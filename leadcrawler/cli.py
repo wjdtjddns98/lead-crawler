@@ -1,0 +1,68 @@
+"""명령행 진입점 (typer).
+
+크롤러 운영·기존 import·엑셀 export·Notion 자동 리포팅을 CLI 로 노출한다.
+"""
+
+from __future__ import annotations
+
+import typer
+
+from . import __version__
+from .config import get_settings
+from .importer import ExistingImporter
+from .integrations.notion import DailyReport, NotionReporter, ScrumEntry
+from .logging import configure_logging, get_logger
+from .pipeline import run_pipeline
+from .sources.base import Segment
+from .storage.export import ExcelExporter
+
+app = typer.Typer(help="lead-crawler — 기업 리드 수집·검증 CLI", no_args_is_help=True)
+log = get_logger("cli")
+
+
+@app.command()
+def version() -> None:
+    """버전을 출력한다."""
+    typer.echo(__version__)
+
+
+@app.command()
+def run(
+    country: str = typer.Option("KR", help="국가 코드"),
+    industry: str = typer.Option("건설", help="업종"),
+    out: str = typer.Option("exports/leads.xlsx", help="엑셀 산출 경로"),
+) -> None:
+    """단일 세그먼트를 처리하고 엑셀 서식으로 저장한다(dry_run 기본)."""
+    configure_logging()
+    leads = run_pipeline([Segment(country=country, industry=industry)])
+    path = ExcelExporter().export(leads, out)
+    typer.echo(f"{len(leads)}건 저장: {path}")
+
+
+@app.command("import-existing")
+def import_existing(path: str = typer.Argument(..., help="기존 엑셀/CSV 경로")) -> None:
+    """기존 검색분을 읽어 dedup 시드용 canonical_key 개수를 보고한다."""
+    rows = ExistingImporter().read(path)
+    typer.echo(f"{len(rows)}건 import, 고유 key {len({r.canonical_key for r in rows})}개")
+
+
+@app.command()
+def report(
+    date: str = typer.Argument(..., help="보고 일자 YYYY-MM-DD"),
+    done: str = typer.Option("", help="오늘 한 일"),
+    nxt: str = typer.Option("", "--next", help="내일 할 일"),
+    milestone: str = typer.Option("M0", help="마일스톤"),
+) -> None:
+    """일일 보고서 + 데일리 스크럼을 Notion 에 자동 기입한다."""
+    configure_logging()
+    reporter = NotionReporter(get_settings())
+    reporter.post_daily_report(
+        DailyReport(date=date, milestone=milestone, done=done, next=nxt)
+    )
+    reporter.post_scrum(ScrumEntry(date=date, today=nxt or done))
+    mode = "전송" if reporter.enabled else "dry_run(미전송)"
+    typer.echo(f"Notion 리포트 {mode} 완료: {date}")
+
+
+if __name__ == "__main__":
+    app()

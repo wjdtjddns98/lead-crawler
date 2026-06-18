@@ -1,0 +1,127 @@
+"""도메인 모델 (Pydantic v2).
+
+발견(Discovery) → 보강(Enrich) → 검증(Verify) 파이프라인이 주고받는 값과,
+최종 산출 엑셀 서식 한 행(:class:`CompanyLead`)을 정의한다. 주석·docstring 은
+한국어, 시각은 timezone-aware UTC 를 사용한다.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from enum import Enum
+from uuid import uuid4
+
+from pydantic import BaseModel, Field
+
+
+def _new_id() -> str:
+    return uuid4().hex[:12]
+
+
+def _utcnow() -> datetime:
+    """timezone-aware UTC now."""
+    return datetime.now(timezone.utc)
+
+
+class Listed(str, Enum):
+    """상장 여부."""
+
+    LISTED = "listed"
+    UNLISTED = "unlisted"
+    UNKNOWN = "unknown"
+
+
+class ContactType(str, Enum):
+    """연락처 종류."""
+
+    EMAIL = "email"
+    PHONE = "phone"
+    FORM = "form"
+    ADDRESS = "address"
+
+
+class EmailRole(str, Enum):
+    """이메일 성격 분류 — HR/언론은 배제 대상."""
+
+    IR = "ir"  # 최우선
+    GENERAL = "general"  # contact@, info@, common — 허용
+    HR = "hr"  # 채용/인사 — 배제
+    PRESS = "press"  # 언론/홍보 — 배제
+    PERSONAL = "personal"  # 개인 — 배제
+    UNKNOWN = "unknown"
+
+
+# 엑셀에 채택 가능한(=발송 대상으로 쓸 수 있는) 이메일 role.
+ACCEPTED_EMAIL_ROLES: frozenset[EmailRole] = frozenset({EmailRole.IR, EmailRole.GENERAL})
+
+
+class ExtractMethod(str, Enum):
+    """연락처를 어떻게 뽑았는지(출처 신뢰도 가중에 사용)."""
+
+    STATIC = "static"
+    HEADLESS = "headless"
+    OCR_VISION = "ocr_vision"
+    API = "api"
+    EXISTING_IMPORT = "existing_import"
+
+
+class ValidationStatus(str, Enum):
+    """이메일 유효성 검증 결과."""
+
+    VALID = "valid"
+    RISKY = "risky"
+    INVALID = "invalid"
+    UNKNOWN = "unknown"
+
+
+class Contact(BaseModel):
+    """회사의 단일 연락처(이메일/전화/문의폼/주소)."""
+
+    id: str = Field(default_factory=_new_id)
+    type: ContactType
+    value: str
+    role: EmailRole = EmailRole.UNKNOWN
+    extract_method: ExtractMethod = ExtractMethod.STATIC
+    source_url: str | None = None
+    confidence: float = 0.0
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class EmailValidation(BaseModel):
+    """이메일 deliverability 검증 결과."""
+
+    status: ValidationStatus = ValidationStatus.UNKNOWN
+    mx: bool = False
+    domain_match: bool = False
+    provider: str | None = None
+    checked_at: datetime | None = None
+
+
+class Company(BaseModel):
+    """검증 파이프라인이 다루는 회사 프로필."""
+
+    id: str = Field(default_factory=_new_id)
+    canonical_key: str
+    name: str
+    country: str = ""
+    industry: str = ""
+    listed: Listed = Listed.UNKNOWN
+    homepage: str | None = None
+    domain: str | None = None
+    registry: str | None = None
+    registry_id: str | None = None
+    segment: str | None = None
+    is_active: bool = False
+    existence_confidence: float = 0.0
+    site_alive: bool = False
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class CompanyLead(BaseModel):
+    """회사 1건 + 채택된 연락처 — 엑셀 한 행에 대응하는 집계 모델."""
+
+    company: Company
+    email: Contact | None = None
+    phone: Contact | None = None
+    form: Contact | None = None
+    email_validation: EmailValidation = Field(default_factory=EmailValidation)

@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# 환경/시크릿
+.env
+.env.*
+!.env.example
+
+# 테스트/캐시
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# 데이터/산출물
+data/
+*.sqlite
+*.db
+screenshots/
+exports/
+
+# 프론트
+web/node_modules/
+web/dist/
+web/.vercel/
+
+# OS/에디터
+.DS_Store
+Thumbs.db

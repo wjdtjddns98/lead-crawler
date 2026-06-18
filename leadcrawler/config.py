@@ -1,0 +1,69 @@
+"""애플리케이션 설정 — pydantic-settings 기반 .env 로드.
+
+모든 외부 키는 ``LEADCRAWLER_`` 접두사 환경변수로 주입한다. 키가 없으면 해당
+소스는 비활성(no-op)으로 동작하고, ``dry_run`` 이 켜져 있으면 네트워크 호출 자체를
+하지 않는다.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """환경변수/.env 에서 로드되는 런타임 설정."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_prefix="LEADCRAWLER_",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    # 기본 동작
+    dry_run: bool = Field(default=True)
+
+    # 저장소
+    database_url: str = Field(
+        default="postgresql+psycopg://leadcrawler:leadcrawler@localhost:5432/leadcrawler"
+    )
+
+    # 발견 소스
+    edgar_user_agent: str = Field(default="")
+    dart_api_key: str = Field(default="")
+    companies_house_api_key: str = Field(default="")
+    opencorporates_api_key: str = Field(default="")
+
+    # 검색엔진 발견
+    google_cse_key: str = Field(default="")
+    google_cse_cx: str = Field(default="")
+    bing_api_key: str = Field(default="")
+
+    # 이메일 보강/검증
+    hunter_api_key: str = Field(default="")
+    apollo_api_key: str = Field(default="")
+    zerobounce_api_key: str = Field(default="")
+    neverbounce_api_key: str = Field(default="")
+
+    # AI (Claude Vision)
+    anthropic_api_key: str = Field(default="")
+
+    # Notion 자동 리포팅 — 토큰 없으면 no-op(로그만).
+    notion_token: str = Field(default="")
+    notion_version: str = Field(default="2022-06-28")
+    notion_daily_db: str = Field(default="4709a56a55614147a264e68dc7e521b8")
+    notion_scrum_db: str = Field(default="850215969daa4b648a8713055356053a")
+    notion_status_db: str = Field(default="dd74e2f7c25f425cbf030117031c9f92")
+
+    # 운영비 한도(월, 원)
+    monthly_budget_krw: int = Field(default=500_000)
+
+
+@lru_cache
+def get_settings() -> Settings:
+    """프로세스 단위로 캐시된 설정 인스턴스를 반환한다."""
+    return Settings()
