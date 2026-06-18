@@ -44,5 +44,3 @@ leadcrawler run --country KR --industry 건설 --out exports/leads.xlsx
 leadcrawler import-existing "기존목록.xlsx"
 leadcrawler report 2026-06-18 --done "..." --next "..."   # Notion 자동 리포팅
 ```
-
-자세한 설계: 승인된 플랜 및 Notion 프로젝트 페이지 참조.
