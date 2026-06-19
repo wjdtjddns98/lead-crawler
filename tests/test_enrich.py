@@ -5,7 +5,9 @@ from __future__ import annotations
 from leadcrawler.config import Settings
 from leadcrawler.enrich.enricher import Enricher
 from leadcrawler.enrich.extract import (
+    candidate_images,
     candidate_links,
+    emails_from_text,
     extract_emails,
     extract_form,
     extract_phones,
@@ -65,8 +67,9 @@ def test_candidate_links_prioritizes_ir_and_same_domain() -> None:
 
 
 class FakeFetcher:
-    def __init__(self, pages: dict[str, str]) -> None:
+    def __init__(self, pages: dict[str, str], images: dict[str, bytes] | None = None) -> None:
         self._pages = pages
+        self._images = images or {}
         self.calls = 0
 
     def get_text(self, url: str, *, params=None, headers=None) -> str:
@@ -78,8 +81,10 @@ class FakeFetcher:
     def get_json(self, url, *, params=None, headers=None):  # 미사용
         raise NotImplementedError
 
-    def get_bytes(self, url, *, params=None, headers=None):  # 미사용
-        raise NotImplementedError
+    def get_bytes(self, url, *, params=None, headers=None) -> bytes:
+        if url not in self._images:
+            raise KeyError(url)
+        return self._images[url]
 
 
 def test_extract_handles_empty_and_broken_html() -> None:
@@ -246,3 +251,90 @@ def test_headless_render_failure_keeps_static() -> None:
     assert any(c.type is ContactType.PHONE for c in out)
     assert not [c for c in out if c.type is ContactType.EMAIL]
     assert renderer.calls == ["https://acme.co.kr"]  # 홈 렌더 1회 시도 후 폴백.
+
+
+# --- OCR escalation(가짜 OCR·이미지, 바이너리·네트워크 없음) ----------
+
+def test_candidate_images_prioritizes_mail_hints_and_caps() -> None:
+    html = (
+        '<img src="/logo.png">'
+        '<img src="/img/email-address.png" alt="문의 이메일">'
+        '<img src="data:image/png;base64,xxx">'  # data: 제외.
+        '<img src="/banner.svg">'  # 비이미지 확장자 제외(.svg 미포함).
+        '<img src="/contact.jpg">'
+    )
+    imgs = candidate_images(html, base_url="https://acme.co.kr", limit=5)
+    # 메일 힌트(email-address.png, contact.jpg)가 logo.png 보다 앞.
+    assert imgs[0].endswith("/img/email-address.png")
+    assert "data:" not in " ".join(imgs) and not any(u.endswith(".svg") for u in imgs)
+    assert any(u.endswith("/contact.jpg") for u in imgs)
+
+
+def test_emails_from_text_filters_roles() -> None:
+    text = "문의: ir@acme.co.kr 채용: hr@acme.co.kr 보도: press@acme.co.kr"
+    out = emails_from_text(text, source_url="img://x")
+    assert {c.value for c in out} == {"ir@acme.co.kr"}  # HR/언론 배제.
+    assert out[0].extract_method is ExtractMethod.OCR_VISION
+
+
+class FakeOcr:
+    """SupportsOcr 더블 — 고정 텍스트 반환 + 호출 기록."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self.calls: list[bytes] = []
+
+    def image_to_text(self, image: bytes) -> str:
+        self.calls.append(image)
+        return self._text
+
+
+def test_ocr_escalates_when_no_email() -> None:
+    static = {"https://acme.co.kr": '<a href="tel:+82-2-1234-5678">T</a><img src="/m.png" alt="email">'}
+    images = {"https://acme.co.kr/m.png": b"PNGBYTES"}
+    ocr = FakeOcr("연락: ir@acme.co.kr")
+    out = Enricher(
+        Settings(dry_run=False, enrich_ocr=True),
+        fetcher=FakeFetcher(static, images),
+        ocr=ocr,
+    ).enrich(_DC)
+    emails = [c for c in out if c.type is ContactType.EMAIL]
+    assert {c.value for c in emails} == {"ir@acme.co.kr"}
+    assert emails[0].extract_method is ExtractMethod.OCR_VISION
+    assert any(c.type is ContactType.PHONE for c in out)  # 정적 전화 보존.
+    assert ocr.calls == [b"PNGBYTES"]
+
+
+def test_ocr_off_by_default_does_not_run() -> None:
+    static = {"https://acme.co.kr": '<img src="/m.png" alt="email">'}
+    ocr = FakeOcr("ir@acme.co.kr")
+    out = Enricher(
+        Settings(dry_run=False, enrich_ocr=False),
+        fetcher=FakeFetcher(static, {"https://acme.co.kr/m.png": b"X"}),
+        ocr=ocr,
+    ).enrich(_DC)
+    assert ocr.calls == [] and not [c for c in out if c.type is ContactType.EMAIL]
+
+
+def test_ocr_skipped_when_static_has_email() -> None:
+    static = {"https://acme.co.kr": '<a href="mailto:ir@acme.co.kr">IR</a><img src="/m.png" alt="email">'}
+    ocr = FakeOcr("other@acme.co.kr")
+    out = Enricher(
+        Settings(dry_run=False, enrich_ocr=True),
+        fetcher=FakeFetcher(static, {"https://acme.co.kr/m.png": b"X"}),
+        ocr=ocr,
+    ).enrich(_DC)
+    assert ocr.calls == []  # 정적 이메일 있으면 OCR 미실행.
+    assert {c.value for c in out if c.type is ContactType.EMAIL} == {"ir@acme.co.kr"}
+
+
+def test_ocr_no_email_found_keeps_contacts() -> None:
+    static = {"https://acme.co.kr": '<a href="tel:+82-2-1234-5678">T</a><img src="/m.png" alt="email">'}
+    ocr = FakeOcr("이메일 없는 텍스트")  # OCR 결과에 이메일 없음.
+    out = Enricher(
+        Settings(dry_run=False, enrich_ocr=True),
+        fetcher=FakeFetcher(static, {"https://acme.co.kr/m.png": b"X"}),
+        ocr=ocr,
+    ).enrich(_DC)
+    assert not [c for c in out if c.type is ContactType.EMAIL]
+    assert any(c.type is ContactType.PHONE for c in out)  # 기존 결과 유지.
