@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     apollo_api_key: str = Field(default="")
     zerobounce_api_key: str = Field(default="")
     neverbounce_api_key: str = Field(default="")
+    # SMTP 메일박스 검증(opt-in) — 느리고 ISP 차단·greylisting 위험이 있어 기본 off.
+    # 켜면 라이브에서 MX 호스트에 RCPT 프로브로 수신가능 여부를 확인한다(catch-all 인지).
+    email_smtp_check: bool = Field(default=False)
+    email_smtp_from: str = Field(default="verify@example.com")  # MAIL FROM 신원
+    smtp_timeout: float = Field(default=10.0)  # SMTP 연결/응답 타임아웃(초)
 
     # AI (Claude Vision)
     anthropic_api_key: str = Field(default="")

@@ -104,6 +104,8 @@ class EmailValidationRow(Base):
     status: Mapped[str] = mapped_column(String(16), default="unknown", server_default=text("'unknown'"))
     mx: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     domain_match: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # SMTP RCPT 프로브 결과(nullable): True=수신확정, False=없음, NULL=미시도/판정불가.
+    smtp: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

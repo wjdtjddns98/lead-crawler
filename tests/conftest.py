@@ -27,11 +27,21 @@ def _force_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _block_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """httpx 의 실제 전송을 차단한다."""
+    """httpx·SMTP·DNS 의 실제 전송을 차단한다(테스트는 주입/monkeypatch 로 우회)."""
 
     def _blocked(*args: object, **kwargs: object) -> None:
         raise NetworkAccessBlockedError("테스트 중 실제 네트워크 호출이 차단되었습니다")
 
+    import smtplib
+
     import httpx
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _blocked, raising=False)
+    # SMTP/DNS 는 httpx 가 아니므로 별도 차단(verify SMTP·MX 경로 안전망).
+    monkeypatch.setattr(smtplib, "SMTP", _blocked, raising=False)
+    try:
+        import dns.resolver
+
+        monkeypatch.setattr(dns.resolver, "resolve", _blocked, raising=False)
+    except ImportError:
+        pass

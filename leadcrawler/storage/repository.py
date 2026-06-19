@@ -176,6 +176,7 @@ def save_lead(session: Session, lead: CompanyLead, *, source: str = "") -> Compa
         ev.status = v.status.value
         ev.mx = v.mx
         ev.domain_match = v.domain_match
+        ev.smtp = v.smtp
         ev.provider = v.provider
         ev.checked_at = v.checked_at
     return company
