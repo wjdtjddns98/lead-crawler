@@ -89,7 +89,8 @@ class Settings(BaseSettings):
     # 호출당 과금이라 기본 off + 엄격한 이미지 캡. anthropic 키 없으면 미동작.
     enrich_vision: bool = Field(default=False)
     vision_model: str = Field(default="claude-haiku-4-5-20251001")  # 저가 모델 기본(비용)
-    vision_max_images: int = Field(default=2)  # 기업당 Vision 이미지 상한(과금 보호)
+    # 기업당 최대 Vision 호출(과금) 횟수 — 이메일 0건 이미지도 호출을 소모한다.
+    vision_max_images: int = Field(default=2)
 
     # 운영비 한도(월, 원)
     monthly_budget_krw: int = Field(default=500_000)

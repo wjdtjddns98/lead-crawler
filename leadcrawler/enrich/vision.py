@@ -18,7 +18,7 @@ from ..logging import get_logger
 
 log = get_logger("enrich.vision")
 
-# 확장자 → media_type(anthropic image 블록용).
+# 확장자 → media_type(anthropic image 블록용). anthropic 미지원 확장자(bmp 등)는 없음.
 _MEDIA_TYPES = {
     "png": "image/png",
     "jpg": "image/jpeg",
@@ -27,12 +27,14 @@ _MEDIA_TYPES = {
     "webp": "image/webp",
 }
 _EXTRACT_PROMPT = "이 이미지에 보이는 이메일 주소를 모두 그대로(텍스트로) 출력하라. 없으면 빈 응답."
+# anthropic 이미지당 상한(base64 후 ~5MB). 초과분은 호출 전 차단(과금·400 회피).
+_MAX_IMAGE_BYTES = 4 * 1024 * 1024
 
 
-def media_type_for(url: str) -> str:
-    """이미지 URL 확장자로 media_type 을 추정한다(기본 image/png)."""
+def media_type_for(url: str) -> str | None:
+    """이미지 URL 확장자로 anthropic media_type 을 추정한다(미지원이면 None)."""
     ext = url.lower().split("?", 1)[0].rsplit(".", 1)[-1]
-    return _MEDIA_TYPES.get(ext, "image/png")
+    return _MEDIA_TYPES.get(ext)
 
 
 class SupportsVision(Protocol):
@@ -52,6 +54,9 @@ class ClaudeVision:
         self._max_tokens = max_tokens
 
     def extract_text(self, image: bytes, *, media_type: str = "image/png") -> str:
+        if len(image) > _MAX_IMAGE_BYTES:  # 대형 이미지 → 호출 전 차단(과금·400 회피).
+            log.info("enrich.vision.too_large", bytes=len(image))
+            return ""
         try:
             import anthropic
 

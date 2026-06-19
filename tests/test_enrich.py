@@ -348,7 +348,16 @@ def test_media_type_for_maps_extensions() -> None:
     assert media_type_for("https://x/a.JPG") == "image/jpeg"
     assert media_type_for("https://x/a.png?v=2") == "image/png"
     assert media_type_for("https://x/a.webp") == "image/webp"
-    assert media_type_for("https://x/a.unknown") == "image/png"  # 기본 폴백.
+    assert media_type_for("https://x/a.bmp") is None  # anthropic 미지원 → None.
+    assert media_type_for("https://x/a.unknown") is None
+
+
+def test_vision_skips_oversized_image_before_api_call() -> None:
+    from leadcrawler.enrich.vision import ClaudeVision
+
+    big = b"x" * (4 * 1024 * 1024 + 1)
+    # 4MB 초과 → API 호출(과금) 없이 빈 문자열(anthropic import 도 안 함).
+    assert ClaudeVision("k", model="m").extract_text(big) == ""
 
 
 class FakeVision:
@@ -413,6 +422,17 @@ def test_vision_skipped_when_email_already_found() -> None:
     ).enrich(_DC)
     assert vision.calls == []  # 정적 이메일 있으면 Vision 미실행.
     assert {c.value for c in out if c.type is ContactType.EMAIL} == {"ir@acme.co.kr"}
+
+
+def test_vision_skips_unsupported_media_type() -> None:
+    # .bmp 는 anthropic 미지원 → 후보지만 Vision 호출 안 함(과금 회피).
+    static = {"https://acme.co.kr": '<a href="tel:+82-2-1234-5678">T</a><img src="/m.bmp" alt="email">'}
+    vision = FakeVision("ir@acme.co.kr")
+    out = Enricher(
+        _vision_settings(), fetcher=FakeFetcher(static, {"https://acme.co.kr/m.bmp": b"X"}), vision=vision
+    ).enrich(_DC)
+    assert vision.calls == []
+    assert not [c for c in out if c.type is ContactType.EMAIL]
 
 
 def test_vision_no_email_keeps_contacts() -> None:

@@ -193,10 +193,13 @@ class Enricher:
         )
         emails: dict[str, Contact] = {}
         for url in img_urls:
+            media_type = media_type_for(url)
+            if media_type is None:  # anthropic 미지원 확장자(bmp 등) → 과금 회피 스킵.
+                continue
             data = _safe_bytes(fetcher, url)
             if data is None:
                 continue
-            text = vision.extract_text(data, media_type=media_type_for(url))
+            text = vision.extract_text(data, media_type=media_type)
             for c in emails_from_text(text, source_url=url):
                 emails.setdefault(c.value, c)
             if emails:  # 이메일 확보 시 조기 종료(과금 절감).
