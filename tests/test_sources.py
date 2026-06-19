@@ -67,20 +67,12 @@ def test_live_branch_without_key_is_noop(cls, seg, no_key, with_key) -> None:  #
     assert cls(Settings(dry_run=False, **no_key)).discover(seg) == []
 
 
-@pytest.mark.parametrize(("cls", "seg", "no_key", "with_key"), _LIVE_CASES)
-def test_live_branch_with_key_not_yet_implemented(cls, seg, no_key, with_key) -> None:  # noqa: ARG001
-    # 키가 있으면 라이브 경로 — M2 미구현이라 명시적으로 NotImplementedError.
-    with pytest.raises(NotImplementedError):
-        cls(Settings(dry_run=False, **with_key)).discover(seg)
-
-
 def test_search_has_key_compound_logic() -> None:
     seg = Segment(country="KR", industry="건설")
     # google_cse_key 만 있고 cx 가 없으면 키 미충족 → no-op.
     assert SearchSource(Settings(dry_run=False, google_cse_key="k")).discover(seg) == []
-    # bing 단독 키만으로도 라이브 시도(미구현).
-    with pytest.raises(NotImplementedError):
-        SearchSource(Settings(dry_run=False, bing_api_key="b")).discover(seg)
+    # bing 단독 키만으로는 라이브 미동작(Bing API 폐기) → no-op.
+    assert SearchSource(Settings(dry_run=False, bing_api_key="b")).discover(seg) == []
 
 
 def test_build_sources_registers_all_adapters() -> None:
