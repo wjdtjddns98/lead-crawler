@@ -35,3 +35,7 @@ web/.vercel/
 # OS/에디터
 .DS_Store
 Thumbs.db
+.idea/
+
+# 툴 상태
+.omc/
