@@ -8,7 +8,8 @@
   로 제공자당 후보를 제한하고, 호출마다 구조화 로그(``enrich.email_api.call``)를 남겨
   향후 cost_ledger 연결점으로 쓴다.
 - 반환 이메일은 사이트 추출과 **동일한 role 필터**(:func:`emails_from_text` → IR 우선,
-  HR·언론·개인 배제)를 거친다. 미설치/키오류/API오류는 빈 리스트 폴백(파이프라인 무중단).
+  HR·언론 배제. 개인명 주소는 일반(GENERAL)으로 채택)를 거친다. 키오류/API오류는
+  빈 리스트 폴백(파이프라인 무중단).
 
 테스트는 :class:`SupportsEmailFinder` 가짜 구현 또는 가짜 페처를 주입해 네트워크 없이 검증한다.
 """
@@ -65,16 +66,16 @@ class HunterFinder:
             return []
         emails = (data or {}).get("data", {}).get("emails", []) or []
         out = [str(e["value"]).strip() for e in emails if isinstance(e, dict) and e.get("value")]
-        log.info("enrich.email_api.call", provider=self.name, n=len(out))
+        log.info("enrich.email_api.call", provider=self.name, domain=domain, n=len(out))
         return out[:limit]
 
 
 class ApolloFinder:
     """Apollo People Search — 도메인 소속 인물의 이메일을 찾는다(잠금 placeholder 제외).
 
-    Apollo 는 인물 중심이라 반환 이메일 다수가 개인(personal)이며, 이는 상위 role 필터에서
-    배제된다(정책: IR/일반만 채택). 잠금 미해제(``email_not_unlocked``) 자리표시자는
-    여기서 먼저 거른다. 오류 시 빈 리스트(graceful).
+    Apollo 는 인물 중심이라 반환 이메일 다수가 개인명 주소이며, 이는 상위 role 필터에서
+    일반(GENERAL)으로 **채택**된다(HR/언론만 배제). 잠금 미해제
+    (``email_not_unlocked@…``) 자리표시자는 여기서 먼저 거른다. 오류 시 빈 리스트(graceful).
     """
 
     name = "apollo"
@@ -99,7 +100,7 @@ class ApolloFinder:
         out: list[str] = []
         for p in people:
             email = (p.get("email") or "").strip() if isinstance(p, dict) else ""
-            if email and "not_unlocked" not in email:  # 미해제 자리표시자 제외.
+            if email and not email.startswith("email_not_unlocked@"):  # 미해제 자리표시자 제외.
                 out.append(email)
-        log.info("enrich.email_api.call", provider=self.name, n=len(out))
+        log.info("enrich.email_api.call", provider=self.name, domain=domain, n=len(out))
         return out[:limit]

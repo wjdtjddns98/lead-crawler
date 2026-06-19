@@ -536,6 +536,18 @@ def test_email_api_early_exit_skips_next_provider() -> None:
     assert hunter.calls and apollo.calls == []  # 1순위 확보 시 2순위 과금 회피.
 
 
+def test_email_api_filtered_empty_provider_falls_through() -> None:
+    # 1순위가 HR/언론만 반환(전량 필터) → 채택 0건이라 2순위로 진행.
+    hronly = FakeFinder("hunter", ["hr@acme.co.kr", "press@acme.co.kr"])
+    apollo = FakeFinder("apollo", ["ir@acme.co.kr"])
+    out = Enricher(
+        _email_api_settings(), fetcher=FakeFetcher(_NO_EMAIL_HOME),
+        email_finders=[hronly, apollo],
+    ).enrich(_DC)
+    assert hronly.calls and apollo.calls  # 필터로 0건이면 다음 제공자 시도.
+    assert {c.value for c in out if c.type is ContactType.EMAIL} == {"ir@acme.co.kr"}
+
+
 def test_email_api_no_finders_keeps_contacts() -> None:
     # 플래그 on 이지만 키 없음(주입도 없음) → 제공자 0개 → no-op(전화 유지).
     out = Enricher(_email_api_settings(), fetcher=FakeFetcher(_NO_EMAIL_HOME)).enrich(_DC)

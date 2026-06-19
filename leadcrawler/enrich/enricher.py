@@ -202,7 +202,7 @@ class Enricher:
         정적·헤드리스·OCR 모두 0건일 때만 진입. 키가 있는 제공자만 순차 시도하고, 한
         제공자에서 이메일을 확보하면 다음 제공자 과금/크레딧을 아끼려 조기 종료한다.
         반환 이메일은 :func:`emails_from_text` 로 site 추출과 동일한 role 필터(IR 우선,
-        HR·언론·개인 배제)를 거친다. 제공자가 없거나 0건이면 ``contacts`` 유지.
+        HR·언론 배제. 개인명은 일반으로 채택)를 거친다. 제공자가 없거나 0건이면 유지.
         """
         finders = self._email_finders_list()
         if not finders:  # 키 없음 → no-op(과금 없음).
@@ -211,9 +211,10 @@ class Enricher:
         emails: dict[str, Contact] = {}
         for finder in finders:
             raw = finder.find_emails(dc.domain, limit=cap)
+            # 제3자 DB 추정치라 다른 escalation 티어(OCR/Vision)와 동일한 낮은 신뢰도.
             for c in emails_from_text(
                 " ".join(raw), source_url=finder.source,
-                method=ExtractMethod.API, confidence=0.7,
+                method=ExtractMethod.API, confidence=0.5,
             ):
                 emails.setdefault(c.value, c)
             if emails:  # 한 제공자에서 확보 시 다음 제공자 과금/크레딧 회피.
