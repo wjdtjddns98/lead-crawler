@@ -10,7 +10,9 @@ from leadcrawler.config import Settings
 from leadcrawler.sources.base import Segment
 from leadcrawler.sources.dart import DartSource
 from leadcrawler.sources.edgar import EdgarSource
+from leadcrawler.sources.gleif import GleifSource
 from leadcrawler.sources.search import SearchSource
+from leadcrawler.sources.wikidata import WikidataSource
 
 
 class FakeFetcher:
@@ -200,3 +202,88 @@ def test_search_empty_and_non_dict_items() -> None:
     settings = Settings(dry_run=False, google_cse_key="k", google_cse_cx="cx")
     src = SearchSource(settings, fetcher=FakeFetcher(json=lambda u, p: {"items": [None, 1, "x"]}))
     assert src.discover(Segment(country="KR", industry="건설")) == []
+
+
+# --- GLEIF (JSON:API) ---------------------------------------------------
+
+def _gleif_page(records: list[dict]) -> dict:
+    """GLEIF lei-records JSON:API 응답 더미."""
+    return {"data": records}
+
+
+def test_gleif_live_parses_active_and_filters_inactive() -> None:
+    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    page = _gleif_page([
+        {"id": "PH0000ACTIVE001", "attributes": {"entity": {
+            "legalName": {"name": "Ayala Corporation"}, "status": "ACTIVE",
+            "legalAddress": {"country": "PH"}}}},
+        {"id": "PH0000INACTIVE9", "attributes": {"entity": {
+            "legalName": {"name": "Dead Corp"}, "status": "INACTIVE",
+            "legalAddress": {"country": "PH"}}}},  # 비활성 → 제외(제약 ②).
+    ])
+
+    def _json(url: str, params: dict):
+        # 1페이지엔 데이터, 2페이지부턴 빈 목록(페이징 종료).
+        return page if params.get("page[number]", 1) == 1 else {"data": []}
+
+    out = GleifSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="필리핀", industry="제조")
+    )
+    assert len(out) == 1
+    dc = out[0]
+    assert dc.name == "Ayala Corporation" and dc.registry == "lei"
+    assert dc.registry_id == "PH0000ACTIVE001"
+    assert dc.domain is None  # LEI 레코드엔 웹사이트 없음.
+    assert dc.canonical_key == "reg:lei:ph0000active001"
+
+
+def test_gleif_non_dict_payload_returns_empty() -> None:
+    settings = Settings(dry_run=False)
+    src = GleifSource(settings, fetcher=FakeFetcher(json=lambda u, p: ["not", "a", "dict"]))
+    assert src.discover(Segment(country="TH", industry="제조")) == []
+
+
+def test_gleif_unknown_country_is_noop() -> None:
+    # 미등록 국가는 applies_to=False 이지만 discover 도 방어적으로 빈 결과.
+    settings = Settings(dry_run=False)
+    src = GleifSource(settings, fetcher=FakeFetcher(json=lambda u, p: _gleif_page([])))
+    assert src.discover(Segment(country="Atlantis", industry="제조")) == []
+
+
+# --- Wikidata (SPARQL) --------------------------------------------------
+
+def _wd_results(rows: list[dict]) -> dict:
+    """Wikidata SPARQL JSON 결과 더미."""
+    return {"results": {"bindings": rows}}
+
+
+def test_wikidata_live_parses_label_and_website() -> None:
+    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    rows = _wd_results([
+        {
+            "item": {"value": "http://www.wikidata.org/entity/Q1391"},
+            "itemLabel": {"value": "PTT Public Company"},
+            "website": {"value": "https://www.ptt.com/th"},
+        },
+        {  # 웹사이트 없는 항목 — 도메인 None 으로 통과.
+            "item": {"value": "http://www.wikidata.org/entity/Q9999"},
+            "itemLabel": {"value": "Siam Cement"},
+        },
+        {  # 라벨 미해소(QID 가 라벨) → 스킵.
+            "item": {"value": "http://www.wikidata.org/entity/Q12345"},
+            "itemLabel": {"value": "Q12345"},
+        },
+    ])
+    src = WikidataSource(settings, fetcher=FakeFetcher(json=lambda u, p: rows))
+    out = src.discover(Segment(country="태국", industry="에너지"))
+    assert {d.registry_id for d in out} == {"Q1391", "Q9999"}
+    ptt = next(d for d in out if d.registry_id == "Q1391")
+    assert ptt.domain == "ptt.com" and ptt.canonical_key == "reg:wikidata:q1391"
+    siam = next(d for d in out if d.registry_id == "Q9999")
+    assert siam.domain is None
+
+
+def test_wikidata_non_dict_payload_returns_empty() -> None:
+    settings = Settings(dry_run=False)
+    src = WikidataSource(settings, fetcher=FakeFetcher(json=lambda u, p: "boom"))
+    assert src.discover(Segment(country="TH", industry="제조")) == []
