@@ -16,6 +16,7 @@ dry_run: 네트워크 없는 결정적 더미(전 소스 공통). 키 불필요.
 
 from __future__ import annotations
 
+import html
 import re
 
 from ..config import Settings
@@ -127,15 +128,17 @@ class PseSource(ExchangeSource):
         page = 1
         while len(out) < cap and page <= _PSE_MAX_PAGES:
             try:
-                html = fetcher.post_text(self.list_url, data=self._form(page))
+                page_html = fetcher.post_text(self.list_url, data=self._form(page))
             except Exception as exc:  # 응답/네트워크 이상 → 부분 결과 보존 후 중단.
-                log.info("pse.error", page=page, err=str(exc))
+                log.info("pse.error", page=page, err_type=type(exc).__name__, err=str(exc))
                 break
-            rows = _PSE_ROW.findall(html)
+            rows = _PSE_ROW.findall(page_html)
             if not rows:  # 빈 페이지 → 마지막 도달.
                 break
             for _cmpy_id, _sec_id, name, symbol in rows:
-                symbol, name = symbol.strip(), name.strip()
+                # HTML 엔티티 해제(예: "A. Soriano &amp; Co." → "&") — 엑셀 출력 품질(§3).
+                symbol = html.unescape(symbol.strip())
+                name = html.unescape(name.strip())
                 if not symbol or not name or symbol in seen:
                     continue
                 seen.add(symbol)
