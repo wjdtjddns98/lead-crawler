@@ -22,7 +22,8 @@ from ..models import (
     ExtractMethod,
     Listed,
 )
-from ..sources.base import DiscoveredCompany, DummySource, Segment
+from ..sources.base import DiscoveredCompany, Segment
+from ..sources.registry import discover_segment
 from ..verify.email_validator import EmailValidator
 from ..verify.existence import ExistenceVerifier
 
@@ -65,13 +66,12 @@ def run_pipeline(
     """세그먼트들을 처리해 검증된 :class:`CompanyLead` 목록을 반환한다."""
     settings = settings or get_settings()
     seen = seen if seen is not None else set()
-    source = DummySource()
     existence = ExistenceVerifier(settings)
     email_validator = EmailValidator(settings)
 
     leads: list[CompanyLead] = []
     for segment in segments:
-        for dc in source.discover(segment):
+        for dc in discover_segment(segment, settings):
             if dc.canonical_key in seen:
                 log.info("dedup.skip", key=dc.canonical_key)
                 continue
