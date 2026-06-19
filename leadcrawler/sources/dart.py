@@ -1,19 +1,33 @@
 """DART(금융감독원 전자공시) 발견 소스 — 한국 상장/공시기업.
 
-dry_run 에서는 네트워크 없이 결정적 더미를 반환한다. 라이브 발견은 M2 에서
-구현한다 — ``dart_api_key`` 가 없으면 비활성(no-op)으로 동작한다.
+dry_run: 네트워크 없이 결정적 더미. 라이브: OpenDART 2-패스
+1. ``corpCode.xml``(ZIP) 로 전체 고유번호 목록 → ``stock_code`` 보유분(상장) 필터,
+2. 각 ``company.json`` 으로 홈페이지(hm_url)·업종(induty_code)·시장(corp_cls) 취득 후
+   업종 접두 매칭(KSIC)으로 거른다.
+호출량은 ``discovery_max_per_source`` 로 상한한다(예산·레이트리밋 보호).
+``dart_api_key`` 가 없으면 비활성(no-op).
 """
 
 from __future__ import annotations
 
+import io
+import zipfile
+from xml.etree import ElementTree
+
 from ..config import Settings
+from ..dedup import normalize_domain
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company, is_country
+from .http import Fetcher, SupportsFetch
+from .industry import ksic_prefixes, matches_prefix
 
 log = get_logger("sources.dart")
 
-# DART 적용 국가 별칭(소문자).
 _KR = {"kr", "kor", "korea", "south korea", "대한민국", "한국"}
+_CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
+_COMPANY_URL = "https://opendart.fss.or.kr/api/company.json"
+# 상장 시장 구분(corp_cls): 유가증권(Y)/코스닥(K)/코넥스(N).
+_LISTED_CLS = {"Y": "listed", "K": "listed", "N": "listed"}
 
 
 class DartSource:
@@ -21,16 +35,19 @@ class DartSource:
 
     name = "dart"
 
-    def __init__(self, settings: Settings, *, count: int = 2) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        count: int = 2,
+        fetcher: SupportsFetch | None = None,
+    ) -> None:
         self._settings = settings
         self._count = count
+        self._fetcher = fetcher
 
     def applies_to(self, segment: Segment) -> bool:
-        """한국 세그먼트에 적용된다.
-
-        DART 는 본래 상장/공시기업 대상이나, M1 에서는 ``segment.listed`` 필터링을
-        하지 않는다(상장여부 게이팅은 M2 라이브 발견과 함께 도입).
-        """
+        """한국 세그먼트에 적용된다(상장여부 게이팅은 라이브에서 corp_cls 로)."""
         return is_country(segment, _KR)
 
     def discover(self, segment: Segment) -> list[DiscoveredCompany]:
@@ -56,6 +73,79 @@ class DartSource:
             for i in range(self._count)
         ]
 
+    def _client(self) -> SupportsFetch:
+        # 소스 인스턴스당 1개만 생성·재사용(discover 호출마다 클라이언트 누수 방지).
+        if self._fetcher is None:
+            self._fetcher = Fetcher(
+                min_interval=self._settings.http_request_delay,
+                timeout=self._settings.http_timeout,
+            )
+        return self._fetcher
+
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
-        """실 DART 발견 — M2 구현 예정."""
-        raise NotImplementedError("DART 라이브 발견은 M2 — dart_api_key 연동 예정")
+        """실 OpenDART 발견(2-패스 + 업종/캡 필터)."""
+        fetcher = self._client()
+        key = self._settings.dart_api_key
+        cap = self._settings.discovery_max_per_source
+        prefixes = ksic_prefixes(segment.industry)
+
+        try:
+            listed = _parse_corp_codes(
+                fetcher.get_bytes(_CORP_CODE_URL, params={"crtfc_key": key})
+            )
+        except Exception as exc:  # 깨진 ZIP/응답이면 전체 크래시 대신 빈 결과.
+            log.info("dart.corpcode.error", err=str(exc))
+            return []
+        # 업종 필터가 없으면 상한만큼만, 있으면 더 넓게 스캔(상한*10)하며 매칭 수집.
+        scan_limit = cap if prefixes is None else cap * 10
+
+        out: list[DiscoveredCompany] = []
+        for corp_code, corp_name in listed[:scan_limit]:
+            try:
+                info = fetcher.get_json(
+                    _COMPANY_URL, params={"crtfc_key": key, "corp_code": corp_code}
+                )
+            except Exception as exc:  # 개별 실패는 건너뛴다(배치 보호).
+                log.info("dart.company.error", corp_code=corp_code, err=str(exc))
+                continue
+            if not isinstance(info, dict) or info.get("status") != "000":
+                continue
+            if not matches_prefix(info.get("induty_code"), prefixes):
+                continue
+            out.append(
+                build_company(
+                    source=self.name,
+                    segment=Segment(
+                        country=segment.country,
+                        industry=segment.industry,
+                        listed=_LISTED_CLS.get(info.get("corp_cls", ""), "unknown"),
+                    ),
+                    name=info.get("corp_name") or corp_name,
+                    domain=normalize_domain(info.get("hm_url")),
+                    registry="dart",
+                    registry_id=corp_code,
+                )
+            )
+            if len(out) >= cap:
+                break
+        log.info("dart.live", segment=segment.label, n=len(out))
+        return out
+
+
+def _parse_corp_codes(zip_bytes: bytes) -> list[tuple[str, str]]:
+    """corpCode.xml(ZIP) 에서 상장사(stock_code 보유) (corp_code, corp_name) 추출."""
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        xml_name = next((n for n in zf.namelist() if n.lower().endswith(".xml")), None)
+        if xml_name is None:
+            return []
+        root = ElementTree.fromstring(zf.read(xml_name))
+    out: list[tuple[str, str]] = []
+    for node in root.iter("list"):
+        stock = (node.findtext("stock_code") or "").strip()
+        if not stock:  # 상장사만(비상장은 stock_code 공백).
+            continue
+        corp_code = (node.findtext("corp_code") or "").strip()
+        corp_name = (node.findtext("corp_name") or "").strip()
+        if corp_code:
+            out.append((corp_code, corp_name))
+    return out

@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     notion_scrum_db: str = Field(default="850215969daa4b648a8713055356053a")
     notion_status_db: str = Field(default="dd74e2f7c25f425cbf030117031c9f92")
 
+    # 라이브 발견 제어(예산·레이트리밋)
+    discovery_max_per_source: int = Field(default=50)  # 소스·세그먼트당 후보 상한
+    http_request_delay: float = Field(default=0.12)  # 요청 간 최소 간격(초)
+    http_timeout: float = Field(default=15.0)
+
     # 운영비 한도(월, 원)
     monthly_budget_krw: int = Field(default=500_000)
 
