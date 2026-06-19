@@ -23,12 +23,13 @@ from .extract import (
 )
 from .headless import PlaywrightRenderer, SupportsRender
 from .ocr import SupportsOcr, TesseractOcr
+from .vision import ClaudeVision, SupportsVision, media_type_for
 
 log = get_logger("enrich")
 
 
 class Enricher:
-    """기업 1건의 연락처를 추출한다(정적 → 헤드리스 → OCR escalation, dry_run 더미)."""
+    """기업 1건의 연락처를 추출한다(정적 → 헤드리스 → OCR → Vision, dry_run 더미)."""
 
     def __init__(
         self,
@@ -37,11 +38,13 @@ class Enricher:
         fetcher: SupportsFetch | None = None,
         renderer: SupportsRender | None = None,
         ocr: SupportsOcr | None = None,
+        vision: SupportsVision | None = None,
     ):
         self._settings = settings or get_settings()
         self._fetcher = fetcher
         self._renderer = renderer
         self._ocr = ocr
+        self._vision = vision
 
     def enrich(self, dc: DiscoveredCompany) -> list[Contact]:
         """발견 기업의 연락처 후보(이메일·전화·폼) 목록을 반환한다."""
@@ -55,6 +58,13 @@ class Enricher:
             contacts = self._escalate(dc, contacts)
         if self._settings.enrich_ocr and not _has_email(contacts):
             contacts = self._escalate_ocr(dc, contacts)
+        # Vision 은 유료 — 키가 있고 플래그가 켜졌을 때만 최후로 시도.
+        if (
+            self._settings.enrich_vision
+            and self._settings.anthropic_api_key
+            and not _has_email(contacts)
+        ):
+            contacts = self._escalate_vision(dc, contacts)
         return contacts
 
     def _client(self) -> SupportsFetch:
@@ -74,6 +84,13 @@ class Enricher:
         if self._ocr is None:
             self._ocr = TesseractOcr()
         return self._ocr
+
+    def _vision_obj(self) -> SupportsVision:
+        if self._vision is None:
+            self._vision = ClaudeVision(
+                self._settings.anthropic_api_key, model=self._settings.vision_model
+            )
+        return self._vision
 
     def close(self) -> None:
         """내부에서 만든 httpx 클라이언트·렌더러를 정리한다(리소스 누수 방지)."""
@@ -154,6 +171,39 @@ class Enricher:
         if not emails:
             return contacts
         log.info("enrich.ocr", domain=dc.domain, emails=len(emails))
+        return [*contacts, *emails.values()]
+
+    def _escalate_vision(self, dc: DiscoveredCompany, contacts: list[Contact]) -> list[Contact]:
+        """홈페이지 이미지를 Claude Vision 으로 읽어 이메일을 보강한다(유료·최후수단).
+
+        정적·헤드리스·OCR 모두 0건이고 키·플래그가 있을 때만 진입. vision_max_images 로
+        과금을 엄격히 제한하고 이미지 확보 시 조기 종료. 실패면 ``contacts`` 유지.
+        """
+        fetcher = self._client()
+        vision = self._vision_obj()
+        home = f"https://{dc.domain}"
+        try:
+            home_html = fetcher.get_text(home)
+        except Exception as exc:  # 홈 fetch 실패 → 기존 결과 유지.
+            log.info("enrich.vision.home_error", domain=dc.domain, err=str(exc))
+            return contacts
+
+        img_urls = candidate_images(
+            home_html, base_url=home, domain=dc.domain, limit=self._settings.vision_max_images
+        )
+        emails: dict[str, Contact] = {}
+        for url in img_urls:
+            data = _safe_bytes(fetcher, url)
+            if data is None:
+                continue
+            text = vision.extract_text(data, media_type=media_type_for(url))
+            for c in emails_from_text(text, source_url=url):
+                emails.setdefault(c.value, c)
+            if emails:  # 이메일 확보 시 조기 종료(과금 절감).
+                break
+        if not emails:
+            return contacts
+        log.info("enrich.vision", domain=dc.domain, emails=len(emails))
         return [*contacts, *emails.values()]
 
     def _live(self, dc: DiscoveredCompany) -> list[Contact]:
