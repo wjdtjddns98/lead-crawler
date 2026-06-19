@@ -37,10 +37,23 @@ ruff check .
 pytest -q
 ```
 
+## 데이터베이스
+
+운영/로컬은 PostgreSQL, 단위 테스트는 SQLite(스키마 양립 설계). 스키마 변경은 Alembic 으로 관리.
+
+```bash
+docker compose up -d            # 로컬 PostgreSQL 기동
+pip install -e ".[db]"          # psycopg 드라이버
+leadcrawler db-upgrade          # = alembic upgrade head
+# 스키마 변경 시: alembic revision --autogenerate -m "변경요약"
+```
+
 ## CLI
 
 ```bash
 leadcrawler run --country KR --industry 건설 --out exports/leads.xlsx
+leadcrawler run --country KR --industry 건설 --persist   # 결과를 DB 에 영속화
+leadcrawler db-upgrade                                    # DB 마이그레이션 적용
 leadcrawler import-existing "기존목록.xlsx"
 leadcrawler report 2026-06-18 --done "..." --next "..."   # Notion 자동 리포팅
 ```

@@ -32,6 +32,7 @@ class DiscoveredCompany(BaseModel):
     name: str
     country: str = ""
     industry: str = ""
+    listed: str = "unknown"
     domain: str | None = None
     registry: str | None = None
     registry_id: str | None = None
@@ -80,6 +81,7 @@ def build_company(
         name=name,
         country=segment.country,
         industry=segment.industry,
+        listed=segment.listed,
         domain=domain,
         registry=registry,
         registry_id=registry_id,

@@ -7,8 +7,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from urllib.parse import urlparse
+
+# canonical_key 는 DB PK(varchar(255)) 라 길이를 넘기면 PG 가 거부한다.
+# 초과 시 결정적 해시로 축약(충돌 회피)하기 위한 한계값.
+_KEY_MAXLEN = 255
 
 # 회사명에서 떼어낼 흔한 법인격 접미사(정규화용).
 _LEGAL_SUFFIXES = {
@@ -52,6 +57,16 @@ def normalize_domain(value: str | None) -> str | None:
     return ".".join(labels[-2:])
 
 
+def _clamp_key(key: str) -> str:
+    """255자 초과 키를 결정적으로 축약한다(접두사 보존 + 해시로 충돌 회피)."""
+    if len(key) <= _KEY_MAXLEN:
+        return key
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()  # 40자
+    # 접두사(name: 등)와 가독 부분 일부를 남기고 끝에 해시를 붙인다.
+    head = key[: _KEY_MAXLEN - len(digest) - 1]
+    return f"{head}:{digest}"[:_KEY_MAXLEN]
+
+
 def canonical_key(
     *,
     registry: str | None = None,
@@ -60,13 +75,13 @@ def canonical_key(
     name: str | None = None,
     country: str | None = None,
 ) -> str:
-    """기업 식별용 canonical_key 를 우선순위에 따라 생성한다."""
+    """기업 식별용 canonical_key 를 우선순위에 따라 생성한다(최대 255자)."""
     if registry and registry_id:
-        return f"reg:{registry.strip().lower()}:{registry_id.strip().lower()}"
+        return _clamp_key(f"reg:{registry.strip().lower()}:{registry_id.strip().lower()}")
     norm_domain = normalize_domain(domain)
     if norm_domain:
-        return f"dom:{norm_domain}"
+        return _clamp_key(f"dom:{norm_domain}")
     norm_name = normalize_name(name or "")
     if norm_name:
-        return f"name:{(country or '').strip().lower()}:{norm_name}"
+        return _clamp_key(f"name:{(country or '').strip().lower()}:{norm_name}")
     raise ValueError("canonical_key 를 만들 식별 정보가 없습니다(registry/domain/name 모두 없음)")
