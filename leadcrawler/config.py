@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     http_request_delay: float = Field(default=0.12)  # 요청 간 최소 간격(초)
     http_timeout: float = Field(default=15.0)
 
+    # 보강(enrich) 제어
+    enrich_max_pages: int = Field(default=6)  # 기업당 정적 크롤 페이지 상한(홈+후보)
+
     # 운영비 한도(월, 원)
     monthly_budget_krw: int = Field(default=500_000)
 
