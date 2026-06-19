@@ -93,6 +93,9 @@ class EmailValidation(BaseModel):
     status: ValidationStatus = ValidationStatus.UNKNOWN
     mx: bool = False
     domain_match: bool = False
+    # SMTP RCPT 프로브 결과: True=메일박스 수신확정, False=없음(550),
+    # None=미시도/판정불가(catch-all·타임아웃 등).
+    smtp: bool | None = None
     provider: str | None = None
     checked_at: datetime | None = None
 
