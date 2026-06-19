@@ -443,3 +443,164 @@ def test_vision_no_email_keeps_contacts() -> None:
     ).enrich(_DC)
     assert not [c for c in out if c.type is ContactType.EMAIL]
     assert any(c.type is ContactType.PHONE for c in out)
+
+
+# --- Email Finder API escalation(Hunter/Apollo, 가짜 주입, 네트워크 없음) -------
+
+# 정적으로 이메일이 안 나오는 홈(전화만) — escalation 진입 조건을 만든다.
+_NO_EMAIL_HOME = {"https://acme.co.kr": '<a href="tel:+82-2-1234-5678">대표</a>'}
+
+
+class FakeFinder:
+    """SupportsEmailFinder 더블 — 고정 이메일 반환 + 호출 기록."""
+
+    def __init__(self, name: str, emails: list[str]) -> None:
+        self.name = name
+        self.source = f"https://{name}.test"
+        self._emails = emails
+        self.calls: list[tuple[str, int]] = []
+
+    def find_emails(self, domain: str, *, limit: int = 5) -> list[str]:
+        self.calls.append((domain, limit))
+        return self._emails
+
+
+def _email_api_settings(**over: object) -> Settings:
+    """이메일 API escalation 라이브 설정(플래그 on) — over 로 추가 조정."""
+    return Settings(dry_run=False, enrich_email_api=True, **over)
+
+
+def test_email_api_escalates_when_no_email() -> None:
+    finder = FakeFinder("hunter", ["ir@acme.co.kr"])
+    out = Enricher(
+        _email_api_settings(), fetcher=FakeFetcher(_NO_EMAIL_HOME), email_finders=[finder]
+    ).enrich(_DC)
+    emails = [c for c in out if c.type is ContactType.EMAIL]
+    assert {c.value for c in emails} == {"ir@acme.co.kr"}
+    assert emails[0].extract_method is ExtractMethod.API
+    assert emails[0].role is EmailRole.IR
+    assert any(c.type is ContactType.PHONE for c in out)  # 정적 전화 보존.
+    assert finder.calls == [("acme.co.kr", 5)]
+
+
+def test_email_api_off_by_default_does_not_run() -> None:
+    finder = FakeFinder("hunter", ["ir@acme.co.kr"])
+    out = Enricher(
+        Settings(dry_run=False, enrich_email_api=False),
+        fetcher=FakeFetcher(_NO_EMAIL_HOME),
+        email_finders=[finder],
+    ).enrich(_DC)
+    assert finder.calls == [] and not [c for c in out if c.type is ContactType.EMAIL]
+
+
+def test_email_api_skipped_when_email_already_found() -> None:
+    static = {"https://acme.co.kr": '<a href="mailto:ir@acme.co.kr">IR</a>'}
+    finder = FakeFinder("hunter", ["other@acme.co.kr"])
+    out = Enricher(
+        _email_api_settings(), fetcher=FakeFetcher(static), email_finders=[finder]
+    ).enrich(_DC)
+    assert finder.calls == []  # 정적 이메일 있으면 API 미실행.
+    assert {c.value for c in out if c.type is ContactType.EMAIL} == {"ir@acme.co.kr"}
+
+
+def test_email_api_filters_hr_and_press() -> None:
+    # HR/언론은 배제, IR·개인명(general)은 채택 — site 추출과 동일 정책.
+    finder = FakeFinder(
+        "hunter", ["ir@acme.co.kr", "hr@acme.co.kr", "press@acme.co.kr", "jane.doe@acme.co.kr"]
+    )
+    out = Enricher(
+        _email_api_settings(), fetcher=FakeFetcher(_NO_EMAIL_HOME), email_finders=[finder]
+    ).enrich(_DC)
+    vals = {c.value for c in out if c.type is ContactType.EMAIL}
+    assert vals == {"ir@acme.co.kr", "jane.doe@acme.co.kr"}
+
+
+def test_email_api_tries_next_provider_until_hit() -> None:
+    empty = FakeFinder("hunter", [])  # 1순위 0건 → 2순위 시도.
+    apollo = FakeFinder("apollo", ["info@acme.co.kr"])
+    out = Enricher(
+        _email_api_settings(), fetcher=FakeFetcher(_NO_EMAIL_HOME),
+        email_finders=[empty, apollo],
+    ).enrich(_DC)
+    assert empty.calls and apollo.calls  # 둘 다 시도.
+    assert {c.value for c in out if c.type is ContactType.EMAIL} == {"info@acme.co.kr"}
+
+
+def test_email_api_early_exit_skips_next_provider() -> None:
+    hunter = FakeFinder("hunter", ["ir@acme.co.kr"])  # 1순위에서 확보.
+    apollo = FakeFinder("apollo", ["info@acme.co.kr"])
+    Enricher(
+        _email_api_settings(), fetcher=FakeFetcher(_NO_EMAIL_HOME),
+        email_finders=[hunter, apollo],
+    ).enrich(_DC)
+    assert hunter.calls and apollo.calls == []  # 1순위 확보 시 2순위 과금 회피.
+
+
+def test_email_api_no_finders_keeps_contacts() -> None:
+    # 플래그 on 이지만 키 없음(주입도 없음) → 제공자 0개 → no-op(전화 유지).
+    out = Enricher(_email_api_settings(), fetcher=FakeFetcher(_NO_EMAIL_HOME)).enrich(_DC)
+    assert not [c for c in out if c.type is ContactType.EMAIL]
+    assert any(c.type is ContactType.PHONE for c in out)
+
+
+def test_email_api_no_email_keeps_contacts() -> None:
+    finder = FakeFinder("hunter", ["not-an-email", ""])  # 유효 이메일 0건.
+    out = Enricher(
+        _email_api_settings(), fetcher=FakeFetcher(_NO_EMAIL_HOME), email_finders=[finder]
+    ).enrich(_DC)
+    assert not [c for c in out if c.type is ContactType.EMAIL]
+    assert any(c.type is ContactType.PHONE for c in out)
+
+
+# --- 제공자 단위(가짜 페처, API·네트워크 없음) ---------------------------------
+
+class FakeApiFetcher:
+    """get_json/post_json 더블 — 고정 응답 반환 + 호출 인자 기록."""
+
+    def __init__(self, json_resp: object) -> None:
+        self._resp = json_resp
+        self.get_params: dict | None = None
+        self.post_json_body: object = None
+
+    def get_json(self, url, *, params=None, headers=None):
+        self.get_params = params
+        return self._resp
+
+    def post_json(self, url, *, json=None, params=None, headers=None):
+        self.post_json_body = json
+        return self._resp
+
+
+def test_hunter_finder_parses_and_requests_generic() -> None:
+    from leadcrawler.enrich.emailapi import HunterFinder
+
+    resp = {"data": {"emails": [{"value": "ir@acme.co.kr"}, {"value": "info@acme.co.kr"}]}}
+    fetcher = FakeApiFetcher(resp)
+    out = HunterFinder("k", fetcher=fetcher).find_emails("acme.co.kr", limit=3)
+    assert out == ["ir@acme.co.kr", "info@acme.co.kr"]
+    assert fetcher.get_params["type"] == "generic"  # 개인 이메일 제외 요청.
+    assert fetcher.get_params["domain"] == "acme.co.kr"
+
+
+def test_apollo_finder_skips_locked_placeholder() -> None:
+    from leadcrawler.enrich.emailapi import ApolloFinder
+
+    resp = {"people": [
+        {"email": "ir@acme.co.kr"},
+        {"email": "email_not_unlocked@domain.com"},  # 미해제 자리표시자.
+        {"email": ""},
+    ]}
+    fetcher = FakeApiFetcher(resp)
+    out = ApolloFinder("k", fetcher=fetcher).find_emails("acme.co.kr", limit=5)
+    assert out == ["ir@acme.co.kr"]
+    assert fetcher.post_json_body["q_organization_domains"] == "acme.co.kr"
+
+
+def test_email_finder_graceful_on_error() -> None:
+    from leadcrawler.enrich.emailapi import HunterFinder
+
+    class Boom:
+        def get_json(self, *a, **k):
+            raise RuntimeError("api down")
+
+    assert HunterFinder("k", fetcher=Boom()).find_emails("acme.co.kr") == []
