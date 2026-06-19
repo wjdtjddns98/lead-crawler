@@ -76,6 +76,10 @@ class Settings(BaseSettings):
 
     # 보강(enrich) 제어
     enrich_max_pages: int = Field(default=6)  # 기업당 정적 크롤 페이지 상한(홈+후보)
+    # 헤드리스 escalation(opt-in) — 정적으로 이메일 못 찾은 기업만 JS 렌더로 재시도.
+    # Playwright(선택적 extra) 미설치면 자동 폴백(정적 결과 유지). 느려서 기본 off.
+    enrich_headless: bool = Field(default=False)
+    headless_timeout: float = Field(default=20.0)  # 페이지 렌더 타임아웃(초)
 
     # 운영비 한도(월, 원)
     monthly_budget_krw: int = Field(default=500_000)

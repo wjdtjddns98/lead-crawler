@@ -10,7 +10,7 @@ from leadcrawler.enrich.extract import (
     extract_form,
     extract_phones,
 )
-from leadcrawler.models import ContactType, EmailRole
+from leadcrawler.models import ContactType, EmailRole, ExtractMethod
 from leadcrawler.sources.base import DiscoveredCompany
 
 _HOME = """
@@ -149,3 +149,85 @@ def test_enricher_live_home_failure_returns_empty() -> None:
     dc = DiscoveredCompany(canonical_key="dom:dead.com", name="죽음", domain="dead.com")
     # 홈페이지 fetch 실패(맵에 없음 → KeyError) → 빈 결과(크래시 없음).
     assert Enricher(settings, fetcher=FakeFetcher({})).enrich(dc) == []
+
+
+# --- 추출 출처(method) 표기 -------------------------------------------
+
+def test_extract_emails_method_is_settable() -> None:
+    out = extract_emails('<a href="mailto:ir@x.com">x</a>', method=ExtractMethod.HEADLESS)
+    assert out and out[0].extract_method is ExtractMethod.HEADLESS
+
+
+# --- 헤드리스 escalation(가짜 렌더러, 브라우저·네트워크 없음) ---------
+
+class FakeRenderer:
+    """SupportsRender 더블 — url→HTML(없으면 None=렌더실패) + 호출 기록."""
+
+    def __init__(self, pages: dict[str, str]) -> None:
+        self._pages = pages
+        self.calls: list[str] = []
+        self.closed = False
+
+    def render(self, url: str) -> str | None:
+        self.calls.append(url)
+        return self._pages.get(url)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+_DC = DiscoveredCompany(canonical_key="dom:acme.co.kr", name="ACME", domain="acme.co.kr")
+
+
+def test_headless_escalates_when_no_static_email() -> None:
+    # 정적: 홈에 IR 링크+전화, IR 페이지엔 이메일 없음 → 정적 이메일 0.
+    static = {
+        "https://acme.co.kr": '<a href="/investor/ir">IR</a><a href="tel:+82-2-1234-5678">T</a>',
+        "https://acme.co.kr/investor/ir": "<html>no email</html>",
+    }
+    # 렌더: JS 로 mailto 가 주입된 IR 페이지.
+    rendered = {
+        "https://acme.co.kr": '<a href="/investor/ir">IR</a>',
+        "https://acme.co.kr/investor/ir": '<a href="mailto:ir@acme.co.kr">IR</a>',
+    }
+    settings = Settings(dry_run=False, enrich_headless=True, enrich_max_pages=6)
+    renderer = FakeRenderer(rendered)
+    out = Enricher(settings, fetcher=FakeFetcher(static), renderer=renderer).enrich(_DC)
+
+    emails = [c for c in out if c.type is ContactType.EMAIL]
+    assert {c.value for c in emails} == {"ir@acme.co.kr"}
+    assert emails[0].extract_method is ExtractMethod.HEADLESS  # 출처 표기.
+    assert any(c.type is ContactType.PHONE for c in out)  # 정적 전화 보존.
+    assert renderer.calls  # 렌더러 호출됨.
+
+
+def test_headless_off_by_default_does_not_render() -> None:
+    static = {"https://acme.co.kr": "<html>no email</html>"}
+    renderer = FakeRenderer({})
+    out = Enricher(
+        Settings(dry_run=False, enrich_headless=False), fetcher=FakeFetcher(static), renderer=renderer
+    ).enrich(_DC)
+    assert renderer.calls == []  # 기본 off → 렌더 미호출.
+    assert not [c for c in out if c.type is ContactType.EMAIL]
+
+
+def test_headless_skipped_when_static_has_email() -> None:
+    static = {"https://acme.co.kr": '<a href="mailto:ir@acme.co.kr">IR</a>'}
+    renderer = FakeRenderer({})
+    out = Enricher(
+        Settings(dry_run=False, enrich_headless=True), fetcher=FakeFetcher(static), renderer=renderer
+    ).enrich(_DC)
+    assert renderer.calls == []  # 정적 이메일 있으면 escalate 안 함.
+    assert any(c.type is ContactType.EMAIL for c in out)
+
+
+def test_headless_render_failure_keeps_static() -> None:
+    static = {"https://acme.co.kr": '<a href="tel:+82-2-1234-5678">T</a>'}
+    renderer = FakeRenderer({})  # 모든 render → None(미설치/실패 시뮬).
+    out = Enricher(
+        Settings(dry_run=False, enrich_headless=True), fetcher=FakeFetcher(static), renderer=renderer
+    ).enrich(_DC)
+    # 렌더 실패 → 정적 결과(전화) 유지, 크래시 없음.
+    assert any(c.type is ContactType.PHONE for c in out)
+    assert not [c for c in out if c.type is ContactType.EMAIL]
+    assert renderer.calls == ["https://acme.co.kr"]  # 홈 렌더 1회 시도 후 폴백.
