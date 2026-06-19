@@ -67,6 +67,8 @@ class WikidataSource:
     def _dry(self, segment: Segment) -> list[DiscoveredCompany]:
         """네트워크 없는 결정적 더미(registry_id 기반 canonical_key + 도메인)."""
         cc = (segment.country or "xx").strip().lower()
+        # registry_id 에 국가를 넣어야 전 국가 적용 소스가 다국가 dry 시뮬레이션에서
+        # 국가 간 충돌(dedup 소멸)하지 않는다(실 QID 도 기업마다 다름).
         return [
             build_company(
                 source=self.name,
@@ -74,7 +76,7 @@ class WikidataSource:
                 name=f"{segment.industry} 위키데이터 {i}",
                 domain=f"{cc}-wiki{i}.com",
                 registry="wikidata",
-                registry_id=f"Q{i}",
+                registry_id=f"Q-{cc}-{i}",
             )
             for i in range(self._count)
         ]

@@ -64,6 +64,8 @@ class GleifSource:
         위해 도메인을 부여한다(EDGAR/DART 더미와 동일 규약 — dry 전부 active).
         """
         cc = (segment.country or "xx").strip().lower()
+        # registry_id 에 국가를 넣어야 전 국가 적용 소스가 다국가 dry 시뮬레이션에서
+        # 국가 간 충돌(dedup 소멸)하지 않는다(실 LEI 도 국가별로 다름).
         return [
             build_company(
                 source=self.name,
@@ -71,7 +73,7 @@ class GleifSource:
                 name=f"{segment.industry} GLEIF Co {i}",
                 domain=f"{cc}-lei{i}.com",
                 registry="lei",
-                registry_id=f"LEI{i:017d}",
+                registry_id=f"LEI-{cc}-{i}",
             )
             for i in range(self._count)
         ]
