@@ -8,8 +8,10 @@ from leadcrawler.config import Settings
 from leadcrawler.sources.base import Segment
 from leadcrawler.sources.dart import DartSource
 from leadcrawler.sources.edgar import EdgarSource
+from leadcrawler.sources.gleif import GleifSource
 from leadcrawler.sources.registry import build_sources, discover_segment
 from leadcrawler.sources.search import SearchSource
+from leadcrawler.sources.wikidata import WikidataSource
 
 
 def _dry_settings(**over: object) -> Settings:
@@ -41,11 +43,40 @@ def test_discover_segment_merges_applicable_sources() -> None:
     seg = Segment(country="KR", industry="건설")
     rows = discover_segment(seg, _dry_settings())
     sources = {r.source for r in rows}
-    # KR 세그먼트: DART + 검색은 적용, EDGAR(미국)는 미적용.
-    assert sources == {"dart", "search"}
+    # KR 세그먼트: DART + 집계원(GLEIF/Wikidata) + 검색 적용, EDGAR(미국)는 미적용.
+    assert sources == {"dart", "gleif", "wikidata", "search"}
     # 병합 후 canonical_key 는 중복이 없어야 한다(제약 ①).
     keys = [r.canonical_key for r in rows]
     assert len(keys) == len(set(keys))
+
+
+def test_aggregator_applies_to_resolvable_countries_only() -> None:
+    s = _dry_settings()
+    ph = Segment(country="필리핀", industry="제조")  # 한글 별칭 해석.
+    th = Segment(country="TH", industry="제조")  # ISO2.
+    unknown = Segment(country="Atlantis", industry="제조")  # 미등록 → 폴백(검색만).
+    for cls in (GleifSource, WikidataSource):
+        assert cls(s).applies_to(ph) and cls(s).applies_to(th)
+        assert not cls(s).applies_to(unknown)
+
+
+def test_unknown_country_routes_to_search_only() -> None:
+    # 미등록 국가는 등록처·집계원 모두 미적용 → 검색 소스로만 폴백.
+    rows = discover_segment(Segment(country="Atlantis", industry="제조"), _dry_settings())
+    assert {r.source for r in rows} == {"search"}
+
+
+def test_aggregator_dry_run_keys_are_registry_based() -> None:
+    s = _dry_settings()
+    seg = Segment(country="PH", industry="제조")
+    gleif = GleifSource(s).discover(seg)
+    wiki = WikidataSource(s).discover(seg)
+    assert gleif and all(c.canonical_key.startswith("reg:lei:") for c in gleif)
+    assert wiki and all(c.canonical_key.startswith("reg:wikidata:") for c in wiki)
+    # 결정적이어야 한다(제약 ① 안정성).
+    assert [c.canonical_key for c in gleif] == [
+        c.canonical_key for c in GleifSource(s).discover(seg)
+    ]
 
 
 # (소스, 적용 세그먼트, 키 없는 설정 override, 키 있는 설정 override)
@@ -77,4 +108,4 @@ def test_search_has_key_compound_logic() -> None:
 
 def test_build_sources_registers_all_adapters() -> None:
     names = {src.name for src in build_sources(_dry_settings())}
-    assert names == {"edgar", "dart", "search"}
+    assert names == {"edgar", "dart", "gleif", "wikidata", "search"}

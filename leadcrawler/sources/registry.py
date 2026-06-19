@@ -12,14 +12,26 @@ from ..logging import get_logger
 from .base import DiscoveredCompany, DiscoverySource, Segment
 from .dart import DartSource
 from .edgar import EdgarSource
+from .gleif import GleifSource
 from .search import SearchSource
+from .wikidata import WikidataSource
 
 log = get_logger("sources.registry")
 
 
 def build_sources(settings: Settings) -> list[DiscoverySource]:
-    """등록된 발견 소스 인스턴스 목록을 만든다(우선순위 순)."""
-    return [EdgarSource(settings), DartSource(settings), SearchSource(settings)]
+    """등록된 발견 소스 인스턴스 목록을 만든다(우선순위 순).
+
+    순서 = canonical_key '첫 등장 우선' 신뢰도 순서: 등록처(EDGAR/DART) →
+    글로벌 집계원(GLEIF/Wikidata, reg: 키) → 검색(dom: 키, 가장 약함).
+    """
+    return [
+        EdgarSource(settings),
+        DartSource(settings),
+        GleifSource(settings),
+        WikidataSource(settings),
+        SearchSource(settings),
+    ]
 
 
 def discover_segment(
