@@ -57,6 +57,12 @@ class SupportsFetch(Protocol):
     ) -> str:
         ...
 
+    def post_json(
+        self, url: str, *, json: Any | None = None,
+        params: dict[str, Any] | None = None, headers: dict[str, str] | None = None,
+    ) -> Any:
+        ...
+
 
 class Fetcher:
     """httpx 기반 실 페처 — 레이트리밋 + 재시도 + 공통 UA 헤더."""
@@ -104,11 +110,11 @@ class Fetcher:
         reraise=True,
     )
     def _post(
-        self, url: str, data: dict[str, Any] | None,
+        self, url: str, data: dict[str, Any] | None, json: Any | None,
         params: dict[str, Any] | None, headers: dict[str, str] | None,
     ) -> httpx.Response:
         self._throttle()
-        resp = self._client.post(url, data=data, params=params, headers=headers)
+        resp = self._client.post(url, data=data, json=json, params=params, headers=headers)
         resp.raise_for_status()
         return resp
 
@@ -138,7 +144,14 @@ class Fetcher:
         params: dict[str, Any] | None = None, headers: dict[str, str] | None = None,
     ) -> str:
         """POST(폼) 후 본문 텍스트(HTML)를 반환한다(예: PSE 페이지네이션)."""
-        return self._post(url, data, params, headers).text
+        return self._post(url, data, None, params, headers).text
+
+    def post_json(
+        self, url: str, *, json: Any | None = None,
+        params: dict[str, Any] | None = None, headers: dict[str, str] | None = None,
+    ) -> Any:
+        """POST(JSON 본문) 후 JSON 파싱 결과를 반환한다(예: Apollo people search)."""
+        return self._post(url, None, json, params, headers).json()
 
     def close(self) -> None:
         self._client.close()

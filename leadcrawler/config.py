@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     apollo_api_key: str = Field(default="")
     zerobounce_api_key: str = Field(default="")
     neverbounce_api_key: str = Field(default="")
+    # 이메일 탐색 API escalation(opt-in·유료) — 정적·헤드리스·OCR 도 0건이면 Hunter/Apollo
+    # 등 제3자 이메일 DB에 도메인을 질의. 키 있는 제공자만 활성, 호출당 과금/크레딧.
+    enrich_email_api: bool = Field(default=False)
+    email_api_max_results: int = Field(default=5)  # 제공자당 채택 후보 상한(과금 보호)
     # SMTP 메일박스 검증(opt-in) — 느리고 ISP 차단·greylisting 위험이 있어 기본 off.
     # 켜면 라이브에서 MX 호스트에 RCPT 프로브로 수신가능 여부를 확인한다(catch-all 인지).
     email_smtp_check: bool = Field(default=False)

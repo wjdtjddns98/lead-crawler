@@ -21,6 +21,7 @@ from .extract import (
     extract_form,
     extract_phones,
 )
+from .emailapi import ApolloFinder, HunterFinder, SupportsEmailFinder
 from .headless import PlaywrightRenderer, SupportsRender
 from .ocr import SupportsOcr, TesseractOcr
 from .vision import ClaudeVision, SupportsVision, media_type_for
@@ -29,7 +30,7 @@ log = get_logger("enrich")
 
 
 class Enricher:
-    """기업 1건의 연락처를 추출한다(정적 → 헤드리스 → OCR → Vision, dry_run 더미)."""
+    """기업 1건의 연락처를 추출한다(정적 → 헤드리스 → OCR → EmailAPI → Vision, dry_run 더미)."""
 
     def __init__(
         self,
@@ -39,12 +40,14 @@ class Enricher:
         renderer: SupportsRender | None = None,
         ocr: SupportsOcr | None = None,
         vision: SupportsVision | None = None,
+        email_finders: list[SupportsEmailFinder] | None = None,
     ):
         self._settings = settings or get_settings()
         self._fetcher = fetcher
         self._renderer = renderer
         self._ocr = ocr
         self._vision = vision
+        self._email_finders = email_finders
 
     def enrich(self, dc: DiscoveredCompany) -> list[Contact]:
         """발견 기업의 연락처 후보(이메일·전화·폼) 목록을 반환한다."""
@@ -58,6 +61,9 @@ class Enricher:
             contacts = self._escalate(dc, contacts)
         if self._settings.enrich_ocr and not _has_email(contacts):
             contacts = self._escalate_ocr(dc, contacts)
+        # 이메일 탐색 API(유료·제3자 DB) — 사이트에서 못 찾았을 때 도메인으로 질의.
+        if self._settings.enrich_email_api and not _has_email(contacts):
+            contacts = self._escalate_email_api(dc, contacts)
         # Vision 은 유료 — 키가 있고 플래그가 켜졌을 때만 최후로 시도.
         if (
             self._settings.enrich_vision
@@ -91,6 +97,21 @@ class Enricher:
                 self._settings.anthropic_api_key, model=self._settings.vision_model
             )
         return self._vision
+
+    def _email_finders_list(self) -> list[SupportsEmailFinder]:
+        """키가 설정된 이메일 탐색 제공자만 우선순위(Hunter→Apollo) 순으로 구성한다."""
+        if self._email_finders is None:
+            finders: list[SupportsEmailFinder] = []
+            if self._settings.hunter_api_key:
+                finders.append(
+                    HunterFinder(self._settings.hunter_api_key, fetcher=self._client())
+                )
+            if self._settings.apollo_api_key:
+                finders.append(
+                    ApolloFinder(self._settings.apollo_api_key, fetcher=self._client())
+                )
+            self._email_finders = finders
+        return self._email_finders
 
     def close(self) -> None:
         """내부에서 만든 httpx 클라이언트·렌더러를 정리한다(리소스 누수 방지)."""
@@ -171,6 +192,36 @@ class Enricher:
         if not emails:
             return contacts
         log.info("enrich.ocr", domain=dc.domain, emails=len(emails))
+        return [*contacts, *emails.values()]
+
+    def _escalate_email_api(
+        self, dc: DiscoveredCompany, contacts: list[Contact]
+    ) -> list[Contact]:
+        """도메인을 이메일 탐색 API(Hunter→Apollo)에 질의해 이메일을 보강한다(유료).
+
+        정적·헤드리스·OCR 모두 0건일 때만 진입. 키가 있는 제공자만 순차 시도하고, 한
+        제공자에서 이메일을 확보하면 다음 제공자 과금/크레딧을 아끼려 조기 종료한다.
+        반환 이메일은 :func:`emails_from_text` 로 site 추출과 동일한 role 필터(IR 우선,
+        HR·언론 배제. 개인명은 일반으로 채택)를 거친다. 제공자가 없거나 0건이면 유지.
+        """
+        finders = self._email_finders_list()
+        if not finders:  # 키 없음 → no-op(과금 없음).
+            return contacts
+        cap = max(1, self._settings.email_api_max_results)
+        emails: dict[str, Contact] = {}
+        for finder in finders:
+            raw = finder.find_emails(dc.domain, limit=cap)
+            # 제3자 DB 추정치라 다른 escalation 티어(OCR/Vision)와 동일한 낮은 신뢰도.
+            for c in emails_from_text(
+                " ".join(raw), source_url=finder.source,
+                method=ExtractMethod.API, confidence=0.5,
+            ):
+                emails.setdefault(c.value, c)
+            if emails:  # 한 제공자에서 확보 시 다음 제공자 과금/크레딧 회피.
+                break
+        if not emails:
+            return contacts
+        log.info("enrich.email_api", domain=dc.domain, emails=len(emails))
         return [*contacts, *emails.values()]
 
     def _escalate_vision(self, dc: DiscoveredCompany, contacts: list[Contact]) -> list[Contact]:
