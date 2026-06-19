@@ -63,8 +63,11 @@ class Settings(BaseSettings):
     discovery_max_per_source: int = Field(default=50)  # 소스·세그먼트당 후보 상한
     http_request_delay: float = Field(default=0.12)  # 요청 간 최소 간격(초)
     http_timeout: float = Field(default=15.0)
-    # 무키 집계원(GLEIF/Wikidata) 공통 UA — WMF 정책상 식별 가능한 UA 필요.
-    discovery_user_agent: str = Field(default="LeadCrawler/1.0 (+lead-crawler; research use)")
+    # 무키 집계원(GLEIF/Wikidata) 공통 UA. Wikidata WDQS 는 WMF 로봇 정책상 연락처
+    # (URL/이메일) 없는 UA 를 403 거부 — 식별 가능한 연락처 URL 필수(2026-06-19 실연동 확인).
+    discovery_user_agent: str = Field(
+        default="LeadCrawler/1.0 (+https://github.com/wjdtjddns98/lead-crawler)"
+    )
 
     # 보강(enrich) 제어
     enrich_max_pages: int = Field(default=6)  # 기업당 정적 크롤 페이지 상한(홈+후보)
