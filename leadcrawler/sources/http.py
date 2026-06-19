@@ -51,6 +51,12 @@ class SupportsFetch(Protocol):
     ) -> str:
         ...
 
+    def post_text(
+        self, url: str, *, data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None, headers: dict[str, str] | None = None,
+    ) -> str:
+        ...
+
 
 class Fetcher:
     """httpx 기반 실 페처 — 레이트리밋 + 재시도 + 공통 UA 헤더."""
@@ -91,6 +97,21 @@ class Fetcher:
         resp.raise_for_status()
         return resp
 
+    @retry(
+        retry=retry_if_exception(_is_retryable),
+        wait=wait_exponential(multiplier=0.5, max=8),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    def _post(
+        self, url: str, data: dict[str, Any] | None,
+        params: dict[str, Any] | None, headers: dict[str, str] | None,
+    ) -> httpx.Response:
+        self._throttle()
+        resp = self._client.post(url, data=data, params=params, headers=headers)
+        resp.raise_for_status()
+        return resp
+
     def get_json(
         self, url: str, *, params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
@@ -111,6 +132,13 @@ class Fetcher:
     ) -> str:
         """GET 후 본문 텍스트(HTML)를 반환한다."""
         return self._get(url, params, headers).text
+
+    def post_text(
+        self, url: str, *, data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None, headers: dict[str, str] | None = None,
+    ) -> str:
+        """POST(폼) 후 본문 텍스트(HTML)를 반환한다(예: PSE 페이지네이션)."""
+        return self._post(url, data, params, headers).text
 
     def close(self) -> None:
         self._client.close()

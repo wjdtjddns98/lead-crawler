@@ -5,17 +5,21 @@
 산출물의 상장여부는 항상 ``listed``(상장목록이므로). 업종 필터는 하지 않는다
 (거래소 목록은 전 섹터 — 업종 정제는 다운스트림).
 
-dry_run: 네트워크 없는 결정적 더미. 라이브: 거래소 공개 목록 엔드포인트를 받아
-(symbol, name[, website]) 로 파싱한다. **라이브 엔드포인트/응답 형식은 공개 자료 기반
-가정이며, 실연동 시 검증이 필요하다**(dry_run 계약은 완전 동작·테스트됨). 키 불필요.
+라이브 엔드포인트는 2026-06-19 실연동 검증함:
+- PSE(필리핀): ``companyDirectory/search.ax`` — POST 폼 + HTML 테이블(JSON 아님),
+  ``pageNo`` 로 페이지네이션(50/page, 총 ~283사). 인증·WAF 없음 → 정적 스크래핑 동작.
+- SET(태국): 공개 API 가 Incapsula WAF(403)로 정적 HTTP 차단됨 → 라이브 비활성.
+  태국 상장사는 당분간 Tier A(GLEIF/Wikidata)로 커버. 실연동은 헤드리스/대체소스 필요.
+
+dry_run: 네트워크 없는 결정적 더미(전 소스 공통). 키 불필요.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import html
+import re
 
 from ..config import Settings
-from ..dedup import normalize_domain
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company, is_country
 from .http import Fetcher, SupportsFetch
@@ -24,12 +28,11 @@ log = get_logger("sources.exchanges")
 
 
 class ExchangeSource:
-    """거래소 상장목록 발견 소스의 공통 베이스(서브클래스가 국가·엔드포인트·파싱 제공)."""
+    """거래소 상장목록 발견 소스의 공통 베이스(서브클래스가 국가·엔드포인트·_live 제공)."""
 
     name: str = ""
     registry: str = ""
     countries: frozenset[str] = frozenset()
-    list_url: str = ""
 
     def __init__(
         self,
@@ -79,110 +82,95 @@ class ExchangeSource:
         return self._fetcher
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
-        """실 거래소 목록 발견(symbol dedup + 캡). 산출 상장여부는 listed 고정."""
-        fetcher = self._client()
-        cap = self._settings.discovery_max_per_source
-        try:
-            payload = fetcher.get_json(self.list_url)
-        except Exception as exc:  # 엔드포인트/응답 이상 → 빈 결과(배치 보호).
-            log.info(f"{self.name}.error", err=str(exc))
-            return []
-
-        listed_seg = Segment(country=segment.country, industry=segment.industry, listed="listed")
-        out: list[DiscoveredCompany] = []
-        seen: set[str] = set()
-        for rec in self._records(payload):
-            symbol, name, website = self._fields(rec)
-            if not symbol or not name or symbol in seen:
-                continue
-            seen.add(symbol)
-            out.append(
-                build_company(
-                    source=self.name,
-                    segment=listed_seg,
-                    name=name,
-                    domain=normalize_domain(website),
-                    registry=self.registry,
-                    registry_id=symbol,
-                )
-            )
-            if len(out) >= cap:
-                break
-        log.info(f"{self.name}.live", segment=segment.label, n=len(out))
-        return out
-
-    def _records(self, payload: Any) -> list[Any]:
-        """응답에서 상장사 레코드 리스트를 안전 추출한다(서브클래스가 형식별 구현)."""
-        raise NotImplementedError
-
-    def _fields(self, rec: Any) -> tuple[str | None, str | None, str | None]:
-        """레코드 1건에서 (symbol, name, website) 추출(서브클래스가 형식별 구현)."""
+        """실 거래소 발견(서브클래스가 거래소별로 구현)."""
         raise NotImplementedError
 
 
-def _str(value: Any) -> str | None:
-    """JSON 셀을 안전 문자열화(빈/비문자는 None)."""
-    if isinstance(value, str):
-        s = value.strip()
-        return s or None
-    if isinstance(value, (int, float)):
-        return str(value)
-    return None
+# PSE 상장사 행: cmDetail('cmpyId','secId')">회사명</a></td> <td..><a..>심볼</a> 순.
+_PSE_ROW = re.compile(
+    r"cmDetail\('(\d+)','(\d+)'\);return false;\">([^<]+)</a></td>\s*"
+    r"<td[^>]*><a[^>]*>([^<]+)</a>",
+    re.S,
+)
+# PSE 페이지네이션 절대 상한(예산 보호) — 실제는 ~6페이지(50/page).
+_PSE_MAX_PAGES = 50
 
 
 class PseSource(ExchangeSource):
-    """필리핀 증권거래소(PSE) 상장목록 소스."""
+    """필리핀 증권거래소(PSE) 상장목록 소스(POST 폼 + HTML 파싱)."""
 
     name = "pse"
     registry = "pse"
     countries = frozenset({"ph", "phl", "philippines", "필리핀"})
-    # TODO(live): PSE Edge 는 통상 POST 폼 엔드포인트 — GET-JSON 가정은 실연동 전
-    # 검증 필요(HTTP 메서드·응답형식). 레코드 배열(또는 {"records":[...]}) 형태로 가정.
     list_url = "https://edge.pse.com.ph/companyDirectory/search.ax"
 
-    def _records(self, payload: Any) -> list[Any]:
-        if isinstance(payload, list):
-            return payload
-        if isinstance(payload, dict):
-            for key in ("records", "data", "companies"):
-                val = payload.get(key)
-                if isinstance(val, list):
-                    return val
-        return []
+    @staticmethod
+    def _form(page: int) -> dict[str, str]:
+        """PSE companyDirectory 검색 폼 파라미터(회사명 오름차순)."""
+        return {
+            "pageNo": str(page),
+            "companyId": "",
+            "keyword": "",
+            "sortType": "cmpy",
+            "dateSortType": "ASC",
+            "cmpyTypeId": "",
+            "symbolType": "",
+        }
 
-    def _fields(self, rec: Any) -> tuple[str | None, str | None, str | None]:
-        if not isinstance(rec, dict):
-            return None, None, None
-        symbol = _str(rec.get("symbol") or rec.get("securitySymbol") or rec.get("stockSymbol"))
-        name = _str(rec.get("companyName") or rec.get("name") or rec.get("securityName"))
-        website = _str(rec.get("website") or rec.get("companyUrl"))
-        return symbol, name, website
+    def _live(self, segment: Segment) -> list[DiscoveredCompany]:
+        """PSE companyDirectory 를 페이지네이션하며 상장사를 수집한다(symbol dedup + 캡)."""
+        fetcher = self._client()
+        cap = self._settings.discovery_max_per_source
+        listed_seg = Segment(country=segment.country, industry=segment.industry, listed="listed")
+
+        out: list[DiscoveredCompany] = []
+        seen: set[str] = set()
+        page = 1
+        while len(out) < cap and page <= _PSE_MAX_PAGES:
+            try:
+                page_html = fetcher.post_text(self.list_url, data=self._form(page))
+            except Exception as exc:  # 응답/네트워크 이상 → 부분 결과 보존 후 중단.
+                log.info("pse.error", page=page, err_type=type(exc).__name__, err=str(exc))
+                break
+            rows = _PSE_ROW.findall(page_html)
+            if not rows:  # 빈 페이지 → 마지막 도달.
+                break
+            for _cmpy_id, _sec_id, name, symbol in rows:
+                # HTML 엔티티 해제(예: "A. Soriano &amp; Co." → "&") — 엑셀 출력 품질(§3).
+                symbol = html.unescape(symbol.strip())
+                name = html.unescape(name.strip())
+                if not symbol or not name or symbol in seen:
+                    continue
+                seen.add(symbol)
+                out.append(
+                    build_company(
+                        source=self.name,
+                        segment=listed_seg,
+                        name=name,
+                        domain=None,  # 목록엔 웹사이트 없음 → enrich 단계에서 보강.
+                        registry=self.registry,
+                        registry_id=symbol,
+                    )
+                )
+                if len(out) >= cap:
+                    break
+            page += 1
+        log.info("pse.live", segment=segment.label, n=len(out))
+        return out
 
 
 class SetSource(ExchangeSource):
-    """태국 증권거래소(SET) 상장목록 소스."""
+    """태국 증권거래소(SET) 상장목록 소스 — 라이브는 WAF 차단으로 비활성(dry 전용)."""
 
     name = "set"
     registry = "set"
     countries = frozenset({"th", "tha", "thailand", "태국"})
-    # TODO(live): SET 공개 데이터는 헤더/POST 요구 가능 — 실연동 전 검증 필요.
-    # {"securitySymbols":[...]} 또는 레코드 배열로 가정.
-    list_url = "https://www.set.or.th/api/set/stock/list"
 
-    def _records(self, payload: Any) -> list[Any]:
-        if isinstance(payload, list):
-            return payload
-        if isinstance(payload, dict):
-            for key in ("securitySymbols", "stocks", "data", "records"):
-                val = payload.get(key)
-                if isinstance(val, list):
-                    return val
+    def _live(self, segment: Segment) -> list[DiscoveredCompany]:
+        """SET 공개 API 는 Incapsula WAF(403)로 정적 HTTP 차단(2026-06-19 확인).
+
+        실연동 전까지 라이브는 네트워크 없이 빈 결과(태국은 Tier A 로 커버).
+        TODO(live): 헤드리스 브라우저 또는 대체 데이터소스(SEC Thailand 등) 필요.
+        """
+        log.info("set.skip.waf_blocked", segment=segment.label)
         return []
-
-    def _fields(self, rec: Any) -> tuple[str | None, str | None, str | None]:
-        if not isinstance(rec, dict):
-            return None, None, None
-        symbol = _str(rec.get("symbol") or rec.get("securitySymbol"))
-        name = _str(rec.get("nameEN") or rec.get("name") or rec.get("companyName"))
-        website = _str(rec.get("website") or rec.get("url"))
-        return symbol, name, website
