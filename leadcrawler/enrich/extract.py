@@ -198,6 +198,9 @@ def candidate_images(
     other: list[str] = []
     seen: set[str] = set()
     for node in tree.css("img[src]"):
+        # 적대적 페이지의 과도한 <img> 열거를 막기 위해 limit 개 모으면 조기 종료.
+        if len(hinted) + len(other) >= limit:
+            break
         src = (node.attributes.get("src") or "").strip()
         if not src or src.startswith("data:"):
             continue
@@ -209,6 +212,4 @@ def candidate_images(
         seen.add(url)
         hint = (src + " " + (node.attributes.get("alt") or "")).lower()
         (hinted if any(h in hint for h in _MAIL_IMG_HINTS) else other).append(url)
-        if len(hinted) >= limit:
-            break
     return (hinted + other)[:limit]

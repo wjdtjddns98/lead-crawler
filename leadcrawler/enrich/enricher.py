@@ -136,7 +136,7 @@ class Enricher:
         try:
             home_html = fetcher.get_text(home)
         except Exception as exc:  # 홈 fetch 실패 → 기존 결과 유지.
-            log.info("ocr.home.error", domain=dc.domain, err=str(exc))
+            log.info("enrich.ocr.home_error", domain=dc.domain, err=str(exc))
             return contacts
 
         img_urls = candidate_images(
