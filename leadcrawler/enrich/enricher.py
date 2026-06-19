@@ -13,14 +13,22 @@ from ..logging import get_logger
 from ..models import Contact, ContactType, EmailRole, ExtractMethod
 from ..sources.base import DiscoveredCompany
 from ..sources.http import Fetcher, SupportsFetch
-from .extract import candidate_links, extract_emails, extract_form, extract_phones
+from .extract import (
+    candidate_images,
+    candidate_links,
+    emails_from_text,
+    extract_emails,
+    extract_form,
+    extract_phones,
+)
 from .headless import PlaywrightRenderer, SupportsRender
+from .ocr import SupportsOcr, TesseractOcr
 
 log = get_logger("enrich")
 
 
 class Enricher:
-    """기업 1건의 연락처를 추출한다(dry_run 더미 / 정적 라이브 / 헤드리스 escalation)."""
+    """기업 1건의 연락처를 추출한다(정적 → 헤드리스 → OCR escalation, dry_run 더미)."""
 
     def __init__(
         self,
@@ -28,10 +36,12 @@ class Enricher:
         *,
         fetcher: SupportsFetch | None = None,
         renderer: SupportsRender | None = None,
+        ocr: SupportsOcr | None = None,
     ):
         self._settings = settings or get_settings()
         self._fetcher = fetcher
         self._renderer = renderer
+        self._ocr = ocr
 
     def enrich(self, dc: DiscoveredCompany) -> list[Contact]:
         """발견 기업의 연락처 후보(이메일·전화·폼) 목록을 반환한다."""
@@ -40,9 +50,11 @@ class Enricher:
         if not dc.domain:
             return []
         contacts = self._live(dc)
-        # 정적으로 이메일을 못 찾았고 헤드리스가 켜져 있으면 JS 렌더로 escalate.
+        # escalation 체인 — 이메일을 못 찾았고 해당 단계가 켜져 있을 때만 순차 시도.
         if self._settings.enrich_headless and not _has_email(contacts):
             contacts = self._escalate(dc, contacts)
+        if self._settings.enrich_ocr and not _has_email(contacts):
+            contacts = self._escalate_ocr(dc, contacts)
         return contacts
 
     def _client(self) -> SupportsFetch:
@@ -57,6 +69,11 @@ class Enricher:
         if self._renderer is None:
             self._renderer = PlaywrightRenderer(timeout=self._settings.headless_timeout)
         return self._renderer
+
+    def _ocr_obj(self) -> SupportsOcr:
+        if self._ocr is None:
+            self._ocr = TesseractOcr()
+        return self._ocr
 
     def close(self) -> None:
         """내부에서 만든 httpx 클라이언트·렌더러를 정리한다(리소스 누수 방지)."""
@@ -106,6 +123,38 @@ class Enricher:
             out.append(form)
         log.info("enrich.headless", domain=dc.domain, emails=len(emails), form=form is not None)
         return out
+
+    def _escalate_ocr(self, dc: DiscoveredCompany, contacts: list[Contact]) -> list[Contact]:
+        """홈페이지 이미지(이메일 가능성 높은 것 우선)를 OCR 해 이메일을 보강한다.
+
+        정적·헤드리스로도 이메일이 0건일 때만 진입. OCR 미설치/실패면 ``contacts`` 유지.
+        OCR 이메일은 ``ExtractMethod.OCR_VISION`` 으로 표기한다.
+        """
+        fetcher = self._client()
+        ocr = self._ocr_obj()
+        home = f"https://{dc.domain}"
+        try:
+            home_html = fetcher.get_text(home)
+        except Exception as exc:  # 홈 fetch 실패 → 기존 결과 유지.
+            log.info("ocr.home.error", domain=dc.domain, err=str(exc))
+            return contacts
+
+        img_urls = candidate_images(
+            home_html, base_url=home, domain=dc.domain, limit=self._settings.ocr_max_images
+        )
+        emails: dict[str, Contact] = {}
+        for url in img_urls:
+            data = _safe_bytes(fetcher, url)
+            if data is None:
+                continue
+            for c in emails_from_text(ocr.image_to_text(data), source_url=url):
+                emails.setdefault(c.value, c)
+            if emails:  # 이메일 확보 시 조기 종료(OCR 비용 절감).
+                break
+        if not emails:
+            return contacts
+        log.info("enrich.ocr", domain=dc.domain, emails=len(emails))
+        return [*contacts, *emails.values()]
 
     def _live(self, dc: DiscoveredCompany) -> list[Contact]:
         """정적 BFS 로 홈페이지·IR/문의 페이지를 훑어 연락처를 모은다."""
@@ -157,6 +206,14 @@ def _safe_get(fetcher: SupportsFetch, url: str) -> str | None:
         return fetcher.get_text(url)
     except Exception as exc:  # 개별 페이지 실패는 건너뛴다.
         log.info("enrich.page.error", url=url, err=str(exc))
+        return None
+
+
+def _safe_bytes(fetcher: SupportsFetch, url: str) -> bytes | None:
+    try:
+        return fetcher.get_bytes(url)
+    except Exception as exc:  # 개별 이미지 실패는 건너뛴다.
+        log.info("enrich.image.error", url=url, err=str(exc))
         return None
 
 
