@@ -19,15 +19,23 @@ from leadcrawler.sources.wikidata import WikidataSource
 class FakeFetcher:
     """SupportsFetch 더블 — url/params 로 응답을 라우팅한다."""
 
-    def __init__(self, *, json=None, data=None) -> None:
+    def __init__(self, *, json=None, data=None, text=None, post=None) -> None:
         self._json = json
         self._data = data
+        self._text = text
+        self._post = post
 
     def get_json(self, url: str, *, params=None, headers=None) -> Any:
         return self._json(url, params or {})
 
     def get_bytes(self, url: str, *, params=None, headers=None) -> bytes:
         return self._data(url, params or {})
+
+    def get_text(self, url: str, *, params=None, headers=None) -> str:
+        return self._text(url, params or {})
+
+    def post_text(self, url: str, *, data=None, params=None, headers=None) -> str:
+        return self._post(url, data or {})
 
 
 def _corp_zip() -> bytes:
@@ -290,48 +298,76 @@ def test_wikidata_non_dict_payload_returns_empty() -> None:
     assert src.discover(Segment(country="TH", industry="제조")) == []
 
 
-# --- 거래소 상장목록(Tier B) --------------------------------------------
+# --- 거래소 상장목록(Tier B) — PSE 는 POST 폼 + HTML(2026-06-19 실연동 검증) ----
 
-def test_pse_live_parses_listing() -> None:
+def _pse_row(cmpy_id: str, sec_id: str, name: str, symbol: str) -> str:
+    """PSE companyDirectory 한 행 HTML(실제 마크업 형태)."""
+    a = f"<a href=\"#company\" onclick=\"cmDetail('{cmpy_id}','{sec_id}');return false;\">"
+    return (
+        f"<tr><td>{a}{name}</a></td>"
+        f"<td class=\"alignC\">{a}{symbol}</a></td>"
+        f"<td>Holding Firms</td><td>Holding Firms</td><td class=\"alignC\">Mar 22, 1973</td></tr>"
+    )
+
+
+def _pse_page(rows_html: str) -> str:
+    return f"<table><tr><th>Company Name</th><th>Stock Symbol</th></tr>{rows_html}</table>"
+
+
+def test_pse_live_parses_html_and_paginates() -> None:
     settings = Settings(dry_run=False, discovery_max_per_source=10)
-    page = {"records": [
-        {"symbol": "AC", "companyName": "Ayala Corporation", "website": "https://www.ayala.com"},
-        {"symbol": "AC", "companyName": "중복 심볼"},  # symbol 중복 → 스킵.
-        {"companyName": "심볼 없음"},  # symbol 없음 → 스킵.
-    ]}
-    out = PseSource(settings, fetcher=FakeFetcher(json=lambda u, p: page)).discover(
+    page1 = _pse_page(
+        _pse_row("55", "347", "Asia Amalgamated Holdings Corporation", "AAA")
+        + _pse_row("19", "181", "Atok-Big Wedge Co., Inc.", "AB")
+        + _pse_row("55", "347", "중복 심볼 회사", "AAA")  # symbol 중복 → 스킵.
+    )
+    page2 = _pse_page(_pse_row("174", "173", "AbaCore Capital Holdings, Inc.", "ABA"))
+
+    def _post(url: str, data: dict) -> str:
+        # pageNo 로 페이지네이션, 3페이지부턴 빈 목록(종료).
+        return {"1": page1, "2": page2}.get(str(data.get("pageNo")), _pse_page(""))
+
+    out = PseSource(settings, fetcher=FakeFetcher(post=_post)).discover(
         Segment(country="필리핀", industry="제조")
     )
-    assert len(out) == 1
+    assert [d.registry_id for d in out] == ["AAA", "AB", "ABA"]  # 페이지 가로질러 dedup.
     dc = out[0]
-    assert dc.registry == "pse" and dc.registry_id == "AC"
-    assert dc.domain == "ayala.com" and dc.listed == "listed"
-    assert dc.canonical_key == "reg:pse:ac"
+    assert dc.registry == "pse" and dc.listed == "listed"
+    assert dc.name == "Asia Amalgamated Holdings Corporation"
+    assert dc.domain is None  # 목록엔 웹사이트 없음(enrich 단계로).
+    assert dc.canonical_key == "reg:pse:aaa"
 
 
-def test_set_live_parses_listing_array() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
-    rows = [
-        {"symbol": "PTT", "nameEN": "PTT Public Company", "website": "https://www.ptt.com/th"},
-        {"symbol": "SCC", "nameEN": "Siam Cement"},  # 웹사이트 없음 → 도메인 None.
-    ]
-    out = SetSource(settings, fetcher=FakeFetcher(json=lambda u, p: rows)).discover(
-        Segment(country="TH", industry="에너지")
+def test_pse_live_respects_cap() -> None:
+    settings = Settings(dry_run=False, discovery_max_per_source=1)
+    page = _pse_page(
+        _pse_row("1", "1", "Alpha Corp", "ALP") + _pse_row("2", "2", "Beta Corp", "BET")
     )
-    assert {d.registry_id for d in out} == {"PTT", "SCC"}
-    ptt = next(d for d in out if d.registry_id == "PTT")
-    assert ptt.domain == "ptt.com" and ptt.canonical_key == "reg:set:ptt"
-    assert next(d for d in out if d.registry_id == "SCC").domain is None
-
-
-def test_exchange_non_dict_payload_returns_empty() -> None:
-    settings = Settings(dry_run=False)
-    assert PseSource(settings, fetcher=FakeFetcher(json=lambda u, p: "boom")).discover(
+    out = PseSource(settings, fetcher=FakeFetcher(post=lambda u, d: page)).discover(
         Segment(country="PH", industry="제조")
-    ) == []
-    assert SetSource(settings, fetcher=FakeFetcher(json=lambda u, p: 123)).discover(
-        Segment(country="TH", industry="제조")
-    ) == []
+    )
+    assert len(out) == 1 and out[0].registry_id == "ALP"
+
+
+def test_pse_live_empty_html_returns_empty() -> None:
+    settings = Settings(dry_run=False)
+    out = PseSource(settings, fetcher=FakeFetcher(post=lambda u, d: "<table></table>")).discover(
+        Segment(country="PH", industry="제조")
+    )
+    assert out == []
+
+
+def test_set_live_is_disabled_waf_blocked() -> None:
+    # SET 라이브는 Incapsula WAF 차단으로 비활성 — 네트워크 호출 없이 빈 결과.
+    settings = Settings(dry_run=False)
+
+    def _boom(*a, **k):
+        raise AssertionError("SET 라이브는 네트워크를 호출하면 안 된다(WAF 비활성)")
+
+    out = SetSource(settings, fetcher=FakeFetcher(json=_boom, post=_boom)).discover(
+        Segment(country="태국", industry="에너지")
+    )
+    assert out == []
 
 
 # --- 검색 현지화(Tier C) ------------------------------------------------
