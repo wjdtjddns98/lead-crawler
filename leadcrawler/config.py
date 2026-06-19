@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     # Playwright(선택적 extra) 미설치면 자동 폴백(정적 결과 유지). 느려서 기본 off.
     enrich_headless: bool = Field(default=False)
     headless_timeout: float = Field(default=20.0)  # 페이지 렌더 타임아웃(초)
+    headless_max_pages: int = Field(default=3)  # 헤드리스 렌더 페이지 상한(정적과 분리·예산)
 
     # 운영비 한도(월, 원)
     monthly_budget_krw: int = Field(default=500_000)

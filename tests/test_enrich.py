@@ -201,6 +201,21 @@ def test_headless_escalates_when_no_static_email() -> None:
     assert renderer.calls  # 렌더러 호출됨.
 
 
+def test_headless_early_exit_once_email_found() -> None:
+    # 정적 이메일 0(링크만) → escalate. 렌더된 홈에 이메일 있으면 후보는 렌더 안 함(§4).
+    static = {"https://acme.co.kr": '<a href="/investor/ir">IR</a><a href="/contact">C</a>'}
+    rendered = {
+        "https://acme.co.kr": '<a href="mailto:ir@acme.co.kr">IR</a><a href="/investor/ir">IR</a>',
+        "https://acme.co.kr/investor/ir": '<a href="mailto:other@acme.co.kr">x</a>',
+    }
+    renderer = FakeRenderer(rendered)
+    out = Enricher(
+        Settings(dry_run=False, enrich_headless=True), fetcher=FakeFetcher(static), renderer=renderer
+    ).enrich(_DC)
+    assert renderer.calls == ["https://acme.co.kr"]  # 홈에서 확보 → 후보 렌더 생략.
+    assert {c.value for c in out if c.type is ContactType.EMAIL} == {"ir@acme.co.kr"}
+
+
 def test_headless_off_by_default_does_not_render() -> None:
     static = {"https://acme.co.kr": "<html>no email</html>"}
     renderer = FakeRenderer({})

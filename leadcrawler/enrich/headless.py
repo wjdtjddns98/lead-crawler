@@ -63,7 +63,9 @@ class PlaywrightRenderer:
         page = None
         try:
             page = self._browser.new_page()
-            page.goto(url, timeout=int(self._timeout * 1000), wait_until="networkidle")
+            # networkidle 은 폴링/소켓 사이트에서 타임아웃까지 행되기 쉬워 권장 안 됨 →
+            # domcontentloaded 로 DOM 확보(JS 주입 mailto/폼 추출엔 충분).
+            page.goto(url, timeout=int(self._timeout * 1000), wait_until="domcontentloaded")
             return page.content()
         except Exception as exc:  # 타임아웃·네비게이션 실패 → 건너뛴다.
             log.info("headless.render.error", url=url, err=str(exc))
@@ -72,7 +74,7 @@ class PlaywrightRenderer:
             if page is not None:
                 try:
                     page.close()
-                except Exception:  # noqa: S110 — 정리 실패는 무시.
+                except Exception:  # 정리 실패는 무시(베스트에포트).
                     pass
 
     def close(self) -> None:
@@ -81,7 +83,7 @@ class PlaywrightRenderer:
             if obj is not None:
                 try:
                     getattr(obj, method)()
-                except Exception:  # noqa: S110 — 정리 실패는 무시.
+                except Exception:  # 정리 실패는 무시(베스트에포트).
                     pass
         self._browser = None
         self._pw = None

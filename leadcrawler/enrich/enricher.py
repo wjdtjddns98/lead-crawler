@@ -72,7 +72,8 @@ class Enricher:
         이메일은 ``ExtractMethod.HEADLESS`` 로 출처를 표기한다. 정적 전화는 보존.
         """
         renderer = self._renderer_obj()
-        cap = max(1, self._settings.enrich_max_pages)
+        # 헤드리스는 느리고 비싸므로 정적(enrich_max_pages)과 분리된 작은 상한을 쓴다(§4).
+        cap = max(1, self._settings.headless_max_pages)
         home = f"https://{dc.domain}"
         home_html = renderer.render(home)
         if home_html is None:  # 렌더 불가(미설치·실패) → 정적 결과 유지.
@@ -94,7 +95,11 @@ class Enricher:
                     emails[c.value] = c
             if form is None:
                 form = extract_form(html, page_url=url, method=ExtractMethod.HEADLESS)
+            if emails:  # 이메일 확보 시 조기 종료(불필요한 렌더 비용 절감).
+                break
 
+        # 산출 = 헤드리스 이메일 + 정적 전화(이미 dedup) + 폼. escalation 은 정적 이메일이
+        # 0건일 때만 진입하므로 버려지는 정적 이메일은 없다(연락처 종류는 EMAIL/PHONE/FORM).
         phones = [c for c in static_contacts if c.type is ContactType.PHONE]
         out: list[Contact] = [*emails.values(), *phones]
         if form is not None:
