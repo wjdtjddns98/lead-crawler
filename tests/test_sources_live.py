@@ -10,6 +10,7 @@ from leadcrawler.config import Settings
 from leadcrawler.sources.base import Segment
 from leadcrawler.sources.dart import DartSource
 from leadcrawler.sources.edgar import EdgarSource
+from leadcrawler.sources.exchanges import PseSource, SetSource
 from leadcrawler.sources.gleif import GleifSource
 from leadcrawler.sources.search import SearchSource
 from leadcrawler.sources.wikidata import WikidataSource
@@ -287,3 +288,85 @@ def test_wikidata_non_dict_payload_returns_empty() -> None:
     settings = Settings(dry_run=False)
     src = WikidataSource(settings, fetcher=FakeFetcher(json=lambda u, p: "boom"))
     assert src.discover(Segment(country="TH", industry="제조")) == []
+
+
+# --- 거래소 상장목록(Tier B) --------------------------------------------
+
+def test_pse_live_parses_listing() -> None:
+    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    page = {"records": [
+        {"symbol": "AC", "companyName": "Ayala Corporation", "website": "https://www.ayala.com"},
+        {"symbol": "AC", "companyName": "중복 심볼"},  # symbol 중복 → 스킵.
+        {"companyName": "심볼 없음"},  # symbol 없음 → 스킵.
+    ]}
+    out = PseSource(settings, fetcher=FakeFetcher(json=lambda u, p: page)).discover(
+        Segment(country="필리핀", industry="제조")
+    )
+    assert len(out) == 1
+    dc = out[0]
+    assert dc.registry == "pse" and dc.registry_id == "AC"
+    assert dc.domain == "ayala.com" and dc.listed == "listed"
+    assert dc.canonical_key == "reg:pse:ac"
+
+
+def test_set_live_parses_listing_array() -> None:
+    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    rows = [
+        {"symbol": "PTT", "nameEN": "PTT Public Company", "website": "https://www.ptt.com/th"},
+        {"symbol": "SCC", "nameEN": "Siam Cement"},  # 웹사이트 없음 → 도메인 None.
+    ]
+    out = SetSource(settings, fetcher=FakeFetcher(json=lambda u, p: rows)).discover(
+        Segment(country="TH", industry="에너지")
+    )
+    assert {d.registry_id for d in out} == {"PTT", "SCC"}
+    ptt = next(d for d in out if d.registry_id == "PTT")
+    assert ptt.domain == "ptt.com" and ptt.canonical_key == "reg:set:ptt"
+    assert next(d for d in out if d.registry_id == "SCC").domain is None
+
+
+def test_exchange_non_dict_payload_returns_empty() -> None:
+    settings = Settings(dry_run=False)
+    assert PseSource(settings, fetcher=FakeFetcher(json=lambda u, p: "boom")).discover(
+        Segment(country="PH", industry="제조")
+    ) == []
+    assert SetSource(settings, fetcher=FakeFetcher(json=lambda u, p: 123)).discover(
+        Segment(country="TH", industry="제조")
+    ) == []
+
+
+# --- 검색 현지화(Tier C) ------------------------------------------------
+
+def test_search_localizes_query_and_region_by_country() -> None:
+    settings = Settings(
+        dry_run=False, google_cse_key="k", google_cse_cx="cx", discovery_max_per_source=10
+    )
+    captured: dict = {}
+
+    def _json(url: str, params: dict):
+        captured.update(params)  # 첫 페이지 파라미터 캡처.
+        return {"items": []}
+
+    SearchSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="태국", industry="에너지")
+    )
+    # 태국 → gl=th, lr=lang_th, 현지어 키워드 포함.
+    assert captured.get("gl") == "th" and captured.get("lr") == "lang_th"
+    assert "เว็บไซต์ทางการ" in captured.get("q", "")
+
+
+def test_search_unknown_country_uses_default_locale() -> None:
+    settings = Settings(
+        dry_run=False, google_cse_key="k", google_cse_cx="cx", discovery_max_per_source=10
+    )
+    captured: dict = {}
+
+    def _json(url: str, params: dict):
+        captured.update(params)
+        return {"items": []}
+
+    SearchSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="Atlantis", industry="제조")
+    )
+    # 미등록 국가 → gl/lr 미설정(generic 영어 쿼리).
+    assert "gl" not in captured and "lr" not in captured
+    assert "investor relations" in captured.get("q", "")

@@ -15,6 +15,7 @@ from ..config import Settings
 from ..dedup import normalize_domain
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company
+from .countries import resolve_country
 from .http import Fetcher, SupportsFetch
 
 log = get_logger("sources.search")
@@ -22,6 +23,32 @@ log = get_logger("sources.search")
 _CSE_URL = "https://customsearch.googleapis.com/customsearch/v1"
 _PAGE = 10  # CSE 는 호출당 최대 10건.
 _MAX_START = 101 - _PAGE  # CSE 는 start+num<=101(최대 100건) 만 허용.
+
+# 국가별 검색 현지화: ISO2 → (Google gl 지역코드, lr 언어제한, 현지어 IR 키워드).
+# 검색을 현지 언어·지역으로 편향시켜 비영어권(태국·일본 등) 기업 도메인 적중률을 높인다.
+_LOCALE: dict[str, tuple[str, str, str]] = {
+    "KR": ("kr", "lang_ko", "기업 공식 홈페이지 IR 투자정보"),
+    "US": ("us", "lang_en", "company official website investor relations"),
+    "GB": ("uk", "lang_en", "company official website investor relations"),
+    "PH": ("ph", "lang_en", "company official website investor relations Philippines"),
+    "SG": ("sg", "lang_en", "company official website investor relations Singapore"),
+    "MY": ("my", "lang_en", "company official website investor relations Malaysia"),
+    "IN": ("in", "lang_en", "company official website investor relations India"),
+    "AU": ("au", "lang_en", "company official website investor relations Australia"),
+    "CA": ("ca", "lang_en", "company official website investor relations Canada"),
+    "HK": ("hk", "lang_en", "company official website investor relations Hong Kong"),
+    "TH": ("th", "lang_th", "บริษัท เว็บไซต์ทางการ นักลงทุนสัมพันธ์"),
+    "JP": ("jp", "lang_ja", "企業 公式サイト IR 投資家情報"),
+    "CN": ("cn", "lang_zh-CN", "公司 官网 投资者关系"),
+    "TW": ("tw", "lang_zh-TW", "公司 官方網站 投資人關係"),
+    "ID": ("id", "lang_id", "perusahaan situs resmi hubungan investor"),
+    "VN": ("vn", "lang_vi", "công ty trang web chính thức quan hệ nhà đầu tư"),
+    "DE": ("de", "lang_de", "Unternehmen offizielle Website Investor Relations"),
+    "FR": ("fr", "lang_fr", "entreprise site officiel relations investisseurs"),
+    "BR": ("br", "lang_pt", "empresa site oficial relações com investidores"),
+}
+# 미등록 국가 폴백(영어 generic — 지역·언어 무편향).
+_DEFAULT_LOCALE = ("", "", "company official website investor relations")
 
 # 기업 직도메인이 아닌 노이즈(포털·뉴스·SNS·디렉터리·공공). eTLD+1 기준.
 _BLOCKLIST = frozenset({
@@ -92,11 +119,14 @@ class SearchSource:
         return self._fetcher
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
-        """Google CSE 로 기업 도메인 후보를 수집한다(blocklist + dedup + 캡)."""
+        """Google CSE 로 기업 도메인 후보를 수집한다(현지화 + blocklist + dedup + 캡)."""
         fetcher = self._client()
         s = self._settings
         cap = min(s.discovery_max_per_source, 100)  # CSE 는 쿼리당 최대 100건.
-        query = f"{segment.industry} 기업 공식 홈페이지 IR 투자정보"
+        # 세그먼트 국가에 맞춰 쿼리 언어·검색 지역(gl)·언어제한(lr)을 현지화.
+        country = resolve_country(segment.country)
+        gl, lr, keyword = _LOCALE.get(country.iso2, _DEFAULT_LOCALE) if country else _DEFAULT_LOCALE
+        query = f"{segment.industry} {keyword}"
 
         out: list[DiscoveredCompany] = []
         seen: set[str] = set()
@@ -109,6 +139,10 @@ class SearchSource:
                 "num": _PAGE,
                 "start": start,
             }
+            if gl:
+                params["gl"] = gl
+            if lr:
+                params["lr"] = lr
             try:
                 payload = fetcher.get_json(_CSE_URL, params=params)
             except Exception as exc:

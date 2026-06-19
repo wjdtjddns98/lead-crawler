@@ -8,6 +8,7 @@ from leadcrawler.config import Settings
 from leadcrawler.sources.base import Segment
 from leadcrawler.sources.dart import DartSource
 from leadcrawler.sources.edgar import EdgarSource
+from leadcrawler.sources.exchanges import PseSource, SetSource
 from leadcrawler.sources.gleif import GleifSource
 from leadcrawler.sources.registry import build_sources, discover_segment
 from leadcrawler.sources.search import SearchSource
@@ -108,4 +109,35 @@ def test_search_has_key_compound_logic() -> None:
 
 def test_build_sources_registers_all_adapters() -> None:
     names = {src.name for src in build_sources(_dry_settings())}
-    assert names == {"edgar", "dart", "gleif", "wikidata", "search"}
+    assert names == {"edgar", "dart", "pse", "set", "gleif", "wikidata", "search"}
+
+
+def test_exchange_applies_to_country_routing() -> None:
+    s = _dry_settings()
+    ph = Segment(country="필리핀", industry="제조")
+    th = Segment(country="TH", industry="제조")
+    kr = Segment(country="KR", industry="제조")
+    assert PseSource(s).applies_to(ph) and not PseSource(s).applies_to(th)
+    assert SetSource(s).applies_to(th) and not SetSource(s).applies_to(kr)
+
+
+def test_exchange_dry_run_is_listed_and_registry_keyed() -> None:
+    s = _dry_settings()
+    pse = PseSource(s).discover(Segment(country="PH", industry="제조"))
+    set_ = SetSource(s).discover(Segment(country="태국", industry="에너지"))
+    assert pse and all(c.canonical_key.startswith("reg:pse:") for c in pse)
+    assert all(c.listed == "listed" for c in pse)  # 거래소 산출은 항상 상장.
+    assert set_ and all(c.canonical_key.startswith("reg:set:") for c in set_)
+    # 결정적이어야 한다(제약 ① 안정성).
+    assert [c.canonical_key for c in pse] == [
+        c.canonical_key for c in PseSource(s).discover(Segment(country="PH", industry="제조"))
+    ]
+
+
+def test_discover_segment_ph_routes_pse_aggregators_search() -> None:
+    rows = discover_segment(Segment(country="PH", industry="제조"), _dry_settings())
+    sources = {r.source for r in rows}
+    # PH: PSE(거래소) + GLEIF/Wikidata(집계원) + 검색. EDGAR/DART/SET 미적용.
+    assert sources == {"pse", "gleif", "wikidata", "search"}
+    keys = [r.canonical_key for r in rows]
+    assert len(keys) == len(set(keys))  # 병합 후 중복 없음(제약 ①).

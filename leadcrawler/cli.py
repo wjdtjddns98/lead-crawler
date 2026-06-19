@@ -14,6 +14,7 @@ from .integrations.notion import DailyReport, NotionReporter, ScrumEntry
 from .logging import configure_logging, get_logger
 from .pipeline import run_pipeline
 from .sources.base import Segment
+from .sources.segments import generate_segments
 from .storage.export import ExcelExporter
 
 app = typer.Typer(help="lead-crawler — 기업 리드 수집·검증 CLI", no_args_is_help=True)
@@ -38,6 +39,28 @@ def run(
     leads = run_pipeline([Segment(country=country, industry=industry)], persist=persist)
     path = ExcelExporter().export(leads, out)
     typer.echo(f"{len(leads)}건 저장: {path}")
+
+
+@app.command("run-global")
+def run_global(
+    industries: str = typer.Option("건설", help="쉼표구분 업종 목록(예: '건설,반도체')"),
+    countries: str = typer.Option("", help="쉼표구분 국가(빈값=지원 전체국 ISO2)"),
+    out: str = typer.Option("exports/leads.xlsx", help="엑셀 산출 경로"),
+    persist: bool = typer.Option(False, help="결과를 DB 에 영속화(발견 원장 + 실존 회사)"),
+) -> None:
+    """다국가 세그먼트(국가×업종)를 일괄 처리한다(dry_run 기본).
+
+    국가 미지정 시 지원 전체국(:mod:`countries`)을 대상으로 한다 — 한 번에 다국가 발견.
+    """
+    configure_logging()
+    inds = [s for s in industries.split(",") if s.strip()]
+    if not inds:
+        raise typer.BadParameter("업종을 하나 이상 지정해야 합니다", param_hint="--industries")
+    ctys = [s for s in countries.split(",") if s.strip()] or None
+    segments = generate_segments(inds, countries=ctys)
+    leads = run_pipeline(segments, persist=persist)
+    path = ExcelExporter().export(leads, out)
+    typer.echo(f"{len(segments)}개 세그먼트 → {len(leads)}건 저장: {path}")
 
 
 @app.command("db-upgrade")
