@@ -14,15 +14,13 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings, get_settings
 from ..emailrules import select_best_email
+from ..enrich.enricher import Enricher
 from ..logging import get_logger
 from ..models import (
     Company,
     CompanyLead,
-    Contact,
     ContactType,
-    EmailRole,
     EmailValidation,
-    ExtractMethod,
     Listed,
 )
 from ..sources.base import DiscoveredCompany, Segment
@@ -43,33 +41,6 @@ def _listed_of(dc: DiscoveredCompany) -> Listed:
         return Listed.UNKNOWN
 
 
-def dry_run_enrich(dc: DiscoveredCompany) -> list[Contact]:
-    """dry_run 보강 — 도메인 기반 결정적 연락처(이메일·전화·폼)."""
-    domain = dc.domain or "example.com"
-    return [
-        Contact(
-            type=ContactType.EMAIL,
-            value=f"ir@{domain}",
-            role=EmailRole.IR,
-            extract_method=ExtractMethod.STATIC,
-            source_url=f"https://{domain}/investor",
-            confidence=0.9,
-        ),
-        Contact(
-            type=ContactType.PHONE,
-            value="+82-2-0000-0000",
-            extract_method=ExtractMethod.STATIC,
-            confidence=0.6,
-        ),
-        Contact(
-            type=ContactType.FORM,
-            value=f"https://{domain}/contact",
-            extract_method=ExtractMethod.STATIC,
-            confidence=0.8,
-        ),
-    ]
-
-
 def run_pipeline(
     segments: Iterable[Segment],
     *,
@@ -87,6 +58,7 @@ def run_pipeline(
     seen = seen if seen is not None else set()
     existence = ExistenceVerifier(settings)
     email_validator = EmailValidator(settings)
+    enricher = Enricher(settings)
 
     leads: list[CompanyLead] = []
     session: Session | None = get_sessionmaker(settings)() if persist else None
@@ -103,7 +75,7 @@ def run_pipeline(
                     continue
                 seen.add(dc.canonical_key)
 
-                contacts = dry_run_enrich(dc) if settings.dry_run else []
+                contacts = enricher.enrich(dc)
                 email = select_best_email(contacts)
                 phone = next((c for c in contacts if c.type is ContactType.PHONE), None)
                 form = next((c for c in contacts if c.type is ContactType.FORM), None)
@@ -136,6 +108,7 @@ def run_pipeline(
                 if session is not None:
                     _persist_lead(session, dc, lead)
     finally:
+        enricher.close()
         if session is not None:
             session.close()
     return leads

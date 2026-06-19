@@ -45,6 +45,12 @@ class SupportsFetch(Protocol):
     ) -> bytes:
         ...
 
+    def get_text(
+        self, url: str, *, params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> str:
+        ...
+
 
 class Fetcher:
     """httpx 기반 실 페처 — 레이트리밋 + 재시도 + 공통 UA 헤더."""
@@ -98,6 +104,13 @@ class Fetcher:
     ) -> bytes:
         """GET 후 본문 바이트를 반환한다(예: ZIP)."""
         return self._get(url, params, headers).content
+
+    def get_text(
+        self, url: str, *, params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> str:
+        """GET 후 본문 텍스트(HTML)를 반환한다."""
+        return self._get(url, params, headers).text
 
     def close(self) -> None:
         self._client.close()
