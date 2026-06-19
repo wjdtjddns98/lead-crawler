@@ -54,6 +54,8 @@ def run_global(
     """
     configure_logging()
     inds = [s for s in industries.split(",") if s.strip()]
+    if not inds:
+        raise typer.BadParameter("업종을 하나 이상 지정해야 합니다", param_hint="--industries")
     ctys = [s for s in countries.split(",") if s.strip()] or None
     segments = generate_segments(inds, countries=ctys)
     leads = run_pipeline(segments, persist=persist)

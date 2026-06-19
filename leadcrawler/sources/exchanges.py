@@ -136,7 +136,8 @@ class PseSource(ExchangeSource):
     name = "pse"
     registry = "pse"
     countries = frozenset({"ph", "phl", "philippines", "필리핀"})
-    # PSE 공개 목록(가정) — 레코드 배열(또는 {"records":[...]}) 형태로 가정.
+    # TODO(live): PSE Edge 는 통상 POST 폼 엔드포인트 — GET-JSON 가정은 실연동 전
+    # 검증 필요(HTTP 메서드·응답형식). 레코드 배열(또는 {"records":[...]}) 형태로 가정.
     list_url = "https://edge.pse.com.ph/companyDirectory/search.ax"
 
     def _records(self, payload: Any) -> list[Any]:
@@ -164,7 +165,8 @@ class SetSource(ExchangeSource):
     name = "set"
     registry = "set"
     countries = frozenset({"th", "tha", "thailand", "태국"})
-    # SET 공개 목록(가정) — {"securitySymbols":[...]} 또는 레코드 배열로 가정.
+    # TODO(live): SET 공개 데이터는 헤더/POST 요구 가능 — 실연동 전 검증 필요.
+    # {"securitySymbols":[...]} 또는 레코드 배열로 가정.
     list_url = "https://www.set.or.th/api/set/stock/list"
 
     def _records(self, payload: Any) -> list[Any]:
