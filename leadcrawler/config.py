@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     # Tesseract(선택적 extra ocr) 미설치면 자동 폴백. 기본 off.
     enrich_ocr: bool = Field(default=False)
     ocr_max_images: int = Field(default=5)  # 기업당 OCR 이미지 상한(비용 보호)
+    # Vision escalation(opt-in·유료) — OCR 도 실패하면 Claude Vision(anthropic_api_key 필요).
+    # 호출당 과금이라 기본 off + 엄격한 이미지 캡. anthropic 키 없으면 미동작.
+    enrich_vision: bool = Field(default=False)
+    vision_model: str = Field(default="claude-haiku-4-5-20251001")  # 저가 모델 기본(비용)
+    # 기업당 최대 Vision 호출(과금) 횟수 — 이메일 0건 이미지도 호출을 소모한다.
+    vision_max_images: int = Field(default=2)
 
     # 운영비 한도(월, 원)
     monthly_budget_krw: int = Field(default=500_000)

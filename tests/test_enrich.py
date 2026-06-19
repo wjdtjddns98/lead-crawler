@@ -338,3 +338,108 @@ def test_ocr_no_email_found_keeps_contacts() -> None:
     ).enrich(_DC)
     assert not [c for c in out if c.type is ContactType.EMAIL]
     assert any(c.type is ContactType.PHONE for c in out)  # 기존 결과 유지.
+
+
+# --- Vision escalation(가짜 Vision, API·네트워크 없음) -----------------
+
+def test_media_type_for_maps_extensions() -> None:
+    from leadcrawler.enrich.vision import media_type_for
+
+    assert media_type_for("https://x/a.JPG") == "image/jpeg"
+    assert media_type_for("https://x/a.png?v=2") == "image/png"
+    assert media_type_for("https://x/a.webp") == "image/webp"
+    assert media_type_for("https://x/a.bmp") is None  # anthropic 미지원 → None.
+    assert media_type_for("https://x/a.unknown") is None
+
+
+def test_vision_skips_oversized_image_before_api_call() -> None:
+    from leadcrawler.enrich.vision import ClaudeVision
+
+    big = b"x" * (4 * 1024 * 1024 + 1)
+    # 4MB 초과 → API 호출(과금) 없이 빈 문자열(anthropic import 도 안 함).
+    assert ClaudeVision("k", model="m").extract_text(big) == ""
+
+
+class FakeVision:
+    """SupportsVision 더블 — 고정 텍스트 반환 + 호출 기록."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self.calls: list[tuple[bytes, str]] = []
+
+    def extract_text(self, image: bytes, *, media_type: str = "image/png") -> str:
+        self.calls.append((image, media_type))
+        return self._text
+
+
+def _vision_settings(**over: object) -> Settings:
+    """Vision 라이브 설정(키 + 플래그) — over 로 추가 조정."""
+    return Settings(dry_run=False, enrich_vision=True, anthropic_api_key="k", **over)
+
+
+def test_vision_escalates_when_no_email() -> None:
+    static = {"https://acme.co.kr": '<a href="tel:+82-2-1234-5678">T</a><img src="/m.jpg" alt="email">'}
+    images = {"https://acme.co.kr/m.jpg": b"JPGBYTES"}
+    vision = FakeVision("연락: ir@acme.co.kr")
+    out = Enricher(
+        _vision_settings(), fetcher=FakeFetcher(static, images), vision=vision
+    ).enrich(_DC)
+    emails = [c for c in out if c.type is ContactType.EMAIL]
+    assert {c.value for c in emails} == {"ir@acme.co.kr"}
+    assert emails[0].extract_method is ExtractMethod.OCR_VISION
+    assert any(c.type is ContactType.PHONE for c in out)  # 정적 전화 보존.
+    assert vision.calls and vision.calls[0][1] == "image/jpeg"  # media_type 추정.
+
+
+def test_vision_off_by_default_does_not_run() -> None:
+    static = {"https://acme.co.kr": '<img src="/m.jpg" alt="email">'}
+    vision = FakeVision("ir@acme.co.kr")
+    out = Enricher(
+        Settings(dry_run=False, enrich_vision=False, anthropic_api_key="k"),
+        fetcher=FakeFetcher(static, {"https://acme.co.kr/m.jpg": b"X"}),
+        vision=vision,
+    ).enrich(_DC)
+    assert vision.calls == [] and not [c for c in out if c.type is ContactType.EMAIL]
+
+
+def test_vision_skipped_without_api_key() -> None:
+    static = {"https://acme.co.kr": '<img src="/m.jpg" alt="email">'}
+    vision = FakeVision("ir@acme.co.kr")
+    # enrich_vision on 이지만 키 없음 → 호출 안 함(과금 보호).
+    out = Enricher(
+        Settings(dry_run=False, enrich_vision=True, anthropic_api_key=""),
+        fetcher=FakeFetcher(static, {"https://acme.co.kr/m.jpg": b"X"}),
+        vision=vision,
+    ).enrich(_DC)
+    assert vision.calls == [] and not [c for c in out if c.type is ContactType.EMAIL]
+
+
+def test_vision_skipped_when_email_already_found() -> None:
+    static = {"https://acme.co.kr": '<a href="mailto:ir@acme.co.kr">IR</a><img src="/m.jpg" alt="email">'}
+    vision = FakeVision("other@acme.co.kr")
+    out = Enricher(
+        _vision_settings(), fetcher=FakeFetcher(static, {"https://acme.co.kr/m.jpg": b"X"}), vision=vision
+    ).enrich(_DC)
+    assert vision.calls == []  # 정적 이메일 있으면 Vision 미실행.
+    assert {c.value for c in out if c.type is ContactType.EMAIL} == {"ir@acme.co.kr"}
+
+
+def test_vision_skips_unsupported_media_type() -> None:
+    # .bmp 는 anthropic 미지원 → 후보지만 Vision 호출 안 함(과금 회피).
+    static = {"https://acme.co.kr": '<a href="tel:+82-2-1234-5678">T</a><img src="/m.bmp" alt="email">'}
+    vision = FakeVision("ir@acme.co.kr")
+    out = Enricher(
+        _vision_settings(), fetcher=FakeFetcher(static, {"https://acme.co.kr/m.bmp": b"X"}), vision=vision
+    ).enrich(_DC)
+    assert vision.calls == []
+    assert not [c for c in out if c.type is ContactType.EMAIL]
+
+
+def test_vision_no_email_keeps_contacts() -> None:
+    static = {"https://acme.co.kr": '<a href="tel:+82-2-1234-5678">T</a><img src="/m.jpg" alt="email">'}
+    vision = FakeVision("이메일 없음")
+    out = Enricher(
+        _vision_settings(), fetcher=FakeFetcher(static, {"https://acme.co.kr/m.jpg": b"X"}), vision=vision
+    ).enrich(_DC)
+    assert not [c for c in out if c.type is ContactType.EMAIL]
+    assert any(c.type is ContactType.PHONE for c in out)
