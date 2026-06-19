@@ -80,10 +80,10 @@ class SmtpProber:
                     smtp.ehlo_or_helo_if_needed()
                     smtp.mail(self._from)
                     real_code, _ = smtp.rcpt(email)
-                    if real_code in (550, 551, 553, 521):
-                        return SMTP_UNDELIVERABLE
+                    if real_code in (550, 551, 553):
+                        return SMTP_UNDELIVERABLE  # 메일박스 없음(하드 바운스).
                     if real_code != 250:
-                        continue  # 4xx/그레이리스팅 등 → 다음 호스트.
+                        continue  # 521(호스트 거부)·4xx 그레이리스팅 등 → 다음 호스트.
                     # 250: catch-all 인지 비존재 주소로 재확인.
                     probe_code, _ = smtp.rcpt(catchall_addr)
                     return SMTP_UNKNOWN if probe_code == 250 else SMTP_DELIVERABLE
@@ -112,6 +112,15 @@ class EmailValidator:
             )
         return self._smtp_prober
 
+    def _placeholder_from(self) -> bool:
+        """MAIL FROM 이 비었거나 예약(example.com 등)·로컬 도메인이면 라이브 부적합."""
+        frm = (self.settings.email_smtp_from or "").strip().lower()
+        return (
+            not frm
+            or "@" not in frm
+            or frm.endswith(("example.com", "example.org", "example.net", ".local"))
+        )
+
     def validate(self, email: str, company_domain: str | None = None) -> EmailValidation:
         """이메일 1건을 검증해 :class:`EmailValidation` 을 반환한다."""
         now = datetime.now(timezone.utc)
@@ -138,12 +147,17 @@ class EmailValidator:
         smtp_result = SMTP_UNKNOWN
         provider = "dry_run" if self.settings.dry_run else "mx"
         if mx and not self.settings.dry_run and self.settings.email_smtp_check:
-            smtp_result = self._prober().probe(email, mx_hosts)
-            provider = "smtp"
-            if smtp_result == SMTP_UNDELIVERABLE:
-                status = ValidationStatus.INVALID  # 메일박스 없음 → 무효 확정.
-            elif smtp_result == SMTP_DELIVERABLE and status is ValidationStatus.RISKY:
-                status = ValidationStatus.VALID  # 수신 확정 → RISKY 승격.
+            if self._placeholder_from():
+                # 예약/빈 MAIL FROM 으로 라이브 프로브 시 차단·오판 위험 → 스킵(MX 판정 유지).
+                log.info("smtp.skip.placeholder_from", mail_from=self.settings.email_smtp_from)
+            else:
+                smtp_result = self._prober().probe(email, mx_hosts)
+                if smtp_result != SMTP_UNKNOWN:
+                    provider = "smtp"  # SMTP 가 실제 판정에 기여한 경우만 출처 표기.
+                if smtp_result == SMTP_UNDELIVERABLE:
+                    status = ValidationStatus.INVALID  # 메일박스 없음 → 무효 확정.
+                elif smtp_result == SMTP_DELIVERABLE and status is ValidationStatus.RISKY:
+                    status = ValidationStatus.VALID  # 수신 확정 → RISKY 승격.
 
         smtp_flag = {SMTP_DELIVERABLE: True, SMTP_UNDELIVERABLE: False}.get(smtp_result)
         return EmailValidation(

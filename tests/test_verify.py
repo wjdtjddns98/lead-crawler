@@ -33,6 +33,13 @@ def _patch_mx(monkeypatch: pytest.MonkeyPatch, hosts: tuple[str, ...] = ("mx1.te
     monkeypatch.setattr(ev_mod, "_resolve_mx", lambda d, s: (bool(hosts), list(hosts)))
 
 
+def _smtp_settings(**over: object) -> Settings:
+    """SMTP 라이브 검증용 설정(실제 MAIL FROM — placeholder 가드 회피)."""
+    return Settings(
+        dry_run=False, email_smtp_check=True, email_smtp_from="verify@leadcrawler.io", **over
+    )
+
+
 # --- dry_run / 형식 -----------------------------------------------------
 
 def test_dry_run_no_smtp() -> None:
@@ -61,9 +68,7 @@ def test_live_smtp_off_does_not_probe(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_smtp_undeliverable_forces_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_mx(monkeypatch)
     prober = FakeProber(SMTP_UNDELIVERABLE)
-    v = EmailValidator(
-        Settings(dry_run=False, email_smtp_check=True), smtp_prober=prober
-    ).validate("ir@acme.com", "acme.com")
+    v = EmailValidator(_smtp_settings(), smtp_prober=prober).validate("ir@acme.com", "acme.com")
     assert v.status is ValidationStatus.INVALID and v.smtp is False and v.provider == "smtp"
 
 
@@ -71,27 +76,37 @@ def test_smtp_deliverable_upgrades_risky_to_valid(monkeypatch: pytest.MonkeyPatc
     _patch_mx(monkeypatch)
     prober = FakeProber(SMTP_DELIVERABLE)
     # 도메인 불일치 → 1차 RISKY, SMTP 수신확정 → VALID 승격.
-    v = EmailValidator(
-        Settings(dry_run=False, email_smtp_check=True), smtp_prober=prober
-    ).validate("ir@mail.acme.com", "other.com")
-    assert v.status is ValidationStatus.VALID and v.smtp is True
+    v = EmailValidator(_smtp_settings(), smtp_prober=prober).validate(
+        "ir@mail.acme.com", "other.com"
+    )
+    assert v.status is ValidationStatus.VALID and v.smtp is True and v.provider == "smtp"
 
 
-def test_smtp_catchall_unknown_keeps_status(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_smtp_catchall_unknown_keeps_status_and_mx_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _patch_mx(monkeypatch)
     prober = FakeProber(SMTP_UNKNOWN)
+    v = EmailValidator(_smtp_settings(), smtp_prober=prober).validate("ir@acme.com", "other.com")
+    # 판정불가 → 1차(RISKY) 유지, SMTP 기여 없으므로 provider 는 mx.
+    assert v.status is ValidationStatus.RISKY and v.smtp is None and v.provider == "mx"
+
+
+def test_placeholder_mail_from_skips_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_mx(monkeypatch)
+    prober = FakeProber(SMTP_UNDELIVERABLE)
+    # 기본 email_smtp_from=verify@example.com(예약) → 프로브 스킵, MX 판정 유지.
     v = EmailValidator(
         Settings(dry_run=False, email_smtp_check=True), smtp_prober=prober
-    ).validate("ir@acme.com", "other.com")
-    assert v.status is ValidationStatus.RISKY and v.smtp is None  # 판정불가 → 1차 유지.
+    ).validate("ir@acme.com", "acme.com")
+    assert prober.calls == [] and v.smtp is None and v.provider == "mx"
+    assert v.status is ValidationStatus.VALID
 
 
 def test_no_mx_is_invalid_without_probing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ev_mod, "_resolve_mx", lambda d, s: (False, []))
     prober = FakeProber(SMTP_DELIVERABLE)
-    v = EmailValidator(
-        Settings(dry_run=False, email_smtp_check=True), smtp_prober=prober
-    ).validate("ir@acme.com", "acme.com")
+    v = EmailValidator(_smtp_settings(), smtp_prober=prober).validate("ir@acme.com", "acme.com")
     assert v.status is ValidationStatus.INVALID and prober.calls == []  # MX 없으면 미시도.
 
 
