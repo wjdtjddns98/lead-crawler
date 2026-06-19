@@ -31,12 +31,30 @@ def run(
     country: str = typer.Option("KR", help="국가 코드"),
     industry: str = typer.Option("건설", help="업종"),
     out: str = typer.Option("exports/leads.xlsx", help="엑셀 산출 경로"),
+    persist: bool = typer.Option(False, help="결과를 DB 에 영속화(발견 원장 + 실존 회사)"),
 ) -> None:
     """단일 세그먼트를 처리하고 엑셀 서식으로 저장한다(dry_run 기본)."""
     configure_logging()
-    leads = run_pipeline([Segment(country=country, industry=industry)])
+    leads = run_pipeline([Segment(country=country, industry=industry)], persist=persist)
     path = ExcelExporter().export(leads, out)
     typer.echo(f"{len(leads)}건 저장: {path}")
+
+
+@app.command("db-upgrade")
+def db_upgrade(revision: str = typer.Argument("head", help="목표 리비전")) -> None:
+    """Alembic 마이그레이션을 적용한다(기본: head)."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    configure_logging()
+    # 설치형 CLI 가 어느 CWD 에서 실행돼도 동작하도록 패키지 기준 절대경로로 해석.
+    root = Path(__file__).resolve().parent.parent
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "alembic"))
+    command.upgrade(cfg, revision)
+    typer.echo(f"DB 마이그레이션 적용 완료: {revision}")
 
 
 @app.command("import-existing")

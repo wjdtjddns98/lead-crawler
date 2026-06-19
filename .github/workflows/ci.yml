@@ -31,3 +31,42 @@ jobs:
         run: pytest -q
         env:
           LEADCRAWLER_DRY_RUN: "true"
+
+  pg-integration:
+    name: PostgreSQL 통합 테스트
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: leadcrawler
+          POSTGRES_PASSWORD: leadcrawler
+          POSTGRES_DB: leadcrawler
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U leadcrawler -d leadcrawler"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      LEADCRAWLER_DRY_RUN: "true"
+      LEADCRAWLER_PG_TEST: "1"
+      LEADCRAWLER_DATABASE_URL: "postgresql+psycopg://leadcrawler:leadcrawler@localhost:5432/leadcrawler"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies (+db)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,db]"
+      - name: Alembic 마이그레이션 적용(실 PG)
+        run: alembic upgrade head
+      - name: 마이그레이션 드리프트 검사(autogenerate 빈 diff)
+        # server_default 표현 차이로 양성오탐 가능 → 비차단(로그로 드리프트 가시화).
+        continue-on-error: true
+        run: alembic check
+      - name: PG 통합 테스트
+        run: pytest -q tests/test_pg_integration.py

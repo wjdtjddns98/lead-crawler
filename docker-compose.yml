@@ -1,0 +1,23 @@
+# 로컬 개발용 PostgreSQL — 운영과 동일 엔진.
+# 사용: docker compose up -d  →  alembic upgrade head
+services:
+  db:
+    image: postgres:16
+    container_name: leadcrawler-db
+    environment:
+      POSTGRES_USER: leadcrawler
+      POSTGRES_PASSWORD: leadcrawler
+      POSTGRES_DB: leadcrawler
+    ports:
+      # 로컬호스트에만 바인드(외부 노출 차단). 운영은 별도 관리형 DB 사용.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U leadcrawler -d leadcrawler"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  pgdata:
