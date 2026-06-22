@@ -21,6 +21,7 @@ from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company
 from .countries import resolve_country
 from .http import Fetcher, SupportsFetch
+from .industry import industry_search_term
 
 log = get_logger("sources.opencorporates")
 
@@ -95,21 +96,26 @@ class OpenCorporatesSource:
             return []
         fetcher = self._client()
         cap = self._settings.discovery_max_per_source
+        token = self._settings.opencorporates_api_key
+        # 업종 베스트에포트 검색어 — 라틴/영어 중심 색인이라 한글을 영어로 옮긴다(집계원엔
+        # 통일 업종코드 없음). 매핑 없는 업종은 원문 그대로(near-zero 매칭 가능, 베스트에포트).
+        q = industry_search_term(segment.industry)
 
         out: list[DiscoveredCompany] = []
         page = 1
         while len(out) < cap and page <= _MAX_PAGES:
             params = {
-                "q": segment.industry,  # 업종 베스트에포트 검색어(집계원엔 통일 업종코드 없음).
+                "q": q,
                 "country_code": country.iso2.lower(),
-                "api_token": self._settings.opencorporates_api_key,
+                "api_token": token,
                 "page": page,
                 "per_page": min(_PER_PAGE, cap),
             }
             try:
                 payload = fetcher.get_json(_SEARCH_URL, params=params)
             except Exception as exc:  # 키오류·API오류·네트워크 → 부분결과 보존 후 중단.
-                log.info("opencorporates.error", page=page, err=str(exc))
+                # api_token 은 쿼리스트링으로 가므로 httpx 오류문자열에 섞일 수 있어 레다크션.
+                log.info("opencorporates.error", page=page, err=_redact(str(exc), token))
                 break
             companies = _companies(payload)
             if not companies:
@@ -131,7 +137,9 @@ class OpenCorporatesSource:
         company = wrapped.get("company")
         if not isinstance(company, dict):
             return None
-        # 제약 ②: 폐업(inactive=True) 법인 제외(실존 기업만).
+        # 제약 ②: 폐업(inactive=True) 법인 제외. inactive 가 null/누락인 관할(상태 미추적)은
+        # 여기서 통과시키되, 최종 실존 판정은 다운스트림 verify(DNS+HTTP 생존)가 책임진다 —
+        # 즉 제약 ②는 '소스 단독'이 아니라 '파이프라인 전체'로 충족된다(보수적 admit).
         if company.get("inactive") is True:
             return None
         number = company.get("company_number")
@@ -147,6 +155,11 @@ class OpenCorporatesSource:
             registry="opencorporates",
             registry_id=f"{jurisdiction}/{number}",
         )
+
+
+def _redact(text: str, secret: str) -> str:
+    """오류 문자열에서 비밀값(api_token)을 가린다(로그 유출 방지)."""
+    return text.replace(secret, "***") if secret else text
 
 
 def _companies(payload: Any) -> list[Any]:

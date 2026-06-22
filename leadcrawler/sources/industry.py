@@ -75,6 +75,36 @@ _SIC: dict[str, tuple[str, ...]] = {
 }
 
 
+# 업종명(소문자) → 영어 검색어. 라틴/영어 중심 글로벌 색인(OpenCorporates 등)에
+# 한글 업종을 그대로 넣으면 거의 매칭되지 않으므로 영어 키워드로 옮긴다.
+_EN_INDUSTRY: dict[str, str] = {
+    "건설": "construction",
+    "제조": "manufacturing",
+    "금융": "finance",
+    "it": "it",
+    "소프트웨어": "software",
+    "바이오": "biotech",
+    "제약": "pharmaceutical",
+    "유통": "retail",
+    "도소매": "retail",
+    "운송": "transport",
+    "물류": "logistics",
+    "에너지": "energy",
+    "부동산": "real estate",
+    "식품": "food",
+    "화학": "chemical",
+    "자동차": "automotive",
+    "반도체": "semiconductor",
+    "통신": "telecommunications",
+}
+
+
+def industry_search_term(industry: str) -> str:
+    """업종명을 영어 검색어로 옮긴다(매핑 없으면 원문 그대로 — 베스트에포트)."""
+    key = industry.strip().lower()
+    return _EN_INDUSTRY.get(key, industry.strip())
+
+
 def ksic_prefixes(industry: str) -> tuple[str, ...] | None:
     """업종명에 대응하는 KSIC 접두 집합(없으면 None)."""
     return _KSIC.get(industry.strip().lower())

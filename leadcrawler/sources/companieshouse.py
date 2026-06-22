@@ -26,7 +26,7 @@ log = get_logger("sources.companies_house")
 
 _GB = {"gb", "uk", "gbr", "united kingdom", "britain", "영국"}
 _SEARCH_URL = "https://api.company-information.service.gov.uk/advanced-search/companies"
-_PAGE = 100  # advanced-search size 권장 상한.
+_PAGE = 100  # 페이지당 size(API 상한은 5000이나 레이트리밋·예산 보호로 보수적 설정).
 # 예산/레이트리밋 보호 가드: 업종 필터가 전량 제외해도 페이지를 무한정 넘기지 않도록 절대 상한.
 _MAX_PAGES = 20
 

@@ -496,6 +496,41 @@ def test_opencorporates_live_parses_active_and_filters_inactive() -> None:
     assert dc.canonical_key == "reg:opencorporates:kr/12345"
 
 
+def test_opencorporates_inactive_null_or_missing_passes_through() -> None:
+    # inactive 가 null/누락인 관할(상태 미추적)은 통과 — 최종 실존판정은 다운스트림 verify.
+    settings = Settings(dry_run=False, opencorporates_api_key="k")
+    page = _oc_page([
+        {"company": {"name": "Null Status Co", "company_number": "1",
+                     "jurisdiction_code": "kr", "inactive": None}},
+        {"company": {"name": "Missing Status Co", "company_number": "2",
+                     "jurisdiction_code": "kr"}},  # inactive 키 자체 없음.
+    ])
+
+    def _json(url: str, params: dict) -> Any:
+        return page if params.get("page", 1) == 1 else _oc_page([])
+
+    out = OpenCorporatesSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="KR", industry="제조")
+    )
+    assert {d.registry_id for d in out} == {"kr/1", "kr/2"}
+
+
+def test_opencorporates_translates_korean_industry_to_english_q() -> None:
+    # 한글 업종은 영어 검색어로 옮겨 라틴 색인 recall 을 확보한다(silent recall 실패 방지).
+    settings = Settings(dry_run=False, opencorporates_api_key="k")
+    captured: dict = {}
+
+    def _json(url: str, params: dict) -> Any:
+        captured.update(params)
+        return _oc_page([])
+
+    OpenCorporatesSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="KR", industry="제조")
+    )
+    assert captured.get("q") == "manufacturing"
+    assert captured.get("country_code") == "kr"
+
+
 def test_opencorporates_no_key_is_noop() -> None:
     src = OpenCorporatesSource(Settings(dry_run=False, opencorporates_api_key=""))
     assert src.discover(Segment(country="KR", industry="제조")) == []
