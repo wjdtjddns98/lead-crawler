@@ -22,7 +22,17 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from ..models import CompanyLead, Contact
+from ..models import (
+    Company,
+    CompanyLead,
+    Contact,
+    ContactType,
+    EmailRole,
+    EmailValidation,
+    ExtractMethod,
+    Listed,
+    ValidationStatus,
+)
 from ..schema import (
     CompanyRow,
     ContactRow,
@@ -30,6 +40,7 @@ from ..schema import (
     EmailValidationRow,
 )
 from ..sources.base import DiscoveredCompany
+from .review import enqueue_email_review
 
 
 def company_id_for(canonical_key: str) -> str:
@@ -179,4 +190,82 @@ def save_lead(session: Session, lead: CompanyLead, *, source: str = "") -> Compa
         ev.smtp = v.smtp
         ev.provider = v.provider
         ev.checked_at = v.checked_at
+
+    # enqueue 규칙: 이메일 후보가 있으면 검증 큐에 등록(상태 보존 멱등).
+    if lead.email is not None:
+        enqueue_email_review(session, cid, [lead.email.value])
     return company
+
+
+def _contact_of(row: ContactRow) -> Contact:
+    """ContactRow 를 도메인 :class:`Contact` 로 복원한다(enum 안전 변환)."""
+    return Contact(
+        id=row.id,
+        type=ContactType(row.type),
+        value=row.value,
+        role=EmailRole(row.role),
+        extract_method=ExtractMethod(row.extract_method),
+        confidence=row.confidence,
+    )
+
+
+def load_leads(
+    session: Session, *, company_ids: list[str] | None = None
+) -> list[CompanyLead]:
+    """DB 행을 :class:`CompanyLead` 로 복원한다(엑셀 export 용).
+
+    ``company_ids`` 가 주어지면 해당 회사만(확정분 export 등), 없으면 전체를 적재한다.
+    회사명 정렬로 결정적 순서를 보장한다.
+    """
+    stmt = select(CompanyRow).order_by(CompanyRow.name)
+    if company_ids is not None:
+        if not company_ids:
+            return []
+        stmt = stmt.where(CompanyRow.id.in_(company_ids))
+
+    leads: list[CompanyLead] = []
+    for crow in session.scalars(stmt).all():
+        disc = session.get(DiscoveredCompanyRow, crow.canonical_key)
+        company = Company(
+            id=crow.id,
+            canonical_key=crow.canonical_key,
+            name=crow.name,
+            country=crow.country,
+            industry=crow.industry,
+            listed=Listed(disc.listed) if disc else Listed.UNKNOWN,
+            homepage=crow.homepage,
+            domain=disc.domain if disc else None,
+            is_active=crow.is_active,
+            existence_confidence=crow.existence_confidence,
+            site_alive=crow.site_alive,
+        )
+        contacts = session.scalars(
+            select(ContactRow).where(ContactRow.company_id == crow.id)
+        ).all()
+        by_type: dict[str, Contact] = {}
+        for row in contacts:
+            by_type.setdefault(row.type, _contact_of(row))
+        email = by_type.get(ContactType.EMAIL.value)
+
+        validation = EmailValidation()
+        if email is not None:
+            evrow = session.get(EmailValidationRow, email.id)
+            if evrow is not None:
+                validation = EmailValidation(
+                    status=ValidationStatus(evrow.status),
+                    mx=evrow.mx,
+                    domain_match=evrow.domain_match,
+                    smtp=evrow.smtp,
+                    provider=evrow.provider,
+                    checked_at=evrow.checked_at,
+                )
+        leads.append(
+            CompanyLead(
+                company=company,
+                email=email,
+                phone=by_type.get(ContactType.PHONE.value),
+                form=by_type.get(ContactType.FORM.value),
+                email_validation=validation,
+            )
+        )
+    return leads
