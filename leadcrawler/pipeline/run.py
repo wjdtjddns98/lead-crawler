@@ -1,6 +1,7 @@
 """파이프라인 본체 — 발견부터 CompanyLead 까지.
 
-제약 ①(중복) : ``seen`` canonical_key 집합으로 이미 본 기업을 스킵.
+제약 ①(중복) : ``seen``(canonical_key) + ``seen_domains``(정규화 도메인) 집합으로 이미
+본 기업을 스킵 — 같은 기업이 reg:/dom: 등 다른 key 로 잡혀도 도메인 동치로 한 번만 추출.
 제약 ②(실존) : ExistenceVerifier 로 죽은 기업을 거른다(검증 큐 대상).
 dry_run 에서는 모든 단계가 네트워크 없이 결정적으로 동작한다.
 """
@@ -24,10 +25,16 @@ from ..models import (
     EmailValidation,
     Listed,
 )
+from ..dedup import normalize_domain
 from ..sources.base import DiscoveredCompany, Segment
 from ..sources.registry import discover_segment
 from ..storage.db import get_sessionmaker
-from ..storage.repository import load_seen_keys, save_discovered, save_lead
+from ..storage.repository import (
+    load_seen_domains,
+    load_seen_keys,
+    save_discovered,
+    save_lead,
+)
 from ..verify.email_validator import EmailValidator
 from ..verify.existence import ExistenceVerifier
 
@@ -57,6 +64,10 @@ def run_pipeline(
     """
     settings = settings or get_settings()
     seen = seen if seen is not None else set()
+    # 도메인 동치 dedup(제약 ①) — 같은 기업이 등록처 key(reg:)와 검색 key(dom:)로 다르게
+    # 잡혀도 정규화 도메인이 같으면 한 번만 추출한다. seen(키)과 짝을 이뤄 런 전체·DB 영속을
+    # 가로질러 적용된다(within-segment 머지는 discover_segment 가 1차로 수행).
+    seen_domains: set[str] = set()
     existence = ExistenceVerifier(settings)
     # 라이브에서만 과금 원장을 켠다(dry_run 은 유료 호출이 없음). persist 면 DB 에 누계
     # 적재(월·다중런 합산), 아니면 인메모리(현재 런 내 가드만). 예산 초과 시 유료 차단.
@@ -69,15 +80,19 @@ def run_pipeline(
     try:
         if session is not None:
             seen |= load_seen_keys(session)
+            seen_domains |= load_seen_domains(session)
         for segment in segments:
             for dc in discover_segment(segment, settings):
-                if dc.canonical_key in seen:
+                dom = normalize_domain(dc.domain) if dc.domain else None
+                if dc.canonical_key in seen or (dom is not None and dom in seen_domains):
                     log.info("dedup.skip", key=dc.canonical_key)
                     # 재발견: 추출은 건너뛰되 last_crawled_at 은 갱신(재크롤 추적).
                     if session is not None:
                         _persist_touch(session, dc)
                     continue
                 seen.add(dc.canonical_key)
+                if dom is not None:
+                    seen_domains.add(dom)
 
                 contacts = enricher.enrich(dc)
                 candidates = accepted_emails(contacts)

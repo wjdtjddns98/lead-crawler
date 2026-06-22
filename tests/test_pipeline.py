@@ -25,3 +25,30 @@ def test_seen_keys_dedup() -> None:
     # 같은 세그먼트를 같은 seen 으로 재실행하면 전부 스킵.
     second = run_pipeline([seg], seen=seen)
     assert second == []
+
+
+def test_cross_segment_domain_dedup(monkeypatch) -> None:
+    # 같은 도메인을 서로 다른 세그먼트가 다른 key(reg:/dom:)로 잡아도 런 전체에서 1회만 추출.
+    from leadcrawler.sources.base import DiscoveredCompany
+
+    def _fake_discover(segment, settings):  # noqa: ARG001
+        if segment.industry == "건설":
+            return [DiscoveredCompany(
+                canonical_key="reg:dart:001", name="삼성", domain="samsung.com",
+                registry="dart", registry_id="001", source="dart",
+            )]
+        return [DiscoveredCompany(
+            canonical_key="dom:samsung.com", name="삼성전자",
+            domain="https://www.samsung.com", source="search",
+        )]
+
+    import leadcrawler.pipeline.run as run_mod
+
+    monkeypatch.setattr(run_mod, "discover_segment", _fake_discover)
+    leads = run_pipeline([
+        Segment(country="KR", industry="건설"),
+        Segment(country="KR", industry="제조"),
+    ])
+    # 두 번째 세그먼트의 dom: 후보는 도메인 동치로 스킵 → 1건만.
+    assert len(leads) == 1
+    assert leads[0].company.canonical_key == "reg:dart:001"
