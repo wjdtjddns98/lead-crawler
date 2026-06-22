@@ -19,7 +19,7 @@ from starlette.background import BackgroundTask
 
 from .. import __version__
 from ..config import get_settings
-from ..schema import ReviewQueueRow
+from ..schema import ReviewQueueRow, UserRow
 from ..storage.db import get_sessionmaker
 from ..storage.export import ExcelExporter
 from ..storage.repository import load_leads
@@ -31,7 +31,8 @@ from ..storage.review import (
     query_reviews,
     set_review_status,
 )
-from .schemas import ActionRequest, QueueResponse, ReviewItem, ReviewStatus
+from .auth import make_require_user, register_auth
+from .schemas import QueueResponse, ReviewItem, ReviewStatus
 
 
 def get_db() -> Iterator[Session]:
@@ -50,6 +51,9 @@ def get_db() -> Iterator[Session]:
 def create_app() -> FastAPI:
     """FastAPI 앱 인스턴스를 생성한다."""
     app = FastAPI(title="lead-crawler 검증 웹앱", version=__version__)
+    # 인증: /health·/auth/login 외 모든 데이터 라우트는 require_user 로 보호.
+    require_user = make_require_user(get_db)
+    register_auth(app, get_db, require_user)
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -61,6 +65,7 @@ def create_app() -> FastAPI:
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
         db: Session = Depends(get_db),
+        user: UserRow = Depends(require_user),
     ) -> QueueResponse:
         """검증 큐 항목을 조회한다(상태 필터·페이지네이션)."""
         status_val = status.value if status is not None else None
@@ -73,7 +78,11 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/queue/{review_id}", response_model=ReviewItem)
-    def get_queue_item(review_id: str, db: Session = Depends(get_db)) -> ReviewItem:
+    def get_queue_item(
+        review_id: str,
+        db: Session = Depends(get_db),
+        user: UserRow = Depends(require_user),
+    ) -> ReviewItem:
         """단건 검증 항목."""
         item = get_review(db, review_id)
         if item is None:
@@ -82,20 +91,27 @@ def create_app() -> FastAPI:
 
     @app.post("/queue/{review_id}/confirm", response_model=ReviewItem)
     def confirm(
-        review_id: str, body: ActionRequest | None = None, db: Session = Depends(get_db)
+        review_id: str,
+        db: Session = Depends(get_db),
+        user: UserRow = Depends(require_user),
     ) -> ReviewItem:
-        """후보를 확정한다(발송 대상 확정)."""
-        return _set_status(db, review_id, CONFIRMED, body)
+        """후보를 확정한다(발송 대상 확정). 담당자=로그인 사용자."""
+        return _set_status(db, review_id, CONFIRMED, user.username)
 
     @app.post("/queue/{review_id}/reject", response_model=ReviewItem)
     def reject(
-        review_id: str, body: ActionRequest | None = None, db: Session = Depends(get_db)
+        review_id: str,
+        db: Session = Depends(get_db),
+        user: UserRow = Depends(require_user),
     ) -> ReviewItem:
-        """후보를 거부한다(발송 제외)."""
-        return _set_status(db, review_id, REJECTED, body)
+        """후보를 거부한다(발송 제외). 담당자=로그인 사용자."""
+        return _set_status(db, review_id, REJECTED, user.username)
 
     @app.get("/export")
-    def export(db: Session = Depends(get_db)) -> FileResponse:
+    def export(
+        db: Session = Depends(get_db),
+        user: UserRow = Depends(require_user),
+    ) -> FileResponse:
         """확정(confirmed) 리드를 고정 12컬럼 엑셀로 내려받는다."""
         company_ids = list(
             db.scalars(
@@ -117,11 +133,8 @@ def create_app() -> FastAPI:
     return app
 
 
-def _set_status(
-    db: Session, review_id: str, status: str, body: ActionRequest | None
-) -> ReviewItem:
-    """상태 변경 공통 — 없으면 404."""
-    assignee = body.assignee if body else None
+def _set_status(db: Session, review_id: str, status: str, assignee: str) -> ReviewItem:
+    """상태 변경 공통 — 담당자는 로그인 사용자. 없으면 404."""
     item = set_review_status(db, review_id, status, assignee=assignee)
     if item is None:
         raise HTTPException(status_code=404, detail="검증 항목을 찾을 수 없습니다")

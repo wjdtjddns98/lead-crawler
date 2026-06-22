@@ -26,6 +26,7 @@ from sqlalchemy import (
     false,
     func,
     text,
+    true,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -144,3 +145,32 @@ class ReviewQueueRow(Base):
     candidates: Mapped[str] = mapped_column(Text, default="[]", server_default=text("'[]'"))
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default=text("'pending'"))
     assignee: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class UserRow(Base):
+    """검증 웹앱 직원 계정 — 로그인·assignee 식별. 비밀번호는 scrypt 해시만 저장."""
+
+    __tablename__ = "app_user"  # 'user' 는 PG 예약어라 회피.
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+
+
+class AuthSessionRow(Base):
+    """로그인 세션 — 불투명 토큰의 sha256 만 저장(평문 미보관)."""
+
+    __tablename__ = "auth_session"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("app_user.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

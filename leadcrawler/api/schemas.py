@@ -45,6 +45,20 @@ class QueueResponse(BaseModel):
 
 
 class ActionRequest(BaseModel):
-    """확정/거부 요청 본문(담당자 선택)."""
+    """확정/거부 요청 본문(담당자는 로그인 사용자로 자동 기록 — 본문 무시)."""
 
     assignee: str | None = None
+
+
+class LoginRequest(BaseModel):
+    """로그인 요청 본문."""
+
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    """로그인 성공 응답 — 평문 토큰은 여기서만 1회 전달."""
+
+    token: str
+    username: str
