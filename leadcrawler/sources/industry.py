@@ -32,6 +32,27 @@ _KSIC: dict[str, tuple[str, ...]] = {
     "통신": ("61",),
 }
 
+# 업종명(소문자) → UK SIC 2007 접두 집합. Companies House sic_codes.startswith 로 매칭.
+_UK_SIC: dict[str, tuple[str, ...]] = {
+    "건설": ("41", "42", "43"),
+    "construction": ("41", "42", "43"),
+    "제조": ("10", "11", "13", "20", "21", "25", "26", "27", "28", "29", "30", "31", "32", "33"),
+    "금융": ("64", "65", "66"),
+    "finance": ("64", "65", "66"),
+    "it": ("62", "63"),
+    "소프트웨어": ("62",),
+    "software": ("62",),
+    "바이오": ("21", "72"),
+    "제약": ("21",),
+    "pharma": ("21",),
+    "유통": ("46", "47"),
+    "에너지": ("35",),
+    "energy": ("35",),
+    "부동산": ("68",),
+    "반도체": ("26",),
+    "통신": ("61",),
+}
+
 # 업종명(소문자) → SIC 접두 집합. sic.startswith 로 매칭.
 _SIC: dict[str, tuple[str, ...]] = {
     "건설": ("15", "16", "17"),
@@ -62,6 +83,11 @@ def ksic_prefixes(industry: str) -> tuple[str, ...] | None:
 def sic_prefixes(industry: str) -> tuple[str, ...] | None:
     """업종명에 대응하는 SIC 접두 집합(없으면 None)."""
     return _SIC.get(industry.strip().lower())
+
+
+def uk_sic_prefixes(industry: str) -> tuple[str, ...] | None:
+    """업종명에 대응하는 UK SIC 2007 접두 집합(없으면 None)."""
+    return _UK_SIC.get(industry.strip().lower())
 
 
 def matches_prefix(code: object, prefixes: tuple[str, ...] | None) -> bool:

@@ -6,10 +6,12 @@ import pytest
 
 from leadcrawler.config import Settings
 from leadcrawler.sources.base import Segment
+from leadcrawler.sources.companieshouse import CompaniesHouseSource
 from leadcrawler.sources.dart import DartSource
 from leadcrawler.sources.edgar import EdgarSource
 from leadcrawler.sources.exchanges import PseSource, SetSource
 from leadcrawler.sources.gleif import GleifSource
+from leadcrawler.sources.opencorporates import OpenCorporatesSource
 from leadcrawler.sources.registry import build_sources, discover_segment
 from leadcrawler.sources.search import SearchSource
 from leadcrawler.sources.wikidata import WikidataSource
@@ -44,8 +46,9 @@ def test_discover_segment_merges_applicable_sources() -> None:
     seg = Segment(country="KR", industry="건설")
     rows = discover_segment(seg, _dry_settings())
     sources = {r.source for r in rows}
-    # KR 세그먼트: DART + 집계원(GLEIF/Wikidata) + 검색 적용, EDGAR(미국)는 미적용.
-    assert sources == {"dart", "gleif", "wikidata", "search"}
+    # KR 세그먼트: DART + 집계원(GLEIF/Wikidata/OpenCorporates) + 검색 적용,
+    # EDGAR(미국)·CompaniesHouse(영국)는 미적용.
+    assert sources == {"dart", "gleif", "wikidata", "opencorporates", "search"}
     # 병합 후 canonical_key 는 중복이 없어야 한다(제약 ①).
     keys = [r.canonical_key for r in rows]
     assert len(keys) == len(set(keys))
@@ -56,7 +59,7 @@ def test_aggregator_applies_to_resolvable_countries_only() -> None:
     ph = Segment(country="필리핀", industry="제조")  # 한글 별칭 해석.
     th = Segment(country="TH", industry="제조")  # ISO2.
     unknown = Segment(country="Atlantis", industry="제조")  # 미등록 → 폴백(검색만).
-    for cls in (GleifSource, WikidataSource):
+    for cls in (GleifSource, WikidataSource, OpenCorporatesSource):
         assert cls(s).applies_to(ph) and cls(s).applies_to(th)
         assert not cls(s).applies_to(unknown)
 
@@ -85,12 +88,58 @@ _LIVE_CASES = [
     (DartSource, Segment(country="KR", industry="건설"), {}, {"dart_api_key": "k"}),
     (EdgarSource, Segment(country="US", industry="건설"), {}, {"edgar_user_agent": "ua"}),
     (
+        CompaniesHouseSource,
+        Segment(country="영국", industry="건설"),
+        {},
+        {"companies_house_api_key": "k"},
+    ),
+    (
+        OpenCorporatesSource,
+        Segment(country="KR", industry="건설"),
+        {},
+        {"opencorporates_api_key": "k"},
+    ),
+    (
         SearchSource,
         Segment(country="KR", industry="건설"),
         {},
         {"google_cse_key": "k", "google_cse_cx": "cx"},
     ),
 ]
+
+
+def test_companies_house_applies_to_gb_only() -> None:
+    s = _dry_settings()
+    gb = Segment(country="영국", industry="건설")
+    us = Segment(country="US", industry="건설")
+    assert CompaniesHouseSource(s).applies_to(gb)
+    assert not CompaniesHouseSource(s).applies_to(us)
+
+
+def test_new_placeholder_sources_dry_run_registry_keyed() -> None:
+    s = _dry_settings()
+    gb = Segment(country="영국", industry="건설")
+    kr = Segment(country="KR", industry="건설")
+    ch = CompaniesHouseSource(s).discover(gb)
+    oc = OpenCorporatesSource(s).discover(kr)
+    assert ch and all(c.canonical_key.startswith("reg:companies_house:") for c in ch)
+    assert oc and all(c.canonical_key.startswith("reg:opencorporates:") for c in oc)
+    # 결정적이어야 한다(제약 ① 안정성).
+    assert [c.canonical_key for c in ch] == [
+        c.canonical_key for c in CompaniesHouseSource(s).discover(gb)
+    ]
+    assert [c.canonical_key for c in oc] == [
+        c.canonical_key for c in OpenCorporatesSource(s).discover(kr)
+    ]
+
+
+def test_discover_segment_gb_routes_companies_house() -> None:
+    rows = discover_segment(Segment(country="영국", industry="건설"), _dry_settings())
+    sources = {r.source for r in rows}
+    # GB: CompaniesHouse(등록처) + GLEIF/Wikidata/OpenCorporates(집계원) + 검색.
+    assert sources == {"companies_house", "gleif", "wikidata", "opencorporates", "search"}
+    keys = [r.canonical_key for r in rows]
+    assert len(keys) == len(set(keys))  # 병합 후 중복 없음(제약 ①).
 
 
 @pytest.mark.parametrize(("cls", "seg", "no_key", "with_key"), _LIVE_CASES)
@@ -109,7 +158,10 @@ def test_search_has_key_compound_logic() -> None:
 
 def test_build_sources_registers_all_adapters() -> None:
     names = {src.name for src in build_sources(_dry_settings())}
-    assert names == {"edgar", "dart", "pse", "set", "gleif", "wikidata", "search"}
+    assert names == {
+        "edgar", "dart", "companies_house", "pse", "set",
+        "gleif", "wikidata", "opencorporates", "search",
+    }
 
 
 def test_exchange_applies_to_country_routing() -> None:
@@ -137,7 +189,7 @@ def test_exchange_dry_run_is_listed_and_registry_keyed() -> None:
 def test_discover_segment_ph_routes_pse_aggregators_search() -> None:
     rows = discover_segment(Segment(country="PH", industry="제조"), _dry_settings())
     sources = {r.source for r in rows}
-    # PH: PSE(거래소) + GLEIF/Wikidata(집계원) + 검색. EDGAR/DART/SET 미적용.
-    assert sources == {"pse", "gleif", "wikidata", "search"}
+    # PH: PSE(거래소) + GLEIF/Wikidata/OpenCorporates(집계원) + 검색. EDGAR/DART/SET 미적용.
+    assert sources == {"pse", "gleif", "wikidata", "opencorporates", "search"}
     keys = [r.canonical_key for r in rows]
     assert len(keys) == len(set(keys))  # 병합 후 중복 없음(제약 ①).

@@ -8,10 +8,12 @@ from typing import Any
 
 from leadcrawler.config import Settings
 from leadcrawler.sources.base import Segment
+from leadcrawler.sources.companieshouse import CompaniesHouseSource
 from leadcrawler.sources.dart import DartSource
 from leadcrawler.sources.edgar import EdgarSource
 from leadcrawler.sources.exchanges import PseSource, SetSource
 from leadcrawler.sources.gleif import GleifSource
+from leadcrawler.sources.opencorporates import OpenCorporatesSource
 from leadcrawler.sources.search import SearchSource
 from leadcrawler.sources.wikidata import WikidataSource
 
@@ -406,3 +408,106 @@ def test_search_unknown_country_uses_default_locale() -> None:
     # 미등록 국가 → gl/lr 미설정(generic 영어 쿼리).
     assert "gl" not in captured and "lr" not in captured
     assert "investor relations" in captured.get("q", "")
+
+
+# --- Companies House (advanced-search) ----------------------------------
+
+def test_companies_house_live_parses_active_and_sic() -> None:
+    settings = Settings(
+        dry_run=False, companies_house_api_key="k", discovery_max_per_source=10
+    )
+    page = {
+        "items": [
+            {"company_number": "01234567", "company_name": "Balfour Construction Ltd",
+             "company_status": "active", "sic_codes": ["41201", "43999"]},
+            {"company_number": "07654321", "company_name": "Dead Construction Ltd",
+             "company_status": "dissolved", "sic_codes": ["41100"]},  # 폐업 → 제외(제약②).
+            {"company_number": "09999999", "company_name": "Finance Co",
+             "company_status": "active", "sic_codes": ["64999"]},  # 업종 불일치 → 제외.
+        ]
+    }
+
+    def _json(url: str, params: dict) -> Any:
+        # start_index 0 에 데이터, 이후는 빈 목록(페이징 종료).
+        return page if params.get("start_index", 0) == 0 else {"items": []}
+
+    out = CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="영국", industry="건설")
+    )
+    assert len(out) == 1
+    dc = out[0]
+    assert dc.registry == "companies_house" and dc.registry_id == "01234567"
+    assert dc.domain is None  # 등록처 레코드엔 웹사이트 없음.
+    assert dc.canonical_key == "reg:companies_house:01234567"
+
+
+def test_companies_house_no_industry_map_keeps_all_active() -> None:
+    settings = Settings(dry_run=False, companies_house_api_key="k")
+    page = {"items": [
+        {"company_number": "1", "company_name": "A Ltd", "company_status": "active",
+         "sic_codes": ["99999"]},
+    ]}
+    out = CompaniesHouseSource(
+        settings, fetcher=FakeFetcher(json=lambda u, p: page if p.get("start_index", 0) == 0
+                                      else {"items": []})
+    ).discover(Segment(country="영국", industry="기타"))  # 미매핑 업종 → 전량.
+    assert {d.registry_id for d in out} == {"1"}
+
+
+def test_companies_house_no_key_is_noop() -> None:
+    src = CompaniesHouseSource(Settings(dry_run=False, companies_house_api_key=""))
+    assert src.discover(Segment(country="영국", industry="건설")) == []
+
+
+def test_companies_house_non_dict_payload_returns_empty() -> None:
+    settings = Settings(dry_run=False, companies_house_api_key="k")
+    src = CompaniesHouseSource(settings, fetcher=FakeFetcher(json=lambda u, p: "boom"))
+    assert src.discover(Segment(country="영국", industry="건설")) == []
+
+
+# --- OpenCorporates (companies/search) ----------------------------------
+
+def _oc_page(companies: list[dict]) -> dict:
+    """OpenCorporates companies/search 응답 더미."""
+    return {"results": {"companies": companies}}
+
+
+def test_opencorporates_live_parses_active_and_filters_inactive() -> None:
+    settings = Settings(
+        dry_run=False, opencorporates_api_key="k", discovery_max_per_source=10
+    )
+    page = _oc_page([
+        {"company": {"name": "Acme Manufacturing", "company_number": "12345",
+                     "jurisdiction_code": "kr", "inactive": False}},
+        {"company": {"name": "Defunct Co", "company_number": "99999",
+                     "jurisdiction_code": "kr", "inactive": True}},  # 폐업 → 제외(제약②).
+    ])
+
+    def _json(url: str, params: dict) -> Any:
+        return page if params.get("page", 1) == 1 else _oc_page([])
+
+    out = OpenCorporatesSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="KR", industry="제조")
+    )
+    assert len(out) == 1
+    dc = out[0]
+    assert dc.registry == "opencorporates" and dc.registry_id == "kr/12345"
+    assert dc.domain is None
+    assert dc.canonical_key == "reg:opencorporates:kr/12345"
+
+
+def test_opencorporates_no_key_is_noop() -> None:
+    src = OpenCorporatesSource(Settings(dry_run=False, opencorporates_api_key=""))
+    assert src.discover(Segment(country="KR", industry="제조")) == []
+
+
+def test_opencorporates_non_dict_payload_returns_empty() -> None:
+    settings = Settings(dry_run=False, opencorporates_api_key="k")
+    src = OpenCorporatesSource(settings, fetcher=FakeFetcher(json=lambda u, p: ["x"]))
+    assert src.discover(Segment(country="KR", industry="제조")) == []
+
+
+def test_opencorporates_unknown_country_is_noop() -> None:
+    settings = Settings(dry_run=False, opencorporates_api_key="k")
+    src = OpenCorporatesSource(settings, fetcher=FakeFetcher(json=lambda u, p: _oc_page([])))
+    assert src.discover(Segment(country="Atlantis", industry="제조")) == []
