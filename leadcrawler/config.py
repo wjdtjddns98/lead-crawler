@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     # 예산 안전장치 — 월 누계가 monthly_budget_krw 이상이면 추가 유료 호출
     # (EmailAPI·Vision·딜리버러빌리티)을 차단한다. cost_ledger 가 활성(라이브)일 때만 작동.
     cost_budget_enforce: bool = Field(default=True)
+    # 호출당 단가 보정(원) — DEFAULT_PRICING_KRW 를 provider 별로 덮어쓴다. 실청구 대사 후
+    # 운영자가 실단가로 보정(예: LEADCRAWLER_COST_PRICING_KRW='{"hunter": 80}'). 미지정=기본 추정치.
+    cost_pricing_krw: dict[str, int] = Field(default_factory=dict)
 
     # 검증 웹앱 로그인 세션 유효시간(시간). 만료 시 재로그인 필요.
     web_session_ttl_hours: int = Field(default=12)
