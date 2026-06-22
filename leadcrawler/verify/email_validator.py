@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from ..config import Settings, get_settings
+from ..cost_ledger import SupportsCostLedger
 from ..dedup import normalize_domain
 from ..logging import get_logger
 from ..models import EmailValidation, ValidationStatus
@@ -112,12 +113,14 @@ class EmailValidator:
         *,
         smtp_prober: SupportsSmtpProbe | None = None,
         deliverability_checker: SupportsDeliverability | None = None,
+        cost_ledger: SupportsCostLedger | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self._smtp_prober = smtp_prober
         self._deliverability = deliverability_checker
         # 주입되면 더는 빌드하지 않는다(테스트 더블·명시 None 모두 존중).
         self._deliverability_built = deliverability_checker is not None
+        self._cost_ledger = cost_ledger
 
     def _prober(self) -> SupportsSmtpProbe:
         if self._smtp_prober is None:
@@ -139,6 +142,21 @@ class EmailValidator:
             self._deliverability = build_deliverability_checker(self.settings, fetcher=fetcher)
             self._deliverability_built = True
         return self._deliverability
+
+    def _budget_blocked(self) -> bool:
+        """예산 가드 — 원장이 있고 enforce 가 켜졌고 월 누계가 예산 이상이면 차단."""
+        led = self._cost_ledger
+        if led is None or not self.settings.cost_budget_enforce:
+            return False
+        if led.is_over_budget():
+            log.info("cost.budget.blocked", budget_krw=self.settings.monthly_budget_krw)
+            return True
+        return False
+
+    def _record_cost(self, provider: str, units: int = 1) -> None:
+        """유료 호출 1건을 원장에 적재(원장 없으면 no-op)."""
+        if self._cost_ledger is not None:
+            self._cost_ledger.record(provider, units)
 
     def _placeholder_from(self) -> bool:
         """MAIL FROM 이 비었거나 예약(example.com 등)·로컬 도메인이면 라이브 부적합."""
@@ -194,10 +212,12 @@ class EmailValidator:
             and not self.settings.dry_run
             and self.settings.email_deliverability_check
             and status is not ValidationStatus.INVALID
+            and not self._budget_blocked()
         ):
             checker = self._deliv_checker()
             if checker is not None:
                 verdict = checker.check(email)
+                self._record_cost(checker.name)  # 유료 딜리버러빌리티 호출 1건.
                 if verdict == DELIV_BAD:
                     status = ValidationStatus.INVALID  # 제3자 DB 수신불가 → 무효 확정.
                     provider = checker.name

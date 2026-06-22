@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from ..config import Settings, get_settings
+from ..cost_ledger import SupportsCostLedger
 from ..logging import get_logger
 from ..models import Contact, ContactType, EmailRole, ExtractMethod
 from ..sources.base import DiscoveredCompany
@@ -41,6 +42,7 @@ class Enricher:
         ocr: SupportsOcr | None = None,
         vision: SupportsVision | None = None,
         email_finders: list[SupportsEmailFinder] | None = None,
+        cost_ledger: SupportsCostLedger | None = None,
     ):
         self._settings = settings or get_settings()
         self._fetcher = fetcher
@@ -48,6 +50,7 @@ class Enricher:
         self._ocr = ocr
         self._vision = vision
         self._email_finders = email_finders
+        self._cost_ledger = cost_ledger
 
     def enrich(self, dc: DiscoveredCompany) -> list[Contact]:
         """발견 기업의 연락처 후보(이메일·전화·폼) 목록을 반환한다."""
@@ -62,16 +65,36 @@ class Enricher:
         if self._settings.enrich_ocr and not _has_email(contacts):
             contacts = self._escalate_ocr(dc, contacts)
         # 이메일 탐색 API(유료·제3자 DB) — 사이트에서 못 찾았을 때 도메인으로 질의.
-        if self._settings.enrich_email_api and not _has_email(contacts):
+        if (
+            self._settings.enrich_email_api
+            and not _has_email(contacts)
+            and not self._budget_blocked()
+        ):
             contacts = self._escalate_email_api(dc, contacts)
         # Vision 은 유료 — 키가 있고 플래그가 켜졌을 때만 최후로 시도.
         if (
             self._settings.enrich_vision
             and self._settings.anthropic_api_key
             and not _has_email(contacts)
+            and not self._budget_blocked()
         ):
             contacts = self._escalate_vision(dc, contacts)
         return contacts
+
+    def _budget_blocked(self) -> bool:
+        """예산 가드 — 원장이 있고 enforce 가 켜졌고 월 누계가 예산 이상이면 차단."""
+        led = self._cost_ledger
+        if led is None or not self._settings.cost_budget_enforce:
+            return False
+        if led.is_over_budget():
+            log.info("cost.budget.blocked", budget_krw=self._settings.monthly_budget_krw)
+            return True
+        return False
+
+    def _record_cost(self, provider: str, units: int = 1) -> None:
+        """유료 호출 1건을 원장에 적재(원장 없으면 no-op)."""
+        if self._cost_ledger is not None:
+            self._cost_ledger.record(provider, units)
 
     def _client(self) -> SupportsFetch:
         if self._fetcher is None:
@@ -210,7 +233,10 @@ class Enricher:
         cap = max(1, self._settings.email_api_max_results)
         emails: dict[str, Contact] = {}
         for finder in finders:
+            if self._budget_blocked():  # 제공자마다 재확인 — 루프 내 예산 초과 차단.
+                break
             raw = finder.find_emails(dc.domain, limit=cap)
+            self._record_cost(finder.name)  # 유료 호출 1건(제공자별 과금).
             # 제3자 DB 추정치라 다른 escalation 티어(OCR/Vision)와 동일한 낮은 신뢰도.
             for c in emails_from_text(
                 " ".join(raw), source_url=finder.source,
@@ -247,10 +273,13 @@ class Enricher:
             media_type = media_type_for(url)
             if media_type is None:  # anthropic 미지원 확장자(bmp 등) → 과금 회피 스킵.
                 continue
+            if self._budget_blocked():  # 이미지마다 재확인 — 루프 내 예산 초과 차단.
+                break
             data = _safe_bytes(fetcher, url)
             if data is None:
                 continue
             text = vision.extract_text(data, media_type=media_type)
+            self._record_cost("vision")  # Vision 이미지 1장 = 과금 1건.
             for c in emails_from_text(text, source_url=url):
                 emails.setdefault(c.value, c)
             if emails:  # 이메일 확보 시 조기 종료(과금 절감).

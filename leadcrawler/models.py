@@ -100,6 +100,17 @@ class EmailValidation(BaseModel):
     checked_at: datetime | None = None
 
 
+class CostEvent(BaseModel):
+    """유료 외부 호출 1건의 과금 이벤트 — cost_ledger 가 기록·집계한다."""
+
+    provider: str  # 호출부 식별자(hunter/apollo/zerobounce/neverbounce/vision)
+    units: int = 1  # 과금 단위 수(예: Vision 이미지 1장=1)
+    unit_cost_krw: int = 0  # 단위당 추정 단가(원)
+    cost_krw: int = 0  # units * unit_cost_krw
+    occurred_at: datetime = Field(default_factory=_utcnow)
+    month_key: str = ""  # 집계 키 YYYY-MM(occurred_at 기준)
+
+
 class Company(BaseModel):
     """검증 파이프라인이 다루는 회사 프로필."""
 

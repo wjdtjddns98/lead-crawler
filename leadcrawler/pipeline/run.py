@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import Settings, get_settings
+from ..cost_ledger import CostLedger
 from ..emailrules import select_best_email
 from ..enrich.enricher import Enricher
 from ..logging import get_logger
@@ -57,8 +58,11 @@ def run_pipeline(
     settings = settings or get_settings()
     seen = seen if seen is not None else set()
     existence = ExistenceVerifier(settings)
-    email_validator = EmailValidator(settings)
-    enricher = Enricher(settings)
+    # 라이브에서만 과금 원장을 켠다(dry_run 은 유료 호출이 없음). persist 면 DB 에 누계
+    # 적재(월·다중런 합산), 아니면 인메모리(현재 런 내 가드만). 예산 초과 시 유료 차단.
+    cost_ledger = CostLedger(settings, persist=persist) if not settings.dry_run else None
+    email_validator = EmailValidator(settings, cost_ledger=cost_ledger)
+    enricher = Enricher(settings, cost_ledger=cost_ledger)
 
     leads: list[CompanyLead] = []
     session: Session | None = get_sessionmaker(settings)() if persist else None
