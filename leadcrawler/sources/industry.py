@@ -32,6 +32,27 @@ _KSIC: dict[str, tuple[str, ...]] = {
     "통신": ("61",),
 }
 
+# 업종명(소문자) → UK SIC 2007 접두 집합. Companies House sic_codes.startswith 로 매칭.
+_UK_SIC: dict[str, tuple[str, ...]] = {
+    "건설": ("41", "42", "43"),
+    "construction": ("41", "42", "43"),
+    "제조": ("10", "11", "13", "20", "21", "25", "26", "27", "28", "29", "30", "31", "32", "33"),
+    "금융": ("64", "65", "66"),
+    "finance": ("64", "65", "66"),
+    "it": ("62", "63"),
+    "소프트웨어": ("62",),
+    "software": ("62",),
+    "바이오": ("21", "72"),
+    "제약": ("21",),
+    "pharma": ("21",),
+    "유통": ("46", "47"),
+    "에너지": ("35",),
+    "energy": ("35",),
+    "부동산": ("68",),
+    "반도체": ("26",),
+    "통신": ("61",),
+}
+
 # 업종명(소문자) → SIC 접두 집합. sic.startswith 로 매칭.
 _SIC: dict[str, tuple[str, ...]] = {
     "건설": ("15", "16", "17"),
@@ -54,6 +75,36 @@ _SIC: dict[str, tuple[str, ...]] = {
 }
 
 
+# 업종명(소문자) → 영어 검색어. 라틴/영어 중심 글로벌 색인(OpenCorporates 등)에
+# 한글 업종을 그대로 넣으면 거의 매칭되지 않으므로 영어 키워드로 옮긴다.
+_EN_INDUSTRY: dict[str, str] = {
+    "건설": "construction",
+    "제조": "manufacturing",
+    "금융": "finance",
+    "it": "it",
+    "소프트웨어": "software",
+    "바이오": "biotech",
+    "제약": "pharmaceutical",
+    "유통": "retail",
+    "도소매": "retail",
+    "운송": "transport",
+    "물류": "logistics",
+    "에너지": "energy",
+    "부동산": "real estate",
+    "식품": "food",
+    "화학": "chemical",
+    "자동차": "automotive",
+    "반도체": "semiconductor",
+    "통신": "telecommunications",
+}
+
+
+def industry_search_term(industry: str) -> str:
+    """업종명을 영어 검색어로 옮긴다(매핑 없으면 원문 그대로 — 베스트에포트)."""
+    key = industry.strip().lower()
+    return _EN_INDUSTRY.get(key, industry.strip())
+
+
 def ksic_prefixes(industry: str) -> tuple[str, ...] | None:
     """업종명에 대응하는 KSIC 접두 집합(없으면 None)."""
     return _KSIC.get(industry.strip().lower())
@@ -62,6 +113,11 @@ def ksic_prefixes(industry: str) -> tuple[str, ...] | None:
 def sic_prefixes(industry: str) -> tuple[str, ...] | None:
     """업종명에 대응하는 SIC 접두 집합(없으면 None)."""
     return _SIC.get(industry.strip().lower())
+
+
+def uk_sic_prefixes(industry: str) -> tuple[str, ...] | None:
+    """업종명에 대응하는 UK SIC 2007 접두 집합(없으면 None)."""
+    return _UK_SIC.get(industry.strip().lower())
 
 
 def matches_prefix(code: object, prefixes: tuple[str, ...] | None) -> bool:
