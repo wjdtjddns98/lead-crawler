@@ -26,6 +26,7 @@ data/
 *.db
 screenshots/
 exports/
+logs/
 
 # 프론트
 web/node_modules/

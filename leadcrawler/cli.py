@@ -135,6 +135,21 @@ def report_auto(
     typer.echo(f"자동 리포트 {sent} 완료: {report_date} (리드 {len(leads)}건)")
 
 
+@app.command("report-daily")
+def report_daily(date: str = typer.Option("", help="보고 일자 YYYY-MM-DD(빈값=오늘 UTC)")) -> None:
+    """설정(.env/config) 기반 무인 1회전 리포팅 — 인자 없이 동작(스케줄러용).
+
+    업종·국가·마일스톤을 ``report_*`` 설정에서 읽으므로 OS 예약작업이 한글 인자 없이
+    호출할 수 있다(Windows PowerShell 의 .ps1 한글 인코딩 함정 회피).
+    """
+    from .scheduler import run_daily_report
+
+    configure_logging()
+    run_daily_report(get_settings(), date=date or None)
+    sent = "전송" if NotionReporter(get_settings()).enabled else "dry_run(미전송)"
+    typer.echo(f"일일 리포트 {sent} 완료")
+
+
 @app.command()
 def serve() -> None:
     """24/7 스케줄러를 띄워 매일 지정 시각(UTC)에 자동 리포팅을 무인 실행한다.
