@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { confirmReview, exportUrl, fetchQueue, rejectReview } from "./api";
+import {
+  confirmReview,
+  exportConfirmed,
+  fetchQueue,
+  getUser,
+  logout,
+  rejectReview,
+  setAuthErrorHandler,
+} from "./api";
 import { QueueTable } from "./components/QueueTable";
+import { Login } from "./components/Login";
 import type { ReviewItem, ReviewStatus } from "./types";
 
 type Filter = ReviewStatus | "";
@@ -14,13 +23,25 @@ const FILTERS: { value: Filter; label: string }[] = [
 ];
 
 export default function App() {
+  const [user, setUser] = useState<string | null>(getUser());
+
+  // 어떤 요청이든 401 이면 로그인 화면으로 되돌린다(세션 만료·토큰 무효).
+  useEffect(() => {
+    setAuthErrorHandler(() => setUser(null));
+    return () => setAuthErrorHandler(null);
+  }, []);
+
+  if (!user) return <Login onLogin={setUser} />;
+  return <Workbench user={user} onLogout={() => setUser(null)} />;
+}
+
+function Workbench({ user, onLogout }: { user: string; onLogout: () => void }) {
   const [filter, setFilter] = useState<Filter>("pending");
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [assignee, setAssignee] = useState("");
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   // 요청 시퀀스 — 늦게 도착한 옛 응답이 현재 화면을 덮어쓰지 않게 한다(필터 연타 레이스).
   const reqRef = useRef(0);
@@ -55,9 +76,8 @@ export default function App() {
     setBusyIds((prev) => new Set(prev).add(id));
     setError(null);
     try {
-      const who = assignee.trim() || undefined;
-      const updated =
-        kind === "confirm" ? await confirmReview(id, who) : await rejectReview(id, who);
+      // 담당자는 서버가 로그인 사용자로 자동 기록한다.
+      const updated = kind === "confirm" ? await confirmReview(id) : await rejectReview(id);
       // 현재 필터에서 벗어난 항목은 목록에서 빠지므로 재조회, 아니면 제자리 갱신.
       if (filter && updated.status !== filter) {
         await load();
@@ -75,6 +95,20 @@ export default function App() {
     }
   };
 
+  const doExport = async () => {
+    setError(null);
+    try {
+      await exportConfirmed();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const doLogout = async () => {
+    await logout();
+    onLogout();
+  };
+
   const changeFilter = (f: Filter) => {
     setFilter(f);
     setOffset(0);
@@ -87,9 +121,15 @@ export default function App() {
     <div className="app">
       <header>
         <h1>검증 워크벤치</h1>
-        <a className="btn export" href={exportUrl()} title="필터와 무관하게 전체 확정분을 내보냅니다">
-          전체 확정분 엑셀 ↓
-        </a>
+        <div className="session">
+          <span className="muted">{user}</span>
+          <button className="btn export" onClick={() => void doExport()}>
+            전체 확정분 엑셀 ↓
+          </button>
+          <button className="btn" onClick={() => void doLogout()}>
+            로그아웃
+          </button>
+        </div>
       </header>
 
       <div className="toolbar">
@@ -104,14 +144,6 @@ export default function App() {
             </button>
           ))}
         </div>
-        <label className="assignee-input">
-          담당자
-          <input
-            value={assignee}
-            onChange={(e) => setAssignee(e.target.value)}
-            placeholder="(선택) 확정/거부 기록"
-          />
-        </label>
         <button className="btn" onClick={() => void load()} disabled={loading}>
           새로고침
         </button>

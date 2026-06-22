@@ -25,3 +25,8 @@ export interface QueueResponse {
   limit: number;
   offset: number;
 }
+
+export interface LoginResponse {
+  token: string;
+  username: string;
+}

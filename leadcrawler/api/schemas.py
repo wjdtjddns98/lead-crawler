@@ -44,7 +44,15 @@ class QueueResponse(BaseModel):
     offset: int
 
 
-class ActionRequest(BaseModel):
-    """확정/거부 요청 본문(담당자 선택)."""
+class LoginRequest(BaseModel):
+    """로그인 요청 본문."""
 
-    assignee: str | None = None
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    """로그인 성공 응답 — 평문 토큰은 여기서만 1회 전달."""
+
+    token: str
+    username: str

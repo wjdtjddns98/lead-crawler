@@ -150,6 +150,45 @@ def report_daily(date: str = typer.Option("", help="보고 일자 YYYY-MM-DD(빈
     typer.echo(f"일일 리포트 {sent} 완료")
 
 
+@app.command("user-add")
+def user_add(
+    username: str = typer.Argument(..., help="직원 로그인 아이디"),
+    password: str = typer.Option(
+        ..., prompt=True, hide_input=True, confirmation_prompt=True, help="비밀번호(숨김 입력)"
+    ),
+) -> None:
+    """검증 웹앱 직원 계정을 생성한다(비밀번호는 scrypt 해시 저장)."""
+    from sqlalchemy.exc import IntegrityError
+
+    from .security import create_user
+    from .storage.db import session_scope
+
+    configure_logging()
+    try:
+        with session_scope(get_settings()) as s:
+            create_user(s, username, password)
+    except IntegrityError as exc:
+        raise typer.BadParameter(f"이미 존재하는 아이디입니다: {username}") from exc
+    typer.echo(f"계정 생성 완료: {username}")
+
+
+@app.command("user-list")
+def user_list() -> None:
+    """등록된 직원 계정을 출력한다."""
+    from sqlalchemy import select
+
+    from .schema import UserRow
+    from .storage.db import session_scope
+
+    configure_logging()
+    with session_scope(get_settings()) as s:
+        rows = s.scalars(select(UserRow).order_by(UserRow.username)).all()
+        for u in rows:
+            state = "활성" if u.is_active else "비활성"
+            typer.echo(f"  - {u.username} ({state})")
+        typer.echo(f"총 {len(rows)}명")
+
+
 @app.command("cost-report")
 def cost_report(
     month: str = typer.Option("", help="집계 월 YYYY-MM(빈값=이번 달 UTC)"),
