@@ -201,6 +201,8 @@ class SgxSource(ExchangeSource):
         fetcher = self._client()
         cap = self._settings.discovery_max_per_source
         listed_seg = Segment(country=segment.country, industry=segment.industry, listed="listed")
+        # SGX securities 는 전 종목을 1회 응답으로 준다(페이징 미구현 — 실 응답에 페이징이
+        # 있다면 온네트워크 확인 후 추가). 캡은 클라이언트측 len(out)>=cap 으로 적용.
         try:
             payload = fetcher.get_json(self.list_url, params={"excludetypes": "bonds"})
         except Exception as exc:  # WAF/네트워크/형식 → graceful 빈 결과.
@@ -263,8 +265,8 @@ class IdxSource(ExchangeSource):
                 log.info("idx.error", start=start, err_type=type(exc).__name__, err=str(exc))
                 break
             rows = payload.get("data") if isinstance(payload, dict) else None
-            if not rows:
-                break
+            if not isinstance(rows, list) or not rows:
+                break  # 빈/비list(dict 등 예상밖 스키마) → graceful 종료(무한 페이징 방지).
             for row in rows:
                 if not isinstance(row, dict):
                     continue

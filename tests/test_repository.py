@@ -19,7 +19,12 @@ from leadcrawler.models import (
 from leadcrawler.schema import CompanyRow, ContactRow, DiscoveredCompanyRow, EmailValidationRow
 from leadcrawler.sources.base import DiscoveredCompany
 from leadcrawler.storage.db import init_db, session_scope
-from leadcrawler.storage.repository import load_seen_keys, save_discovered, save_lead
+from leadcrawler.storage.repository import (
+    load_seen_domains,
+    load_seen_keys,
+    save_discovered,
+    save_lead,
+)
 
 
 @pytest.fixture
@@ -60,6 +65,20 @@ def test_save_discovered_is_idempotent(session: Session) -> None:
     save_discovered(session, dc)  # 두 번 호출해도 1행(제약 ①).
     session.commit()
     assert load_seen_keys(session) == {"dom:x.com"}
+
+
+def test_load_seen_domains_returns_normalized(session: Session) -> None:
+    # 도메인 동치 dedup 시드 — 정규화 도메인만, 도메인 없는 행은 제외(제약 ①).
+    save_discovered(session, DiscoveredCompany(
+        canonical_key="reg:dart:001", name="삼성", country="KR",
+        domain="https://www.samsung.com", registry="dart", registry_id="001", source="dart",
+    ))
+    save_discovered(session, DiscoveredCompany(
+        canonical_key="reg:lei:xyz", name="도메인없음", country="KR",
+        domain=None, registry="lei", registry_id="xyz", source="gleif",
+    ))
+    session.commit()
+    assert load_seen_domains(session) == {"samsung.com"}
 
 
 def test_save_discovered_sets_listed_and_last_crawled_at(session: Session) -> None:

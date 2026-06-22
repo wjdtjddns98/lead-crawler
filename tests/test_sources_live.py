@@ -422,6 +422,21 @@ def test_idx_non_dict_payload_returns_empty() -> None:
     assert out == []
 
 
+def test_idx_dict_data_does_not_spin() -> None:
+    # data 가 list 가 아닌 dict(예상밖 스키마)면 무한 페이징 없이 1회만 호출 후 종료.
+    settings = Settings(dry_run=False)
+    calls = {"n": 0}
+
+    def _json(url: str, params: dict) -> Any:
+        calls["n"] += 1
+        return {"data": {"unexpected": 1}}
+
+    out = IdxSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="ID", industry="금융")
+    )
+    assert out == [] and calls["n"] == 1
+
+
 def test_bursa_live_is_disabled_unverified() -> None:
     # Bursa 라이브는 정적 수집 불가 — 네트워크 호출 없이 빈 결과(검증대기).
     settings = Settings(dry_run=False)

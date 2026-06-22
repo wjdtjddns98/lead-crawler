@@ -55,6 +55,10 @@ def discover_segment(
     - canonical_key 동치(같은 등록처 식별자/도메인 key),
     - 도메인 동치 — 같은 실존 기업이 등록처 소스(reg:..., 도메인 보유)와 검색 소스
       (dom:...)에서 서로 다른 key 로 잡혀도 정규화 도메인이 같으면 하나로 병합한다.
+
+    주의: 여기서의 도메인 동치는 **세그먼트 1건 내부**에서만 적용된다. 세그먼트를
+    가로지르거나(다국가/다업종) DB 영속을 거친 cross-run 중복은 파이프라인
+    (:func:`run_pipeline`)이 런 전체 ``seen``/``seen_domains`` 로 처리한다.
     """
     settings = settings or get_settings()
     out: list[DiscoveredCompany] = []

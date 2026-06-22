@@ -218,7 +218,7 @@ def test_new_exchanges_dry_run_registry_keyed_and_listed() -> None:
     ]
 
 
-def test_discover_segment_merges_by_domain_equivalence() -> None:
+def test_discover_segment_merges_by_domain_equivalence(monkeypatch) -> None:
     # 같은 도메인을 등록처(reg:)와 검색(dom:)이 서로 다른 key 로 잡으면 1건으로 병합(제약①).
     from leadcrawler.sources.base import DiscoveredCompany
 
@@ -249,12 +249,8 @@ def test_discover_segment_merges_by_domain_equivalence() -> None:
 
     import leadcrawler.sources.registry as reg
 
-    orig = reg.build_sources
-    reg.build_sources = lambda settings: [_RegSrc(), _DomSrc()]  # noqa: ARG005
-    try:
-        rows = reg.discover_segment(Segment(country="KR", industry="제조"), _dry_settings())
-    finally:
-        reg.build_sources = orig
+    monkeypatch.setattr(reg, "build_sources", lambda settings: [_RegSrc(), _DomSrc()])
+    rows = reg.discover_segment(Segment(country="KR", industry="제조"), _dry_settings())
     # 신뢰도 높은 등록처(첫 등장)만 살아남는다.
     assert len(rows) == 1
     assert rows[0].canonical_key == "reg:dart:001"

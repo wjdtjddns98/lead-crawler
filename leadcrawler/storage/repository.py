@@ -33,6 +33,7 @@ from ..models import (
     Listed,
     ValidationStatus,
 )
+from ..dedup import normalize_domain
 from ..emailrules import accepted_emails
 from ..schema import (
     CompanyRow,
@@ -78,6 +79,18 @@ def _clip(value: str, limit: int = _NAME_MAX) -> str:
 def load_seen_keys(session: Session) -> set[str]:
     """발견 테이블에 적재된 모든 ``canonical_key`` 를 반환한다(제약 ① 시드)."""
     return set(session.scalars(select(DiscoveredCompanyRow.canonical_key)).all())
+
+
+def load_seen_domains(session: Session) -> set[str]:
+    """발견 테이블에 적재된 모든 정규화 도메인을 반환한다(제약 ① 도메인 동치 시드).
+
+    같은 기업이 과거 런에서 등록처 key(reg:..., 도메인 보유)로, 이번 런에서 검색
+    key(dom:...)로 잡히는 식의 cross-run 중복을 도메인 동치로 막기 위한 시드다.
+    """
+    domains = session.scalars(
+        select(DiscoveredCompanyRow.domain).where(DiscoveredCompanyRow.domain.is_not(None))
+    ).all()
+    return {d for d in (normalize_domain(x) for x in domains) if d is not None}
 
 
 def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompanyRow:
