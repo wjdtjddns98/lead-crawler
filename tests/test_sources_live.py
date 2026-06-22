@@ -11,7 +11,13 @@ from leadcrawler.sources.base import Segment
 from leadcrawler.sources.companieshouse import CompaniesHouseSource
 from leadcrawler.sources.dart import DartSource
 from leadcrawler.sources.edgar import EdgarSource
-from leadcrawler.sources.exchanges import PseSource, SetSource
+from leadcrawler.sources.exchanges import (
+    BursaSource,
+    IdxSource,
+    PseSource,
+    SetSource,
+    SgxSource,
+)
 from leadcrawler.sources.gleif import GleifSource
 from leadcrawler.sources.opencorporates import OpenCorporatesSource
 from leadcrawler.sources.search import SearchSource
@@ -355,6 +361,76 @@ def test_pse_live_empty_html_returns_empty() -> None:
     settings = Settings(dry_run=False)
     out = PseSource(settings, fetcher=FakeFetcher(post=lambda u, d: "<table></table>")).discover(
         Segment(country="PH", industry="제조")
+    )
+    assert out == []
+
+
+def test_sgx_live_parses_securities() -> None:
+    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    payload = {"data": {"prices": [
+        {"nc": "D05", "n": "DBS Group Holdings"},
+        {"nc": "O39", "n": "OCBC Bank"},
+        {"nc": "D05", "n": "중복 코드"},  # 코드 중복 → 스킵.
+        {"nc": "", "n": "코드 없음"},  # 코드 없음 → 스킵.
+    ]}}
+    out = SgxSource(settings, fetcher=FakeFetcher(json=lambda u, p: payload)).discover(
+        Segment(country="싱가포르", industry="금융")
+    )
+    assert [d.registry_id for d in out] == ["D05", "O39"]
+    dc = out[0]
+    assert dc.registry == "sgx" and dc.listed == "listed"
+    assert dc.name == "DBS Group Holdings" and dc.domain is None
+    assert dc.canonical_key == "reg:sgx:d05"
+
+
+def test_sgx_live_error_returns_empty() -> None:
+    settings = Settings(dry_run=False)
+
+    def _boom(u, p):
+        raise RuntimeError("waf")
+
+    out = SgxSource(settings, fetcher=FakeFetcher(json=_boom)).discover(
+        Segment(country="SG", industry="금융")
+    )
+    assert out == []
+
+
+def test_idx_live_parses_and_paginates() -> None:
+    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    page1 = {"data": [
+        {"KodeEmiten": "BBCA", "NamaEmiten": "Bank Central Asia Tbk"},
+        {"KodeEmiten": "BBRI", "NamaEmiten": "Bank Rakyat Indonesia Tbk"},
+    ]}
+    page2 = {"data": [{"KodeEmiten": "TLKM", "NamaEmiten": "Telkom Indonesia Tbk"}]}
+
+    def _json(url: str, params: dict) -> Any:
+        return {"0": page1, "2": page2}.get(str(params.get("start")), {"data": []})
+
+    out = IdxSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="인도네시아", industry="금융")
+    )
+    assert [d.registry_id for d in out] == ["BBCA", "BBRI", "TLKM"]
+    assert out[0].registry == "idx" and out[0].listed == "listed"
+    assert out[0].canonical_key == "reg:idx:bbca"
+
+
+def test_idx_non_dict_payload_returns_empty() -> None:
+    settings = Settings(dry_run=False)
+    out = IdxSource(settings, fetcher=FakeFetcher(json=lambda u, p: "boom")).discover(
+        Segment(country="ID", industry="금융")
+    )
+    assert out == []
+
+
+def test_bursa_live_is_disabled_unverified() -> None:
+    # Bursa 라이브는 정적 수집 불가 — 네트워크 호출 없이 빈 결과(검증대기).
+    settings = Settings(dry_run=False)
+
+    def _boom(*a, **k):
+        raise AssertionError("Bursa 라이브는 네트워크를 호출하면 안 된다(검증대기 no-op)")
+
+    out = BursaSource(settings, fetcher=FakeFetcher(json=_boom, post=_boom)).discover(
+        Segment(country="말레이시아", industry="금융")
     )
     assert out == []
 

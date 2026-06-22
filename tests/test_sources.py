@@ -9,7 +9,13 @@ from leadcrawler.sources.base import Segment
 from leadcrawler.sources.companieshouse import CompaniesHouseSource
 from leadcrawler.sources.dart import DartSource
 from leadcrawler.sources.edgar import EdgarSource
-from leadcrawler.sources.exchanges import PseSource, SetSource
+from leadcrawler.sources.exchanges import (
+    BursaSource,
+    IdxSource,
+    PseSource,
+    SetSource,
+    SgxSource,
+)
 from leadcrawler.sources.gleif import GleifSource
 from leadcrawler.sources.opencorporates import OpenCorporatesSource
 from leadcrawler.sources.registry import build_sources, discover_segment
@@ -159,7 +165,7 @@ def test_search_has_key_compound_logic() -> None:
 def test_build_sources_registers_all_adapters() -> None:
     names = {src.name for src in build_sources(_dry_settings())}
     assert names == {
-        "edgar", "dart", "companies_house", "pse", "set",
+        "edgar", "dart", "companies_house", "pse", "set", "sgx", "idx", "bursa",
         "gleif", "wikidata", "opencorporates", "search",
     }
 
@@ -184,6 +190,74 @@ def test_exchange_dry_run_is_listed_and_registry_keyed() -> None:
     assert [c.canonical_key for c in pse] == [
         c.canonical_key for c in PseSource(s).discover(Segment(country="PH", industry="제조"))
     ]
+
+
+def test_new_exchanges_applies_to_country_routing() -> None:
+    s = _dry_settings()
+    sg = Segment(country="싱가포르", industry="제조")
+    idn = Segment(country="인도네시아", industry="제조")
+    my = Segment(country="말레이시아", industry="제조")
+    kr = Segment(country="KR", industry="제조")
+    assert SgxSource(s).applies_to(sg) and not SgxSource(s).applies_to(kr)
+    assert IdxSource(s).applies_to(idn) and not IdxSource(s).applies_to(kr)
+    assert BursaSource(s).applies_to(my) and not BursaSource(s).applies_to(kr)
+
+
+def test_new_exchanges_dry_run_registry_keyed_and_listed() -> None:
+    s = _dry_settings()
+    sg = SgxSource(s).discover(Segment(country="SG", industry="금융"))
+    idn = IdxSource(s).discover(Segment(country="ID", industry="금융"))
+    my = BursaSource(s).discover(Segment(country="MY", industry="금융"))
+    assert sg and all(c.canonical_key.startswith("reg:sgx:") for c in sg)
+    assert idn and all(c.canonical_key.startswith("reg:idx:") for c in idn)
+    assert my and all(c.canonical_key.startswith("reg:bursa:") for c in my)
+    assert all(c.listed == "listed" for c in sg + idn + my)
+    # 결정적이어야 한다(제약 ① 안정성).
+    assert [c.canonical_key for c in sg] == [
+        c.canonical_key for c in SgxSource(s).discover(Segment(country="SG", industry="금융"))
+    ]
+
+
+def test_discover_segment_merges_by_domain_equivalence() -> None:
+    # 같은 도메인을 등록처(reg:)와 검색(dom:)이 서로 다른 key 로 잡으면 1건으로 병합(제약①).
+    from leadcrawler.sources.base import DiscoveredCompany
+
+    class _RegSrc:
+        name = "regsrc"
+
+        def applies_to(self, seg: Segment) -> bool:  # noqa: ARG002
+            return True
+
+        def discover(self, seg: Segment) -> list[DiscoveredCompany]:  # noqa: ARG002
+            return [DiscoveredCompany(
+                canonical_key="reg:dart:001", name="삼성", domain="samsung.com",
+                registry="dart", registry_id="001", source="regsrc",
+            )]
+
+    class _DomSrc:
+        name = "domsrc"
+
+        def applies_to(self, seg: Segment) -> bool:  # noqa: ARG002
+            return True
+
+        def discover(self, seg: Segment) -> list[DiscoveredCompany]:  # noqa: ARG002
+            # 같은 도메인(www. 접두 변형)이지만 dom: key — 병합돼야 한다.
+            return [DiscoveredCompany(
+                canonical_key="dom:samsung.com", name="삼성전자", domain="https://www.samsung.com",
+                source="domsrc",
+            )]
+
+    import leadcrawler.sources.registry as reg
+
+    orig = reg.build_sources
+    reg.build_sources = lambda settings: [_RegSrc(), _DomSrc()]  # noqa: ARG005
+    try:
+        rows = reg.discover_segment(Segment(country="KR", industry="제조"), _dry_settings())
+    finally:
+        reg.build_sources = orig
+    # 신뢰도 높은 등록처(첫 등장)만 살아남는다.
+    assert len(rows) == 1
+    assert rows[0].canonical_key == "reg:dart:001"
 
 
 def test_discover_segment_ph_routes_pse_aggregators_search() -> None:
