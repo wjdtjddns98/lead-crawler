@@ -151,6 +151,56 @@ def report_daily(date: str = typer.Option("", help="보고 일자 YYYY-MM-DD(빈
 
 
 @app.command()
+def enqueue() -> None:
+    """기존 적재된 리드 중 이메일 보유 회사를 검증 큐에 백필한다(멱등).
+
+    파이프라인은 이제 적재 시 자동 enqueue 하지만, 이미 저장된 과거 리드는 이 명령으로
+    한 번 큐에 올린다. 이미 큐에 있으면 후보만 갱신(상태 보존)된다.
+    """
+    from sqlalchemy import select
+
+    from .schema import ContactRow
+    from .storage.db import get_sessionmaker
+    from .storage.review import enqueue_email_review
+
+    configure_logging()
+    session = get_sessionmaker(get_settings())()
+    try:
+        rows = session.execute(
+            select(ContactRow.company_id, ContactRow.value)
+            .where(ContactRow.type == "email")
+            .order_by(ContactRow.company_id, ContactRow.id)
+        ).all()
+        # 회사별로 이메일 후보를 모아 한 번에 enqueue(멀티이메일 시 후보 유실 방지).
+        by_company: dict[str, list[str]] = {}
+        for company_id, value in rows:
+            by_company.setdefault(company_id, []).append(value)
+        for company_id, values in by_company.items():
+            enqueue_email_review(session, company_id, values)
+        session.commit()
+        typer.echo(f"검증 큐 백필 완료: 회사 {len(by_company)}곳 ({len(rows)}개 이메일) enqueue")
+    finally:
+        session.close()
+
+
+@app.command()
+def web(
+    host: str = typer.Option("127.0.0.1", help="바인드 호스트"),
+    port: int = typer.Option(8000, help="포트"),
+) -> None:
+    """검증 웹앱(FastAPI)을 띄운다. fastapi/uvicorn extra(`.[api]`) 필요."""
+    try:
+        import uvicorn
+    except ModuleNotFoundError as exc:
+        raise typer.BadParameter(
+            "uvicorn 이 없습니다. `pip install -e .[api]` 로 설치하세요."
+        ) from exc
+
+    configure_logging()
+    uvicorn.run("leadcrawler.api.app:create_app", factory=True, host=host, port=port)
+
+
+@app.command()
 def serve() -> None:
     """24/7 스케줄러를 띄워 매일 지정 시각(UTC)에 자동 리포팅을 무인 실행한다.
 
