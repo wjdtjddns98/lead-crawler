@@ -35,23 +35,60 @@ def review_id_for(company_id: str, field: str) -> str:
     return "r_" + hashlib.sha1(raw).hexdigest()[:30]
 
 
-def enqueue_email_review(session: Session, company_id: str, candidates: Sequence[str]) -> str:
-    """회사의 이메일 검토 항목을 멱등 등록/갱신한다.
+def enqueue_email_review(
+    session: Session,
+    company_id: str,
+    candidates: Sequence[str],
+    *,
+    selected_default: str | None = None,
+) -> str:
+    """회사의 이메일 검토 항목을 멱등 등록/갱신한다(다중 후보 + 선택 보존).
 
-    신규면 ``pending`` 으로 만들고, 기존이면 후보 목록만 갱신하고 **상태·담당자는 보존**
-    한다(사람의 확정/거부가 재크롤로 되돌아가지 않게). 큐 행 id 를 반환한다.
+    신규면 ``pending`` 으로 만들고, 기존이면 후보 목록만 갱신하고 **상태·담당자·선택은
+    보존**한다(사람의 확정/거부·선택이 재크롤로 되돌아가지 않게). 단, 기존 선택이 새 후보
+    목록에 더 이상 없으면 기본값(``selected_default`` 또는 선두 후보)으로 재설정한다.
+    큐 행 id 를 반환한다.
     """
     rid = review_id_for(company_id, "email")
-    payload = json.dumps(list(candidates), ensure_ascii=False)
+    cand_list = list(candidates)
+    payload = json.dumps(cand_list, ensure_ascii=False)
+    # 기본 선택: selected_default 가 후보에 있으면 그것, 아니면 선두 후보(best-first).
+    fallback = (
+        selected_default
+        if selected_default is not None and selected_default in cand_list
+        else (cand_list[0] if cand_list else None)
+    )
     row = session.get(ReviewQueueRow, rid)
     if row is None:
         row = ReviewQueueRow(
-            id=rid, company_id=company_id, field="email", candidates=payload, status=PENDING
+            id=rid, company_id=company_id, field="email", candidates=payload,
+            status=PENDING, selected=fallback, selected_by_human=False,
         )
         session.add(row)
     else:
         row.candidates = payload  # 후보만 갱신, status/assignee 보존
+        if row.selected_by_human:
+            # 사람이 명시 선택한 경우 보존하되, 후보에서 사라졌으면 자동 기본값으로 강등.
+            if row.selected not in cand_list:
+                row.selected = fallback
+                row.selected_by_human = False
+        else:
+            # 자동 기본값은 매 재크롤마다 best 로 갱신(더 나은 후보 반영).
+            row.selected = fallback
     return rid
+
+
+def clear_email_review(session: Session, company_id: str) -> None:
+    """회사가 이메일 후보를 전부 잃었을 때 큐 행의 후보를 비운다(상태·담당자 보존).
+
+    재크롤로 이메일이 0건이 되면 죽은 후보가 큐에 남지 않게 정리한다. 행 자체는 남겨
+    사람의 확정/거부 이력을 보존한다(제약 ② 일관).
+    """
+    row = session.get(ReviewQueueRow, review_id_for(company_id, "email"))
+    if row is not None and row.candidates != "[]":
+        row.candidates = "[]"
+        row.selected = None
+        row.selected_by_human = False
 
 
 def count_reviews(session: Session, *, status: str | None = None) -> int:
@@ -62,30 +99,28 @@ def count_reviews(session: Session, *, status: str | None = None) -> int:
     return int(session.scalar(stmt) or 0)
 
 
-def _email_signal_map(session: Session, company_ids: Sequence[str]) -> dict[str, _EmailSignal]:
-    """회사별 **대표 이메일 1건**의 검증 신호를 맵으로 반환한다(조인 행폭증 방지).
+def _email_signals_by_value(
+    session: Session, company_ids: Sequence[str]
+) -> dict[tuple[str, str], _EmailSignal]:
+    """(회사, 이메일주소)별 검증 신호를 맵으로 반환한다(후보별 신호 표시용).
 
-    한 회사가 이메일 연락처를 여럿 가질 수 있으므로(IR + general 등), 큐 행과 1:1 을
-    유지하려면 검증 신호를 별도 배치 조회로 평탄화한다. 대표는 ``contact.id`` 오름차순
-    첫 행으로 **결정적** 선택한다(목록·단건 뷰가 항상 같은 신호를 보이도록).
+    다중 후보 선택 UI 가 각 후보의 검증 상태를 보여줄 수 있도록 회사·주소 단위로
+    평탄화한다(조인 행폭증은 큐 행과 분리된 별도 배치 조회로 회피).
     """
     if not company_ids:
         return {}
     rows = session.execute(
         select(
             ContactRow.company_id,
+            ContactRow.value,
             EmailValidationRow.status,
             EmailValidationRow.mx,
             EmailValidationRow.smtp,
         )
         .join(EmailValidationRow, EmailValidationRow.contact_id == ContactRow.id)
         .where(ContactRow.company_id.in_(company_ids), ContactRow.type == "email")
-        .order_by(ContactRow.company_id, ContactRow.id)
     ).all()
-    out: dict[str, _EmailSignal] = {}
-    for cid, status, mx, smtp in rows:
-        out.setdefault(cid, (status, mx, smtp))  # 첫 행(id 최소)만 = 결정적 대표
-    return out
+    return {(cid, value): (status, mx, smtp) for cid, value, status, mx, smtp in rows}
 
 
 def query_reviews(
@@ -107,29 +142,70 @@ def query_reviews(
     if status is not None:
         stmt = stmt.where(ReviewQueueRow.status == status)
     rows = session.execute(stmt).all()
-    signals = _email_signal_map(session, [company.id for _, company in rows])
-    return [_to_dict(rq, company, signals.get(company.id)) for rq, company in rows]
+    signals = _email_signals_by_value(session, [company.id for _, company in rows])
+    return [_to_dict(rq, company, signals) for rq, company in rows]
 
 
 def get_review(session: Session, review_id: str) -> dict | None:
-    """단건 큐 항목 DTO(없으면 None). 목록과 동일한 대표 이메일 신호를 쓴다."""
+    """단건 큐 항목 DTO(없으면 None). 목록과 동일한 후보별 신호를 쓴다."""
     rq = session.get(ReviewQueueRow, review_id)
     if rq is None:
         return None
     company = session.get(CompanyRow, rq.company_id)
-    signal = _email_signal_map(session, [rq.company_id]).get(rq.company_id)
-    return _to_dict(rq, company, signal)
+    signals = _email_signals_by_value(session, [rq.company_id])
+    return _to_dict(rq, company, signals)
+
+
+def _parse_candidates(rq: ReviewQueueRow) -> list[str]:
+    """candidates JSON 을 안전 파싱한다(깨졌으면 빈 목록 + 경고)."""
+    try:
+        value = json.loads(rq.candidates)
+        return value if isinstance(value, list) else []
+    except (ValueError, TypeError):
+        log.warning("review.candidates_corrupt", review_id=rq.id, raw=rq.candidates)
+        return []
+
+
+def effective_selected(selected: str | None, candidate_values: list[str]) -> str | None:
+    """'유효 선택' 단일 진실원천 — selected 가 후보에 있으면 그것, 아니면 선두 후보.
+
+    DTO 표시(:func:`_to_dict`)와 엑셀 export(load_leads)가 **동일 규칙**으로 같은 후보를
+    고르도록 한 곳에 정의한다(워크벤치 표시 ≠ export 불일치 방지). 둘 다 review_queue
+    candidates JSON 순서(best-first)를 진실원천으로 삼는다.
+    """
+    if selected is not None and selected in candidate_values:
+        return selected
+    return candidate_values[0] if candidate_values else None
+
+
+def candidate_values_of(rq: ReviewQueueRow) -> list[str]:
+    """큐 행의 후보 주소 목록(load_leads 등 외부에서 effective_selected 와 함께 사용)."""
+    return _parse_candidates(rq)
 
 
 def set_review_status(
-    session: Session, review_id: str, status: str, *, assignee: str | None = None
+    session: Session,
+    review_id: str,
+    status: str,
+    *,
+    assignee: str | None = None,
+    selected: str | None = None,
 ) -> dict | None:
-    """큐 항목 상태를 갱신한다(확정/거부/보류). 없으면 None, 잘못된 상태면 ValueError."""
+    """큐 항목 상태(확정/거부/보류)와 선택 후보를 갱신한다.
+
+    없으면 None, 잘못된 상태면 ValueError. ``selected`` 가 주어지면 후보 목록에 있어야
+    하며(아니면 ValueError), 확정/거부 시 사람이 고른 최종 이메일을 기록한다.
+    """
     if status not in _VALID_STATUSES:
         raise ValueError(f"허용되지 않은 상태: {status}")
     rq = session.get(ReviewQueueRow, review_id)
     if rq is None:
         return None
+    if selected is not None:
+        if selected not in _parse_candidates(rq):
+            raise ValueError(f"후보에 없는 선택: {selected}")
+        rq.selected = selected
+        rq.selected_by_human = True  # 사람 명시 선택 — 이후 재크롤에서 보존.
     rq.status = status
     if assignee is not None:
         rq.assignee = assignee
@@ -138,20 +214,30 @@ def set_review_status(
 
 
 def _to_dict(
-    rq: ReviewQueueRow, company: CompanyRow | None, signal: _EmailSignal | None
+    rq: ReviewQueueRow,
+    company: CompanyRow | None,
+    signals: dict[tuple[str, str], _EmailSignal],
 ) -> dict:
-    """ORM 행 + 이메일 신호를 API DTO dict 로 평탄화한다."""
-    try:
-        candidates = json.loads(rq.candidates)
-    except (ValueError, TypeError):
-        log.warning("review.candidates_corrupt", review_id=rq.id, raw=rq.candidates)
-        candidates = []
-    status, mx, smtp = signal if signal is not None else (None, None, None)
+    """ORM 행 + 후보별 이메일 신호를 API DTO dict 로 평탄화한다."""
+    candidates = _parse_candidates(rq)
+    # 선택: load_leads(export) 와 동일 규칙(effective_selected)으로 단일화.
+    selected = effective_selected(rq.selected, candidates)
+    cand_dtos = []
+    for value in candidates:
+        st, mx, smtp = signals.get((rq.company_id, value), (None, None, None))
+        cand_dtos.append({"value": value, "email_status": st, "email_mx": mx, "email_smtp": smtp})
+    # 대표 신호 = 선택된 후보의 신호(이메일 컬럼 표시·export 정합).
+    rep_status, rep_mx, rep_smtp = (
+        signals.get((rq.company_id, selected), (None, None, None))
+        if selected is not None
+        else (None, None, None)
+    )
     return {
         "id": rq.id,
         "company_id": rq.company_id,
         "field": rq.field,
-        "candidates": candidates,
+        "candidates": cand_dtos,
+        "selected": selected,
         "status": rq.status,
         "assignee": rq.assignee,
         "name": company.name if company else "",
@@ -159,7 +245,7 @@ def _to_dict(
         "industry": company.industry if company else "",
         "homepage": company.homepage if company else None,
         "site_alive": company.site_alive if company else False,
-        "email_status": status,
-        "email_mx": mx,
-        "email_smtp": smtp,
+        "email_status": rep_status,
+        "email_mx": rep_mx,
+        "email_smtp": rep_smtp,
     }

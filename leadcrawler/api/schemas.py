@@ -15,13 +15,23 @@ class ReviewStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class CandidateInfo(BaseModel):
+    """이메일 후보 1건 + 그 후보의 검증 신호(다중 후보 선택 UI 용)."""
+
+    value: str
+    email_status: str | None = None
+    email_mx: bool | None = None
+    email_smtp: bool | None = None
+
+
 class ReviewItem(BaseModel):
     """검증 큐 한 항목(회사·이메일검증 정보 평탄화)."""
 
     id: str
     company_id: str
     field: str
-    candidates: list[str]
+    candidates: list[CandidateInfo]
+    selected: str | None = None  # 사람이 고른 최종 이메일(미선택이면 대표=선두 후보)
     status: str
     assignee: str | None = None
     name: str
@@ -29,7 +39,7 @@ class ReviewItem(BaseModel):
     industry: str = ""
     homepage: str | None = None
     site_alive: bool = False
-    # 이메일 연락처가 있을 때의 검증 신호(없으면 None).
+    # 선택된 후보의 검증 신호(이메일 컬럼 표시용, 없으면 None).
     email_status: str | None = None
     email_mx: bool | None = None
     email_smtp: bool | None = None
@@ -42,6 +52,12 @@ class QueueResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class ConfirmRequest(BaseModel):
+    """확정 요청 본문 — 사람이 고른 최종 이메일 후보(선택)."""
+
+    selected: str | None = None
 
 
 class LoginRequest(BaseModel):

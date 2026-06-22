@@ -72,12 +72,13 @@ function Workbench({ user, onLogout }: { user: string; onLogout: () => void }) {
     void load();
   }, [load]);
 
-  const act = async (id: string, kind: "confirm" | "reject") => {
+  const act = async (id: string, kind: "confirm" | "reject", selected?: string) => {
     setBusyIds((prev) => new Set(prev).add(id));
     setError(null);
     try {
-      // 담당자는 서버가 로그인 사용자로 자동 기록한다.
-      const updated = kind === "confirm" ? await confirmReview(id) : await rejectReview(id);
+      // 담당자는 서버가 로그인 사용자로 자동 기록. 확정 시 사람이 고른 이메일을 보낸다.
+      const updated =
+        kind === "confirm" ? await confirmReview(id, selected) : await rejectReview(id);
       // 현재 필터에서 벗어난 항목은 목록에서 빠지므로 재조회, 아니면 제자리 갱신.
       if (filter && updated.status !== filter) {
         await load();
@@ -159,7 +160,7 @@ function Workbench({ user, onLogout }: { user: string; onLogout: () => void }) {
       <QueueTable
         items={items}
         busyIds={busyIds}
-        onConfirm={(id) => void act(id, "confirm")}
+        onConfirm={(id, selected) => void act(id, "confirm", selected)}
         onReject={(id) => void act(id, "reject")}
       />
 

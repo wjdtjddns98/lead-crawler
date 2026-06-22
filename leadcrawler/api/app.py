@@ -32,7 +32,7 @@ from ..storage.review import (
     set_review_status,
 )
 from .auth import make_require_user, register_auth
-from .schemas import QueueResponse, ReviewItem, ReviewStatus
+from .schemas import ConfirmRequest, QueueResponse, ReviewItem, ReviewStatus
 
 
 def get_db() -> Iterator[Session]:
@@ -92,11 +92,13 @@ def create_app() -> FastAPI:
     @app.post("/queue/{review_id}/confirm", response_model=ReviewItem)
     def confirm(
         review_id: str,
+        body: ConfirmRequest | None = None,
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> ReviewItem:
-        """후보를 확정한다(발송 대상 확정). 담당자=로그인 사용자."""
-        return _set_status(db, review_id, CONFIRMED, user.username)
+        """후보를 확정한다(발송 대상 확정). 담당자=로그인 사용자, 선택 이메일 기록."""
+        selected = body.selected if body else None
+        return _set_status(db, review_id, CONFIRMED, user.username, selected=selected)
 
     @app.post("/queue/{review_id}/reject", response_model=ReviewItem)
     def reject(
@@ -133,9 +135,14 @@ def create_app() -> FastAPI:
     return app
 
 
-def _set_status(db: Session, review_id: str, status: str, assignee: str) -> ReviewItem:
-    """상태 변경 공통 — 담당자는 로그인 사용자. 없으면 404."""
-    item = set_review_status(db, review_id, status, assignee=assignee)
+def _set_status(
+    db: Session, review_id: str, status: str, assignee: str, *, selected: str | None = None
+) -> ReviewItem:
+    """상태 변경 공통 — 담당자는 로그인 사용자. 없으면 404, 후보 밖 선택이면 400."""
+    try:
+        item = set_review_status(db, review_id, status, assignee=assignee, selected=selected)
+    except ValueError as exc:  # 후보에 없는 selected → 400.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if item is None:
         raise HTTPException(status_code=404, detail="검증 항목을 찾을 수 없습니다")
     return ReviewItem(**item)

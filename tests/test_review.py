@@ -17,7 +17,7 @@ from leadcrawler.models import (
 )
 from leadcrawler.schema import ContactRow, EmailValidationRow
 from leadcrawler.storage.db import init_db, session_scope
-from leadcrawler.storage.repository import save_lead
+from leadcrawler.storage.repository import load_leads, save_lead
 from leadcrawler.storage.review import (
     CONFIRMED,
     count_reviews,
@@ -65,7 +65,8 @@ def test_save_lead_auto_enqueues(session: Session) -> None:
     session.flush()
     assert count_reviews(session) == 1
     items = query_reviews(session)
-    assert items[0]["candidates"] == ["ir@acme.com"]
+    assert [c["value"] for c in items[0]["candidates"]] == ["ir@acme.com"]
+    assert items[0]["selected"] == "ir@acme.com"  # 기본 선택 = best 후보
     assert items[0]["status"] == "pending"
     assert items[0]["name"] == "아크메"
     assert items[0]["email_status"] == "valid"
@@ -102,7 +103,8 @@ def test_enqueue_updates_candidates_only(session: Session) -> None:
     enqueue_email_review(session, cid, ["ir@acme.com", "contact@acme.com"])
     session.flush()
     item2 = get_review(session, rid)
-    assert item2["candidates"] == ["ir@acme.com", "contact@acme.com"]
+    assert [c["value"] for c in item2["candidates"]] == ["ir@acme.com", "contact@acme.com"]
+    assert item2["selected"] == "ir@acme.com"  # 기존 선택이 후보에 남아 보존
     assert item2["status"] == CONFIRMED  # 상태 보존
 
 
@@ -128,6 +130,164 @@ def test_set_status_invalid_raises(session: Session) -> None:
 
 def test_set_status_missing_returns_none(session: Session) -> None:
     assert set_review_status(session, "r_nonexistent", CONFIRMED) is None
+
+
+def test_enqueue_default_selected_and_candidate_signals(session: Session) -> None:
+    # 두 후보를 직접 enqueue + 각자 검증행 → DTO 후보별 신호·선택 확인.
+    save_lead(session, _lead())  # 회사 생성
+    session.flush()
+    cid = query_reviews(session)[0]["company_id"]
+    # 두번째 후보 contact + 검증(invalid) 추가.
+    from leadcrawler.storage.repository import contact_id_for
+
+    cid2 = contact_id_for(cid, "email", "info@acme.com")
+    session.add(ContactRow(id=cid2, company_id=cid, type="email", value="info@acme.com"))
+    session.add(EmailValidationRow(contact_id=cid2, status="invalid", mx=False))
+    enqueue_email_review(
+        session, cid, ["ir@acme.com", "info@acme.com"], selected_default="ir@acme.com"
+    )
+    session.flush()
+    item = get_review(session, review_id_for(cid, "email"))
+    assert item["selected"] == "ir@acme.com"
+    by_val = {c["value"]: c for c in item["candidates"]}
+    assert by_val["ir@acme.com"]["email_status"] == "valid"
+    assert by_val["info@acme.com"]["email_status"] == "invalid"
+    assert item["email_status"] == "valid"  # 대표 = 선택(ir)의 신호
+
+
+def test_confirm_with_selection(session: Session) -> None:
+    save_lead(session, _lead())
+    session.flush()
+    cid = query_reviews(session)[0]["company_id"]
+    rid = review_id_for(cid, "email")
+    session.add(
+        ContactRow(id="k_info_2", company_id=cid, type="email", value="info@acme.com")
+    )
+    enqueue_email_review(session, cid, ["ir@acme.com", "info@acme.com"])
+    session.flush()
+    item = set_review_status(session, rid, CONFIRMED, assignee="심사원", selected="info@acme.com")
+    assert item["selected"] == "info@acme.com" and item["status"] == CONFIRMED
+
+
+def test_select_out_of_candidates_raises(session: Session) -> None:
+    save_lead(session, _lead())
+    session.flush()
+    rid = query_reviews(session)[0]["id"]
+    with pytest.raises(ValueError, match="후보에 없는 선택"):
+        set_review_status(session, rid, CONFIRMED, selected="nope@x.com")
+
+
+def test_selection_reset_when_candidate_vanishes(session: Session) -> None:
+    # 사람이 고른 선택이 재크롤에서 후보 목록에서 사라지면 기본값으로 재설정.
+    save_lead(session, _lead())
+    session.flush()
+    cid = query_reviews(session)[0]["company_id"]
+    rid = review_id_for(cid, "email")
+    session.add(
+        ContactRow(id="k_old_sel", company_id=cid, type="email", value="old@acme.com")
+    )
+    enqueue_email_review(session, cid, ["ir@acme.com", "old@acme.com"])
+    set_review_status(session, rid, CONFIRMED, selected="old@acme.com")
+    session.flush()
+    # 재크롤: old@ 후보가 사라짐 → 선택이 기본(ir)로 재설정.
+    enqueue_email_review(session, cid, ["ir@acme.com"], selected_default="ir@acme.com")
+    session.flush()
+    assert get_review(session, rid)["selected"] == "ir@acme.com"
+
+
+def _multi_lead() -> CompanyLead:
+    """이메일 후보 2개(ir best + info)를 가진 리드."""
+    company = Company(
+        canonical_key="dom:acme.com", name="아크메", country="KR", industry="건설",
+        domain="acme.com", homepage="https://acme.com", is_active=True, site_alive=True,
+    )
+    ir = Contact(type=ContactType.EMAIL, value="ir@acme.com", role=EmailRole.IR, confidence=0.9)
+    info = Contact(
+        type=ContactType.EMAIL, value="info@acme.com", role=EmailRole.GENERAL, confidence=0.5
+    )
+    return CompanyLead(
+        company=company, email=ir, email_candidates=[ir, info],
+        email_validation=EmailValidation(status=ValidationStatus.VALID, mx=True),
+        email_validations={
+            "ir@acme.com": EmailValidation(status=ValidationStatus.VALID, mx=True),
+            "info@acme.com": EmailValidation(status=ValidationStatus.RISKY, mx=True),
+        },
+    )
+
+
+def test_multi_candidate_save_select_export(session: Session) -> None:
+    save_lead(session, _multi_lead())
+    session.flush()
+    item = query_reviews(session)[0]
+    rid, cid = item["id"], item["company_id"]
+    # 두 후보 모두 저장 + 기본 선택 = best(ir).
+    assert {c["value"] for c in item["candidates"]} == {"ir@acme.com", "info@acme.com"}
+    assert item["selected"] == "ir@acme.com"
+    # export(load_leads) 는 기본 선택(ir)을 쓴다.
+    assert load_leads(session, company_ids=[cid])[0].email.value == "ir@acme.com"
+    # 사람이 info 로 변경 확정 → export 가 info 를 반영.
+    set_review_status(session, rid, CONFIRMED, selected="info@acme.com")
+    session.flush()
+    assert load_leads(session, company_ids=[cid])[0].email.value == "info@acme.com"
+
+
+def test_null_selected_dto_export_consistent(session: Session) -> None:
+    # selected 가 NULL 인 레거시 상황에서도 DTO 표시와 export 이메일이 같은 폴백을 쓴다.
+    from leadcrawler.schema import ReviewQueueRow
+
+    save_lead(session, _multi_lead())
+    session.flush()
+    item = query_reviews(session)[0]
+    rid, cid = item["id"], item["company_id"]
+    rq = session.get(ReviewQueueRow, rid)
+    rq.selected = None  # 미선택으로 강제
+    session.flush()
+    dto = get_review(session, rid)
+    lead = load_leads(session, company_ids=[cid])[0]
+    assert dto["selected"] == lead.email.value  # 동일 effective_selected → 일치
+
+
+def test_zero_candidates_clears_queue(session: Session) -> None:
+    save_lead(session, _lead())  # ir 후보 + 큐행
+    session.flush()
+    cid = query_reviews(session)[0]["company_id"]
+    rid = review_id_for(cid, "email")
+    # 재크롤: 이메일 0건 → 큐 후보 비움(상태/행 보존).
+    save_lead(session, _lead(email=None))
+    session.flush()
+    item = get_review(session, rid)
+    assert item["candidates"] == [] and item["selected"] is None
+    assert load_leads(session, company_ids=[cid])[0].email is None
+
+
+def test_auto_default_refreshes_until_human(session: Session) -> None:
+    save_lead(session, _lead())  # ir 자동 기본값(미확정)
+    session.flush()
+    cid = query_reviews(session)[0]["company_id"]
+    rid = review_id_for(cid, "email")
+    # 재크롤: 더 나은 후보로 후보 목록 교체(사람 미선택) → 자동 갱신.
+    enqueue_email_review(session, cid, ["contact@acme.com"], selected_default="contact@acme.com")
+    session.flush()
+    assert get_review(session, rid)["selected"] == "contact@acme.com"
+
+
+def test_human_selection_preserved_on_recrawl(session: Session) -> None:
+    save_lead(session, _lead())
+    session.flush()
+    cid = query_reviews(session)[0]["company_id"]
+    rid = review_id_for(cid, "email")
+    session.add(
+        ContactRow(id="k_info_h", company_id=cid, type="email", value="info@acme.com")
+    )
+    enqueue_email_review(session, cid, ["ir@acme.com", "info@acme.com"])
+    set_review_status(session, rid, CONFIRMED, selected="info@acme.com")  # 사람 선택
+    session.flush()
+    # 재크롤(두 후보 유지) → 사람 선택 보존(자동 best 로 안 돌아감).
+    enqueue_email_review(
+        session, cid, ["ir@acme.com", "info@acme.com"], selected_default="ir@acme.com"
+    )
+    session.flush()
+    assert get_review(session, rid)["selected"] == "info@acme.com"
 
 
 def test_multi_email_no_fanout(session: Session) -> None:

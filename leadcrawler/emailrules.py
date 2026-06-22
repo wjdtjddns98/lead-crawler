@@ -40,11 +40,12 @@ def is_accepted(role: EmailRole) -> bool:
     return role in ACCEPTED_EMAIL_ROLES
 
 
-def select_best_email(contacts: list[Contact]) -> Contact | None:
-    """이메일 후보 중 채택 규칙에 맞는 최선의 1건을 고른다.
+def accepted_emails(contacts: list[Contact]) -> list[Contact]:
+    """채택 규칙에 맞는 이메일 후보 전부를 **우선순위 내림차순**으로 반환한다.
 
-    IR > GENERAL 순으로 우선하고, 동급이면 confidence 가 높은 것을 택한다.
-    HR/언론 등 배제 role 은 후보에서 제거한다.
+    IR > GENERAL 순으로 우선하고, 동급이면 confidence 가 높은 것, 그래도 동급이면 주소
+    문자열 오름차순으로 **결정적** 정렬한다(목록·선택 UI 가 항상 같은 순서를 보이도록).
+    HR/언론 등 배제 role 은 제거한다. 분류된 role 을 반영한 사본으로 반환한다.
     """
     candidates: list[Contact] = []
     for c in contacts:
@@ -53,14 +54,16 @@ def select_best_email(contacts: list[Contact]) -> Contact | None:
         role = c.role if c.role is not EmailRole.UNKNOWN else classify_role(c.value)
         if not is_accepted(role):
             continue
-        # 분류된 role 을 반영한 사본으로 다룬다.
         candidates.append(c.model_copy(update={"role": role}))
 
-    if not candidates:
-        return None
+    # 결정적 정렬: 안정정렬 2단(주소 오름차순 → role·confidence 내림차순). 동급이면
+    # 주소 오름차순이 유지된다(Python sort 안정성).
+    candidates.sort(key=lambda c: c.value)
+    candidates.sort(key=lambda c: (1 if c.role is EmailRole.IR else 0, c.confidence), reverse=True)
+    return candidates
 
-    def rank(c: Contact) -> tuple[int, float]:
-        role_rank = 1 if c.role is EmailRole.IR else 0
-        return (role_rank, c.confidence)
 
-    return max(candidates, key=rank)
+def select_best_email(contacts: list[Contact]) -> Contact | None:
+    """이메일 후보 중 채택 규칙에 맞는 최선의 1건을 고른다(:func:`accepted_emails` 의 선두)."""
+    ranked = accepted_emails(contacts)
+    return ranked[0] if ranked else None

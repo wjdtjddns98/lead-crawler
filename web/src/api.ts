@@ -94,10 +94,14 @@ export async function fetchQueue(params: {
   );
 }
 
-// 담당자는 서버가 로그인 사용자로 자동 기록하므로 본문이 필요 없다.
-export async function confirmReview(id: string): Promise<ReviewItem> {
+// 담당자는 서버가 로그인 사용자로 자동 기록. selected = 사람이 고른 최종 이메일 후보.
+export async function confirmReview(id: string, selected?: string): Promise<ReviewItem> {
   return jsonOrThrow<ReviewItem>(
-    await fetch(`${BASE}/queue/${id}/confirm`, { method: "POST", headers: authHeaders() }),
+    await fetch(`${BASE}/queue/${id}/confirm`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ selected: selected ?? null }),
+    }),
   );
 }
 
