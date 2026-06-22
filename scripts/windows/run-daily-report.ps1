@@ -23,9 +23,12 @@
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $root
 
-# Force UTF-8 so Korean log output is preserved (default console codepage is cp949).
+# Force UTF-8 end to end so Korean log output is preserved (default codepage is cp949).
+# PYTHONUTF8 -> python emits UTF-8; Console.OutputEncoding -> PowerShell decodes the
+# child's stdout as UTF-8 (under Task Scheduler there is no console, so it must be set).
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # Prefer venv python, fall back to PATH python.
 $py = Join-Path $root ".venv\Scripts\python.exe"
