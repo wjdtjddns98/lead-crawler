@@ -78,9 +78,18 @@ class CostLedger:
     ) -> None:
         self.settings = settings or get_settings()
         self._persist = persist
-        self._pricing = {**DEFAULT_PRICING_KRW, **(pricing or {})}
+        # 단가 우선순위: 기본 추정치 < config 보정(env) < 명시 인자(테스트). env 로 실청구 보정.
+        self._pricing = {
+            **DEFAULT_PRICING_KRW,
+            **self.settings.cost_pricing_krw,
+            **(pricing or {}),
+        }
         self._now = now or _utcnow
         self._mem: list[CostEvent] = []  # 인메모리 모드 누계
+        # persist 모드 월 누계 캐시(month_key→원) — per-call DB 집계를 줄인다. 최초 1회 DB 에서
+        # 시드 후 record 마다 증분(현재 프로세스 정합). 다중 프로세스 엄밀 누계는 DB 가 진실원천
+        # (:meth:`refresh` 로 재시드, breakdown/리포트는 DB 라이브 조회).
+        self._total_cache: dict[str, int] = {}
 
     def unit_cost(self, provider: str) -> int:
         """provider 의 호출당 단가(원). 미등록 provider 는 0(과금 미추적)."""
@@ -103,6 +112,15 @@ class CostLedger:
         )
         if self._persist:
             self._persist_row(ev)
+            # 누계 캐시 갱신: 최초엔 DB 에서 시드(방금 쓴 ev 포함), 이후엔 ev 만큼 증분.
+            # per-call DB 재집계를 피하면서 현재 프로세스 누계를 정합하게 유지한다.
+            try:
+                if ev.month_key in self._total_cache:
+                    self._total_cache[ev.month_key] += ev.cost_krw
+                else:
+                    self._total_cache[ev.month_key] = self._db_month_total(ev.month_key)
+            except Exception as exc:  # DB 집계 실패(테이블 없음 등) → 추적 degrade, record 무중단.
+                log.warning("cost.cache.error", err=str(exc))
         else:
             self._mem.append(ev)
         log.info(
@@ -110,26 +128,36 @@ class CostLedger:
         )
         return ev
 
+    def refresh(self) -> None:
+        """월 누계 캐시를 비운다(다음 조회 시 DB 에서 재시드 — 다중 프로세스 누계 동기화)."""
+        self._total_cache.clear()
+
     def month_total_krw(self, month_key: str | None = None) -> int:
-        """해당 월(기본=이번 달 UTC) 과금 누계(원)."""
+        """해당 월(기본=이번 달 UTC) 과금 누계(원). persist 모드는 인메모리 캐시 경유."""
         key = month_key or month_key_of(self._now())
         if self._persist:
-            from sqlalchemy import func, select
-
-            from .schema import CostLedgerRow
-            from .storage.db import get_sessionmaker
-
-            session = get_sessionmaker(self.settings)()
-            try:
-                total = session.execute(
-                    select(func.coalesce(func.sum(CostLedgerRow.cost_krw), 0)).where(
-                        CostLedgerRow.month_key == key
-                    )
-                ).scalar_one()
-                return int(total or 0)
-            finally:
-                session.close()
+            if key not in self._total_cache:
+                self._total_cache[key] = self._db_month_total(key)
+            return self._total_cache[key]
         return sum(e.cost_krw for e in self._mem if e.month_key == key)
+
+    def _db_month_total(self, key: str) -> int:
+        """DB 에서 해당 월 과금 누계를 집계한다(캐시 시드용)."""
+        from sqlalchemy import func, select
+
+        from .schema import CostLedgerRow
+        from .storage.db import get_sessionmaker
+
+        session = get_sessionmaker(self.settings)()
+        try:
+            total = session.execute(
+                select(func.coalesce(func.sum(CostLedgerRow.cost_krw), 0)).where(
+                    CostLedgerRow.month_key == key
+                )
+            ).scalar_one()
+            return int(total or 0)
+        finally:
+            session.close()
 
     def breakdown(self, month_key: str | None = None) -> dict[str, int]:
         """해당 월 provider 별 과금 누계(원) — 큰 순서로 정렬된 dict."""
@@ -164,6 +192,25 @@ class CostLedger:
     def is_over_budget(self, month_key: str | None = None) -> bool:
         """이번 달 누계가 예산 이상인지(차단 게이트 기준)."""
         return self.month_total_krw(month_key) >= self.settings.monthly_budget_krw
+
+    def report(self, month_key: str | None = None) -> dict[str, object]:
+        """실청구 대사·리포트용 구조화 요약(월·누계·예산·남음·비율·provider별).
+
+        단가는 추정치라 ``total_krw`` 는 실청구와 다를 수 있다 — 운영자가 실청구와 대사해
+        ``cost_pricing_krw`` 로 보정하는 단일 산출원. DB 라이브 집계(breakdown) 기준.
+        """
+        key = month_key or month_key_of(self._now())
+        total = self.month_total_krw(key)
+        budget = self.settings.monthly_budget_krw
+        return {
+            "month_key": key,
+            "total_krw": total,
+            "budget_krw": budget,
+            "remaining_krw": max(0, budget - total),
+            "pct": round(total / budget * 100, 1) if budget else 0.0,
+            "over_budget": total >= budget,
+            "breakdown": self.breakdown(key),
+        }
 
     def _persist_row(self, ev: CostEvent) -> None:
         """과금 1건을 cost_ledger 에 적재한다(격리된 짧은 세션).

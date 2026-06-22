@@ -205,20 +205,18 @@ def cost_report(
     ledger = CostLedger(settings, persist=True)
     key = month or month_key_of(datetime.now(timezone.utc))
     try:
-        total = ledger.month_total_krw(key)
-        breakdown = ledger.breakdown(key)
-        over = ledger.is_over_budget(key)
+        rpt = ledger.report(key)
     except Exception as exc:  # DB 미연결·테이블 없음 → 친절 안내(스택트레이스 노출 회피).
         raise typer.BadParameter(
             f"cost_ledger 조회 실패({exc}). DB 연결·마이그레이션(`db-upgrade`)을 확인하세요."
         ) from exc
-    budget = settings.monthly_budget_krw
-    remaining = max(0, budget - total)
-    pct = (total / budget * 100) if budget else 0.0
-    typer.echo(f"[{key}] 과금 누계 {total:,}원 / 예산 {budget:,}원 ({pct:.1f}%) — 남음 {remaining:,}원")
-    for provider, cost in breakdown.items():
+    typer.echo(
+        f"[{rpt['month_key']}] 과금 누계 {rpt['total_krw']:,}원 / 예산 {rpt['budget_krw']:,}원 "
+        f"({rpt['pct']}%) — 남음 {rpt['remaining_krw']:,}원"
+    )
+    for provider, cost in rpt["breakdown"].items():
         typer.echo(f"  - {provider}: {cost:,}원")
-    if over:
+    if rpt["over_budget"]:
         typer.echo("⚠ 예산 초과 — 유료 escalation 이 차단됩니다(cost_budget_enforce).")
 
 

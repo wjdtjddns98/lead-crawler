@@ -47,6 +47,22 @@ def test_pricing_override() -> None:
     assert led.month_total_krw() == 100
 
 
+def test_pricing_override_from_config() -> None:
+    # config(env) 단가 보정이 기본 추정치를 덮어쓴다.
+    s = Settings(monthly_budget_krw=1000, cost_pricing_krw={"hunter": 80})
+    led = CostLedger(s, now=_at(2026, 6))
+    led.record("hunter")
+    assert led.month_total_krw() == 80
+
+
+def test_explicit_pricing_overrides_config() -> None:
+    # 우선순위: 기본 < config < 명시 인자.
+    s = Settings(cost_pricing_krw={"hunter": 80})
+    led = CostLedger(s, pricing={"hunter": 5}, now=_at(2026, 6))
+    led.record("hunter")
+    assert led.month_total_krw() == 5
+
+
 def test_breakdown_sorted_desc() -> None:
     led = CostLedger(Settings(), now=_at(2026, 6))
     led.record("hunter")  # 50
@@ -97,6 +113,43 @@ def test_persist_survives_new_ledger_instance(tmp_path) -> None:
     CostLedger(s, persist=True, now=_at(2026, 6)).record("apollo")  # 50
     # 새 인스턴스가 DB 에서 누계를 다시 읽는다(다중 런 합산).
     assert CostLedger(s, persist=True, now=_at(2026, 6)).month_total_krw("2026-06") == 50
+
+
+def test_persist_cache_increments_consistently(tmp_path) -> None:
+    # 캐시 증분이 DB 누계와 정합(여러 record 후 합계 일치).
+    s = Settings(database_url=f"sqlite:///{tmp_path}/cost3.db", monthly_budget_krw=10_000)
+    init_db(s)
+    led = CostLedger(s, persist=True, now=_at(2026, 6))
+    for _ in range(3):
+        led.record("hunter")  # 50*3
+    assert led.month_total_krw("2026-06") == 150
+    # 새 인스턴스(캐시 없음)도 DB 에서 같은 누계.
+    assert CostLedger(s, persist=True, now=_at(2026, 6)).month_total_krw("2026-06") == 150
+
+
+def test_persist_cache_refresh_picks_up_external_writes(tmp_path) -> None:
+    # 캐시는 현재 프로세스 정합 — 다른 인스턴스(프로세스 모사) 쓰기는 refresh 후 반영.
+    s = Settings(database_url=f"sqlite:///{tmp_path}/cost4.db", monthly_budget_krw=10_000)
+    init_db(s)
+    a = CostLedger(s, persist=True, now=_at(2026, 6))
+    a.record("hunter")  # 50, a 캐시=50
+    CostLedger(s, persist=True, now=_at(2026, 6)).record("hunter")  # DB 누계=100
+    assert a.month_total_krw("2026-06") == 50  # a 캐시는 외부 쓰기 미반영.
+    a.refresh()
+    assert a.month_total_krw("2026-06") == 100  # 재시드 후 DB 진실원천 반영.
+
+
+def test_report_structure(tmp_path) -> None:
+    s = Settings(database_url=f"sqlite:///{tmp_path}/cost5.db", monthly_budget_krw=200)
+    init_db(s)
+    led = CostLedger(s, persist=True, now=_at(2026, 6, 22))
+    led.record("vision", 2)  # 60
+    led.record("hunter")  # 50
+    r = led.report("2026-06")
+    assert r["month_key"] == "2026-06" and r["total_krw"] == 110
+    assert r["budget_krw"] == 200 and r["remaining_krw"] == 90
+    assert r["pct"] == 55.0 and r["over_budget"] is False
+    assert r["breakdown"] == {"vision": 60, "hunter": 50}
 
 
 def test_month_key_of() -> None:
