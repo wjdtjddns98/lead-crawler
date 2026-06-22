@@ -99,6 +99,16 @@ class Settings(BaseSettings):
     # 운영비 한도(월, 원)
     monthly_budget_krw: int = Field(default=500_000)
 
+    # 24/7 스케줄러(opt-in) — 매일 크롤 1회전 + Notion 자동 리포팅(일일보고·스크럼·현황).
+    # APScheduler(선택적 extra ``schedule``) 미설치면 ``serve`` 가 안내 후 종료. 기본 off.
+    scheduler_enabled: bool = Field(default=False)
+    report_hour: int = Field(default=0)  # 일일 리포트 실행 시각(UTC 시)
+    report_minute: int = Field(default=0)  # 일일 리포트 실행 시각(UTC 분)
+    report_industries: str = Field(default="건설")  # 일일 잡 기본 업종(쉼표구분)
+    report_countries: str = Field(default="KR")  # 일일 잡 기본 국가(쉼표구분, 빈값=전체국)
+    report_milestone: str = Field(default="M3")  # 일일 보고 마일스톤 라벨
+    report_persist: bool = Field(default=False)  # 일일 잡 결과 DB 영속화 여부
+
 
 @lru_cache
 def get_settings() -> Settings:
