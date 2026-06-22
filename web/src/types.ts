@@ -2,11 +2,19 @@
 
 export type ReviewStatus = "pending" | "confirmed" | "rejected";
 
+export interface CandidateInfo {
+  value: string;
+  email_status: string | null;
+  email_mx: boolean | null;
+  email_smtp: boolean | null;
+}
+
 export interface ReviewItem {
   id: string;
   company_id: string;
   field: string;
-  candidates: string[];
+  candidates: CandidateInfo[];
+  selected: string | null;
   status: ReviewStatus;
   assignee: string | null;
   name: string;

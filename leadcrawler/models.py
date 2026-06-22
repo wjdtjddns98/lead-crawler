@@ -135,7 +135,11 @@ class CompanyLead(BaseModel):
     """회사 1건 + 채택된 연락처 — 엑셀 한 행에 대응하는 집계 모델."""
 
     company: Company
-    email: Contact | None = None
+    email: Contact | None = None  # 채택된 대표(기본 선택) 이메일 — best-first 선두
+    # 채택된 전체 이메일 후보(best-first). 사람이 검증 웹앱에서 최종 1건을 고른다.
+    email_candidates: list[Contact] = Field(default_factory=list)
     phone: Contact | None = None
     form: Contact | None = None
     email_validation: EmailValidation = Field(default_factory=EmailValidation)
+    # 후보 주소값 → 검증결과. 후보별 신호를 검증 UI 에 보이기 위해 보관.
+    email_validations: dict[str, EmailValidation] = Field(default_factory=dict)

@@ -83,7 +83,8 @@ def test_queue_list(client: TestClient) -> None:
     body = r.json()
     assert body["total"] == 1
     item = body["items"][0]
-    assert item["candidates"] == ["ir@acme.com"]
+    assert [c["value"] for c in item["candidates"]] == ["ir@acme.com"]
+    assert item["selected"] == "ir@acme.com"
     assert item["status"] == "pending"
     assert item["name"] == "아크메"
     assert item["email_status"] == "valid"
@@ -116,6 +117,19 @@ def test_confirm_then_export(client: TestClient) -> None:
 def test_reject(client: TestClient) -> None:
     rid = client.get("/queue").json()["items"][0]["id"]
     assert client.post(f"/queue/{rid}/reject").json()["status"] == "rejected"
+
+
+def test_confirm_with_selection(client: TestClient) -> None:
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"selected": "ir@acme.com"})
+    assert r.status_code == 200
+    assert r.json()["selected"] == "ir@acme.com" and r.json()["status"] == "confirmed"
+
+
+def test_confirm_invalid_selection_400(client: TestClient) -> None:
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"selected": "nope@x.com"})
+    assert r.status_code == 400  # 후보에 없는 선택 → 400
 
 
 def test_confirm_missing_404(client: TestClient) -> None:

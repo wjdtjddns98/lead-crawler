@@ -145,6 +145,8 @@ class ReviewQueueRow(Base):
     candidates: Mapped[str] = mapped_column(Text, default="[]", server_default=text("'[]'"))
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default=text("'pending'"))
     assignee: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 사람이 고른 최종 이메일 후보(candidates 중 1건). 미선택이면 NULL(=기본 대표 사용).
+    selected: Mapped[str | None] = mapped_column(String(320), nullable=True)
 
 
 class UserRow(Base):

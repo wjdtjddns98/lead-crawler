@@ -171,6 +171,27 @@ table.queue {
   font-size: 13px;
 }
 
+.cands {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.cand input {
+  cursor: pointer;
+}
+
+.cand-val {
+  font-family: "Consolas", monospace;
+}
+
 .actions {
   display: flex;
   gap: 6px;
