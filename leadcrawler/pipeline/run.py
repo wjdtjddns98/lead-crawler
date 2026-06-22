@@ -85,7 +85,9 @@ def run_pipeline(
                 phone = next((c for c in contacts if c.type is ContactType.PHONE), None)
                 form = next((c for c in contacts if c.type is ContactType.FORM), None)
 
-                ex = existence.verify(dc.domain)
+                ex = existence.verify(
+                    dc.domain, registry=dc.registry, registry_id=dc.registry_id
+                )
                 company = Company(
                     canonical_key=dc.canonical_key,
                     name=dc.name,
