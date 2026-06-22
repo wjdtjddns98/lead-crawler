@@ -284,6 +284,13 @@ def test_enricher_vision_stops_mid_loop_at_budget() -> None:
     assert led.month_total_krw() == 30
 
 
+def test_is_over_budget_fails_closed_on_db_error(tmp_path) -> None:
+    # 누계 조회가 DB 장애(테이블 없음)로 실패하면 안전하게 차단(True) — 가드 fail-closed.
+    s = Settings(database_url=f"sqlite:///{tmp_path}/missing2.db", monthly_budget_krw=1000)
+    led = CostLedger(s, persist=True, now=_at(2026, 6))  # init_db 미호출 → 집계 실패.
+    assert led.is_over_budget("2026-06") is True
+
+
 def test_persist_failure_does_not_crash_pipeline(tmp_path) -> None:
     # persist=True 인데 테이블 미생성(DB 장애 모사) → record 가 예외 없이 degrade.
     s = Settings(database_url=f"sqlite:///{tmp_path}/missing.db", monthly_budget_krw=1000)

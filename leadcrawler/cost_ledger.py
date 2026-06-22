@@ -190,8 +190,16 @@ class CostLedger:
         return max(0, self.settings.monthly_budget_krw - self.month_total_krw(month_key))
 
     def is_over_budget(self, month_key: str | None = None) -> bool:
-        """이번 달 누계가 예산 이상인지(차단 게이트 기준)."""
-        return self.month_total_krw(month_key) >= self.settings.monthly_budget_krw
+        """이번 달 누계가 예산 이상인지(차단 게이트 기준).
+
+        누계 조회가 DB 장애로 실패하면 **안전하게 차단**(True)한다 — 가드가 눈먼 채로
+        유료 호출을 흘리는 것(예산 초과 위험)보다 일시적으로 막는 편이 안전하다(배치 무중단).
+        """
+        try:
+            return self.month_total_krw(month_key) >= self.settings.monthly_budget_krw
+        except Exception as exc:  # DB 집계 실패 → fail-closed(차단), 배치는 계속.
+            log.warning("cost.guard.db_error_blocking", err=str(exc))
+            return True
 
     def report(self, month_key: str | None = None) -> dict[str, object]:
         """실청구 대사·리포트용 구조화 요약(월·누계·예산·남음·비율·provider별).
@@ -206,9 +214,9 @@ class CostLedger:
             "month_key": key,
             "total_krw": total,
             "budget_krw": budget,
-            "remaining_krw": max(0, budget - total),
+            "remaining_krw": self.remaining_krw(key),
             "pct": round(total / budget * 100, 1) if budget else 0.0,
-            "over_budget": total >= budget,
+            "over_budget": self.is_over_budget(key),
             "breakdown": self.breakdown(key),
         }
 
