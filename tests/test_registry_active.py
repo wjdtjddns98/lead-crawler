@@ -53,6 +53,24 @@ def test_companies_house_unknown_status_none() -> None:
     assert c.is_active("companies_house", "01234567") is None
 
 
+def test_companies_house_closed_is_defunct() -> None:
+    c = _checker(lambda u, p, h: {"company_status": "closed"})
+    assert c.is_active("companies_house", "01234567") is False
+
+
+def test_companies_house_registered_and_open_are_active() -> None:
+    for status in ("registered", "open"):
+        c = _checker(lambda u, p, h, s=status: {"company_status": s})
+        assert c.is_active("companies_house", "01234567") is True
+
+
+def test_companies_house_unsafe_number_none() -> None:
+    # 경로 변형 차단 — 슬래시/쿼리문자 포함 식별자는 룩업 미수행(None).
+    c = _checker(lambda u, p, h: {"company_status": "active"})
+    assert c.is_active("companies_house", "01234567?x=1") is None
+    assert c.is_active("companies_house", "00/12") is None
+
+
 def test_companies_house_sends_basic_auth() -> None:
     seen: dict = {}
 
@@ -89,6 +107,20 @@ def test_opencorporates_null_status_none() -> None:
 def test_opencorporates_bad_registry_id_none() -> None:
     c = _checker(lambda u, p, h: {"results": {"company": {"inactive": False}}})
     assert c.is_active("opencorporates", "no-slash") is None
+
+
+def test_opencorporates_truthy_nonbool_inactive_none() -> None:
+    # inactive 가 bool 아닌 truthy/falsy(문자열·숫자)면 식별불가 → None(절대 False 금지).
+    c = _checker(lambda u, p, h: {"results": {"company": {"inactive": "true"}}})
+    assert c.is_active("opencorporates", "kr/12345") is None
+    c2 = _checker(lambda u, p, h: {"results": {"company": {"inactive": 0}}})
+    assert c2.is_active("opencorporates", "kr/12345") is None
+
+
+def test_opencorporates_extra_slash_in_number_none() -> None:
+    # registry_id 에 추가 슬래시(오분할 위험)면 룩업 미수행(None).
+    c = _checker(lambda u, p, h: {"results": {"company": {"inactive": False}}})
+    assert c.is_active("opencorporates", "kr/12/34") is None
 
 
 # --- 계약: 오류·미지원·빈 입력은 반드시 None(절대 False 금지) ----------

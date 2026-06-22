@@ -19,6 +19,7 @@ dry_run 에서는 파이프라인이 이 체커를 주입하지 않는다(실존
 from __future__ import annotations
 
 import base64
+import re
 from typing import Any
 
 from ..config import Settings
@@ -30,10 +31,15 @@ log = get_logger("verify.registry_active")
 _CH_URL = "https://api.company-information.service.gov.uk/company/{number}"
 _OC_URL = "https://api.opencorporates.com/v0.4/companies/{jurisdiction}/{number}"
 # Companies House 가 명시적으로 폐업/소멸로 보는 상태(이외는 active 계열 또는 불확실).
+# 'closed' 포함(CH 열거형의 종료 상태). 'voluntary-arrangement'(법인 존속)·'open'은 제외.
 _CH_DEFUNCT = {
     "dissolved", "liquidation", "receivership", "administration",
-    "converted-closed", "insolvency-proceedings", "removed",
+    "converted-closed", "insolvency-proceedings", "removed", "closed",
 }
+# CH active 계열(강신호 True). 그 외 상태는 불확실(None → HTTP/DNS 폴백).
+_CH_ACTIVE = {"active", "registered", "open"}
+# URL 경로에 안전한 식별자(슬래시·쿼리문자 등 경로 변형 차단). 위반 시 룩업 미수행(None).
+_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class RegistryActiveChecker:
@@ -69,8 +75,8 @@ class RegistryActiveChecker:
 
     def _companies_house(self, number: str) -> bool | None:
         key = self._settings.companies_house_api_key
-        if not key:
-            return None
+        if not key or not _SAFE_ID.match(number):
+            return None  # 키 없음·식별자 형식불량(경로 변형 차단) → 불확실.
         token = base64.b64encode(f"{key}:".encode()).decode()
         payload = self._client().get_json(
             _CH_URL.format(number=number), headers={"Authorization": f"Basic {token}"}
@@ -81,16 +87,17 @@ class RegistryActiveChecker:
         status = str(status).strip().lower()
         if status in _CH_DEFUNCT:
             return False  # 명시적 폐업.
-        if status == "active":
-            return True
-        return None  # 그 외(예: open/registered 외 모호) → 불확실.
+        if status in _CH_ACTIVE:
+            return True  # active 계열(강신호).
+        return None  # 그 외 모호 상태 → 불확실(HTTP/DNS 폴백).
 
     def _opencorporates(self, registry_id: str) -> bool | None:
         key = self._settings.opencorporates_api_key
         if not key or "/" not in registry_id:
             return None
         jurisdiction, _, number = registry_id.partition("/")
-        if not jurisdiction or not number:
+        # 경로 변형/오분할 차단: 관할·번호 모두 안전 문자만(번호에 추가 '/' 있으면 거부).
+        if not _SAFE_ID.match(jurisdiction) or not _SAFE_ID.match(number):
             return None
         payload = self._client().get_json(
             _OC_URL.format(jurisdiction=jurisdiction, number=number),
