@@ -171,3 +171,200 @@ def test_prober_unknown_when_all_hosts_fail(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(smtplib, "SMTP", _boom)
     assert SmtpProber("v@x.com").probe("ir@acme.com", ["mx.acme.com"]) == SMTP_UNKNOWN
+
+
+# --- 딜리버러빌리티 API 티어(opt-in·유료, 가짜 체커 주입) --------------
+
+from leadcrawler.verify.deliverability import (  # noqa: E402
+    DELIVERABLE,
+    UNDELIVERABLE,
+    UNKNOWN,
+    NeverBounceChecker,
+    ZeroBounceChecker,
+    build_deliverability_checker,
+)
+
+
+class FakeChecker:
+    """SupportsDeliverability 더블 — 고정 verdict 반환 + 호출 기록."""
+
+    name = "fake"
+
+    def __init__(self, verdict: str) -> None:
+        self.verdict = verdict
+        self.calls: list[str] = []
+
+    def check(self, email: str) -> str:
+        self.calls.append(email)
+        return self.verdict
+
+
+def _deliv_settings(**over: object) -> Settings:
+    """딜리버러빌리티 라이브 검증용 설정(키는 주입 체커가 대신해 불필요)."""
+    return Settings(dry_run=False, email_deliverability_check=True, **over)
+
+
+def test_deliverability_off_does_not_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_mx(monkeypatch)
+    checker = FakeChecker(UNDELIVERABLE)
+    v = EmailValidator(
+        Settings(dry_run=False, email_deliverability_check=False),
+        deliverability_checker=checker,
+    ).validate("ir@acme.com", "acme.com")
+    assert checker.calls == []  # opt-in off → 미호출.
+    assert v.provider == "mx"
+
+
+def test_dry_run_no_deliverability() -> None:
+    checker = FakeChecker(UNDELIVERABLE)
+    v = EmailValidator(
+        Settings(dry_run=True, email_deliverability_check=True),
+        deliverability_checker=checker,
+    ).validate("ir@acme.com", "acme.com")
+    assert checker.calls == [] and v.provider == "dry_run"
+
+
+def test_deliverability_undeliverable_forces_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_mx(monkeypatch)
+    checker = FakeChecker(UNDELIVERABLE)
+    v = EmailValidator(_deliv_settings(), deliverability_checker=checker).validate(
+        "ir@acme.com", "acme.com"
+    )
+    assert v.status is ValidationStatus.INVALID and v.provider == "fake"
+
+
+def test_deliverability_deliverable_upgrades_risky(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_mx(monkeypatch)
+    checker = FakeChecker(DELIVERABLE)
+    # 도메인 불일치 → 1차 RISKY, 딜리버러빌리티 확정 → VALID 승격.
+    v = EmailValidator(_deliv_settings(), deliverability_checker=checker).validate(
+        "ir@mail.acme.com", "other.com"
+    )
+    assert v.status is ValidationStatus.VALID and v.provider == "fake"
+
+
+def test_deliverability_unknown_keeps_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_mx(monkeypatch)
+    checker = FakeChecker(UNKNOWN)
+    v = EmailValidator(_deliv_settings(), deliverability_checker=checker).validate(
+        "ir@acme.com", "other.com"
+    )
+    # 판정불가 → 1차(RISKY) 유지, 기여 없으므로 provider 는 mx.
+    assert v.status is ValidationStatus.RISKY and v.provider == "mx"
+
+
+def test_deliverability_skipped_when_already_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_mx(monkeypatch)
+    prober = FakeProber(SMTP_UNDELIVERABLE)
+    checker = FakeChecker(DELIVERABLE)
+    # SMTP 가 먼저 INVALID 확정 → 과금 딜리버러빌리티 호출은 스킵.
+    v = EmailValidator(
+        Settings(
+            dry_run=False,
+            email_smtp_check=True,
+            email_smtp_from="verify@leadcrawler.io",
+            email_deliverability_check=True,
+        ),
+        smtp_prober=prober,
+        deliverability_checker=checker,
+    ).validate("ir@acme.com", "acme.com")
+    assert v.status is ValidationStatus.INVALID and checker.calls == []
+
+
+def test_deliverability_skipped_when_no_mx(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ev_mod, "_resolve_mx", lambda d, s: (False, []))
+    checker = FakeChecker(DELIVERABLE)
+    v = EmailValidator(_deliv_settings(), deliverability_checker=checker).validate(
+        "ir@acme.com", "acme.com"
+    )
+    assert v.status is ValidationStatus.INVALID and checker.calls == []  # MX 없으면 미호출.
+
+
+# --- 팩토리 키게이트 ---------------------------------------------------
+
+def test_build_checker_none_without_keys() -> None:
+    assert build_deliverability_checker(Settings(), fetcher=object()) is None
+
+
+def test_build_checker_prefers_zerobounce() -> None:
+    s = Settings(zerobounce_api_key="zb", neverbounce_api_key="nb")
+    c = build_deliverability_checker(s, fetcher=object())
+    assert isinstance(c, ZeroBounceChecker) and c.name == "zerobounce"
+
+
+def test_build_checker_falls_back_to_neverbounce() -> None:
+    s = Settings(neverbounce_api_key="nb")
+    c = build_deliverability_checker(s, fetcher=object())
+    assert isinstance(c, NeverBounceChecker) and c.name == "neverbounce"
+
+
+# --- 제공자 파서(가짜 페처, 네트워크 0) -------------------------------
+
+class _FakeFetcher:
+    """get_json/post_json 더블 — 고정 응답 반환 + 호출 메서드 기록."""
+
+    def __init__(self, payload: object, *, boom: bool = False) -> None:
+        self.payload = payload
+        self.boom = boom
+        self.method: str | None = None
+
+    def get_json(self, url, *, params=None, headers=None):
+        self.method = "GET"
+        if self.boom:
+            raise RuntimeError("api error")
+        return self.payload
+
+    def post_json(self, url, *, json=None, params=None, headers=None):
+        self.method = "POST"
+        if self.boom:
+            raise RuntimeError("api error")
+        return self.payload
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        ("valid", DELIVERABLE),
+        ("invalid", UNDELIVERABLE),
+        ("spamtrap", UNDELIVERABLE),
+        ("do_not_mail", UNDELIVERABLE),
+        ("catch-all", UNKNOWN),
+        ("unknown", UNKNOWN),
+        ("", UNKNOWN),
+    ],
+)
+def test_zerobounce_maps_status(status: str, expected: str) -> None:
+    f = _FakeFetcher({"status": status})
+    assert ZeroBounceChecker("k", fetcher=f).check("ir@acme.com") == expected
+    assert f.method == "GET"
+
+
+def test_zerobounce_error_is_unknown() -> None:
+    f = _FakeFetcher(None, boom=True)
+    assert ZeroBounceChecker("k", fetcher=f).check("ir@acme.com") == UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "result,expected",
+    [
+        ("valid", DELIVERABLE),
+        ("invalid", UNDELIVERABLE),
+        ("disposable", UNDELIVERABLE),
+        ("catchall", UNKNOWN),
+        ("unknown", UNKNOWN),
+    ],
+)
+def test_neverbounce_maps_result(result: str, expected: str) -> None:
+    f = _FakeFetcher({"status": "success", "result": result})
+    assert NeverBounceChecker("k", fetcher=f).check("ir@acme.com") == expected
+    assert f.method == "POST"  # NeverBounce 는 POST.
+
+
+def test_neverbounce_non_success_is_unknown() -> None:
+    f = _FakeFetcher({"status": "auth_failure", "message": "bad key"})
+    assert NeverBounceChecker("k", fetcher=f).check("ir@acme.com") == UNKNOWN
+
+
+def test_neverbounce_error_is_unknown() -> None:
+    f = _FakeFetcher(None, boom=True)
+    assert NeverBounceChecker("k", fetcher=f).check("ir@acme.com") == UNKNOWN

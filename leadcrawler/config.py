@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     email_smtp_check: bool = Field(default=False)
     email_smtp_from: str = Field(default="verify@example.com")  # MAIL FROM 신원
     smtp_timeout: float = Field(default=10.0)  # SMTP 연결/응답 타임아웃(초)
+    # 딜리버러빌리티 API 검증(opt-in·유료) — MX/SMTP 다음 단계로 ZeroBounce/NeverBounce 등
+    # 제3자 DB에 이메일을 질의해 수신가능 여부를 권위있게 보정. 호출당 과금/크레딧이라 기본
+    # off, 키 있는 제공자만 활성(ZeroBounce→NeverBounce 순). dry_run 미경유.
+    email_deliverability_check: bool = Field(default=False)
 
     # AI (Claude Vision)
     anthropic_api_key: str = Field(default="")
