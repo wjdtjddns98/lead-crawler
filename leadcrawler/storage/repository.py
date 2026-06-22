@@ -42,7 +42,13 @@ from ..schema import (
     ReviewQueueRow,
 )
 from ..sources.base import DiscoveredCompany
-from .review import enqueue_email_review, review_id_for
+from .review import (
+    candidate_values_of,
+    clear_email_review,
+    effective_selected,
+    enqueue_email_review,
+    review_id_for,
+)
 
 
 def company_id_for(canonical_key: str) -> str:
@@ -200,11 +206,14 @@ def save_lead(session: Session, lead: CompanyLead, *, source: str = "") -> Compa
         ev.checked_at = v.checked_at
 
     # enqueue 규칙: 이메일 후보가 있으면 전체 후보를 검증 큐에 등록(상태·선택 보존 멱등).
+    # 재크롤로 후보가 0건이 되면 기존 큐 행의 후보를 비운다(죽은 후보 잔존 방지).
     if email_contacts:
         default = lead.email.value if lead.email is not None else email_contacts[0].value
         enqueue_email_review(
             session, cid, [ct.value for ct in email_contacts], selected_default=default
         )
+    else:
+        clear_email_review(session, cid)
     return company
 
 
@@ -223,10 +232,12 @@ def _contact_of(row: ContactRow) -> Contact:
 def load_leads(
     session: Session, *, company_ids: list[str] | None = None
 ) -> list[CompanyLead]:
-    """DB 행을 :class:`CompanyLead` 로 복원한다(엑셀 export 용).
+    """DB 행을 :class:`CompanyLead` 로 복원한다(엑셀 export 전용).
 
     ``company_ids`` 가 주어지면 해당 회사만(확정분 export 등), 없으면 전체를 적재한다.
-    회사명 정렬로 결정적 순서를 보장한다.
+    회사명 정렬로 결정적 순서를 보장한다. **재저장(save_lead)용이 아니다** — 선택된
+    이메일 1건만 채우고 ``email_candidates``/``email_validations`` 는 복원하지 않으므로,
+    이 결과를 다시 save_lead 에 넘기면 나머지 후보가 stale 로 삭제된다.
     """
     stmt = select(CompanyRow).order_by(CompanyRow.name)
     if company_ids is not None:
@@ -260,11 +271,14 @@ def load_leads(
         form = next(
             (_contact_of(r) for r in contacts if r.type == ContactType.FORM.value), None
         )
-        # export 는 사람이 검증 웹앱에서 고른 이메일을 쓴다(미선택이면 best 후보).
+        # export 는 사람이 검증 웹앱에서 고른 이메일을 쓴다. DTO 표시와 **동일 규칙**
+        # (effective_selected) 으로 골라 워크벤치 표시 ≠ export 불일치를 막는다.
         rq = session.get(ReviewQueueRow, review_id_for(crow.id, "email"))
-        selected_value = rq.selected if rq is not None else None
-        email = next((e for e in emails if e.value == selected_value), None)
-        if email is None:
+        chosen = (
+            effective_selected(rq.selected, candidate_values_of(rq)) if rq is not None else None
+        )
+        email = next((e for e in emails if e.value == chosen), None)
+        if email is None:  # 큐 행 없음·후보 미영속 등 → best 후보로 최후 폴백.
             ranked = accepted_emails(emails)
             email = ranked[0] if ranked else (emails[0] if emails else None)
 

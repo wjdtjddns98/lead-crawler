@@ -147,6 +147,10 @@ class ReviewQueueRow(Base):
     assignee: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # 사람이 고른 최종 이메일 후보(candidates 중 1건). 미선택이면 NULL(=기본 대표 사용).
     selected: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    # 선택을 사람이 명시했는지. False(자동 기본값)면 재크롤마다 best 로 갱신, True 면 보존.
+    selected_by_human: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
 
 
 class UserRow(Base):

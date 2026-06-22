@@ -231,6 +231,65 @@ def test_multi_candidate_save_select_export(session: Session) -> None:
     assert load_leads(session, company_ids=[cid])[0].email.value == "info@acme.com"
 
 
+def test_null_selected_dto_export_consistent(session: Session) -> None:
+    # selected 가 NULL 인 레거시 상황에서도 DTO 표시와 export 이메일이 같은 폴백을 쓴다.
+    from leadcrawler.schema import ReviewQueueRow
+
+    save_lead(session, _multi_lead())
+    session.flush()
+    item = query_reviews(session)[0]
+    rid, cid = item["id"], item["company_id"]
+    rq = session.get(ReviewQueueRow, rid)
+    rq.selected = None  # 미선택으로 강제
+    session.flush()
+    dto = get_review(session, rid)
+    lead = load_leads(session, company_ids=[cid])[0]
+    assert dto["selected"] == lead.email.value  # 동일 effective_selected → 일치
+
+
+def test_zero_candidates_clears_queue(session: Session) -> None:
+    save_lead(session, _lead())  # ir 후보 + 큐행
+    session.flush()
+    cid = query_reviews(session)[0]["company_id"]
+    rid = review_id_for(cid, "email")
+    # 재크롤: 이메일 0건 → 큐 후보 비움(상태/행 보존).
+    save_lead(session, _lead(email=None))
+    session.flush()
+    item = get_review(session, rid)
+    assert item["candidates"] == [] and item["selected"] is None
+    assert load_leads(session, company_ids=[cid])[0].email is None
+
+
+def test_auto_default_refreshes_until_human(session: Session) -> None:
+    save_lead(session, _lead())  # ir 자동 기본값(미확정)
+    session.flush()
+    cid = query_reviews(session)[0]["company_id"]
+    rid = review_id_for(cid, "email")
+    # 재크롤: 더 나은 후보로 후보 목록 교체(사람 미선택) → 자동 갱신.
+    enqueue_email_review(session, cid, ["contact@acme.com"], selected_default="contact@acme.com")
+    session.flush()
+    assert get_review(session, rid)["selected"] == "contact@acme.com"
+
+
+def test_human_selection_preserved_on_recrawl(session: Session) -> None:
+    save_lead(session, _lead())
+    session.flush()
+    cid = query_reviews(session)[0]["company_id"]
+    rid = review_id_for(cid, "email")
+    session.add(
+        ContactRow(id="k_info_h", company_id=cid, type="email", value="info@acme.com")
+    )
+    enqueue_email_review(session, cid, ["ir@acme.com", "info@acme.com"])
+    set_review_status(session, rid, CONFIRMED, selected="info@acme.com")  # 사람 선택
+    session.flush()
+    # 재크롤(두 후보 유지) → 사람 선택 보존(자동 best 로 안 돌아감).
+    enqueue_email_review(
+        session, cid, ["ir@acme.com", "info@acme.com"], selected_default="ir@acme.com"
+    )
+    session.flush()
+    assert get_review(session, rid)["selected"] == "info@acme.com"
+
+
 def test_multi_email_no_fanout(session: Session) -> None:
     """회사가 이메일 연락처를 둘 가져도 큐 행은 1개로 유지(조인 행폭증 방지)."""
     save_lead(session, _lead())  # 회사 + 이메일 ir@acme.com(valid) + 큐행

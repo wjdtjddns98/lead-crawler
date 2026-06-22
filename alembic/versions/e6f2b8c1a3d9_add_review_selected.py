@@ -21,7 +21,15 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     # 사람이 고른 최종 이메일 후보(candidates 중 1건). NULL=미선택(기본 대표 사용).
     op.add_column("review_queue", sa.Column("selected", sa.String(length=320), nullable=True))
+    # 선택을 사람이 명시했는지(False=자동 기본값 → 재크롤마다 best 갱신).
+    op.add_column(
+        "review_queue",
+        sa.Column(
+            "selected_by_human", sa.Boolean(), nullable=False, server_default=sa.false()
+        ),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("review_queue", "selected_by_human")
     op.drop_column("review_queue", "selected")
