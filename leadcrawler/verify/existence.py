@@ -51,7 +51,12 @@ class SupportsRegistryActive(Protocol):
     """등록처 active 신호 체커(주입형 placeholder — 미주입이면 미사용)."""
 
     def is_active(self, registry: str | None, registry_id: str | None) -> bool | None:
-        """등록처가 active/defunct 를 보고하면 True/False, 판정 불가면 None."""
+        """등록처가 active/defunct 를 보고하면 True/False, 판정 불가면 None.
+
+        **계약**: 룩업 실패·미지원 등록처·불확실은 반드시 ``None`` 을 반환해야 한다.
+        ``False`` 는 등록처가 **명시적으로 defunct** 로 보고한 경우만 — False 는 실존 기업을
+        reject(저장 차단)하므로 룩업 오류를 False 로 흘리면 안 된다.
+        """
         ...
 
 
@@ -71,7 +76,8 @@ class HttpSiteProbe:
                 )
                 if resp.status_code < 400:
                     return True
-            except Exception:
+            except Exception as exc:  # 연결 실패·타임아웃 등 → 다음 스킴.
+                log.debug("existence.http.fail", domain=domain, scheme=scheme, err=str(exc))
                 continue
         return False
 
@@ -82,11 +88,13 @@ class DnsProbe:
     def resolves(self, domain: str) -> bool:
         import dns.resolver
 
+        # dnspython 은 레코드 없으면 NoAnswer/NXDOMAIN 을 raise → 성공 호출 자체가 존재 증거.
         for rtype in ("A", "MX"):
             try:
-                if dns.resolver.resolve(domain, rtype):
-                    return True
-            except Exception:
+                dns.resolver.resolve(domain, rtype)
+                return True
+            except Exception as exc:  # NoAnswer·NXDOMAIN·타임아웃 → 다음 레코드.
+                log.debug("existence.dns.fail", domain=domain, rtype=rtype, err=str(exc))
                 continue
         return False
 
@@ -131,23 +139,33 @@ class ExistenceVerifier:
             else None
         )
         if registry_active is True:
-            return ExistenceResult(is_active=True, site_alive=site_alive, confidence=0.9)
-        if registry_active is False:
-            # 등록처가 defunct 로 보고 — 사이트가 살아있어도 실존 아님으로 본다(제약 ②).
-            return ExistenceResult(is_active=False, site_alive=site_alive, confidence=0.85)
-
-        # 등록처 신호 없음 → DNS/HTTP 생존 신호를 등급화 합성.
-        if site_alive and dns_alive:
-            confidence = 0.85  # 양 신호 일치 — 강한 실존.
-        elif site_alive:
-            confidence = 0.7  # HTTP 만 — 서비스 생존(DNS 조회 실패/누락).
-        elif dns_alive:
-            confidence = 0.5  # DNS 만 — 도메인 생존(사이트 일시 다운 가능, 사람 검토).
+            result = ExistenceResult(is_active=True, site_alive=site_alive, confidence=0.9)
+        elif registry_active is False:
+            # 등록처가 defunct 로 보고 — 사이트가 살아있어도 실존 아님(제약 ②). 높은 신뢰.
+            result = ExistenceResult(is_active=False, site_alive=site_alive, confidence=0.9)
         else:
-            confidence = 0.0
-        return ExistenceResult(
-            is_active=site_alive or dns_alive, site_alive=site_alive, confidence=confidence
+            # 등록처 신호 없음 → **HTTP 서비스 생존을 admit 기준**으로 한다(제약 ②: 현 시점
+            # 실존). DNS 는 단독 admit 신호가 아니라(parked domain 도 해석됨) 살아있는 사이트를
+            # 보강하는 confidence 신호로만 쓴다 — DNS-only 는 비실존으로 보수 처리.
+            if site_alive and dns_alive:
+                confidence = 0.85  # HTTP+DNS 일치 — 강한 실존.
+            elif site_alive:
+                confidence = 0.7  # HTTP 만 — 서비스 생존(DNS 조회 실패/누락).
+            else:
+                confidence = 0.0  # 사이트 미생존(DNS 만 있어도 admit 안 함).
+            result = ExistenceResult(
+                is_active=site_alive, site_alive=site_alive, confidence=confidence
+            )
+        log.info(
+            "existence.verify",
+            domain=domain or "",
+            site=site_alive,
+            dns=dns_alive,
+            registry=registry_active,
+            active=result.is_active,
+            confidence=result.confidence,
         )
+        return result
 
     def _site(self) -> SupportsSiteProbe:
         if self._site_probe is None:
