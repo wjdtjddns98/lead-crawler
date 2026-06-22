@@ -19,6 +19,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -110,6 +111,26 @@ class EmailValidationRow(Base):
     checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class CostLedgerRow(Base):
+    """유료 외부 호출 1건의 과금 기록 — 월 예산(monthly_budget_krw) 추적용.
+
+    ``month_key``(YYYY-MM)에 인덱스를 둬 월 누계 집계를 빠르게 한다. 실제 호출이
+    일어난 건만 적재한다(dry_run·무료 경로는 행 없음).
+    """
+
+    __tablename__ = "cost_ledger"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), index=True)
+    units: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    unit_cost_krw: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    cost_krw: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+    month_key: Mapped[str] = mapped_column(String(7), index=True)
 
 
 class ReviewQueueRow(Base):

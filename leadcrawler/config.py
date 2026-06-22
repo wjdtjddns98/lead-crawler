@@ -102,6 +102,9 @@ class Settings(BaseSettings):
 
     # 운영비 한도(월, 원)
     monthly_budget_krw: int = Field(default=500_000)
+    # 예산 안전장치 — 월 누계가 monthly_budget_krw 이상이면 추가 유료 호출
+    # (EmailAPI·Vision·딜리버러빌리티)을 차단한다. cost_ledger 가 활성(라이브)일 때만 작동.
+    cost_budget_enforce: bool = Field(default=True)
 
     # 24/7 스케줄러(opt-in) — 매일 크롤 1회전 + Notion 자동 리포팅(일일보고·스크럼·현황).
     # APScheduler(선택적 extra ``schedule``) 미설치면 ``serve`` 가 안내 후 종료. 기본 off.

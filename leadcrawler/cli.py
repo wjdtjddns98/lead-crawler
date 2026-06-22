@@ -150,6 +150,39 @@ def report_daily(date: str = typer.Option("", help="보고 일자 YYYY-MM-DD(빈
     typer.echo(f"일일 리포트 {sent} 완료")
 
 
+@app.command("cost-report")
+def cost_report(
+    month: str = typer.Option("", help="집계 월 YYYY-MM(빈값=이번 달 UTC)"),
+) -> None:
+    """이번 달 유료 호출 과금 누계를 예산과 대비해 출력한다(cost_ledger).
+
+    DB 에 적재된 과금(EmailAPI·Vision·딜리버러빌리티)을 월·제공자별로 집계해
+    월 예산(monthly_budget_krw) 대비 사용률과 남은 예산을 보고한다.
+    """
+    from .cost_ledger import CostLedger, month_key_of
+
+    configure_logging()
+    settings = get_settings()
+    ledger = CostLedger(settings, persist=True)
+    key = month or month_key_of(datetime.now(timezone.utc))
+    try:
+        total = ledger.month_total_krw(key)
+        breakdown = ledger.breakdown(key)
+        over = ledger.is_over_budget(key)
+    except Exception as exc:  # DB 미연결·테이블 없음 → 친절 안내(스택트레이스 노출 회피).
+        raise typer.BadParameter(
+            f"cost_ledger 조회 실패({exc}). DB 연결·마이그레이션(`db-upgrade`)을 확인하세요."
+        ) from exc
+    budget = settings.monthly_budget_krw
+    remaining = max(0, budget - total)
+    pct = (total / budget * 100) if budget else 0.0
+    typer.echo(f"[{key}] 과금 누계 {total:,}원 / 예산 {budget:,}원 ({pct:.1f}%) — 남음 {remaining:,}원")
+    for provider, cost in breakdown.items():
+        typer.echo(f"  - {provider}: {cost:,}원")
+    if over:
+        typer.echo("⚠ 예산 초과 — 유료 escalation 이 차단됩니다(cost_budget_enforce).")
+
+
 @app.command()
 def enqueue() -> None:
     """기존 적재된 리드 중 이메일 보유 회사를 검증 큐에 백필한다(멱등).
