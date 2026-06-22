@@ -7,7 +7,7 @@ const BASE = import.meta.env.VITE_API_BASE ?? "";
 const TOKEN_KEY = "lc_token";
 const USER_KEY = "lc_user";
 
-export function getToken(): string | null {
+function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
 
@@ -36,12 +36,17 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   return { ...(extra ?? {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) };
 }
 
-async function jsonOrThrow<T>(res: Response): Promise<T> {
+// 401(만료/무효 토큰) 공통 처리 — 세션 비우고 콜백 통지 후 throw.
+function handle401(res: Response): void {
   if (res.status === 401) {
     clearSession();
     onAuthError?.();
     throw new Error("세션이 만료되었습니다. 다시 로그인하세요.");
   }
+}
+
+async function jsonOrThrow<T>(res: Response): Promise<T> {
+  handle401(res);
   if (!res.ok) {
     let detail = `${res.status}`;
     try {
@@ -105,11 +110,7 @@ export async function rejectReview(id: string): Promise<ReviewItem> {
 // 확정분 엑셀 다운로드. 인증 헤더가 필요해 평범한 링크 대신 fetch→blob 으로 받아 저장한다.
 export async function exportConfirmed(): Promise<void> {
   const res = await fetch(`${BASE}/export`, { headers: authHeaders() });
-  if (res.status === 401) {
-    clearSession();
-    onAuthError?.();
-    throw new Error("세션이 만료되었습니다. 다시 로그인하세요.");
-  }
+  handle401(res);
   if (!res.ok) throw new Error(`엑셀 내보내기 실패: ${res.status}`);
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);

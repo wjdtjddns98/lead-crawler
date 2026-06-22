@@ -165,6 +165,11 @@ def test_logout_invalidates_token(client: TestClient) -> None:
     assert client.get("/queue").status_code == 401  # 폐기된 토큰 → 거부.
 
 
+def test_logout_without_token_ok(anon: TestClient) -> None:
+    # 토큰 없이 로그아웃해도 200(멱등·무해).
+    assert anon.post("/auth/logout").status_code == 200
+
+
 def test_expired_session_rejected(anon: TestClient, monkeypatch) -> None:
     # TTL 0 → 즉시 만료(create_session 은 최소 1시간이지만 now 를 미래로 보정).
     from datetime import datetime, timedelta, timezone

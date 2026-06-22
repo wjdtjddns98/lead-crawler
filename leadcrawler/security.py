@@ -17,7 +17,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .schema import AuthSessionRow, UserRow
@@ -73,11 +73,16 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
+# 미존재 사용자에도 항상 scrypt 1회를 돌려 로그인 응답시간을 평탄화한다(사용자 열거
+# 타이밍 사이드채널 완화). 모듈 로드 시 1회 계산.
+_DUMMY_PASSWORD_HASH = hash_password("timing-equalizer-not-a-real-account")
+
+
 def create_user(session: Session, username: str, password: str) -> UserRow:
     """직원 계정을 만든다(username 중복은 DB UNIQUE 가 차단)."""
     user = UserRow(
         id=uuid4().hex[:12],
-        username=username,
+        username=username.strip(),  # 앞뒤 공백 제거(프론트 트림과 일관 — 로그인 불일치 방지).
         password_hash=hash_password(password),
         is_active=True,
     )
@@ -87,11 +92,16 @@ def create_user(session: Session, username: str, password: str) -> UserRow:
 
 
 def authenticate(session: Session, username: str, password: str) -> UserRow | None:
-    """username/비밀번호를 검증해 활성 사용자면 반환, 아니면 None."""
+    """username/비밀번호를 검증해 활성 사용자면 반환, 아니면 None.
+
+    사용자 유무와 무관하게 scrypt 를 항상 1회 수행해 타이밍 차이를 줄인다(열거 완화).
+    """
     user = session.scalar(
         select(UserRow).where(UserRow.username == username, UserRow.is_active.is_(True))
     )
-    if user is None or not verify_password(password, user.password_hash):
+    stored = user.password_hash if user is not None else _DUMMY_PASSWORD_HASH
+    ok = verify_password(password, stored)
+    if user is None or not ok:
         return None
     return user
 
@@ -139,3 +149,14 @@ def delete_session(session: Session, token: str) -> None:
     row = session.get(AuthSessionRow, _token_hash(token))
     if row is not None:
         session.delete(row)
+
+
+def delete_expired_sessions(session: Session, *, now: datetime | None = None) -> int:
+    """만료된 세션 행을 정리한다(테이블 비대화 방지). 삭제 건수를 반환.
+
+    만료 토큰은 :func:`user_for_token` 가 이미 거부하므로 보안 영향은 없고 위생 목적.
+    로그인 시 lazy 로 호출해 무인 24/7 운영에서 행이 단조 증가하지 않게 한다.
+    """
+    now = now or _utcnow()
+    result = session.execute(delete(AuthSessionRow).where(AuthSessionRow.expires_at <= now))
+    return int(result.rowcount or 0)

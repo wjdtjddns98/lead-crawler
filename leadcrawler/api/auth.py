@@ -13,7 +13,13 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..schema import UserRow
-from ..security import authenticate, create_session, delete_session, user_for_token
+from ..security import (
+    authenticate,
+    create_session,
+    delete_expired_sessions,
+    delete_session,
+    user_for_token,
+)
 from .schemas import LoginRequest, LoginResponse
 
 
@@ -38,6 +44,7 @@ def register_auth(
         if user is None:
             # username/비밀번호 구분 없이 동일 메시지(사용자 열거 방지).
             raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다")
+        delete_expired_sessions(db)  # lazy GC — 만료 세션 정리(테이블 비대화 방지).
         token = create_session(db, user.id, ttl_hours=get_settings().web_session_ttl_hours)
         return LoginResponse(token=token, username=user.username)
 

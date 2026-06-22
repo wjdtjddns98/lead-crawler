@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from leadcrawler.config import Settings
 from leadcrawler.security import (
     authenticate,
     create_session,
     create_user,
+    delete_expired_sessions,
     delete_session,
     hash_password,
     user_for_token,
@@ -94,3 +97,35 @@ def test_unknown_token_is_none(tmp_path) -> None:
     with session_scope(s) as db:
         assert user_for_token(db, "nope") is None
         assert user_for_token(db, "") is None
+
+
+def test_delete_expired_sessions(tmp_path) -> None:
+    s = _settings(tmp_path)
+    past = datetime(2020, 1, 1, tzinfo=UTC)
+    with session_scope(s) as db:
+        user = create_user(db, "gc", "pw")
+        create_session(db, user.id, ttl_hours=1, now=past)  # 만료될 세션
+        live = create_session(db, user.id, ttl_hours=12)  # 유효 세션
+    with session_scope(s) as db:
+        removed = delete_expired_sessions(db, now=past + timedelta(hours=2))
+        assert removed == 1
+    with session_scope(s) as db:
+        assert user_for_token(db, live) is not None  # 유효 세션은 보존.
+
+
+def test_create_user_strips_username(tmp_path) -> None:
+    s = _settings(tmp_path)
+    with session_scope(s) as db:
+        create_user(db, "  spaced  ", "pw")
+    with session_scope(s) as db:
+        assert authenticate(db, "spaced", "pw") is not None  # 트림된 아이디로 로그인.
+
+
+def test_duplicate_username_raises(tmp_path) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    s = _settings(tmp_path)
+    with session_scope(s) as db:
+        create_user(db, "dup", "pw")
+    with pytest.raises(IntegrityError), session_scope(s) as db:
+        create_user(db, "dup", "pw2")
