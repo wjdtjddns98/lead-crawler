@@ -37,6 +37,7 @@ from ..storage.repository import (
 )
 from ..verify.email_validator import EmailValidator
 from ..verify.existence import ExistenceVerifier
+from ..verify.registry_active import build_registry_checker
 
 log = get_logger("pipeline")
 
@@ -68,7 +69,10 @@ def run_pipeline(
     # 잡혀도 정규화 도메인이 같으면 한 번만 추출한다. seen(키)과 짝을 이뤄 런 전체·DB 영속을
     # 가로질러 적용된다(within-segment 머지는 discover_segment 가 1차로 수행).
     seen_domains: set[str] = set()
-    existence = ExistenceVerifier(settings)
+    # 라이브에서만 등록처 active 체커 주입(키 있을 때) — 실존 판정의 최강 신호(active=0.9 우선).
+    # dry_run 은 도메인 유무로 결정적이라 미주입.
+    registry_checker = None if settings.dry_run else build_registry_checker(settings)
+    existence = ExistenceVerifier(settings, registry_checker=registry_checker)
     # 라이브에서만 과금 원장을 켠다(dry_run 은 유료 호출이 없음). persist 면 DB 에 누계
     # 적재(월·다중런 합산), 아니면 인메모리(현재 런 내 가드만). 예산 초과 시 유료 차단.
     cost_ledger = CostLedger(settings, persist=persist) if not settings.dry_run else None
