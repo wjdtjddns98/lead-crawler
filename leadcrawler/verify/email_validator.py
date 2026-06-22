@@ -18,6 +18,16 @@ from ..config import Settings, get_settings
 from ..dedup import normalize_domain
 from ..logging import get_logger
 from ..models import EmailValidation, ValidationStatus
+from .deliverability import (
+    DELIVERABLE as DELIV_OK,
+)
+from .deliverability import (
+    UNDELIVERABLE as DELIV_BAD,
+)
+from .deliverability import (
+    SupportsDeliverability,
+    build_deliverability_checker,
+)
 
 log = get_logger("verify.email")
 
@@ -101,9 +111,13 @@ class EmailValidator:
         settings: Settings | None = None,
         *,
         smtp_prober: SupportsSmtpProbe | None = None,
+        deliverability_checker: SupportsDeliverability | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self._smtp_prober = smtp_prober
+        self._deliverability = deliverability_checker
+        # 주입되면 더는 빌드하지 않는다(테스트 더블·명시 None 모두 존중).
+        self._deliverability_built = deliverability_checker is not None
 
     def _prober(self) -> SupportsSmtpProbe:
         if self._smtp_prober is None:
@@ -111,6 +125,20 @@ class EmailValidator:
                 self.settings.email_smtp_from, timeout=self.settings.smtp_timeout
             )
         return self._smtp_prober
+
+    def _deliv_checker(self) -> SupportsDeliverability | None:
+        """키 있는 딜리버러빌리티 제공자(없으면 None). 라이브에서 1회 지연 생성."""
+        if not self._deliverability_built:
+            from ..sources.http import Fetcher
+
+            fetcher = Fetcher(
+                user_agent=self.settings.discovery_user_agent,
+                min_interval=self.settings.http_request_delay,
+                timeout=self.settings.http_timeout,
+            )
+            self._deliverability = build_deliverability_checker(self.settings, fetcher=fetcher)
+            self._deliverability_built = True
+        return self._deliverability
 
     def _placeholder_from(self) -> bool:
         """MAIL FROM 이 비었거나 예약(example.com 등)·로컬 도메인이면 라이브 부적합."""
@@ -158,6 +186,25 @@ class EmailValidator:
                     status = ValidationStatus.INVALID  # 메일박스 없음 → 무효 확정.
                 elif smtp_result == SMTP_DELIVERABLE and status is ValidationStatus.RISKY:
                     status = ValidationStatus.VALID  # 수신 확정 → RISKY 승격.
+
+        # 3차(opt-in 라이브·유료): 딜리버러빌리티 API 로 최종 보정. 이미 INVALID 면
+        # 제외 확정이라 과금 호출을 아낀다(VALID/RISKY 만 질의).
+        if (
+            mx
+            and not self.settings.dry_run
+            and self.settings.email_deliverability_check
+            and status is not ValidationStatus.INVALID
+        ):
+            checker = self._deliv_checker()
+            if checker is not None:
+                verdict = checker.check(email)
+                if verdict == DELIV_BAD:
+                    status = ValidationStatus.INVALID  # 제3자 DB 수신불가 → 무효 확정.
+                    provider = checker.name
+                elif verdict == DELIV_OK:
+                    if status is ValidationStatus.RISKY:
+                        status = ValidationStatus.VALID  # 수신 확정 → RISKY 승격.
+                    provider = checker.name  # 권위있는 확정 → 출처 표기.
 
         smtp_flag = {SMTP_DELIVERABLE: True, SMTP_UNDELIVERABLE: False}.get(smtp_result)
         return EmailValidation(
