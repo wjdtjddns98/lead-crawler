@@ -27,6 +27,7 @@ from ..models import (
 )
 from ..dedup import normalize_domain
 from ..sources.base import DiscoveredCompany, Segment
+from ..sources.domain_resolver import DomainResolver
 from ..sources.registry import discover_segment
 from ..storage.db import get_sessionmaker
 from ..storage.repository import (
@@ -78,6 +79,13 @@ def run_pipeline(
     cost_ledger = CostLedger(settings, persist=persist) if not settings.dry_run else None
     email_validator = EmailValidator(settings, cost_ledger=cost_ledger)
     enricher = Enricher(settings, cost_ledger=cost_ledger)
+    # 도메인 해석(opt-in·라이브) — 발견이 도메인을 못 준 기업(GLEIF 등)을 회사명으로 보강.
+    # 없으면 enrich 가 즉시 빈손이라 사이트·이메일을 못 얻는다(핵심 커버리지 갭 해소).
+    resolver = (
+        DomainResolver(settings)
+        if settings.resolve_domains and not settings.dry_run
+        else None
+    )
 
     leads: list[CompanyLead] = []
     session: Session | None = get_sessionmaker(settings)() if persist else None
@@ -97,6 +105,20 @@ def run_pipeline(
                 seen.add(dc.canonical_key)
                 if dom is not None:
                     seen_domains.add(dom)
+                elif resolver is not None:
+                    # 도메인 미보유 기업 → 회사명으로 공식 도메인 해석 시도.
+                    resolved = resolver.resolve(dc)
+                    rdom = normalize_domain(resolved) if resolved else None
+                    if rdom is not None:
+                        if rdom in seen_domains:
+                            # 해석된 도메인이 이미 본 기업과 동치 → 재추출 스킵(제약 ①).
+                            # 원장엔 해석된 도메인을 기록해 다음 런이 재해석(quota 낭비) 안 하게.
+                            log.info("dedup.skip.resolved", key=dc.canonical_key, domain=rdom)
+                            if session is not None:
+                                _persist_touch(session, dc.model_copy(update={"domain": resolved}))
+                            continue
+                        seen_domains.add(rdom)
+                        dc = dc.model_copy(update={"domain": resolved})  # 도메인만 채움
 
                 contacts = enricher.enrich(dc)
                 candidates = accepted_emails(contacts)
