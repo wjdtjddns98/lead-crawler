@@ -152,6 +152,12 @@ class ReviewQueueRow(Base):
     )
     # 마지막 상태 변경(확정/거부) 시각 — "누가"에 더해 "언제"를 큐 행에 기록.
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 동시 처리 점유 — 어느 직원이 이 항목을 당겨갔는지(배타 배정). 6명 동시 검증 시 충돌
+    # 방지. claimed_at 기준 TTL 경과하면 미처리 점유는 풀로 복귀(다른 직원이 가져감).
+    claimed_by: Mapped[str | None] = mapped_column(
+        ForeignKey("app_user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 사람이 고른 최종 이메일 후보(candidates 중 1건). 미선택이면 NULL(=기본 대표 사용).
     selected: Mapped[str | None] = mapped_column(String(320), nullable=True)
     # 선택을 사람이 명시했는지. False(자동 기본값)면 재크롤마다 best 로 갱신, True 면 보존.

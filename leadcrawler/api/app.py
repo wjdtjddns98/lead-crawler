@@ -19,21 +19,27 @@ from starlette.background import BackgroundTask
 
 from .. import __version__
 from ..config import get_settings
+from ..logging import get_logger
 from ..schema import ReviewQueueRow, UserRow
-from ..storage.db import get_sessionmaker
+from ..storage.db import get_engine, get_sessionmaker
 from ..storage.export import ExcelExporter
 from ..storage.repository import load_leads
 from ..storage.review import (
     CONFIRMED,
     REJECTED,
+    ReviewConflict,
+    claim_work,
     count_reviews,
     get_review,
     query_reviews,
+    release_my_claims,
     set_review_status,
 )
 from .admin import register_admin
 from .auth import make_require_admin, make_require_user, register_auth
 from .schemas import ConfirmRequest, QueueResponse, ReviewItem, ReviewStatus
+
+log = get_logger("api")
 
 
 def get_db() -> Iterator[Session]:
@@ -52,6 +58,10 @@ def get_db() -> Iterator[Session]:
 def create_app() -> FastAPI:
     """FastAPI 앱 인스턴스를 생성한다."""
     app = FastAPI(title="lead-crawler 검증 웹앱", version=__version__)
+    # 당겨가기(claim) 배타성은 PG 의 FOR UPDATE SKIP LOCKED 에 의존한다 — SQLite 는 행잠금이
+    # 없어 다중 사용자 동시 점유에서 충돌이 날 수 있다. 운영(다중 직원)은 반드시 PostgreSQL.
+    if get_engine(get_settings()).dialect.name != "postgresql":
+        log.warning("api.sqlite_no_concurrency_guard")  # 멀티유저면 PG 필수.
     # 인증: /health·/auth/login 외 모든 데이터 라우트는 require_user 로 보호.
     require_user = make_require_user(get_db)
     require_admin = make_require_admin(require_user)  # 관리자 전용(계정관리·export).
@@ -79,6 +89,26 @@ def create_app() -> FastAPI:
             limit=limit,
             offset=offset,
         )
+
+    @app.post("/queue/claim", response_model=list[ReviewItem])
+    def claim_queue(
+        db: Session = Depends(get_db),
+        user: UserRow = Depends(require_user),
+    ) -> list[ReviewItem]:
+        """내 작업분을 배치 크기까지 채워 반환한다(당겨가기 — 6명 동시 충돌 방지·자동 리필)."""
+        s = get_settings()
+        items = claim_work(
+            db, user.id, target=s.review_claim_batch, ttl_minutes=s.review_claim_ttl_minutes
+        )
+        return [ReviewItem(**it) for it in items]
+
+    @app.post("/queue/release")
+    def release_queue(
+        db: Session = Depends(get_db),
+        user: UserRow = Depends(require_user),
+    ) -> dict[str, int]:
+        """내가 점유한 미처리 항목을 풀로 반납한다(작업 종료)."""
+        return {"released": release_my_claims(db, user.id)}
 
     @app.get("/queue/{review_id}", response_model=ReviewItem)
     def get_queue_item(
@@ -141,7 +171,7 @@ def create_app() -> FastAPI:
 def _set_status(
     db: Session, review_id: str, status: str, actor: UserRow, *, selected: str | None = None
 ) -> ReviewItem:
-    """상태 변경 공통 — 담당자는 로그인 사용자(username+id). 404/후보밖 400 + 감사기록."""
+    """상태 변경 공통 — 담당자=로그인 사용자. 404/후보밖 400/타인점유 409 + 감사기록."""
     try:
         item = set_review_status(
             db,
@@ -150,7 +180,10 @@ def _set_status(
             assignee=actor.username,
             assignee_id=actor.id,
             selected=selected,
+            claim_ttl_minutes=get_settings().review_claim_ttl_minutes,
         )
+    except ReviewConflict as exc:  # 타인이 활성 점유 중 → 409(동시성 백스톱).
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:  # 후보에 없는 selected → 400.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if item is None:

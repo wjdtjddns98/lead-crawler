@@ -10,12 +10,13 @@ import {
   setAuthErrorHandler,
 } from "./api";
 import { Admin } from "./components/Admin";
+import { MyWork } from "./components/MyWork";
 import { QueueTable } from "./components/QueueTable";
 import { Login } from "./components/Login";
 import type { ReviewItem, ReviewStatus, Role } from "./types";
 
 type Filter = ReviewStatus | "";
-type View = "queue" | "admin";
+type View = "mine" | "browse" | "admin";
 const PAGE = 50;
 
 const FILTERS: { value: Filter; label: string }[] = [
@@ -62,7 +63,7 @@ function Workbench({
   onLogout: () => void;
 }) {
   const isAdmin = role === "admin";
-  const [view, setView] = useState<View>("queue");
+  const [view, setView] = useState<View>("mine");
   const [filter, setFilter] = useState<Filter>("pending");
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState<ReviewItem[]>([]);
@@ -207,22 +208,28 @@ function Workbench({
       <header>
         <h1>검증 워크벤치</h1>
         <div className="session">
-          {isAdmin && (
-            <nav className="views">
-              <button
-                className={`tab ${view === "queue" ? "active" : ""}`}
-                onClick={() => setView("queue")}
-              >
-                검증 큐
-              </button>
+          <nav className="views">
+            <button
+              className={`tab ${view === "mine" ? "active" : ""}`}
+              onClick={() => setView("mine")}
+            >
+              내 작업
+            </button>
+            <button
+              className={`tab ${view === "browse" ? "active" : ""}`}
+              onClick={() => setView("browse")}
+            >
+              전체 큐
+            </button>
+            {isAdmin && (
               <button
                 className={`tab ${view === "admin" ? "active" : ""}`}
                 onClick={() => setView("admin")}
               >
                 관리자
               </button>
-            </nav>
-          )}
+            )}
+          </nav>
           <span className="muted">
             {user}
             {isAdmin && " · 관리자"}
@@ -238,7 +245,7 @@ function Workbench({
         </div>
       </header>
 
-      {view === "admin" && isAdmin ? <Admin /> : queueView}
+      {view === "admin" && isAdmin ? <Admin /> : view === "browse" ? queueView : <MyWork />}
     </div>
   );
 }
