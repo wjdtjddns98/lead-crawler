@@ -246,6 +246,73 @@ def test_worker_cannot_view_audit(worker: TestClient) -> None:
     assert worker.get("/admin/audit").status_code == 403
 
 
+# --- 크롤 타깃(웹앱 관리자 설정) ------------------------------------
+
+def test_get_crawl_target_default(admin: TestClient) -> None:
+    # 미설정이면 .env 기본값을 폼 초기값으로 돌려준다(updated_by 없음).
+    body = admin.get("/admin/crawl-target").json()
+    assert body["industries"]  # .env report_industries(기본 '건설')
+    assert body["updated_by"] is None
+
+
+def test_set_then_get_crawl_target(admin: TestClient) -> None:
+    r = admin.put(
+        "/admin/crawl-target",
+        json={"countries": "KR,US", "industries": "건설,반도체", "listed": "listed",
+              "persist": True},
+    )
+    assert r.status_code == 200
+    got = admin.get("/admin/crawl-target").json()
+    assert got["countries"] == "KR,US"
+    assert got["industries"] == "건설,반도체"
+    assert got["listed"] == "listed"
+    assert got["updated_by"] == _ADMIN  # 설정자 기록.
+    assert got["updated_at"] is not None
+
+
+def test_worker_cannot_read_target(worker: TestClient) -> None:
+    assert worker.get("/admin/crawl-target").status_code == 403
+
+
+def test_worker_cannot_set_target(worker: TestClient) -> None:
+    r = worker.put("/admin/crawl-target", json={"industries": "건설"})
+    assert r.status_code == 403
+
+
+def test_invalid_listed_422(admin: TestClient) -> None:
+    # listed 는 Literal → 스키마 레이어에서 422(자기문서화·유효값 노출).
+    r = admin.put("/admin/crawl-target", json={"industries": "건설", "listed": "bogus"})
+    assert r.status_code == 422
+
+
+def test_industries_required_422(admin: TestClient) -> None:
+    r = admin.put("/admin/crawl-target", json={"industries": "", "countries": "KR"})
+    assert r.status_code == 422  # min_length=1 → pydantic 422.
+
+
+def test_whitespace_industries_422(admin: TestClient) -> None:
+    # 공백만 입력은 트림 후 빈 문자열 → 422(저장됐다가 조용히 무시되는 갱 차단).
+    r = admin.put("/admin/crawl-target", json={"industries": "   "})
+    assert r.status_code == 422
+
+
+def test_scheduler_uses_db_target(admin: TestClient) -> None:
+    # 관리자가 설정한 DB 타깃을 스케줄러가 우선 사용(.env 폴백 아님).
+    from leadcrawler.config import get_settings
+    from leadcrawler.scheduler import _effective_target
+
+    admin.put(
+        "/admin/crawl-target",
+        json={"countries": "JP", "industries": "반도체", "listed": "unlisted",
+              "persist": False},
+    )
+    inds, ctys, listed, persist = _effective_target(get_settings())
+    assert inds == ["반도체"]
+    assert ctys == ["JP"]
+    assert listed == "unlisted"
+    assert persist is False
+
+
 def _uid(client: TestClient, username: str) -> str:
     rows = client.get("/admin/users").json()
     return next(r["id"] for r in rows if r["username"] == username)

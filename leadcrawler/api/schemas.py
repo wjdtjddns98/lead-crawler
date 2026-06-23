@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ReviewStatus(str, Enum):
@@ -120,3 +121,30 @@ class AuditEntry(BaseModel):
     selected: str | None = None
     company_name: str = ""
     at: str | None = None
+
+
+class CrawlTargetInfo(BaseModel):
+    """현재 크롤 타깃(스케줄러가 매일 읽는 값) — 관리자 화면 표시·폼 초기값."""
+
+    countries: str = ""  # 쉼표구분 ISO2(빈값=지원 전체국)
+    industries: str = ""  # 쉼표구분 업종
+    listed: str = "unknown"  # unknown(전체) | listed(상장) | unlisted(비상장)
+    persist: bool = True
+    updated_by: str | None = None
+    updated_at: str | None = None
+
+
+class CrawlTargetRequest(BaseModel):
+    """크롤 타깃 설정 요청(관리자 전용). 업종은 최소 1개, listed 는 3종 중 하나."""
+
+    countries: str = ""
+    industries: str = Field(min_length=1, max_length=512)
+    listed: Literal["unknown", "listed", "unlisted"] = "unknown"
+    persist: bool = True
+
+    @field_validator("industries", mode="before")
+    @classmethod
+    def _strip_industries(cls, v: object) -> object:
+        # 공백만 입력("   ")이 min_length 를 통과해 빈 타깃으로 저장→.env 폴백되는 갱
+        # 을 막는다(트림 후 min_length 검증 → 빈 업종은 422).
+        return v.strip() if isinstance(v, str) else v

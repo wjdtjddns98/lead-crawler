@@ -355,3 +355,39 @@ a {
   font-size: 11px;
   margin-left: 2px;
 }
+
+.crawl-target {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.crawl-target label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.crawl-target label.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.crawl-target input[type="text"],
+.crawl-target input:not([type]),
+.crawl-target select {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: 6px;
+  min-width: 200px;
+}
+
+.crawl-target label.inline input {
+  min-width: 0;
+}

@@ -3,10 +3,12 @@ import {
   changeUserRole,
   createUser,
   fetchAudit,
+  fetchCrawlTarget,
   fetchUsers,
+  saveCrawlTarget,
   setUserActive,
 } from "../api";
-import type { AuditEntry, Role, UserStats } from "../types";
+import type { AuditEntry, CrawlTarget, Listed, Role, UserStats } from "../types";
 
 // 관리자 페이지 — 계정별 처리 통계·역할/활성 관리·계정 생성 + 최근 검증 감사 로그.
 export function Admin() {
@@ -46,6 +48,8 @@ export function Admin() {
   return (
     <div className="admin">
       {error && <div className="error">⚠ {error}</div>}
+
+      <CrawlTargetSection />
 
       <section>
         <h2>계정 {loading && <span className="muted">· 불러오는 중…</span>}</h2>
@@ -127,6 +131,115 @@ export function Admin() {
         )}
       </section>
     </div>
+  );
+}
+
+const LISTED_OPTIONS: { value: Listed; label: string }[] = [
+  { value: "unknown", label: "전체" },
+  { value: "listed", label: "상장" },
+  { value: "unlisted", label: "비상장" },
+];
+
+// 내일(다음) 크롤 타깃 설정 — 국가·업종·상장여부·DB적재. 스케줄러가 매일 이 값을 읽는다.
+function CrawlTargetSection() {
+  const [target, setTarget] = useState<CrawlTarget | null>(null);
+  const [countries, setCountries] = useState("");
+  const [industries, setIndustries] = useState("");
+  const [listed, setListed] = useState<Listed>("unknown");
+  const [persist, setPersist] = useState(true);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const apply = (t: CrawlTarget) => {
+    setTarget(t);
+    setCountries(t.countries);
+    setIndustries(t.industries);
+    setListed(t.listed);
+    setPersist(t.persist);
+  };
+
+  useEffect(() => {
+    let alive = true;
+    fetchCrawlTarget()
+      .then((t) => alive && apply(t))
+      .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      const saved = await saveCrawlTarget({
+        countries: countries.trim(),
+        industries: industries.trim(),
+        listed,
+        persist,
+      });
+      apply(saved);
+      setMsg("저장됨 — 다음 크롤부터 반영됩니다.");
+    } catch (e2) {
+      setErr(e2 instanceof Error ? e2.message : String(e2));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section>
+      <h2>내일 크롤 타깃</h2>
+      {err && <div className="error">⚠ {err}</div>}
+      <form className="crawl-target" onSubmit={(e) => void save(e)}>
+        <label>
+          국가 <span className="muted">(쉼표구분 ISO2, 빈값=전체국)</span>
+          <input
+            value={countries}
+            onChange={(e) => setCountries(e.target.value)}
+            placeholder="예: KR,US,JP"
+          />
+        </label>
+        <label>
+          업종 <span className="muted">(쉼표구분, 필수)</span>
+          <input
+            value={industries}
+            onChange={(e) => setIndustries(e.target.value)}
+            placeholder="예: 건설,반도체,바이오"
+          />
+        </label>
+        <label>
+          상장여부
+          <select value={listed} onChange={(e) => setListed(e.target.value as Listed)}>
+            {LISTED_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="inline">
+          <input
+            type="checkbox"
+            checked={persist}
+            onChange={(e) => setPersist(e.target.checked)}
+          />
+          DB 적재(검증 큐로)
+        </label>
+        <button className="btn confirm" type="submit" disabled={saving || !industries.trim()}>
+          {saving ? "저장 중…" : "타깃 저장"}
+        </button>
+      </form>
+      {msg && <p className="muted">{msg}</p>}
+      {target?.updated_by && (
+        <p className="muted">
+          최근 설정: {target.updated_by} · {fmt(target.updated_at)}
+        </p>
+      )}
+    </section>
   );
 }
 
