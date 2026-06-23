@@ -156,6 +156,7 @@ def user_add(
     password: str = typer.Option(
         ..., prompt=True, hide_input=True, confirmation_prompt=True, help="비밀번호(숨김 입력)"
     ),
+    role: str = typer.Option("worker", help="권한 admin|worker(첫 계정은 자동 admin)"),
 ) -> None:
     """검증 웹앱 직원 계정을 생성한다(비밀번호는 scrypt 해시 저장)."""
     from sqlalchemy.exc import IntegrityError
@@ -166,10 +167,13 @@ def user_add(
     configure_logging()
     try:
         with session_scope(get_settings()) as s:
-            create_user(s, username, password)
+            user = create_user(s, username, password, role=role)
+            created_role = user.role  # 부트스트랩으로 admin 승격됐을 수 있어 실제값 표시.
+    except ValueError as exc:  # 허용되지 않은 역할.
+        raise typer.BadParameter(str(exc)) from exc
     except IntegrityError as exc:
         raise typer.BadParameter(f"이미 존재하는 아이디입니다: {username}") from exc
-    typer.echo(f"계정 생성 완료: {username}")
+    typer.echo(f"계정 생성 완료: {username} ({created_role})")
 
 
 @app.command("user-list")
@@ -185,7 +189,7 @@ def user_list() -> None:
         rows = s.scalars(select(UserRow).order_by(UserRow.username)).all()
         for u in rows:
             state = "활성" if u.is_active else "비활성"
-            typer.echo(f"  - {u.username} ({state})")
+            typer.echo(f"  - {u.username} [{u.role}] ({state})")
         typer.echo(f"총 {len(rows)}명")
 
 

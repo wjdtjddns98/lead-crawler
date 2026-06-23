@@ -17,10 +17,22 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .schema import AuthSessionRow, UserRow
+
+# 권한 역할.
+ROLE_ADMIN = "admin"
+ROLE_WORKER = "worker"
+_VALID_ROLES = frozenset({ROLE_ADMIN, ROLE_WORKER})
+
+
+def validate_role(role: str) -> str:
+    """역할 문자열을 검증해 그대로 반환한다(허용 외면 ValueError). 검증 단일화용."""
+    if role not in _VALID_ROLES:
+        raise ValueError(f"허용되지 않은 역할: {role}")
+    return role
 
 # scrypt 파라미터(OWASP 권고 수준). 메모리 ≈ N*r*128 ≈ 16MB(<기본 maxmem 32MB).
 _SCRYPT_N = 16384
@@ -78,12 +90,34 @@ def _aware(dt: datetime) -> datetime:
 _DUMMY_PASSWORD_HASH = hash_password("timing-equalizer-not-a-real-account")
 
 
-def create_user(session: Session, username: str, password: str) -> UserRow:
-    """직원 계정을 만든다(username 중복은 DB UNIQUE 가 차단)."""
+def count_users(session: Session) -> int:
+    """전체 계정 수(부트스트랩 — 첫 계정 자동 admin 판정용)."""
+    return int(session.scalar(select(func.count()).select_from(UserRow)) or 0)
+
+
+def count_admins(session: Session, *, active_only: bool = True) -> int:
+    """admin 계정 수(마지막 admin 강등/비활성 방지용)."""
+    stmt = select(func.count()).select_from(UserRow).where(UserRow.role == ROLE_ADMIN)
+    if active_only:
+        stmt = stmt.where(UserRow.is_active.is_(True))
+    return int(session.scalar(stmt) or 0)
+
+
+def create_user(
+    session: Session, username: str, password: str, *, role: str = ROLE_WORKER
+) -> UserRow:
+    """직원 계정을 만든다(username 중복은 DB UNIQUE 가 차단).
+
+    ``role`` 미지정이면 worker. 단, **첫 계정은 자동으로 admin** 으로 승격해 관리자
+    부재(락아웃)를 막는다. 유효하지 않은 역할은 ValueError.
+    """
+    validate_role(role)
+    effective_role = ROLE_ADMIN if count_users(session) == 0 else role
     user = UserRow(
         id=uuid4().hex[:12],
         username=username.strip(),  # 앞뒤 공백 제거(프론트 트림과 일관 — 로그인 불일치 방지).
         password_hash=hash_password(password),
+        role=effective_role,
         is_active=True,
     )
     session.add(user)
@@ -149,6 +183,15 @@ def delete_session(session: Session, token: str) -> None:
     row = session.get(AuthSessionRow, _token_hash(token))
     if row is not None:
         session.delete(row)
+
+
+def delete_user_sessions(session: Session, user_id: str) -> int:
+    """특정 사용자의 모든 세션을 즉시 폐기한다(계정 비활성화 시 토큰 즉시 무효화).
+
+    ``user_for_token`` 이 런타임에 ``is_active`` 를 확인하므로 보안상 이미 차단되지만,
+    비활성화 즉시 세션 행을 지워 죽은 토큰이 남지 않게 한다(즉시 무효화 보장)."""
+    result = session.execute(delete(AuthSessionRow).where(AuthSessionRow.user_id == user_id))
+    return int(result.rowcount or 0)
 
 
 def delete_expired_sessions(session: Session, *, now: datetime | None = None) -> int:

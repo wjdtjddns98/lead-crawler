@@ -10,12 +10,20 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
+from datetime import datetime, timezone
+from uuid import uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..logging import get_logger
-from ..schema import CompanyRow, ContactRow, EmailValidationRow, ReviewQueueRow
+from ..schema import (
+    CompanyRow,
+    ContactRow,
+    EmailValidationRow,
+    ReviewAuditRow,
+    ReviewQueueRow,
+)
 
 log = get_logger("review")
 
@@ -189,12 +197,16 @@ def set_review_status(
     status: str,
     *,
     assignee: str | None = None,
+    assignee_id: str | None = None,
     selected: str | None = None,
+    now: datetime | None = None,
 ) -> dict | None:
-    """큐 항목 상태(확정/거부/보류)와 선택 후보를 갱신한다.
+    """큐 항목 상태(확정/거부/보류)와 선택 후보를 갱신하고 감사 이력을 적재한다.
 
     없으면 None, 잘못된 상태면 ValueError. ``selected`` 가 주어지면 후보 목록에 있어야
-    하며(아니면 ValueError), 확정/거부 시 사람이 고른 최종 이메일을 기록한다.
+    하며(아니면 ValueError), 확정/거부 시 사람이 고른 최종 이메일을 기록한다. 처리자
+    (assignee/assignee_id)와 시각(reviewed_at)을 큐 행에 남기고, 변경 1건마다
+    :class:`ReviewAuditRow` 를 append 해 책임추적 이력을 보존한다.
     """
     if status not in _VALID_STATUSES:
         raise ValueError(f"허용되지 않은 상태: {status}")
@@ -207,8 +219,26 @@ def set_review_status(
         rq.selected = selected
         rq.selected_by_human = True  # 사람 명시 선택 — 이후 재크롤에서 보존.
     rq.status = status
-    if assignee is not None:
+    # 처리자(사람) 정보는 username·id·시각·감사행을 한 묶음으로 기록한다 — 부분 갱신으로
+    # username↔id 가 서로 다른 처리자를 가리키는 불일치를 막는다. 처리자 없이(내부 호출)
+    # 부르면 상태만 바꾸고 귀속/감사행은 남기지 않는다(빈 actor 감사행 방지).
+    if assignee is not None or assignee_id is not None:
+        when = now or datetime.now(timezone.utc)
         rq.assignee = assignee
+        rq.assignee_id = assignee_id
+        rq.reviewed_at = when
+        # 감사 이력 — 처리자 계정이 삭제돼도 username 스냅샷으로 '누가' 가 남는다.
+        session.add(
+            ReviewAuditRow(
+                id=uuid4().hex[:12],
+                review_id=review_id,
+                actor_id=assignee_id,
+                actor_username=assignee or "",
+                action=status,
+                selected=rq.selected,
+                at=when,
+            )
+        )
     session.flush()
     return get_review(session, review_id)
 
@@ -240,6 +270,7 @@ def _to_dict(
         "selected": selected,
         "status": rq.status,
         "assignee": rq.assignee,
+        "reviewed_at": rq.reviewed_at.isoformat() if rq.reviewed_at else None,
         "name": company.name if company else "",
         "country": company.country if company else "",
         "industry": company.industry if company else "",

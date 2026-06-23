@@ -316,3 +316,42 @@ a {
   margin-top: 6px;
   text-align: center;
 }
+
+/* 관리자 페이지 */
+.views {
+  display: flex;
+  gap: 4px;
+  margin-right: 8px;
+}
+
+.admin {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.admin section h2 {
+  font-size: 16px;
+  margin: 0 0 12px;
+}
+
+.create-user {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.create-user input,
+.create-user select {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: 6px;
+}
+
+.assignee small {
+  font-size: 11px;
+  margin-left: 2px;
+}

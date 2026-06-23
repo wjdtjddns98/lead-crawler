@@ -10,6 +10,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      "/auth": API_TARGET,
+      "/admin": API_TARGET,
       "/queue": API_TARGET,
       "/export": API_TARGET,
       "/health": API_TARGET,

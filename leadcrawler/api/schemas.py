@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ReviewStatus(str, Enum):
@@ -34,6 +34,7 @@ class ReviewItem(BaseModel):
     selected: str | None = None  # 사람이 고른 최종 이메일(미선택이면 대표=선두 후보)
     status: str
     assignee: str | None = None
+    reviewed_at: str | None = None  # 마지막 처리(확정/거부) 시각 ISO8601(미처리면 None)
     name: str
     country: str = ""
     industry: str = ""
@@ -72,3 +73,50 @@ class LoginResponse(BaseModel):
 
     token: str
     username: str
+    role: str = "worker"
+
+
+class MeResponse(BaseModel):
+    """현재 로그인 사용자 정보(프론트 권한 분기용)."""
+
+    username: str
+    role: str
+
+
+class UserStatsItem(BaseModel):
+    """관리자 화면의 계정 1행 — 권한·활성 + 처리 통계."""
+
+    id: str
+    username: str
+    role: str
+    is_active: bool
+    created_at: str | None = None
+    confirmed: int = 0
+    rejected: int = 0
+    last_action_at: str | None = None
+
+
+class CreateUserRequest(BaseModel):
+    """계정 생성 요청(관리자 전용)."""
+
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=8, max_length=256)
+    role: str = "worker"
+
+
+class RoleUpdateRequest(BaseModel):
+    """역할 변경 요청(관리자 전용)."""
+
+    role: str
+
+
+class AuditEntry(BaseModel):
+    """검증 처리 감사 로그 1건."""
+
+    id: str
+    review_id: str
+    actor_username: str
+    action: str
+    selected: str | None = None
+    company_name: str = ""
+    at: str | None = None
