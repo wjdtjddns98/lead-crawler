@@ -111,6 +111,20 @@ export async function fetchQueue(params: {
   );
 }
 
+// 내 작업분을 배치 크기까지 채워 받는다(당겨가기 — 6명 동시 충돌 방지·자동 리필).
+export async function claimWork(): Promise<ReviewItem[]> {
+  return jsonOrThrow<ReviewItem[]>(
+    await fetch(`${BASE}/queue/claim`, { method: "POST", headers: authHeaders() }),
+  );
+}
+
+// 내가 점유한 미처리 항목을 풀로 반납한다(작업 종료).
+export async function releaseWork(): Promise<{ released: number }> {
+  return jsonOrThrow<{ released: number }>(
+    await fetch(`${BASE}/queue/release`, { method: "POST", headers: authHeaders() }),
+  );
+}
+
 // 담당자는 서버가 로그인 사용자로 자동 기록. selected = 사람이 고른 최종 이메일 후보.
 export async function confirmReview(id: string, selected?: string): Promise<ReviewItem> {
   return jsonOrThrow<ReviewItem>(

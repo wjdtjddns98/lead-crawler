@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     resolve_domains: bool = Field(default=False)
     domain_resolve_max: int = Field(default=50)  # 런당 CSE 해석 호출 상한(quota 보호)
 
+    # 검증 큐 동시 처리(당겨가기) — 6명 동시 검증 시 충돌 방지. 직원이 한 번에 점유하는
+    # 배치 크기와, 점유 후 미처리로 방치된 항목이 풀로 복귀하는 TTL(분).
+    review_claim_batch: int = Field(default=15, ge=1)
+    review_claim_ttl_minutes: int = Field(default=30, ge=1)
+
     # 이메일 보강/검증
     hunter_api_key: str = Field(default="")
     apollo_api_key: str = Field(default="")

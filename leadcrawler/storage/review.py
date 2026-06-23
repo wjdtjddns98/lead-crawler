@@ -10,10 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..logging import get_logger
@@ -26,6 +26,10 @@ from ..schema import (
 )
 
 log = get_logger("review")
+
+
+class ReviewConflict(Exception):
+    """다른 직원이 활성 점유 중인 항목을 처리하려 할 때(동시성 충돌, API→409)."""
 
 # 이메일 검증 신호 튜플: (status, mx, smtp). 신호 없으면 None.
 _EmailSignal = tuple[str | None, bool | None, bool | None]
@@ -200,30 +204,45 @@ def set_review_status(
     assignee_id: str | None = None,
     selected: str | None = None,
     now: datetime | None = None,
+    claim_ttl_minutes: int | None = None,
 ) -> dict | None:
     """큐 항목 상태(확정/거부/보류)와 선택 후보를 갱신하고 감사 이력을 적재한다.
 
     없으면 None, 잘못된 상태면 ValueError. ``selected`` 가 주어지면 후보 목록에 있어야
     하며(아니면 ValueError), 확정/거부 시 사람이 고른 최종 이메일을 기록한다. 처리자
     (assignee/assignee_id)와 시각(reviewed_at)을 큐 행에 남기고, 변경 1건마다
-    :class:`ReviewAuditRow` 를 append 해 책임추적 이력을 보존한다.
+    :class:`ReviewAuditRow` 를 append 해 책임추적 이력을 보존한다. ``claim_ttl_minutes``
+    가 주어지면 동시성 백스톱 — 타인이 활성 점유 중인 항목이면 :class:`ReviewConflict`.
     """
     if status not in _VALID_STATUSES:
         raise ValueError(f"허용되지 않은 상태: {status}")
     rq = session.get(ReviewQueueRow, review_id)
     if rq is None:
         return None
+    when = now or datetime.now(timezone.utc)
+    # 클레임 백스톱(동시성) — 활성 점유자가 타인이면 충돌(전체보기 등 우연한 동시처리 차단).
+    if (
+        claim_ttl_minutes is not None
+        and rq.claimed_by is not None
+        and rq.claimed_by != assignee_id
+        and rq.claimed_at is not None
+        and _aware(rq.claimed_at) >= _expiry(when, claim_ttl_minutes)
+    ):
+        raise ReviewConflict("다른 직원이 처리 중인 항목입니다. 새로고침 후 다시 시도하세요.")
     if selected is not None:
         if selected not in _parse_candidates(rq):
             raise ValueError(f"후보에 없는 선택: {selected}")
         rq.selected = selected
         rq.selected_by_human = True  # 사람 명시 선택 — 이후 재크롤에서 보존.
     rq.status = status
+    if status in (CONFIRMED, REJECTED):
+        # 종료 상태로 가면 점유는 무의미 — 정리(귀속은 assignee/reviewed_at 가 보존).
+        rq.claimed_by = None
+        rq.claimed_at = None
     # 처리자(사람) 정보는 username·id·시각·감사행을 한 묶음으로 기록한다 — 부분 갱신으로
     # username↔id 가 서로 다른 처리자를 가리키는 불일치를 막는다. 처리자 없이(내부 호출)
     # 부르면 상태만 바꾸고 귀속/감사행은 남기지 않는다(빈 actor 감사행 방지).
     if assignee is not None or assignee_id is not None:
-        when = now or datetime.now(timezone.utc)
         rq.assignee = assignee
         rq.assignee_id = assignee_id
         rq.reviewed_at = when
@@ -241,6 +260,102 @@ def set_review_status(
         )
     session.flush()
     return get_review(session, review_id)
+
+
+def _aware(dt: datetime) -> datetime:
+    """naive datetime(SQLite)을 UTC aware 로 보정(비교 안전)."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _expiry(now: datetime, ttl_minutes: int) -> datetime:
+    """점유 만료 기준 시각 — 이보다 이전에 점유된 미처리 항목은 풀로 복귀 가능."""
+    return now - timedelta(minutes=max(1, ttl_minutes))
+
+
+def _claim_more(
+    session: Session, user_id: str, *, want: int, ttl_minutes: int, now: datetime
+) -> int:
+    """미점유(또는 TTL 만료) pending 항목을 최대 ``want`` 개 이 직원에게 배타 배정한다.
+
+    PostgreSQL 은 ``FOR UPDATE SKIP LOCKED`` 로 6명 동시 요청에도 서로 다른 행을 받게
+    한다(잠긴 행 건너뜀 — 동시 작업 큐의 표준). SQLite(테스트)는 미지원이라 평이한
+    select(단일 라이터라 무해). 배정한 행 수를 반환한다.
+    """
+    if want <= 0:
+        return 0
+    expiry = _expiry(now, ttl_minutes)
+    stmt = (
+        select(ReviewQueueRow.id)
+        .where(ReviewQueueRow.status == PENDING)
+        .where(or_(ReviewQueueRow.claimed_by.is_(None), ReviewQueueRow.claimed_at < expiry))
+        .order_by(ReviewQueueRow.id)
+        .limit(want)
+    )
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        stmt = stmt.with_for_update(skip_locked=True)
+    # 배타성은 이 행잠금이 보장한다(시계 일치가 아님) — select 와 아래 update 가 같은
+    # 요청 트랜잭션(get_db) 안이라 잠금이 update 까지 유지된다. 리팩터로 트랜잭션을
+    # 쪼개면 안 된다.
+    ids = list(session.scalars(stmt).all())
+    if not ids:
+        return 0
+    session.execute(
+        update(ReviewQueueRow)
+        .where(ReviewQueueRow.id.in_(ids))
+        .values(claimed_by=user_id, claimed_at=now)
+    )
+    return len(ids)
+
+
+def _my_active_rows(
+    session: Session, user_id: str, *, ttl_minutes: int, now: datetime
+) -> list[tuple[ReviewQueueRow, CompanyRow]]:
+    """이 직원이 점유 중인(아직 pending·미만료) 항목 (rq, company) 목록."""
+    expiry = _expiry(now, ttl_minutes)
+    rows = session.execute(
+        select(ReviewQueueRow, CompanyRow)
+        .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
+        .where(ReviewQueueRow.claimed_by == user_id)
+        .where(ReviewQueueRow.status == PENDING)
+        .where(ReviewQueueRow.claimed_at >= expiry)
+        .order_by(CompanyRow.name, ReviewQueueRow.id)
+    ).all()
+    return [(rq, company) for rq, company in rows]
+
+
+def claim_work(
+    session: Session,
+    user_id: str,
+    *,
+    target: int,
+    ttl_minutes: int,
+    now: datetime | None = None,
+) -> list[dict]:
+    """내 활성 점유를 ``target`` 개까지 채우고(부족분 배타 배정) 내 작업분 DTO 를 반환한다.
+
+    매 호출이 target 으로 top-up 하므로 확정/거부로 줄어든 만큼 자동 리필된다(반복 호출
+    멱등 — 항상 ~target 개 유지). 6명이 동시에 불러도 SKIP LOCKED 로 작업분이 겹치지 않는다.
+    """
+    now = now or datetime.now(timezone.utc)
+    current = _my_active_rows(session, user_id, ttl_minutes=ttl_minutes, now=now)
+    if len(current) < target:
+        _claim_more(
+            session, user_id, want=target - len(current), ttl_minutes=ttl_minutes, now=now
+        )
+        session.flush()
+        current = _my_active_rows(session, user_id, ttl_minutes=ttl_minutes, now=now)
+    signals = _email_signals_by_value(session, [c.id for _, c in current])
+    return [_to_dict(rq, company, signals) for rq, company in current]
+
+
+def release_my_claims(session: Session, user_id: str) -> int:
+    """내가 점유한 미처리(pending) 항목을 모두 풀로 반납한다(작업 종료). 반납 수 반환."""
+    result = session.execute(
+        update(ReviewQueueRow)
+        .where(ReviewQueueRow.claimed_by == user_id, ReviewQueueRow.status == PENDING)
+        .values(claimed_by=None, claimed_at=None)
+    )
+    return int(result.rowcount or 0)
 
 
 def _to_dict(
