@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     google_cse_cx: str = Field(default="")
     bing_api_key: str = Field(default="")
 
+    # 도메인 해석(opt-in) — 발견 소스가 도메인을 못 준 기업(GLEIF 등)을 회사명+국가로
+    # 검색해 공식 도메인을 채운다. Google CSE 키 필요(무료 100/일), dry_run no-op.
+    # 정밀도 우선(회사명↔도메인 root 일치할 때만 채택). quota 보호용 런당 캡.
+    resolve_domains: bool = Field(default=False)
+    domain_resolve_max: int = Field(default=50)  # 런당 CSE 해석 호출 상한(quota 보호)
+
     # 이메일 보강/검증
     hunter_api_key: str = Field(default="")
     apollo_api_key: str = Field(default="")
