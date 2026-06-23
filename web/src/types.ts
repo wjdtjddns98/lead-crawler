@@ -2,6 +2,8 @@
 
 export type ReviewStatus = "pending" | "confirmed" | "rejected";
 
+export type Role = "admin" | "worker";
+
 export interface CandidateInfo {
   value: string;
   email_status: string | null;
@@ -17,6 +19,7 @@ export interface ReviewItem {
   selected: string | null;
   status: ReviewStatus;
   assignee: string | null;
+  reviewed_at: string | null;
   name: string;
   country: string;
   industry: string;
@@ -37,4 +40,26 @@ export interface QueueResponse {
 export interface LoginResponse {
   token: string;
   username: string;
+  role: Role;
+}
+
+export interface UserStats {
+  id: string;
+  username: string;
+  role: Role;
+  is_active: boolean;
+  created_at: string | null;
+  confirmed: number;
+  rejected: number;
+  last_action_at: string | null;
+}
+
+export interface AuditEntry {
+  id: string;
+  review_id: string;
+  actor_username: string;
+  action: string;
+  selected: string | null;
+  company_name: string;
+  at: string | null;
 }

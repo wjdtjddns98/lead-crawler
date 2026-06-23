@@ -144,12 +144,45 @@ class ReviewQueueRow(Base):
     field: Mapped[str] = mapped_column(String(32))
     candidates: Mapped[str] = mapped_column(Text, default="[]", server_default=text("'[]'"))
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default=text("'pending'"))
+    # 마지막 처리자 username(비정규 표시용 — 계정 삭제/개명에도 이력 흔적 보존).
     assignee: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 마지막 처리자 계정 FK — 계정 삭제 시 NULL(귀속은 사라져도 review_audit 이력은 남음).
+    assignee_id: Mapped[str | None] = mapped_column(
+        ForeignKey("app_user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # 마지막 상태 변경(확정/거부) 시각 — "누가"에 더해 "언제"를 큐 행에 기록.
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 사람이 고른 최종 이메일 후보(candidates 중 1건). 미선택이면 NULL(=기본 대표 사용).
     selected: Mapped[str | None] = mapped_column(String(320), nullable=True)
     # 선택을 사람이 명시했는지. False(자동 기본값)면 재크롤마다 best 로 갱신, True 면 보존.
     selected_by_human: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false()
+    )
+
+
+class ReviewAuditRow(Base):
+    """검증 처리 감사 로그 — confirm/reject 1건마다 append-only 적재(불변 이력).
+
+    review_queue 는 '현재 상태'만 보유해 재처리 시 이전 처리자가 덮인다. 이 테이블은
+    누가·언제·무엇을(확정/거부, 선택 이메일) 했는지 전 이력을 남겨 책임추적을 보장한다.
+    actor 계정이 삭제돼도 ``actor_username`` 스냅샷으로 이력은 보존된다(FK 는 SET NULL).
+    """
+
+    __tablename__ = "review_audit"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    review_id: Mapped[str] = mapped_column(
+        ForeignKey("review_queue.id", ondelete="CASCADE"), index=True
+    )
+    actor_id: Mapped[str | None] = mapped_column(
+        ForeignKey("app_user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # 처리 시점의 username 스냅샷(계정 삭제 후에도 '누가' 가 남도록 비정규 보관).
+    actor_username: Mapped[str] = mapped_column(String(64), default="", server_default=text("''"))
+    action: Mapped[str] = mapped_column(String(16))  # confirmed | rejected
+    selected: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now(), index=True
     )
 
 
@@ -161,6 +194,8 @@ class UserRow(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    # 권한 — 'admin'(계정관리·엑셀 export) | 'worker'(검증 처리만). 기본 worker.
+    role: Mapped[str] = mapped_column(String(16), default="worker", server_default=text("'worker'"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now()

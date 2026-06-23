@@ -97,7 +97,13 @@ export function QueueTable({ items, busyIds, onConfirm, onReject }: Props) {
               </td>
               <td>
                 <StatusBadge status={it.status} />
-                {it.assignee && <span className="assignee"> · {it.assignee}</span>}
+                {it.assignee && (
+                  <span className="assignee" title={it.reviewed_at ?? undefined}>
+                    {" · "}
+                    {it.assignee}
+                    {it.reviewed_at && <small className="muted"> {fmtTime(it.reviewed_at)}</small>}
+                  </span>
+                )}
               </td>
               <td className="actions">
                 <button
@@ -127,4 +133,16 @@ export function QueueTable({ items, busyIds, onConfirm, onReject }: Props) {
 function tri(v: boolean | null): string {
   if (v === null) return "—";
   return v ? "O" : "X";
+}
+
+// ISO8601 → 월-일 시:분(처리 시각 축약 표기). 파싱 실패면 빈 문자열.
+function fmtTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }

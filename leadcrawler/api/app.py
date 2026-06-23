@@ -31,7 +31,8 @@ from ..storage.review import (
     query_reviews,
     set_review_status,
 )
-from .auth import make_require_user, register_auth
+from .admin import register_admin
+from .auth import make_require_admin, make_require_user, register_auth
 from .schemas import ConfirmRequest, QueueResponse, ReviewItem, ReviewStatus
 
 
@@ -53,7 +54,9 @@ def create_app() -> FastAPI:
     app = FastAPI(title="lead-crawler 검증 웹앱", version=__version__)
     # 인증: /health·/auth/login 외 모든 데이터 라우트는 require_user 로 보호.
     require_user = make_require_user(get_db)
+    require_admin = make_require_admin(require_user)  # 관리자 전용(계정관리·export).
     register_auth(app, get_db, require_user)
+    register_admin(app, get_db, require_admin)
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -98,7 +101,7 @@ def create_app() -> FastAPI:
     ) -> ReviewItem:
         """후보를 확정한다(발송 대상 확정). 담당자=로그인 사용자, 선택 이메일 기록."""
         selected = body.selected if body else None
-        return _set_status(db, review_id, CONFIRMED, user.username, selected=selected)
+        return _set_status(db, review_id, CONFIRMED, user, selected=selected)
 
     @app.post("/queue/{review_id}/reject", response_model=ReviewItem)
     def reject(
@@ -107,14 +110,14 @@ def create_app() -> FastAPI:
         user: UserRow = Depends(require_user),
     ) -> ReviewItem:
         """후보를 거부한다(발송 제외). 담당자=로그인 사용자."""
-        return _set_status(db, review_id, REJECTED, user.username)
+        return _set_status(db, review_id, REJECTED, user)
 
     @app.get("/export")
     def export(
         db: Session = Depends(get_db),
-        user: UserRow = Depends(require_user),
+        _admin: UserRow = Depends(require_admin),
     ) -> FileResponse:
-        """확정(confirmed) 리드를 고정 12컬럼 엑셀로 내려받는다."""
+        """확정(confirmed) 리드를 고정 12컬럼 엑셀로 내려받는다(관리자 전용)."""
         company_ids = list(
             db.scalars(
                 select(ReviewQueueRow.company_id).where(ReviewQueueRow.status == CONFIRMED)
@@ -136,11 +139,18 @@ def create_app() -> FastAPI:
 
 
 def _set_status(
-    db: Session, review_id: str, status: str, assignee: str, *, selected: str | None = None
+    db: Session, review_id: str, status: str, actor: UserRow, *, selected: str | None = None
 ) -> ReviewItem:
-    """상태 변경 공통 — 담당자는 로그인 사용자. 없으면 404, 후보 밖 선택이면 400."""
+    """상태 변경 공통 — 담당자는 로그인 사용자(username+id). 404/후보밖 400 + 감사기록."""
     try:
-        item = set_review_status(db, review_id, status, assignee=assignee, selected=selected)
+        item = set_review_status(
+            db,
+            review_id,
+            status,
+            assignee=actor.username,
+            assignee_id=actor.id,
+            selected=selected,
+        )
     except ValueError as exc:  # 후보에 없는 selected → 400.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if item is None:

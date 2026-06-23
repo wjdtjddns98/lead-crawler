@@ -3,16 +3,19 @@ import {
   confirmReview,
   exportConfirmed,
   fetchQueue,
+  getRole,
   getUser,
   logout,
   rejectReview,
   setAuthErrorHandler,
 } from "./api";
+import { Admin } from "./components/Admin";
 import { QueueTable } from "./components/QueueTable";
 import { Login } from "./components/Login";
-import type { ReviewItem, ReviewStatus } from "./types";
+import type { ReviewItem, ReviewStatus, Role } from "./types";
 
 type Filter = ReviewStatus | "";
+type View = "queue" | "admin";
 const PAGE = 50;
 
 const FILTERS: { value: Filter; label: string }[] = [
@@ -24,18 +27,42 @@ const FILTERS: { value: Filter; label: string }[] = [
 
 export default function App() {
   const [user, setUser] = useState<string | null>(getUser());
+  const [role, setRole] = useState<Role | null>(getRole());
 
   // 어떤 요청이든 401 이면 로그인 화면으로 되돌린다(세션 만료·토큰 무효).
   useEffect(() => {
-    setAuthErrorHandler(() => setUser(null));
+    const reset = () => {
+      setUser(null);
+      setRole(null);
+    };
+    setAuthErrorHandler(reset);
     return () => setAuthErrorHandler(null);
   }, []);
 
-  if (!user) return <Login onLogin={setUser} />;
-  return <Workbench user={user} onLogout={() => setUser(null)} />;
+  const onLogin = (who: string, r: Role) => {
+    setUser(who);
+    setRole(r);
+  };
+  const onLogout = () => {
+    setUser(null);
+    setRole(null);
+  };
+
+  if (!user) return <Login onLogin={onLogin} />;
+  return <Workbench user={user} role={role ?? "worker"} onLogout={onLogout} />;
 }
 
-function Workbench({ user, onLogout }: { user: string; onLogout: () => void }) {
+function Workbench({
+  user,
+  role,
+  onLogout,
+}: {
+  user: string;
+  role: Role;
+  onLogout: () => void;
+}) {
+  const isAdmin = role === "admin";
+  const [view, setView] = useState<View>("queue");
   const [filter, setFilter] = useState<Filter>("pending");
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState<ReviewItem[]>([]);
@@ -118,21 +145,10 @@ function Workbench({ user, onLogout }: { user: string; onLogout: () => void }) {
   const page = Math.floor(offset / PAGE) + 1;
   const pages = Math.max(1, Math.ceil(total / PAGE));
 
-  return (
-    <div className="app">
-      <header>
-        <h1>검증 워크벤치</h1>
-        <div className="session">
-          <span className="muted">{user}</span>
-          <button className="btn export" onClick={() => void doExport()}>
-            전체 확정분 엑셀 ↓
-          </button>
-          <button className="btn" onClick={() => void doLogout()}>
-            로그아웃
-          </button>
-        </div>
-      </header>
-
+  // 큐 화면 JSX 를 상수로 둔다(별도 컴포넌트로 만들면 매 렌더 리마운트되어 QueueTable
+  // 내부 선택 상태가 사라지므로 인라인 element 로 유지).
+  const queueView = (
+    <>
       <div className="toolbar">
         <div className="filters">
           {FILTERS.map((f) => (
@@ -183,6 +199,46 @@ function Workbench({ user, onLogout }: { user: string; onLogout: () => void }) {
           다음 →
         </button>
       </div>
+    </>
+  );
+
+  return (
+    <div className="app">
+      <header>
+        <h1>검증 워크벤치</h1>
+        <div className="session">
+          {isAdmin && (
+            <nav className="views">
+              <button
+                className={`tab ${view === "queue" ? "active" : ""}`}
+                onClick={() => setView("queue")}
+              >
+                검증 큐
+              </button>
+              <button
+                className={`tab ${view === "admin" ? "active" : ""}`}
+                onClick={() => setView("admin")}
+              >
+                관리자
+              </button>
+            </nav>
+          )}
+          <span className="muted">
+            {user}
+            {isAdmin && " · 관리자"}
+          </span>
+          {isAdmin && (
+            <button className="btn export" onClick={() => void doExport()}>
+              전체 확정분 엑셀 ↓
+            </button>
+          )}
+          <button className="btn" onClick={() => void doLogout()}>
+            로그아웃
+          </button>
+        </div>
+      </header>
+
+      {view === "admin" && isAdmin ? <Admin /> : queueView}
     </div>
   );
 }

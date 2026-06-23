@@ -14,13 +14,14 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..schema import UserRow
 from ..security import (
+    ROLE_ADMIN,
     authenticate,
     create_session,
     delete_expired_sessions,
     delete_session,
     user_for_token,
 )
-from .schemas import LoginRequest, LoginResponse
+from .schemas import LoginRequest, LoginResponse, MeResponse
 
 
 def _bearer(authorization: str | None) -> str:
@@ -46,7 +47,7 @@ def register_auth(
             raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다")
         delete_expired_sessions(db)  # lazy GC — 만료 세션 정리(테이블 비대화 방지).
         token = create_session(db, user.id, ttl_hours=get_settings().web_session_ttl_hours)
-        return LoginResponse(token=token, username=user.username)
+        return LoginResponse(token=token, username=user.username, role=user.role)
 
     @app.post("/auth/logout")
     def logout(
@@ -55,9 +56,9 @@ def register_auth(
         delete_session(db, _bearer(authorization))
         return {"ok": True}
 
-    @app.get("/auth/me")
-    def me(user: UserRow = Depends(require_user)) -> dict[str, str]:
-        return {"username": user.username}
+    @app.get("/auth/me", response_model=MeResponse)
+    def me(user: UserRow = Depends(require_user)) -> MeResponse:
+        return MeResponse(username=user.username, role=user.role)
 
 
 def make_require_user(
@@ -75,3 +76,19 @@ def make_require_user(
         return user
 
     return require_user
+
+
+def make_require_admin(
+    require_user: Callable[..., UserRow],
+) -> Callable[..., UserRow]:
+    """관리자 전용 라우트 의존성 — 인증(require_user) 후 role==admin 이 아니면 403.
+
+    require_user 를 그대로 의존성으로 재사용해 토큰 검증을 한 곳에서만 한다.
+    """
+
+    def require_admin(user: UserRow = Depends(require_user)) -> UserRow:
+        if user.role != ROLE_ADMIN:
+            raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다")
+        return user
+
+    return require_admin
