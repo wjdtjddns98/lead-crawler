@@ -63,3 +63,14 @@ export interface AuditEntry {
   company_name: string;
   at: string | null;
 }
+
+export type Listed = "unknown" | "listed" | "unlisted";
+
+export interface CrawlTarget {
+  countries: string;
+  industries: string;
+  listed: Listed;
+  persist: boolean;
+  updated_by: string | null;
+  updated_at: string | null;
+}

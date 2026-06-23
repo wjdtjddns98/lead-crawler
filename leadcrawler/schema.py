@@ -186,6 +186,28 @@ class ReviewAuditRow(Base):
     )
 
 
+class CrawlTargetRow(Base):
+    """다음 크롤 타깃 — 웹앱 관리자가 클릭으로 설정, 스케줄러가 매일 읽는다.
+
+    단일행(id='current')으로 "현재 타깃"을 보관한다. 행이 없거나 비면 스케줄러는 .env
+    (report_*) 로 폴백한다. 국가·업종은 쉼표구분 CSV, listed 는 unknown/listed/unlisted.
+    """
+
+    __tablename__ = "crawl_target"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)  # 단일행 'current'
+    countries: Mapped[str] = mapped_column(String(256), default="", server_default=text("''"))
+    industries: Mapped[str] = mapped_column(String(512), default="", server_default=text("''"))
+    listed: Mapped[str] = mapped_column(
+        String(16), default="unknown", server_default=text("'unknown'")
+    )
+    persist: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+
+
 class UserRow(Base):
     """검증 웹앱 직원 계정 — 로그인·assignee 식별. 비밀번호는 scrypt 해시만 저장."""
 

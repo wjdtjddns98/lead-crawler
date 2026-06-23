@@ -13,7 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..schema import UserRow
+from ..config import get_settings
+from ..schema import CrawlTargetRow, UserRow
 from ..security import (
     ROLE_ADMIN,
     count_admins,
@@ -22,7 +23,15 @@ from ..security import (
     validate_role,
 )
 from ..storage.audit import recent_audit, user_stats
-from .schemas import AuditEntry, CreateUserRequest, RoleUpdateRequest, UserStatsItem
+from ..storage.crawl_target import get_crawl_target, set_crawl_target
+from .schemas import (
+    AuditEntry,
+    CrawlTargetInfo,
+    CrawlTargetRequest,
+    CreateUserRequest,
+    RoleUpdateRequest,
+    UserStatsItem,
+)
 
 
 def _lock_admin_rows(db: Session) -> None:
@@ -147,6 +156,55 @@ def register_admin(
     ) -> list[AuditEntry]:
         """최근 검증 처리 이력(누가·언제·무엇), 최신순."""
         return [AuditEntry(**row) for row in recent_audit(db, limit=limit, offset=offset)]
+
+    @app.get("/admin/crawl-target", response_model=CrawlTargetInfo)
+    def read_crawl_target(
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> CrawlTargetInfo:
+        """현재 크롤 타깃을 반환한다(미설정이면 .env 기본값으로 폼 초기값 제공)."""
+        row = get_crawl_target(db)
+        if row is not None:
+            return _target_info(row)
+        s = get_settings()  # DB 미설정 → 스케줄러가 폴백하는 .env 값을 그대로 표시.
+        return CrawlTargetInfo(
+            countries=s.report_countries,
+            industries=s.report_industries,
+            listed="unknown",
+            persist=s.report_persist,
+        )
+
+    @app.put("/admin/crawl-target", response_model=CrawlTargetInfo)
+    def update_crawl_target(
+        body: CrawlTargetRequest,
+        db: Session = Depends(get_db),
+        admin: UserRow = Depends(require_admin),
+    ) -> CrawlTargetInfo:
+        """다음 크롤 타깃을 설정한다(관리자). listed 는 unknown/listed/unlisted."""
+        try:
+            row = set_crawl_target(
+                db,
+                countries=body.countries,
+                industries=body.industries,
+                listed=body.listed,
+                persist=body.persist,
+                updated_by=admin.username,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _target_info(row)
+
+
+def _target_info(row: CrawlTargetRow) -> CrawlTargetInfo:
+    """크롤 타깃 행 → DTO(시각 ISO8601)."""
+    return CrawlTargetInfo(
+        countries=row.countries,
+        industries=row.industries,
+        listed=row.listed,
+        persist=row.persist,
+        updated_by=row.updated_by,
+        updated_at=row.updated_at.isoformat() if row.updated_at else None,
+    )
 
 
 def _stats_item(db: Session, user: UserRow) -> UserStatsItem:

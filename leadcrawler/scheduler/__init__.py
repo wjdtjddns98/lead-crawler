@@ -28,6 +28,43 @@ def _today_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _load_db_target(
+    settings: Settings,
+) -> tuple[list[str], list[str] | None, str, bool] | None:
+    """DB 크롤 타깃을 (업종, 국가|None, listed, persist)로 읽는다(없거나 실패면 None).
+
+    DB 미구성/미마이그레이션/빈 행은 모두 None 으로 폴백시킨다(dry_run·DB없는 환경 안전).
+    세션이 열린 동안 값을 평탄화해 detached 접근을 피한다.
+    """
+    try:
+        from ..storage.crawl_target import get_crawl_target
+        from ..storage.db import get_sessionmaker
+
+        session = get_sessionmaker(settings)()
+        try:
+            row = get_crawl_target(session)
+            if row is None or not row.industries.strip():
+                return None
+            inds = [s for s in row.industries.split(",") if s.strip()]
+            ctys = [s for s in row.countries.split(",") if s.strip()] or None
+            return inds, ctys, (row.listed or "unknown"), row.persist
+        finally:
+            session.close()
+    except Exception as exc:  # DB 없음/미마이그레이션 등 — .env 폴백(운영 가시성 위해 warning).
+        log.warning("scheduler.target.db_unavailable", err=str(exc))
+        return None
+
+
+def _effective_target(settings: Settings) -> tuple[list[str], list[str] | None, str, bool]:
+    """이번 크롤 타깃 — DB(웹앱 관리자 설정) 우선, 없으면 .env(report_*) 폴백."""
+    db = _load_db_target(settings)
+    if db is not None:
+        return db
+    inds = [s for s in settings.report_industries.split(",") if s.strip()] or ["건설"]
+    ctys = [s for s in settings.report_countries.split(",") if s.strip()] or None
+    return inds, ctys, "unknown", settings.report_persist
+
+
 def run_daily_report(
     settings: Settings | None = None, *, date: str | None = None
 ) -> dict[str, dict]:
@@ -38,10 +75,9 @@ def run_daily_report(
     """
     settings = settings or get_settings()
     report_date = date or _today_utc()
-    inds = [s for s in settings.report_industries.split(",") if s.strip()] or ["건설"]
-    ctys = [s for s in settings.report_countries.split(",") if s.strip()] or None
-    segments = generate_segments(inds, countries=ctys)
-    leads = run_pipeline(segments, settings=settings, persist=settings.report_persist)
+    inds, ctys, listed, persist = _effective_target(settings)
+    segments = generate_segments(inds, countries=ctys, listed=[listed])
+    leads = run_pipeline(segments, settings=settings, persist=persist)
     result = auto_report(
         leads, date=report_date, settings=settings, milestone=settings.report_milestone
     )

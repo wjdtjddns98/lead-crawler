@@ -3,6 +3,8 @@
 // 모든 보호 요청에 Authorization: Bearer 헤더로 동반한다. 401 이면 세션을 비우고 콜백 통지.
 import type {
   AuditEntry,
+  CrawlTarget,
+  Listed,
   LoginResponse,
   QueueResponse,
   ReviewItem,
@@ -170,6 +172,27 @@ export async function setUserActive(id: string, active: boolean): Promise<UserSt
 export async function fetchAudit(limit = 100): Promise<AuditEntry[]> {
   return jsonOrThrow<AuditEntry[]>(
     await fetch(`${BASE}/admin/audit?limit=${limit}`, { headers: authHeaders() }),
+  );
+}
+
+export async function fetchCrawlTarget(): Promise<CrawlTarget> {
+  return jsonOrThrow<CrawlTarget>(
+    await fetch(`${BASE}/admin/crawl-target`, { headers: authHeaders() }),
+  );
+}
+
+export async function saveCrawlTarget(t: {
+  countries: string;
+  industries: string;
+  listed: Listed;
+  persist: boolean;
+}): Promise<CrawlTarget> {
+  return jsonOrThrow<CrawlTarget>(
+    await fetch(`${BASE}/admin/crawl-target`, {
+      method: "PUT",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(t),
+    }),
   );
 }
 
