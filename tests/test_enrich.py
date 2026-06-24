@@ -45,6 +45,18 @@ def test_extract_emails_excludes_hr_and_press() -> None:
     assert emails["ir@acme.co.kr"].confidence >= emails["info@acme.co.kr"].confidence
 
 
+def test_extract_emails_rejects_asset_filenames_and_placeholders() -> None:
+    # 이미지 파일명(@2x...jpg)·예시 도메인(example.com)이 이메일로 새지 않는다.
+    html = (
+        "<body>진짜 ir@good.com · 가짜이미지 banner_homepage-texture-1@2x-992x379.jpg"
+        " · 플레이스홀더 address@example.com</body>"
+    )
+    emails = {c.value for c in extract_emails(html)}
+    assert "ir@good.com" in emails
+    assert not any(".jpg" in e for e in emails)
+    assert "address@example.com" not in emails
+
+
 def test_extract_phones() -> None:
     phones = extract_phones(_HOME)
     assert any("1234-5678" in p.value for p in phones)

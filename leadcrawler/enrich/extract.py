@@ -20,6 +20,26 @@ _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\
 # 신뢰불가 페이지의 본문 정규식 스캔 길이 상한(ReDoS/대용량 CPU 방지).
 _MAX_TEXT_SCAN = 200_000
 
+# 가짜 이메일 차단: ① 도메인 TLD 가 자산 확장자면 이미지/파일명 오탐(예:
+# 'banner@2x-992x379.jpg' → TLD 'jpg'), ② 예시·템플릿 플레이스홀더 도메인.
+_ASSET_TLDS = frozenset({
+    "jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico", "css", "js",
+    "pdf", "zip", "mp4", "mp3", "woff", "woff2", "ttf", "eot",
+})
+_PLACEHOLDER_DOMAINS = frozenset({
+    "example.com", "example.org", "example.net", "domain.com", "yourdomain.com",
+    "yourcompany.com", "company.com", "sentry.io", "wix.com", "wixpress.com",
+})
+
+
+def _is_junk_email(addr: str) -> bool:
+    """이미지/자산 파일명 오탐과 예시·플레이스홀더 도메인을 가짜로 판정한다."""
+    domain = addr.rsplit("@", 1)[-1]
+    if not domain:
+        return True
+    tld = domain.rsplit(".", 1)[-1]
+    return tld in _ASSET_TLDS or domain in _PLACEHOLDER_DOMAINS
+
 # IR/문의 후보 페이지를 가리키는 링크 키워드(BFS 우선순위).
 _IR_HINTS = ("investor", "ir", "투자", "투자자")
 _CONTACT_HINTS = ("contact", "inquiry", "문의", "고객", "about", "회사소개", "company")
@@ -45,7 +65,7 @@ def extract_emails(
 
     def _add(addr: str, confidence: float) -> None:
         addr = addr.strip().strip(".").lower()
-        if not addr or addr in found:
+        if not addr or addr in found or _is_junk_email(addr):
             return
         role = classify_role(addr)
         if not is_accepted(role):  # HR/언론/개인 배제.
@@ -88,7 +108,7 @@ def emails_from_text(
     found: dict[str, Contact] = {}
     for m in _EMAIL_RE.findall((text or "")[:_MAX_TEXT_SCAN]):
         addr = m.strip().strip(".").lower()
-        if addr in found:
+        if addr in found or _is_junk_email(addr):
             continue
         role = classify_role(addr)
         if not is_accepted(role):  # HR/언론/개인 배제.
