@@ -20,6 +20,15 @@ function safeHref(url: string | null): string | null {
   }
 }
 
+// URL 에서 표시용 호스트(도메인)를 뽑는다(www. 제거). 실패 시 원문.
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
 // 불리언/널 3-state 를 O/X/— 로 표시.
 function tri(v: boolean | null): string {
   if (v === null) return "—";
@@ -95,8 +104,14 @@ const QueueRow = memo(
         </td>
         <td>
           {href ? (
-            <a href={href} target="_blank" rel="noreferrer">
-              {item.site_alive ? "↗ 생존" : "↗"}
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className={item.site_alive ? "" : "site-dead"}
+              title={item.site_alive ? "사이트 생존" : "사이트 미응답"}
+            >
+              ↗ {hostOf(href)}
             </a>
           ) : (
             <span className="muted">—</span>

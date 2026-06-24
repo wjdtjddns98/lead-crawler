@@ -267,6 +267,12 @@ a {
   color: var(--accent);
 }
 
+/* 사이트 미응답(site_alive=false) 링크 — 도메인은 보이되 죽은 표시(취소선·흐림). */
+.site-dead {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
 .muted {
   color: var(--muted);
 }

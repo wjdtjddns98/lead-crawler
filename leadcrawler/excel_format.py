@@ -48,12 +48,15 @@ def build_row(lead: CompanyLead) -> list[str]:
     else:
         email_exist = "X"
 
+    # E: 홈페이지 문의 — 폼 있으면 폼 URL(클릭 이동), 없으면 X.
+    form_cell = lead.form.value if has_form else "X"
+
     return [
         c.country,                                  # A 국가
         c.name,                                     # B 업체명
         lead.phone.value if lead.phone else "",     # C 연락처(공란 허용)
         lead.email.value if has_email else "",      # D 이메일
-        ox(has_form),                               # E 홈페이지 문의(O/X)
+        form_cell,                                  # E 홈페이지 문의(폼 URL 또는 X)
         c.homepage or c.domain or "",               # F 사이트
         "",                                          # G 담당 부서(공란)
         "",                                          # H 담당자(공란)
