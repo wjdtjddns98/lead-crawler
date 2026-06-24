@@ -64,6 +64,18 @@ export interface AuditEntry {
   at: string | null;
 }
 
+export interface CountryOption {
+  iso2: string;
+  label: string;
+  aliases: string[];
+}
+
+export interface IndustryOption {
+  value: string;
+  label: string;
+  aliases: string[];
+}
+
 export type Listed = "unknown" | "listed" | "unlisted";
 
 export interface CrawlTarget {

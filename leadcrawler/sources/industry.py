@@ -105,6 +105,29 @@ def industry_search_term(industry: str) -> str:
     return _EN_INDUSTRY.get(key, industry.strip())
 
 
+def supported_industries() -> tuple[tuple[str, str], ...]:
+    """선택 가능한 표준 업종 목록 (한글명, 영문 검색어) — 업종 선택 UI 의 단일 출처.
+
+    여기 있는 업종만 등록처 코드(KSIC/SIC/UK SIC)로 정확히 필터된다. 자유 텍스트 입력은
+    오타·미매핑으로 필터가 통째로 풀려 비대상 업종이 섞이므로(집계원 폴백), UI 는 이
+    목록에서만 고르게 해 업종 정밀도를 보장한다.
+    """
+    return tuple(_EN_INDUSTRY.items())
+
+
+def is_specific_industry(industry: str) -> bool:
+    """업종이 '구체적'(알려진 매핑 업종)인지 — 집계원(GLEIF/Wikidata/거래소) 게이팅 기준.
+
+    구체 업종이면 업종 필터를 못 하는 집계원·거래소 소스를 끄고 등록처(코드 필터)와
+    검색(키워드 필터)에 맡긴다(정밀도 우선). 빈값·미매핑('전체'·'기타' 등)은 '광범위'로
+    보아 집계원을 그대로 둔다(광범위 발견의 유일 출처일 수 있으므로).
+    """
+    key = (industry or "").strip().lower()
+    if not key:
+        return False
+    return key in _EN_INDUSTRY or key in _KSIC or key in _SIC or key in _UK_SIC
+
+
 def ksic_prefixes(industry: str) -> tuple[str, ...] | None:
     """업종명에 대응하는 KSIC 접두 집합(없으면 None)."""
     return _KSIC.get(industry.strip().lower())

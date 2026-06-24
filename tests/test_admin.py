@@ -270,6 +270,41 @@ def test_set_then_get_crawl_target(admin: TestClient) -> None:
     assert got["updated_at"] is not None
 
 
+def test_list_countries(admin: TestClient) -> None:
+    from leadcrawler.sources.countries import supported_countries
+
+    rows = admin.get("/admin/countries").json()
+    assert len(rows) == len(supported_countries())  # 지원 국가 전체.
+    by_iso = {r["iso2"]: r["label"] for r in rows}
+    # 한글 라벨이 별칭에서 정확히 추출된다.
+    assert by_iso["KR"] == "대한민국"
+    assert by_iso["US"] == "미국"
+    assert by_iso["GB"] == "영국"
+    assert rows[0]["iso2"] == "US"  # 우선순위 순서 보존(supported_countries 순).
+    # 별칭 노출 — 'UK'로 검색해도 영국(GB)이 잡히게 한다.
+    gb = next(r for r in rows if r["iso2"] == "GB")
+    assert "uk" in gb["aliases"]
+
+
+def test_worker_cannot_list_countries(worker: TestClient) -> None:
+    assert worker.get("/admin/countries").status_code == 403
+
+
+def test_list_industries(admin: TestClient) -> None:
+    from leadcrawler.sources.industry import supported_industries
+
+    rows = admin.get("/admin/industries").json()
+    assert len(rows) == len(supported_industries())
+    by_val = {r["value"]: r for r in rows}
+    assert "건설" in by_val and by_val["건설"]["label"] == "건설"
+    # 영문 별칭으로 검색 가능하게 노출('construction'→건설).
+    assert "construction" in by_val["건설"]["aliases"]
+
+
+def test_worker_cannot_list_industries(worker: TestClient) -> None:
+    assert worker.get("/admin/industries").status_code == 403
+
+
 def test_worker_cannot_read_target(worker: TestClient) -> None:
     assert worker.get("/admin/crawl-target").status_code == 403
 

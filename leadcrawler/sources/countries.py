@@ -10,7 +10,11 @@
 
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel
+
+_HANGUL = re.compile(r"[가-힣]")
 
 
 class Country(BaseModel):
@@ -58,3 +62,11 @@ def resolve_country(name: str) -> Country | None:
 def supported_countries() -> tuple[Country, ...]:
     """등록된 국가 목록(우선순위 순) — 국가 세그먼트 제너레이터의 출처."""
     return _COUNTRIES
+
+
+def korean_label(country: Country) -> str:
+    """국가의 한글 표시명(별칭 중 한글) — UI 표시용. 한글 별칭이 없으면 ISO2."""
+    for alias in country.aliases:
+        if _HANGUL.search(alias):
+            return alias
+    return country.iso2

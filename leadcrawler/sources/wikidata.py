@@ -21,6 +21,7 @@ from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company
 from .countries import resolve_country
 from .http import Fetcher, SupportsFetch
+from .industry import is_specific_industry
 
 log = get_logger("sources.wikidata")
 
@@ -55,8 +56,11 @@ class WikidataSource:
         self._fetcher = fetcher
 
     def applies_to(self, segment: Segment) -> bool:
-        """QID 해석 가능한 국가 세그먼트에 적용된다(업종 무관)."""
-        return resolve_country(segment.country) is not None
+        """QID 해석 가능한 국가 세그먼트에 적용된다. 단 구체 업종 지정 시엔 제외 —
+        Wikidata 질의가 업종 필터를 안 해 비대상 업종을 섞으므로(정밀도 우선)."""
+        return resolve_country(segment.country) is not None and not is_specific_industry(
+            segment.industry
+        )
 
     def discover(self, segment: Segment) -> list[DiscoveredCompany]:
         """세그먼트 국가의 기업 목록을 반환한다(공식 웹사이트 보유 우선 가치)."""

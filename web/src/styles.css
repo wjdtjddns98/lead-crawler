@@ -134,6 +134,10 @@ h1 {
   margin-bottom: 12px;
 }
 
+.table-scroll {
+  overflow-x: auto; /* 매우 좁은 화면 안전망(평상시엔 fixed 비율로 한 화면에 들어옴). */
+}
+
 table.queue {
   width: 100%;
   border-collapse: collapse;
@@ -143,11 +147,20 @@ table.queue {
   overflow: hidden;
 }
 
+/* 검증 큐 표(.table-scroll 로 감싼 것)에만 컬럼 폭을 비율로 고정 — 컬럼이 1글자 폭으로
+   압축돼 글자가 세로로 깨지는 것을 막는다. 계정·감사 표는 같은 .queue 라도 컬럼 수가
+   달라 이 규칙을 받으면 안 되므로 .table-scroll 로 스코프를 한정한다. */
+.table-scroll table.queue {
+  table-layout: fixed;
+}
+
 .queue th,
 .queue td {
   text-align: left;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  overflow-wrap: anywhere; /* 긴 이메일·도메인은 칸 폭에 맞춰 줄바꿈(세로 1글자 금지). */
 }
 
 .queue th {
@@ -156,6 +169,44 @@ table.queue {
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  white-space: nowrap; /* 헤더는 항상 한 줄 가로. */
+}
+
+/* 컬럼 폭(table-layout:fixed 기준, 합 100%): 업체명·이메일은 넓게, 단문 컬럼은 좁게. */
+/* 8컬럼: 검증·MX·SMTP 를 '메일' 한 칸으로 합쳐 밀도를 높였다(합 100%). */
+.table-scroll .queue th:nth-child(1) { width: 16%; } /* 업체명 */
+.table-scroll .queue th:nth-child(2) { width: 6%; }  /* 국가 */
+.table-scroll .queue th:nth-child(3) { width: 8%; }  /* 구분 */
+.table-scroll .queue th:nth-child(4) { width: 27%; } /* 이메일 후보 */
+.table-scroll .queue th:nth-child(5) { width: 14%; } /* 메일(검증·MX·SMTP) */
+.table-scroll .queue th:nth-child(6) { width: 8%; }  /* 사이트 */
+.table-scroll .queue th:nth-child(7) { width: 11%; } /* 상태 */
+.table-scroll .queue th:nth-child(8) { width: 10%; } /* 액션 */
+
+/* 메일 통합 칸 — 선택 이메일의 검증 뱃지 + MX/SMTP 신호를 한 칸에 압축. */
+.mailstat {
+  font-size: 12px;
+}
+
+.mailstat .sig {
+  color: var(--muted);
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
+/* 상태별 행 좌측 색 띠(한눈에 스캔) + hover 하이라이트 — 검증 큐 표에만. */
+.table-scroll tr.row-pending td:first-child {
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+.table-scroll tr.row-confirmed td:first-child {
+  box-shadow: inset 3px 0 0 var(--green);
+}
+.table-scroll tr.row-rejected td:first-child {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
+.table-scroll .queue tbody tr:hover {
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .queue tr.done {
@@ -179,22 +230,37 @@ table.queue {
 
 .cand {
   display: flex;
-  align-items: center;
+  align-items: flex-start; /* 이메일이 두 줄로 접혀도 라디오는 위 정렬. */
   gap: 6px;
   cursor: pointer;
 }
 
 .cand input {
   cursor: pointer;
+  flex: none; /* 라디오가 찌그러지지 않게 고정. */
+  margin-top: 2px;
 }
 
-.cand-val {
+.cand-val,
+.cand-single {
   font-family: "Consolas", monospace;
+  overflow-wrap: anywhere; /* 긴 이메일은 칸 안에서 줄바꿈(가로 유지, 세로 1글자 금지). */
+}
+
+.cand-single {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .actions {
   display: flex;
   gap: 6px;
+}
+
+/* 검증 큐의 좁은(고정폭) 액션 칸에서만 버튼이 넘치면 다음 줄로 — 계정·감사 표는 영향 없음. */
+.table-scroll .actions {
+  flex-wrap: wrap;
 }
 
 a {
@@ -216,6 +282,7 @@ a {
   border-radius: 10px;
   font-size: 12px;
   border: 1px solid var(--line);
+  white-space: nowrap; /* 'valid'/'risky' 등 뱃지 글자는 절대 쪼개지지 않게(세로 방지). */
 }
 
 .badge-pending {
@@ -390,4 +457,119 @@ a {
 
 .crawl-target label.inline input {
   min-width: 0;
+}
+
+/* 멀티셀렉트 피커(국가·업종 공용 — 검색 + 체크리스트) ----------------- */
+.crawl-target .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.multi-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 260px;
+}
+
+.multi-picker .picker-search {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: 6px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.picker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.picker-chips .chip {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.picker-chips .chip:hover {
+  border-color: var(--muted);
+}
+
+.picker-chips .chip .chip-x {
+  color: var(--muted);
+  margin-left: 2px;
+}
+
+.picker-chips .chip-clear {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.picker-all {
+  margin: 0;
+  font-size: 12px;
+}
+
+.picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+/* .multi-picker 로 스코프해 `.crawl-target label`(flex-direction:column)을 이긴다 —
+   안 그러면 체크박스·국가명·코드가 세로로 쌓인다. */
+.multi-picker .picker-item {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.multi-picker .picker-item:hover {
+  background: var(--line);
+}
+
+.multi-picker .picker-item input {
+  min-width: 0;
+  margin: 0;
+  flex: none;
+}
+
+.picker-name {
+  flex: 1;
+}
+
+.picker-code {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.picker-empty {
+  padding: 8px 6px;
+  font-size: 13px;
 }

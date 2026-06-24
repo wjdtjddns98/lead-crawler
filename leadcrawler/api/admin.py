@@ -22,13 +22,17 @@ from ..security import (
     delete_user_sessions,
     validate_role,
 )
+from ..sources.countries import korean_label, supported_countries
+from ..sources.industry import supported_industries
 from ..storage.audit import recent_audit, user_stats
 from ..storage.crawl_target import get_crawl_target, set_crawl_target
 from .schemas import (
     AuditEntry,
+    CountryOption,
     CrawlTargetInfo,
     CrawlTargetRequest,
     CreateUserRequest,
+    IndustryOption,
     RoleUpdateRequest,
     UserStatsItem,
 )
@@ -156,6 +160,26 @@ def register_admin(
     ) -> list[AuditEntry]:
         """최근 검증 처리 이력(누가·언제·무엇), 최신순."""
         return [AuditEntry(**row) for row in recent_audit(db, limit=limit, offset=offset)]
+
+    @app.get("/admin/countries", response_model=list[CountryOption])
+    def list_countries(
+        _admin: UserRow = Depends(require_admin),
+    ) -> list[CountryOption]:
+        """크롤이 지원하는 국가 목록(우선순위 순) — 타깃 국가 선택 UI 의 단일 출처."""
+        return [
+            CountryOption(iso2=c.iso2, label=korean_label(c), aliases=list(c.aliases))
+            for c in supported_countries()
+        ]
+
+    @app.get("/admin/industries", response_model=list[IndustryOption])
+    def list_industries(
+        _admin: UserRow = Depends(require_admin),
+    ) -> list[IndustryOption]:
+        """선택 가능한 표준 업종 목록 — 타깃 업종 선택 UI 의 단일 출처(필터 가능한 업종만)."""
+        return [
+            IndustryOption(value=ko, label=ko, aliases=[en])
+            for ko, en in supported_industries()
+        ]
 
     @app.get("/admin/crawl-target", response_model=CrawlTargetInfo)
     def read_crawl_target(
