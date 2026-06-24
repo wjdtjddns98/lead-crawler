@@ -41,7 +41,10 @@ class Settings(BaseSettings):
     # 검색엔진 발견
     google_cse_key: str = Field(default="")
     google_cse_cx: str = Field(default="")
+    serper_api_key: str = Field(default="")  # Serper.dev SERP API(유료·CSE 신규차단 대체)
     bing_api_key: str = Field(default="")
+    # 검색 공급자 선택: auto(serper 키>cse 키) | serper | cse | none.
+    search_provider: str = Field(default="auto")
 
     # 도메인 해석(opt-in) — 발견 소스가 도메인을 못 준 기업(GLEIF 등)을 회사명+국가로
     # 검색해 공식 도메인을 채운다. Google CSE 키 필요(무료 100/일), dry_run no-op.

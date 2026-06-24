@@ -82,7 +82,7 @@ def run_pipeline(
     # 도메인 해석(opt-in·라이브) — 발견이 도메인을 못 준 기업(GLEIF 등)을 회사명으로 보강.
     # 없으면 enrich 가 즉시 빈손이라 사이트·이메일을 못 얻는다(핵심 커버리지 갭 해소).
     resolver = (
-        DomainResolver(settings)
+        DomainResolver(settings, cost_ledger=cost_ledger)
         if settings.resolve_domains and not settings.dry_run
         else None
     )
@@ -94,7 +94,7 @@ def run_pipeline(
             seen |= load_seen_keys(session)
             seen_domains |= load_seen_domains(session)
         for segment in segments:
-            for dc in discover_segment(segment, settings):
+            for dc in discover_segment(segment, settings, cost_ledger=cost_ledger):
                 dom = normalize_domain(dc.domain) if dc.domain else None
                 if dc.canonical_key in seen or (dom is not None and dom in seen_domains):
                     log.info("dedup.skip", key=dc.canonical_key)

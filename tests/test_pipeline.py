@@ -31,7 +31,7 @@ def test_cross_segment_domain_dedup(monkeypatch) -> None:
     # 같은 도메인을 서로 다른 세그먼트가 다른 key(reg:/dom:)로 잡아도 런 전체에서 1회만 추출.
     from leadcrawler.sources.base import DiscoveredCompany
 
-    def _fake_discover(segment, settings):  # noqa: ARG001
+    def _fake_discover(segment, settings, cost_ledger=None):  # noqa: ARG001
         if segment.industry == "건설":
             return [DiscoveredCompany(
                 canonical_key="reg:dart:001", name="삼성", domain="samsung.com",
