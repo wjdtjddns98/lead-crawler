@@ -1,0 +1,229 @@
+"""웹 직접 크롤 — 백그라운드 실행·진행현황·취소.
+
+웹앱 관리자가 '지금 크롤 실행'을 누르면 :func:`trigger_crawl_job` 이 crawl_job 행을
+만들고 데몬 스레드에서 :func:`run_pipeline` 을 돌린다(요청은 즉시 202 로 반환). 스레드는
+짧은 세션을 열어 카운터를 갱신하고 취소 플래그를 폴링한다(현황은 GET 폴링으로 노출).
+
+동시 1건 제한: 이 프로세스 안에서 크롤은 한 번에 하나만 — uvicorn 단일 프로세스라
+모듈 락으로 충분하다. 프로세스가 죽어 남은 stale running 행은 다음 트리거가 정리한다.
+스케줄러(별도 프로세스)와의 동시 실행은 막지 않지만, 파이프라인이 기업 단위 트랜잭션·
+중복가드로 동시 적재에 안전하다(겹쳐도 데이터 손상 없음).
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections.abc import Callable
+from datetime import datetime, timezone
+
+from sqlalchemy.orm import sessionmaker
+
+from ..config import Settings
+from ..logging import get_logger
+from ..sources.base import Segment
+from ..sources.segments import generate_segments
+from ..storage.crawl_job import (
+    CANCELLED,
+    DONE,
+    FAILED,
+    create_crawl_job,
+    crawl_job_dict,
+    fail_running_jobs,
+    is_cancel_requested,
+    update_crawl_job,
+)
+from ..storage.db import get_sessionmaker
+from .run import run_pipeline
+
+log = get_logger("crawl_job")
+
+# 동시 1건 가드 — 단일 프로세스(uvicorn) 기준. 스레드가 끝날 때 _running 을 False 로 되돌린다.
+_guard = threading.Lock()
+_running = False
+
+# 진행 카운터 DB 반영 최소 간격(초) — 기업마다 쓰면 커넥션 churn 이 커서 throttle. 최종
+# 카운터는 파이프라인 종료 후 한 번 강제로 확정 기록한다(정확성 보장).
+_PROGRESS_THROTTLE_SEC = 1.5
+
+# 테스트가 동기 실행을 주입할 수 있게 하는 러너 시그니처(기본은 데몬 스레드 spawn).
+JobRunner = Callable[[Settings, str, list[Segment], bool], None]
+
+
+class CrawlBusy(RuntimeError):
+    """이미 진행 중인 크롤이 있어 새 크롤을 시작할 수 없음(동시 1건 제한)."""
+
+
+class CrawlTooLarge(ValueError):
+    """요청 세그먼트 수가 상한(crawl_max_segments)을 초과 — 우발적 대량 크롤 차단."""
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def is_crawl_running() -> bool:
+    """이 프로세스에서 크롤 스레드가 도는 중인지(가드 상태)."""
+    return _running
+
+
+def trigger_crawl_job(
+    settings: Settings,
+    *,
+    countries: str,
+    industries: str,
+    listed: str,
+    persist: bool,
+    triggered_by: str | None,
+    runner: JobRunner | None = None,
+) -> dict[str, object]:
+    """크롤 작업을 만들고 백그라운드 실행을 시작한다 — 작업 스냅샷(dict) 반환.
+
+    이미 진행 중이면 :class:`CrawlBusy`. ``runner`` 주입 시 그것으로 실행(테스트 동기화).
+    """
+    global _running
+    inds = [s for s in industries.split(",") if s.strip()]
+    ctys = [s for s in countries.split(",") if s.strip()] or None
+    segments = generate_segments(inds, countries=ctys, listed=[listed])
+    if len(segments) > settings.crawl_max_segments:
+        raise CrawlTooLarge(
+            f"세그먼트 {len(segments)}개가 상한({settings.crawl_max_segments})을 초과합니다. "
+            "국가/업종을 좁히세요."
+        )
+
+    with _guard:
+        if _running:
+            raise CrawlBusy("이미 진행 중인 크롤이 있습니다")
+        _running = True
+    try:
+        session = get_sessionmaker(settings)()
+        try:
+            # _running 이 False 였다 = 이 프로세스에 살아있는 크롤 스레드가 없었다는 뜻.
+            # crawl_job 은 웹 트리거 전용이므로 남아있는 running 행은 전부 비정상 종료
+            # 잔재다 → 모두 failed 로 정리(다중 잔재 누적·현황 오염 방지).
+            fail_running_jobs(session, "중단됨(프로세스 재시작 또는 비정상 종료)")
+            row = create_crawl_job(
+                session,
+                countries=countries,
+                industries=industries,
+                listed=listed,
+                persist=persist,
+                segments_total=len(segments),
+                triggered_by=triggered_by,
+            )
+            info = crawl_job_dict(row)
+            session.commit()
+        finally:
+            session.close()
+    except Exception:
+        with _guard:  # 행 생성 실패 — 가드 해제(스레드를 못 띄웠으니 직접 되돌린다).
+            _running = False
+        raise
+
+    job_id = str(info["id"])
+    log.info("crawl_job.start", job=job_id, countries=countries, industries=industries)
+    try:
+        (runner or _spawn_thread)(settings, job_id, segments, persist)
+    except Exception as exc:  # 스레드 spawn 실패 — 가드 누수 방지 + 작업을 failed 로.
+        log.warning("crawl_job.spawn_failed", job=job_id, err=str(exc))
+        _finalize(get_sessionmaker(settings), job_id, status=FAILED, error=f"실행 시작 실패: {exc}")
+        with _guard:
+            _running = False
+        raise
+    return info
+
+
+def _spawn_thread(settings: Settings, job_id: str, segments: list[Segment], persist: bool) -> None:
+    """데몬 스레드로 작업을 실행한다(요청 스레드를 막지 않음)."""
+    thread = threading.Thread(
+        target=run_crawl_job,
+        args=(settings, job_id, segments, persist),
+        name=f"crawl-{job_id}",
+        daemon=True,
+    )
+    thread.start()
+
+
+def run_crawl_job(
+    settings: Settings, job_id: str, segments: list[Segment], persist: bool
+) -> None:
+    """작업 본체 — 파이프라인을 돌리며 카운터/취소를 DB로 중계하고 종료 상태를 적는다.
+
+    진행/취소/종료는 각각 짧은 세션으로 처리해(읽기 커밋·identity-map stale 회피) 다른
+    트랜잭션(취소 요청)이 켠 플래그를 즉시 본다. 예외는 status='failed'+error 로 기록한다.
+    """
+    global _running
+    sm = get_sessionmaker(settings)
+    # 카운터 throttle 상태 — 마지막 DB 반영 시각과 가장 최근 카운터(종료 후 강제 확정용).
+    state: dict[str, object] = {"last": 0.0, "counts": None}
+
+    def _on_progress(counts: dict[str, int]) -> None:
+        state["counts"] = counts
+        now = time.monotonic()
+        if now - float(state["last"]) >= _PROGRESS_THROTTLE_SEC:
+            state["last"] = now
+            _write_progress(sm, job_id, counts)
+
+    try:
+        run_pipeline(
+            segments,
+            settings=settings,
+            persist=persist,
+            on_progress=_on_progress,
+            should_cancel=lambda: _read_cancel(sm, job_id),
+        )
+        if state["counts"] is not None:  # throttle 로 누락된 최종 카운터를 확정 기록.
+            _write_progress(sm, job_id, state["counts"])  # type: ignore[arg-type]
+        final = CANCELLED if _read_cancel(sm, job_id) else DONE
+        _finalize(sm, job_id, status=final)
+    except Exception as exc:  # 크롤 실패 — 작업을 failed 로 남겨 현황에 노출(프로세스는 생존).
+        log.warning("crawl_job.failed", job=job_id, err=str(exc))
+        _finalize(sm, job_id, status=FAILED, error=str(exc)[:1000])
+    finally:
+        with _guard:
+            _running = False
+
+
+def _write_progress(sm: sessionmaker, job_id: str, counts: dict[str, int]) -> None:
+    """카운터 5종을 작업 행에 반영(짧은 세션). 실패해도 크롤은 계속(현황만 손실)."""
+    session = sm()
+    try:
+        update_crawl_job(
+            session,
+            job_id,
+            segments_total=counts["segments_total"],
+            segments_done=counts["segments_done"],
+            discovered=counts["discovered"],
+            enriched=counts["enriched"],
+            saved=counts["saved"],
+        )
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        log.warning("crawl_job.progress_failed", job=job_id, err=str(exc))
+    finally:
+        session.close()
+
+
+def _read_cancel(sm: sessionmaker, job_id: str) -> bool:
+    """취소 요청 플래그를 짧은 세션으로 읽는다(stale 회피)."""
+    session = sm()
+    try:
+        return is_cancel_requested(session, job_id)
+    finally:
+        session.close()
+
+
+def _finalize(
+    sm: sessionmaker, job_id: str, *, status: str, error: str | None = None
+) -> None:
+    """종료 상태(done/failed/cancelled)와 finished_at 을 기록한다."""
+    session = sm()
+    try:
+        update_crawl_job(session, job_id, status=status, error=error, finished_at=_now())
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        log.warning("crawl_job.finalize_failed", job=job_id, err=str(exc))
+    finally:
+        session.close()

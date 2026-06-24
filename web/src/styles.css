@@ -525,6 +525,24 @@ a {
   gap: 8px;
 }
 
+/* 직접 크롤 진행현황 패널 ------------------------------------------- */
+.crawl-progress {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.06);
+}
+
+.crawl-progress p {
+  margin: 4px 0;
+}
+
+.crawl-progress progress {
+  width: 100%;
+  height: 14px;
+}
+
 /* 멀티셀렉트 피커(국가·업종 공용 — 검색 + 체크리스트) ----------------- */
 .crawl-target .field {
   display: flex;

@@ -199,3 +199,47 @@ class CrawlTargetRequest(BaseModel):
         # 공백만 입력("   ")이 min_length 를 통과해 빈 타깃으로 저장→.env 폴백되는 갱
         # 을 막는다(트림 후 min_length 검증 → 빈 업종은 422).
         return v.strip() if isinstance(v, str) else v
+
+
+class CrawlJobRequest(BaseModel):
+    """직접 크롤 실행 요청(관리자 전용) — 폼 즉석 입력값으로 즉시 크롤.
+
+    크롤 타깃 저장과 무관하게, 이 요청의 국가/업종/상장/적재로 바로 1회전 크롤을 돈다.
+    업종은 최소 1개(빈 업종은 전 집계원 대상이라 과도한 발견 방지).
+    """
+
+    countries: str = ""
+    industries: str = Field(min_length=1, max_length=512)
+    listed: Literal["unknown", "listed", "unlisted"] = "unknown"
+    persist: bool = True
+
+    @field_validator("industries", mode="before")
+    @classmethod
+    def _strip_industries(cls, v: object) -> object:
+        return v.strip() if isinstance(v, str) else v
+
+
+class CrawlJobInfo(BaseModel):
+    """크롤 작업 현황 — 상태·진행 카운터(웹 폴링 표시용).
+
+    ``status``: idle(작업 없음) | running | done | failed | cancelled. 카운터는
+    discovered(중복제외 발견)·enriched(보강완료)·saved(실존 확인분)·segments_done/total.
+    """
+
+    id: str | None = None
+    status: str = "idle"
+    countries: str = ""
+    industries: str = ""
+    listed: str = "unknown"
+    persist: bool = True
+    segments_total: int = 0
+    segments_done: int = 0
+    discovered: int = 0
+    enriched: int = 0
+    saved: int = 0
+    error: str | None = None
+    cancel_requested: bool = False
+    triggered_by: str | None = None
+    started_at: str | None = None
+    updated_at: str | None = None
+    finished_at: str | None = None
