@@ -348,6 +348,60 @@ def test_scheduler_uses_db_target(admin: TestClient) -> None:
     assert persist is False
 
 
+# --- 직접 크롤(웹 트리거·현황·취소) ---------------------------------
+
+@pytest.fixture
+def _sync_crawl(monkeypatch):
+    """백그라운드 스레드 대신 동기 실행으로 바꿔 테스트를 결정적으로 만든다."""
+    import leadcrawler.pipeline.background as bg
+
+    def _run_now(settings, job_id, segments, persist):
+        bg.run_crawl_job(settings, job_id, segments, persist)
+
+    monkeypatch.setattr(bg, "_spawn_thread", _run_now)
+
+
+def test_worker_cannot_start_crawl(worker: TestClient) -> None:
+    r = worker.post("/admin/crawl", json={"industries": "건설", "countries": "KR"})
+    assert r.status_code == 403
+
+
+def test_crawl_status_idle_when_no_job(admin: TestClient) -> None:
+    body = admin.get("/admin/crawl").json()
+    assert body["status"] == "idle"
+
+
+def test_cancel_without_active_404(admin: TestClient) -> None:
+    assert admin.post("/admin/crawl/cancel").status_code == 404
+
+
+def test_start_crawl_requires_industries_422(admin: TestClient) -> None:
+    r = admin.post("/admin/crawl", json={"industries": "", "countries": "KR"})
+    assert r.status_code == 422
+
+
+def test_start_crawl_runs_and_reports(admin: TestClient, _sync_crawl) -> None:
+    # dry_run 동기 실행 → 작업이 완료되고 카운터가 채워진다.
+    r = admin.post("/admin/crawl", json={"industries": "건설", "countries": "KR"})
+    assert r.status_code == 202
+    assert r.json()["status"] == "running"  # 생성 직후 스냅샷.
+    status = admin.get("/admin/crawl").json()
+    assert status["status"] == "done"
+    assert status["segments_total"] == 1
+    assert status["discovered"] >= 1
+    assert status["triggered_by"] == _ADMIN
+    assert status["finished_at"] is not None
+
+
+def test_crawl_busy_returns_409(admin: TestClient, monkeypatch) -> None:
+    # 이미 진행 중(가드 점유)이면 새 크롤은 409.
+    import leadcrawler.pipeline.background as bg
+
+    monkeypatch.setattr(bg, "_running", True)
+    r = admin.post("/admin/crawl", json={"industries": "건설", "countries": "KR"})
+    assert r.status_code == 409
+
+
 def _uid(client: TestClient, username: str) -> str:
     rows = client.get("/admin/users").json()
     return next(r["id"] for r in rows if r["username"] == username)

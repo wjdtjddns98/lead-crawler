@@ -8,7 +8,7 @@ dry_run 에서는 모든 단계가 네트워크 없이 결정적으로 동작한
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -42,6 +42,10 @@ from ..verify.registry_active import build_registry_checker
 
 log = get_logger("pipeline")
 
+# 진행현황 콜백 시그니처 — 카운터 dict 를 받는다(웹 직접 크롤의 실시간 표시·DB 적재용).
+# 키: segments_total·segments_done·discovered(중복제외 발견)·enriched(보강완료)·saved(실존저장).
+ProgressCallback = Callable[[dict[str, int]], None]
+
 
 def _listed_of(dc: DiscoveredCompany) -> Listed:
     """발견 단계 상장정보 문자열을 :class:`Listed` 로 안전 변환(미상 fallback)."""
@@ -57,14 +61,32 @@ def run_pipeline(
     seen: set[str] | None = None,
     settings: Settings | None = None,
     persist: bool = False,
+    on_progress: ProgressCallback | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[CompanyLead]:
     """세그먼트들을 처리해 검증된 :class:`CompanyLead` 목록을 반환한다.
 
     ``persist=True`` 면 DB 세션을 열어 ① 발견 원장(discovered_company)에 모든 신규
     기업을 기록(죽은 기업도 — 제약 ① 재추출 방지)하고, ② 실존(active) 기업만 회사·
     연락처 테이블에 저장한다(제약 ②). 기존 ``seen`` 은 원장 key 와 합쳐 dedup 시드가 된다.
+
+    ``on_progress`` 가 주어지면 발견/보강/저장·세그먼트 진행 카운터 dict 를 단계마다
+    호출한다(웹 직접 크롤의 실시간 현황). ``should_cancel`` 이 매 기업 처리 직전 True 를
+    반환하면 협조적으로 중단한다(이미 처리된 결과는 보존). 둘 다 None 이면 기존 동작 그대로.
     """
     settings = settings or get_settings()
+    seg_list = list(segments)
+    progress = {
+        "segments_total": len(seg_list),
+        "segments_done": 0,
+        "discovered": 0,
+        "enriched": 0,
+        "saved": 0,
+    }
+
+    def _emit() -> None:
+        if on_progress is not None:
+            on_progress(dict(progress))
     seen = seen if seen is not None else set()
     # 도메인 동치 dedup(제약 ①) — 같은 기업이 등록처 key(reg:)와 검색 key(dom:)로 다르게
     # 잡혀도 정규화 도메인이 같으면 한 번만 추출한다. seen(키)과 짝을 이뤄 런 전체·DB 영속을
@@ -89,12 +111,20 @@ def run_pipeline(
 
     leads: list[CompanyLead] = []
     session: Session | None = get_sessionmaker(settings)() if persist else None
+    cancelled = False
     try:
         if session is not None:
             seen |= load_seen_keys(session)
             seen_domains |= load_seen_domains(session)
-        for segment in segments:
+        _emit()  # 초기 상태(세그먼트 총수) 통지 — 시작 즉시 진행바가 보이도록.
+        for segment in seg_list:
+            if should_cancel is not None and should_cancel():
+                cancelled = True
+                break
             for dc in discover_segment(segment, settings, cost_ledger=cost_ledger):
+                if should_cancel is not None and should_cancel():
+                    cancelled = True
+                    break  # 다음 기업 처리 전 협조적 중단(처리분은 보존).
                 dom = normalize_domain(dc.domain) if dc.domain else None
                 if dc.canonical_key in seen or (dom is not None and dom in seen_domains):
                     log.info("dedup.skip", key=dc.canonical_key)
@@ -120,7 +150,9 @@ def run_pipeline(
                         seen_domains.add(rdom)
                         dc = dc.model_copy(update={"domain": resolved})  # 도메인만 채움
 
+                progress["discovered"] += 1  # 중복제외 신규 발견(처리 대상 확정).
                 contacts = enricher.enrich(dc)
+                progress["enriched"] += 1
                 candidates = accepted_emails(contacts)
                 email = candidates[0] if candidates else None
                 phone = next((c for c in contacts if c.type is ContactType.PHONE), None)
@@ -155,9 +187,16 @@ def run_pipeline(
                     email_validation=validation, email_validations=validations,
                 )
                 leads.append(lead)
+                if lead.company.is_active:
+                    progress["saved"] += 1  # 실존 확인분(persist 면 회사·연락처 저장됨).
 
                 if session is not None:
                     _persist_lead(session, dc, lead)
+                _emit()  # 기업 1건 처리 완료 — 카운터 갱신 통지(폴링 표시).
+            if cancelled:
+                break
+            progress["segments_done"] += 1
+            _emit()
     finally:
         enricher.close()
         if session is not None:

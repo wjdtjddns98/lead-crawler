@@ -104,3 +104,30 @@ export interface CrawlTarget {
   updated_by: string | null;
   updated_at: string | null;
 }
+
+export type CrawlJobStatus =
+  | "idle"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export interface CrawlJob {
+  id: string | null;
+  status: CrawlJobStatus;
+  countries: string;
+  industries: string;
+  listed: Listed;
+  persist: boolean;
+  segments_total: number;
+  segments_done: number;
+  discovered: number;
+  enriched: number;
+  saved: number;
+  error: string | null;
+  cancel_requested: boolean;
+  triggered_by: string | null;
+  started_at: string | null;
+  updated_at: string | null;
+  finished_at: string | null;
+}

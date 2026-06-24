@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     review_claim_batch: int = Field(default=15, ge=1)
     review_claim_ttl_minutes: int = Field(default=30, ge=1)
 
+    # 웹 직접 크롤 — 한 번에 도는 세그먼트(국가×업종×상장) 상한. 빈 국가=지원 전체국이라
+    # 다업종 선택 시 세그먼트가 폭증할 수 있어, 우발적 대량 크롤(예산·시간 낭비)을 막는 캡.
+    crawl_max_segments: int = Field(default=500, ge=1)
+
     # 이메일 보강/검증
     hunter_api_key: str = Field(default="")
     apollo_api_key: str = Field(default="")

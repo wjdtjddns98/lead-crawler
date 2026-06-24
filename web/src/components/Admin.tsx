@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  cancelCrawl,
   changeUserRole,
   createUser,
   exportConfirmed,
   fetchAudit,
   fetchCountries,
+  fetchCrawlStatus,
   fetchCrawlTarget,
   fetchIndustries,
   fetchSendPreview,
@@ -12,9 +14,11 @@ import {
   saveCrawlTarget,
   sendCampaign,
   setUserActive,
+  startCrawl,
 } from "../api";
 import type {
   AuditEntry,
+  CrawlJob,
   CrawlTarget,
   Listed,
   Role,
@@ -62,6 +66,8 @@ export function Admin() {
   return (
     <div className="admin">
       {error && <div className="error">⚠ {error}</div>}
+
+      <CrawlNowSection />
 
       <CrawlTargetSection />
 
@@ -157,6 +163,178 @@ const LISTED_OPTIONS: { value: Listed; label: string }[] = [
   { value: "listed", label: "상장" },
   { value: "unlisted", label: "비상장" },
 ];
+
+// 크롤 작업 상태 → 한글 라벨.
+const CRAWL_STATUS_LABEL: Record<CrawlJob["status"], string> = {
+  idle: "대기",
+  running: "진행 중",
+  done: "완료",
+  failed: "실패",
+  cancelled: "취소됨",
+};
+
+// 지금 크롤 실행 — 폼 즉석 입력값으로 즉시 1회전 크롤(타깃 저장과 무관). 진행현황을 3초
+// 폴링으로 실시간 표시하고, 진행 중에는 '중지'로 협조적 취소한다. 동시 1건(409).
+function CrawlNowSection() {
+  const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
+  const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
+  const [countries, setCountries] = useState("");
+  const [industries, setIndustries] = useState("");
+  const [listed, setListed] = useState<Listed>("unknown");
+  const [persist, setPersist] = useState(true);
+  const [job, setJob] = useState<CrawlJob | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const running = job?.status === "running";
+
+  // 초기 로드 — 선택지·타깃 폼 초기값(편의)·현재 진행 중 작업(있으면 즉시 표시).
+  useEffect(() => {
+    let alive = true;
+    Promise.all([fetchCountries(), fetchIndustries(), fetchCrawlTarget(), fetchCrawlStatus()])
+      .then(([cs, is, target, status]) => {
+        if (!alive) return;
+        setCountryOpts(
+          cs.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
+        );
+        setIndustryOpts(is.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })));
+        setCountries(target.countries);
+        setIndustries(target.industries);
+        setListed(target.listed);
+        setPersist(target.persist);
+        if (status.status !== "idle") setJob(status);
+      })
+      .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // 진행 중이면 3초마다 현황 폴링. 종료 상태가 되면 인터벌 정리.
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => {
+      fetchCrawlStatus()
+        .then((s) => setJob(s))
+        .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  const run = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setJob(
+        await startCrawl({ countries: countries.trim(), industries: industries.trim(), listed, persist }),
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stop = async () => {
+    if (!window.confirm("진행 중인 크롤을 중지할까요? (처리된 분은 보존됩니다)")) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      setJob(await cancelCrawl());
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section>
+      <h2>지금 크롤 실행</h2>
+      {err && <div className="error">⚠ {err}</div>}
+      <div className="crawl-target">
+        <div className="field">
+          <span className="field-label">
+            국가 <span className="muted">(선택 안 함=지원 전체국)</span>
+          </span>
+          <MultiPicker
+            options={countryOpts}
+            value={countries}
+            onChange={setCountries}
+            placeholder="국가 검색 (예: 미국, US, 일본)"
+            emptyHint="지원 전체국 대상(국가를 선택하면 좁혀집니다)"
+          />
+        </div>
+        <div className="field">
+          <span className="field-label">
+            업종 <span className="muted">(1개 이상 필수 — 표준 업종만 선택)</span>
+          </span>
+          <MultiPicker
+            options={industryOpts}
+            value={industries}
+            onChange={setIndustries}
+            placeholder="업종 검색 (예: 건설, construction)"
+            emptyHint="업종을 1개 이상 선택하세요"
+          />
+        </div>
+        <label>
+          상장여부
+          <select value={listed} onChange={(e) => setListed(e.target.value as Listed)}>
+            {LISTED_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="inline">
+          <input type="checkbox" checked={persist} onChange={(e) => setPersist(e.target.checked)} />
+          DB 적재(검증 큐로)
+        </label>
+        <div className="send-actions">
+          <button
+            className="btn confirm"
+            type="button"
+            disabled={busy || running || !industries.trim()}
+            onClick={() => void run()}
+          >
+            {running ? "실행 중…" : "지금 크롤 실행 ▶"}
+          </button>
+          {running && (
+            <button className="btn reject" type="button" disabled={busy} onClick={() => void stop()}>
+              중지 ■
+            </button>
+          )}
+        </div>
+      </div>
+      {job && job.status !== "idle" && <CrawlProgress job={job} />}
+    </section>
+  );
+}
+
+// 크롤 진행현황 패널 — 상태·세그먼트 진행바·발견/처리/저장 카운터.
+function CrawlProgress({ job }: { job: CrawlJob }) {
+  const total = job.segments_total || 0;
+  const done = job.segments_done || 0;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const stale = job.status === "running" && job.cancel_requested;
+  return (
+    <div className="crawl-progress">
+      <p>
+        <strong>상태: {CRAWL_STATUS_LABEL[job.status]}</strong>
+        {stale && <span className="muted"> · 중지 요청됨…</span>}
+        {job.triggered_by && <span className="muted"> · {job.triggered_by}</span>}
+      </p>
+      <progress value={done} max={total || 1} style={{ width: "100%" }} />
+      <p className="muted">
+        세그먼트 {done}/{total} ({pct}%) · 발견 {job.discovered} · 처리 {job.enriched} · 저장(실존){" "}
+        {job.saved}
+      </p>
+      {job.error && <div className="error">⚠ {job.error}</div>}
+      {job.finished_at && <p className="muted">종료: {fmt(job.finished_at)}</p>}
+    </div>
+  );
+}
 
 // 내일(다음) 크롤 타깃 설정 — 국가·업종·상장여부·DB적재. 스케줄러가 매일 이 값을 읽는다.
 function CrawlTargetSection() {

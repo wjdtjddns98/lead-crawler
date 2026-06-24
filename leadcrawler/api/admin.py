@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
+from ..pipeline.background import CrawlBusy, CrawlTooLarge, trigger_crawl_job
 from ..schema import CrawlTargetRow, UserRow
 from ..security import (
     ROLE_ADMIN,
@@ -25,10 +26,18 @@ from ..security import (
 from ..sources.countries import korean_label, supported_countries
 from ..sources.industry import supported_industries
 from ..storage.audit import recent_audit, user_stats
+from ..storage.crawl_job import (
+    active_crawl_job,
+    crawl_job_dict,
+    latest_crawl_job,
+    request_cancel,
+)
 from ..storage.crawl_target import get_crawl_target, set_crawl_target
 from .schemas import (
     AuditEntry,
     CountryOption,
+    CrawlJobInfo,
+    CrawlJobRequest,
     CrawlTargetInfo,
     CrawlTargetRequest,
     CreateUserRequest,
@@ -217,6 +226,56 @@ def register_admin(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _target_info(row)
+
+    @app.post("/admin/crawl", response_model=CrawlJobInfo, status_code=202)
+    def start_crawl(
+        body: CrawlJobRequest,
+        admin: UserRow = Depends(require_admin),
+    ) -> CrawlJobInfo:
+        """폼 입력값으로 즉시 크롤을 1회전 돌린다(관리자, 백그라운드 실행).
+
+        타깃 저장과 무관하게 이 요청값으로 바로 실행한다. 진행현황은 GET /admin/crawl 로
+        폴링한다. 이미 진행 중이면 409, 세그먼트 상한 초과면 422.
+        """
+        try:
+            info = trigger_crawl_job(
+                get_settings(),
+                countries=body.countries,
+                industries=body.industries,
+                listed=body.listed,
+                persist=body.persist,
+                triggered_by=admin.username,
+            )
+        except CrawlBusy as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except CrawlTooLarge as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return CrawlJobInfo(**info)
+
+    @app.get("/admin/crawl", response_model=CrawlJobInfo)
+    def crawl_status(
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> CrawlJobInfo:
+        """가장 최근 크롤 작업의 상태·진행 카운터(없으면 idle)."""
+        row = latest_crawl_job(db)
+        if row is None:
+            return CrawlJobInfo()  # 작업 이력 없음 → idle.
+        return CrawlJobInfo(**crawl_job_dict(row))
+
+    @app.post("/admin/crawl/cancel", response_model=CrawlJobInfo)
+    def cancel_crawl(
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> CrawlJobInfo:
+        """진행 중 크롤에 취소를 요청한다(실행 스레드가 다음 기업 전 협조적 중단). 없으면 404."""
+        row = active_crawl_job(db)
+        if row is None:
+            raise HTTPException(status_code=404, detail="진행 중인 크롤이 없습니다")
+        request_cancel(db, row.id)
+        # 실행 스레드가 그 사이 종료했을 수 있으니 재조회해 정확한 현재 상태를 돌려준다.
+        db.refresh(row)
+        return CrawlJobInfo(**crawl_job_dict(row))
 
 
 def _target_info(row: CrawlTargetRow) -> CrawlTargetInfo:

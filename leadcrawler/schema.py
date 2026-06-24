@@ -214,6 +214,47 @@ class CrawlTargetRow(Base):
     )
 
 
+class CrawlJobRow(Base):
+    """직접 크롤 작업 1건의 상태·진행 카운터 — 웹앱에서 트리거, 진행현황 폴링용.
+
+    스케줄러(매일 1회)와 달리 관리자가 웹에서 즉시 돌리는 단발 크롤. 백그라운드 스레드가
+    이 행의 카운터(발견/처리/저장·세그먼트 진행)를 갱신하고, 프론트가 주기 폴링으로 표시한다.
+    ``cancel_requested`` 를 켜면 실행 스레드가 다음 기업 처리 전에 협조적으로 멈춘다.
+    status: running | done | failed | cancelled. started_at 인덱스로 '최근 작업'을 빠르게 찾는다.
+    """
+
+    __tablename__ = "crawl_job"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # 'cj_' + uuid12
+    status: Mapped[str] = mapped_column(
+        String(16), default="running", server_default=text("'running'"), index=True
+    )
+    countries: Mapped[str] = mapped_column(String(256), default="", server_default=text("''"))
+    industries: Mapped[str] = mapped_column(String(512), default="", server_default=text("''"))
+    listed: Mapped[str] = mapped_column(
+        String(16), default="unknown", server_default=text("'unknown'")
+    )
+    persist: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    segments_total: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    segments_done: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    discovered: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    enriched: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    saved: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 협조적 취소 플래그 — 다른 트랜잭션(취소 요청)이 켜면 실행 스레드가 다음 폴링에서 중단.
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    triggered_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now(), index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class UserRow(Base):
     """검증 웹앱 직원 계정 — 로그인·assignee 식별. 비밀번호는 scrypt 해시만 저장."""
 

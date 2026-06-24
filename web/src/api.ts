@@ -4,6 +4,7 @@
 import type {
   AuditEntry,
   CountryOption,
+  CrawlJob,
   CrawlTarget,
   IndustryOption,
   Listed,
@@ -249,6 +250,38 @@ export async function saveCrawlTarget(t: {
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(t),
     }),
+  );
+}
+
+// --- 직접 크롤(웹에서 즉시 실행 + 진행현황 폴링 + 중지) ----------------
+
+// 폼 입력값으로 즉시 크롤을 시작한다(백그라운드). 이미 진행 중이면 409.
+export async function startCrawl(t: {
+  countries: string;
+  industries: string;
+  listed: Listed;
+  persist: boolean;
+}): Promise<CrawlJob> {
+  return jsonOrThrow<CrawlJob>(
+    await fetch(`${BASE}/admin/crawl`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(t),
+    }),
+  );
+}
+
+// 최근 크롤 작업 현황(없으면 status="idle"). 진행 중에는 주기 폴링으로 호출한다.
+export async function fetchCrawlStatus(): Promise<CrawlJob> {
+  return jsonOrThrow<CrawlJob>(
+    await fetch(`${BASE}/admin/crawl`, { headers: authHeaders() }),
+  );
+}
+
+// 진행 중 크롤에 취소를 요청한다(협조적 중단). 진행 중이 없으면 404.
+export async function cancelCrawl(): Promise<CrawlJob> {
+  return jsonOrThrow<CrawlJob>(
+    await fetch(`${BASE}/admin/crawl/cancel`, { method: "POST", headers: authHeaders() }),
   );
 }
 
