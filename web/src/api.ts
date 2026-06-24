@@ -12,6 +12,8 @@ import type {
   ReviewItem,
   ReviewStatus,
   Role,
+  SendPreview,
+  SendResult,
   UserStats,
 } from "./types";
 
@@ -200,6 +202,32 @@ export async function fetchCountries(): Promise<CountryOption[]> {
 export async function fetchIndustries(): Promise<IndustryOption[]> {
   return jsonOrThrow<IndustryOption[]>(
     await fetch(`${BASE}/admin/industries`, { headers: authHeaders() }),
+  );
+}
+
+export async function fetchSendPreview(country = "", industry = ""): Promise<SendPreview> {
+  const q = new URLSearchParams();
+  if (country) q.set("country", country);
+  if (industry) q.set("industry", industry);
+  const qs = q.toString();
+  return jsonOrThrow<SendPreview>(
+    await fetch(`${BASE}/send/preview${qs ? `?${qs}` : ""}`, { headers: authHeaders() }),
+  );
+}
+
+export async function sendCampaign(payload: {
+  subject: string;
+  body: string;
+  from_display: string;
+  country: string;
+  industry: string;
+}): Promise<SendResult> {
+  return jsonOrThrow<SendResult>(
+    await fetch(`${BASE}/send`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(payload),
+    }),
   );
 }
 

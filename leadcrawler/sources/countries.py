@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 from pydantic import BaseModel
 
@@ -70,3 +71,21 @@ def korean_label(country: Country) -> str:
         if _HANGUL.search(alias):
             return alias
     return country.iso2
+
+
+def country_match_set(tokens: Iterable[str]) -> set[str]:
+    """국가 토큰들을 매칭용 **소문자** 집합으로 확장한다(별칭 포함, 'KR'↔'대한민국' 호환).
+
+    저장된 country 표기가 ISO2('KR')든 한글('대한민국')이든 잡히도록 :func:`resolve_country`
+    별칭을 모두 소문자로 펼친다. 엑셀 export·아웃리치 발송의 국가 필터 공용.
+    """
+    vals: set[str] = set()
+    for token in tokens:
+        t = (token or "").strip()
+        if not t:
+            continue
+        vals.add(t.lower())
+        country = resolve_country(t)
+        if country is not None:
+            vals.update(alias.lower() for alias in country.aliases)
+    return vals

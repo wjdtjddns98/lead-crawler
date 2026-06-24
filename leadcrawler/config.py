@@ -76,6 +76,16 @@ class Settings(BaseSettings):
     # AI (Claude Vision)
     anthropic_api_key: str = Field(default="")
 
+    # 아웃리치 이메일 발송(확정큐 전체발송) — Gmail SMTP 등. 외부행위라 기본 off(dry-run):
+    # email_send_enabled=true 라야 실발송, 아니면 수신 미리보기·로그만 남기고 안 보낸다.
+    smtp_send_host: str = Field(default="smtp.gmail.com")
+    smtp_send_port: int = Field(default=587)
+    smtp_send_user: str = Field(default="")  # 발신 계정(= From 주소). 예: you@gmail.com
+    smtp_send_password: str = Field(default="")  # 앱 비밀번호(Gmail 2단계 인증)
+    email_send_enabled: bool = Field(default=False)  # true 라야 실발송(안전 게이트)
+    email_send_daily_cap: int = Field(default=400)  # 일일 발송 상한(계정 차단·스팸 방지)
+    email_send_min_interval: float = Field(default=1.0)  # 발송 간 최소 간격(초, 레이트리밋)
+
     # Notion 자동 리포팅 — 토큰 없으면 no-op(로그만).
     notion_token: str = Field(default="")
     notion_version: str = Field(default="2022-06-28")

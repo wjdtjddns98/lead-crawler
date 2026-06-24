@@ -7,11 +7,21 @@ import {
   fetchCountries,
   fetchCrawlTarget,
   fetchIndustries,
+  fetchSendPreview,
   fetchUsers,
   saveCrawlTarget,
+  sendCampaign,
   setUserActive,
 } from "../api";
-import type { AuditEntry, CrawlTarget, Listed, Role, UserStats } from "../types";
+import type {
+  AuditEntry,
+  CrawlTarget,
+  Listed,
+  Role,
+  SendPreview,
+  SendResult,
+  UserStats,
+} from "../types";
 import { MultiPicker, type PickerOption } from "./MultiPicker";
 
 // 관리자 페이지 — 계정별 처리 통계·역할/활성 관리·계정 생성 + 최근 검증 감사 로그.
@@ -56,6 +66,8 @@ export function Admin() {
       <CrawlTargetSection />
 
       <ExportSection />
+
+      <SendSection />
 
       <section>
         <h2>계정 {loading && <span className="muted">· 불러오는 중…</span>}</h2>
@@ -267,6 +279,159 @@ function CrawlTargetSection() {
       {target?.updated_by && (
         <p className="muted">
           최근 설정: {target.updated_by} · {fmt(target.updated_at)}
+        </p>
+      )}
+    </section>
+  );
+}
+
+// 확정큐 이메일 전체발송 — 제목·본문·발신표시명 직접 입력, 국가/업종 필터. 미리보기로
+// 수신 N명 확인 후 발송. email_send_enabled(.env)가 꺼져 있으면 dry-run(실발송 안 함).
+function SendSection() {
+  const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
+  const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
+  const [countries, setCountries] = useState("");
+  const [industries, setIndustries] = useState("");
+  const [subject, setSubject] = useState("");
+  const [bodyText, setBodyText] = useState("");
+  const [fromName, setFromName] = useState("");
+  const [preview, setPreview] = useState<SendPreview | null>(null);
+  const [result, setResult] = useState<SendResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([fetchCountries(), fetchIndustries()])
+      .then(([cs, is]) => {
+        if (!alive) return;
+        setCountryOpts(
+          cs.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
+        );
+        setIndustryOpts(is.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })));
+      })
+      .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const doPreview = async () => {
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    try {
+      setPreview(await fetchSendPreview(countries, industries));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doSend = async () => {
+    const n = preview?.recipients ?? 0;
+    const dryWarn =
+      preview && !preview.enabled
+        ? "\n\n※ 발송 비활성(dry-run): 실제로 보내지 않고 카운트만 반환합니다."
+        : "";
+    if (!window.confirm(`확정큐 ${n}건에 발송할까요?${dryWarn}`)) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      setResult(
+        await sendCampaign({
+          subject,
+          body: bodyText,
+          from_display: fromName,
+          country: countries,
+          industry: industries,
+        }),
+      );
+      setPreview(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const canSend = subject.trim().length > 0 && bodyText.trim().length > 0;
+  return (
+    <section>
+      <h2>확정큐 이메일 발송</h2>
+      {err && <div className="error">⚠ {err}</div>}
+      <div className="send-form">
+        <label>
+          제목
+          <input value={subject} onChange={(e) => setSubject(e.target.value)} />
+        </label>
+        <label>
+          발신 표시명 <span className="muted">(From 주소는 서버 발신계정 고정)</span>
+          <input
+            value={fromName}
+            onChange={(e) => setFromName(e.target.value)}
+            placeholder="예: Zenith Asset IR"
+          />
+        </label>
+        <label className="full">
+          본문
+          <textarea value={bodyText} rows={6} onChange={(e) => setBodyText(e.target.value)} />
+        </label>
+        <div className="crawl-target">
+          <div className="field">
+            <span className="field-label">
+              국가 <span className="muted">(선택 안 함=전체)</span>
+            </span>
+            <MultiPicker
+              options={countryOpts}
+              value={countries}
+              onChange={setCountries}
+              placeholder="국가 검색"
+              emptyHint="전체 국가"
+            />
+          </div>
+          <div className="field">
+            <span className="field-label">
+              업종 <span className="muted">(선택 안 함=전체)</span>
+            </span>
+            <MultiPicker
+              options={industryOpts}
+              value={industries}
+              onChange={setIndustries}
+              placeholder="업종 검색"
+              emptyHint="전체 업종"
+            />
+          </div>
+        </div>
+        <div className="send-actions">
+          <button className="btn" type="button" disabled={busy} onClick={() => void doPreview()}>
+            미리보기(수신 N명)
+          </button>
+          <button
+            className="btn confirm"
+            type="button"
+            disabled={busy || !canSend}
+            onClick={() => void doSend()}
+          >
+            발송
+          </button>
+        </div>
+      </div>
+      {preview && (
+        <p className="muted">
+          수신 {preview.recipients}명 · 발신 {preview.sender || "(.env 미설정)"} ·{" "}
+          {preview.enabled
+            ? `오늘 잔여 ${preview.remaining_today}건`
+            : "⚠ 발송 비활성(dry-run) — .env LEADCRAWLER_EMAIL_SEND_ENABLED=true 필요"}
+          {preview.sample.length > 0 && ` · 예: ${preview.sample.slice(0, 3).join(", ")}…`}
+        </p>
+      )}
+      {result && (
+        <p className={result.dry_run ? "muted" : ""}>
+          {result.dry_run
+            ? `dry-run: 수신 ${result.recipients}명 (실발송 안 함 — email_send_enabled=true 필요)`
+            : `발송 완료 — 성공 ${result.sent} · 실패 ${result.failed} · 상한초과 ${result.capped} (수신 ${result.recipients})`}
         </p>
       )}
     </section>

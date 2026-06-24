@@ -76,6 +76,24 @@ export interface IndustryOption {
   aliases: string[];
 }
 
+export interface SendPreview {
+  recipients: number;
+  enabled: boolean;
+  daily_cap: number;
+  remaining_today: number;
+  sender: string;
+  sample: string[];
+}
+
+export interface SendResult {
+  dry_run: boolean;
+  recipients: number;
+  attempted: number;
+  sent: number;
+  failed: number;
+  capped: number;
+}
+
 export type Listed = "unknown" | "listed" | "unlisted";
 
 export interface CrawlTarget {
