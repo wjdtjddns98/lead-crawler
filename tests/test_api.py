@@ -114,6 +114,25 @@ def test_confirm_then_export(client: TestClient) -> None:
     assert len(ex.content) > 0
 
 
+def test_export_filter_by_country_industry(client: TestClient) -> None:
+    import io
+
+    from openpyxl import load_workbook
+
+    rid = client.get("/queue").json()["items"][0]["id"]
+    client.post(f"/queue/{rid}/confirm")  # 시드 리드(KR/건설) 확정.
+
+    def data_rows(resp) -> int:
+        return load_workbook(io.BytesIO(resp.content)).active.max_row - 1  # 헤더 제외.
+
+    # 매칭(KR/건설) → 1행. 별칭(소문자 'kr')으로도 잡혀야 한다.
+    assert data_rows(client.get("/export?country=KR&industry=건설")) == 1
+    assert data_rows(client.get("/export?country=대한민국")) == 1  # 한글 별칭 매칭.
+    # 불일치 국가/업종 → 0행(헤더만).
+    assert data_rows(client.get("/export?country=JP")) == 0
+    assert data_rows(client.get("/export?industry=반도체")) == 0
+
+
 def test_reject(client: TestClient) -> None:
     rid = client.get("/queue").json()["items"][0]["id"]
     assert client.post(f"/queue/{rid}/reject").json()["status"] == "rejected"

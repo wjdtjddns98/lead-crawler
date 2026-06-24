@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   changeUserRole,
   createUser,
+  exportConfirmed,
   fetchAudit,
   fetchCountries,
   fetchCrawlTarget,
@@ -53,6 +54,8 @@ export function Admin() {
       {error && <div className="error">⚠ {error}</div>}
 
       <CrawlTargetSection />
+
+      <ExportSection />
 
       <section>
         <h2>계정 {loading && <span className="muted">· 불러오는 중…</span>}</h2>
@@ -266,6 +269,86 @@ function CrawlTargetSection() {
           최근 설정: {target.updated_by} · {fmt(target.updated_at)}
         </p>
       )}
+    </section>
+  );
+}
+
+// 확정분 엑셀 추출 — 국가/업종을 골라 선택 추출(빈 선택=전체). 헤더의 '전체 확정분'
+// 버튼과 별개로, 국가·업종별로 좁혀 받는다.
+function ExportSection() {
+  const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
+  const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
+  const [countries, setCountries] = useState("");
+  const [industries, setIndustries] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([fetchCountries(), fetchIndustries()])
+      .then(([cs, is]) => {
+        if (!alive) return;
+        setCountryOpts(
+          cs.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
+        );
+        setIndustryOpts(is.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })));
+      })
+      .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const download = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await exportConfirmed(countries, industries);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section>
+      <h2>확정분 엑셀 추출</h2>
+      {err && <div className="error">⚠ {err}</div>}
+      <div className="crawl-target">
+        <div className="field">
+          <span className="field-label">
+            국가 <span className="muted">(선택 안 함=전체)</span>
+          </span>
+          <MultiPicker
+            options={countryOpts}
+            value={countries}
+            onChange={setCountries}
+            placeholder="국가 검색 (예: 미국, US)"
+            emptyHint="전체 국가 대상(선택하면 좁혀집니다)"
+          />
+        </div>
+        <div className="field">
+          <span className="field-label">
+            업종 <span className="muted">(선택 안 함=전체)</span>
+          </span>
+          <MultiPicker
+            options={industryOpts}
+            value={industries}
+            onChange={setIndustries}
+            placeholder="업종 검색 (예: 건설, construction)"
+            emptyHint="전체 업종 대상(선택하면 좁혀집니다)"
+          />
+        </div>
+        <button
+          className="btn export"
+          type="button"
+          disabled={busy}
+          onClick={() => void download()}
+        >
+          {busy ? "추출 중…" : "엑셀 다운로드 ↓"}
+        </button>
+      </div>
     </section>
   );
 }
