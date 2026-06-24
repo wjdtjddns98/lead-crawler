@@ -37,7 +37,11 @@ def session(tmp_path) -> Session:
         yield s
 
 
-def _lead(domain: str = "acme.com", email: str | None = "ir@acme.com") -> CompanyLead:
+def _lead(
+    domain: str = "acme.com",
+    email: str | None = "ir@acme.com",
+    form: str | None = None,
+) -> CompanyLead:
     company = Company(
         canonical_key=f"dom:{domain}",
         name="아크메",
@@ -53,9 +57,11 @@ def _lead(domain: str = "acme.com", email: str | None = "ir@acme.com") -> Compan
         if email
         else None
     )
+    form_ct = Contact(type=ContactType.FORM, value=form) if form else None
     return CompanyLead(
         company=company,
         email=ct,
+        form=form_ct,
         email_validation=EmailValidation(status=ValidationStatus.VALID, mx=True, smtp=True),
     )
 
@@ -73,10 +79,32 @@ def test_save_lead_auto_enqueues(session: Session) -> None:
     assert items[0]["email_smtp"] is True
 
 
-def test_no_email_no_enqueue(session: Session) -> None:
+def test_no_email_still_enqueues(session: Session) -> None:
+    # 규칙 변경(2026-06-24): 이메일이 없어도 실존 리드는 큐에 적재(빈 후보) — 사람이
+    # 워크벤치에서 직접 이메일을 찾아 입력/확정한다.
     save_lead(session, _lead(email=None))
     session.flush()
-    assert count_reviews(session) == 0
+    assert count_reviews(session) == 1
+    item = query_reviews(session)[0]
+    assert item["candidates"] == []
+    assert item["selected"] is None
+    assert item["status"] == "pending"
+
+
+def test_form_only_lead_enqueues_with_form(session: Session) -> None:
+    # 이메일 없이 문의폼만 있는 리드도 큐에 적재되고, 폼 URL 이 DTO 로 노출된다.
+    save_lead(session, _lead(email=None, form="https://acme.com/contact"))
+    session.flush()
+    assert count_reviews(session) == 1
+    item = query_reviews(session)[0]
+    assert item["candidates"] == []
+    assert item["form"] == "https://acme.com/contact"
+
+
+def test_email_lead_exposes_no_form(session: Session) -> None:
+    save_lead(session, _lead())  # 폼 없음.
+    session.flush()
+    assert query_reviews(session)[0]["form"] is None
 
 
 def test_enqueue_preserves_status_on_recrawl(session: Session) -> None:

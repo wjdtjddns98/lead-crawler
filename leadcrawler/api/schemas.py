@@ -41,6 +41,7 @@ class ReviewItem(BaseModel):
     industry: str = ""
     homepage: str | None = None
     site_alive: bool = False
+    form: str | None = None  # 문의폼 URL(이메일 없을 때 폼으로 처리)
     # 선택된 후보의 검증 신호(이메일 컬럼 표시용, 없으면 None).
     email_status: str | None = None
     email_mx: bool | None = None

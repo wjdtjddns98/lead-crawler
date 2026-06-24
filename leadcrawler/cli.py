@@ -270,33 +270,43 @@ def cost_report(
 
 @app.command()
 def enqueue() -> None:
-    """기존 적재된 리드 중 이메일 보유 회사를 검증 큐에 백필한다(멱등).
+    """기존 적재된 **실존 회사 전체**를 검증 큐에 백필한다(이메일 없어도 — 멱등).
 
-    파이프라인은 이제 적재 시 자동 enqueue 하지만, 이미 저장된 과거 리드는 이 명령으로
-    한 번 큐에 올린다. 이미 큐에 있으면 후보만 갱신(상태 보존)된다.
+    파이프라인은 이제 적재 시 자동 enqueue 하지만, 규칙 변경 전 저장된 과거 리드는 이
+    명령으로 한 번 큐에 올린다. 이메일 후보가 있으면 후보를 싣고, 없으면 빈 후보로 등록해
+    사람이 워크벤치에서 직접 이메일을 찾거나 문의폼으로 처리한다. 이미 큐에 있으면 후보만
+    갱신(상태·선택 보존)된다.
     """
     from sqlalchemy import select
 
-    from .schema import ContactRow
+    from .schema import CompanyRow, ContactRow
     from .storage.db import get_sessionmaker
     from .storage.review import enqueue_email_review
 
     configure_logging()
     session = get_sessionmaker(get_settings())()
     try:
-        rows = session.execute(
+        # 회사별 이메일 후보 맵(있는 회사만).
+        emails = session.execute(
             select(ContactRow.company_id, ContactRow.value)
             .where(ContactRow.type == "email")
             .order_by(ContactRow.company_id, ContactRow.id)
         ).all()
-        # 회사별로 이메일 후보를 모아 한 번에 enqueue(멀티이메일 시 후보 유실 방지).
         by_company: dict[str, list[str]] = {}
-        for company_id, value in rows:
+        for company_id, value in emails:
             by_company.setdefault(company_id, []).append(value)
-        for company_id, values in by_company.items():
-            enqueue_email_review(session, company_id, values)
+        # 실존(active) 회사 전체를 enqueue — 이메일 없는 회사도 빈 후보로 포함.
+        active_ids = list(
+            session.scalars(select(CompanyRow.id).where(CompanyRow.is_active.is_(True))).all()
+        )
+        for company_id in active_ids:
+            enqueue_email_review(session, company_id, by_company.get(company_id, []))
         session.commit()
-        typer.echo(f"검증 큐 백필 완료: 회사 {len(by_company)}곳 ({len(rows)}개 이메일) enqueue")
+        with_email = sum(1 for cid in active_ids if cid in by_company)
+        typer.echo(
+            f"검증 큐 백필 완료: 실존 회사 {len(active_ids)}곳 enqueue "
+            f"(이메일 보유 {with_email}곳 / 이메일 없음 {len(active_ids) - with_email}곳)"
+        )
     finally:
         session.close()
 
