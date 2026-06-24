@@ -11,7 +11,7 @@ import typer
 
 from . import __version__
 from .config import get_settings
-from .importer import ExistingImporter
+from .importer import ExistingImporter, ImportedCompany
 from .integrations.notion import DailyReport, NotionReporter, ScrumEntry
 from .logging import configure_logging, get_logger
 from .pipeline import run_pipeline
@@ -84,10 +84,54 @@ def db_upgrade(revision: str = typer.Argument("head", help="목표 리비전")) 
 
 
 @app.command("import-existing")
-def import_existing(path: str = typer.Argument(..., help="기존 엑셀/CSV 경로")) -> None:
-    """기존 검색분을 읽어 dedup 시드용 canonical_key 개수를 보고한다."""
-    rows = ExistingImporter().read(path)
-    typer.echo(f"{len(rows)}건 import, 고유 key {len({r.canonical_key for r in rows})}개")
+def import_existing(
+    path: str = typer.Argument(..., help="기존 엑셀/CSV 경로(파일 또는 디렉터리)"),
+    persist: bool = typer.Option(
+        False, "--persist", help="discovered_company 에 dedup 시드로 저장(제약 ① 선행)"
+    ),
+) -> None:
+    """기존 검색분을 읽어 dedup 시드(canonical_key)로 집계하고, --persist 면 DB에 적재한다.
+
+    디렉터리를 주면 그 안의 .xlsx/.xlsm/.csv 를 모두 읽어 파일·시트를 가로질러
+    canonical_key 로 중복 제거한 뒤 한 번에 처리한다.
+    """
+    from pathlib import Path
+
+    p = Path(path)
+    if p.is_dir():
+        files = sorted(
+            f for f in p.iterdir()
+            if f.suffix.lower() in {".xlsx", ".xlsm", ".csv"} and not f.name.startswith("~$")
+        )
+    else:
+        files = [p]
+    if not files:
+        typer.echo(f"대상 파일이 없습니다: {path}")
+        raise typer.Exit(code=1)
+
+    importer = ExistingImporter()
+    uniq: dict[str, ImportedCompany] = {}  # canonical_key → 회사(파일·시트 가로질러 dedup)
+    for f in files:
+        rows = importer.read(f)
+        for r in rows:
+            uniq.setdefault(r.canonical_key, r)
+        typer.echo(f"  {f.name}: {len(rows)}건")
+    typer.echo(f"총 파싱: 고유 기업 {len(uniq)}개 (파일 {len(files)}개)")
+
+    if not persist:
+        typer.echo("(--persist 미지정 — DB 저장 안 함)")
+        return
+
+    from .storage.db import get_sessionmaker
+    from .storage.repository import seed_discovered_from_imports
+
+    session = get_sessionmaker(get_settings())()
+    try:
+        new, skipped = seed_discovered_from_imports(session, uniq.values())
+        session.commit()
+    finally:
+        session.close()
+    typer.echo(f"DB 시드 완료: 신규 {new}건, 기존 스킵 {skipped}건 (source='import')")
 
 
 @app.command()

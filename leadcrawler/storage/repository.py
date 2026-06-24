@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -50,6 +52,9 @@ from .review import (
     enqueue_email_review,
     review_id_for,
 )
+
+if TYPE_CHECKING:
+    from ..importer import ImportedCompany
 
 
 def company_id_for(canonical_key: str) -> str:
@@ -91,6 +96,39 @@ def load_seen_domains(session: Session) -> set[str]:
         select(DiscoveredCompanyRow.domain).where(DiscoveredCompanyRow.domain.is_not(None))
     ).all()
     return {d for d in (normalize_domain(x) for x in domains) if d is not None}
+
+
+def seed_discovered_from_imports(
+    session: Session, companies: Iterable[ImportedCompany], *, source: str = "import"
+) -> tuple[int, int]:
+    """기존 import(엑셀/CSV) 데이터를 발견 원장에 dedup 시드로 멱등 적재한다(제약 ① 선행).
+
+    각 항목의 ``canonical_key``/``name``/``country``/``domain`` 만 쓴다(이메일 등 나머지는
+    무시 — 시드 목적은 '이미 검색한 기업' 표시뿐). 이미 존재하는 key 는 식별정보를
+    덮어쓰지 않고 건너뛴다(기존 크롤 이력 보존). ``(신규 적재, 기존 스킵)`` 건수를 반환한다.
+
+    도메인은 :func:`normalize_domain` 으로 eTLD+1 정규화해 저장한다 — 같은 기업이 이후
+    크롤에서 검색 key(dom:...)로 잡혀도 :func:`load_seen_domains` 의 도메인 동치로 한 번만
+    추출되도록(제약 ①). 회사명만 있는 행은 이름 기반 key 로 시드된다.
+    """
+    existing = load_seen_keys(session)
+    new = skipped = 0
+    for c in companies:
+        if c.canonical_key in existing:
+            skipped += 1
+            continue
+        session.add(
+            DiscoveredCompanyRow(
+                canonical_key=c.canonical_key,
+                name=_clip(c.name),
+                country=_clip(c.country or "", 8),
+                domain=normalize_domain(c.domain),
+                source=_clip(source, 32),
+            )
+        )
+        existing.add(c.canonical_key)  # 같은 배치 내 중복도 한 번만 적재.
+        new += 1
+    return new, skipped
 
 
 def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompanyRow:
