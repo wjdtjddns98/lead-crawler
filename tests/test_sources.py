@@ -275,7 +275,9 @@ def test_discover_segment_merges_by_domain_equivalence(monkeypatch) -> None:
 
     import leadcrawler.sources.registry as reg
 
-    monkeypatch.setattr(reg, "build_sources", lambda settings: [_RegSrc(), _DomSrc()])
+    monkeypatch.setattr(
+        reg, "build_sources", lambda settings, cost_ledger=None: [_RegSrc(), _DomSrc()]
+    )
     rows = reg.discover_segment(Segment(country="KR", industry="제조"), _dry_settings())
     # 신뢰도 높은 등록처(첫 등장)만 살아남는다.
     assert len(rows) == 1
