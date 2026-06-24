@@ -3,12 +3,15 @@ import {
   changeUserRole,
   createUser,
   fetchAudit,
+  fetchCountries,
   fetchCrawlTarget,
+  fetchIndustries,
   fetchUsers,
   saveCrawlTarget,
   setUserActive,
 } from "../api";
 import type { AuditEntry, CrawlTarget, Listed, Role, UserStats } from "../types";
+import { MultiPicker, type PickerOption } from "./MultiPicker";
 
 // 관리자 페이지 — 계정별 처리 통계·역할/활성 관리·계정 생성 + 최근 검증 감사 로그.
 export function Admin() {
@@ -143,6 +146,8 @@ const LISTED_OPTIONS: { value: Listed; label: string }[] = [
 // 내일(다음) 크롤 타깃 설정 — 국가·업종·상장여부·DB적재. 스케줄러가 매일 이 값을 읽는다.
 function CrawlTargetSection() {
   const [target, setTarget] = useState<CrawlTarget | null>(null);
+  const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
+  const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
   const [countries, setCountries] = useState("");
   const [industries, setIndustries] = useState("");
   const [listed, setListed] = useState<Listed>("unknown");
@@ -161,8 +166,22 @@ function CrawlTargetSection() {
 
   useEffect(() => {
     let alive = true;
-    fetchCrawlTarget()
-      .then((t) => alive && apply(t))
+    Promise.all([fetchCrawlTarget(), fetchCountries(), fetchIndustries()])
+      .then(([t, countryList, industryList]) => {
+        if (!alive) return;
+        apply(t);
+        setCountryOpts(
+          countryList.map((c) => ({
+            value: c.iso2,
+            label: c.label,
+            code: c.iso2,
+            aliases: c.aliases,
+          })),
+        );
+        setIndustryOpts(
+          industryList.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
+        );
+      })
       .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       alive = false;
@@ -195,22 +214,30 @@ function CrawlTargetSection() {
       <h2>내일 크롤 타깃</h2>
       {err && <div className="error">⚠ {err}</div>}
       <form className="crawl-target" onSubmit={(e) => void save(e)}>
-        <label>
-          국가 <span className="muted">(쉼표구분 ISO2, 빈값=전체국)</span>
-          <input
+        <div className="field">
+          <span className="field-label">
+            국가 <span className="muted">(선택 안 함=지원 전체국)</span>
+          </span>
+          <MultiPicker
+            options={countryOpts}
             value={countries}
-            onChange={(e) => setCountries(e.target.value)}
-            placeholder="예: KR,US,JP"
+            onChange={setCountries}
+            placeholder="국가 검색 (예: 미국, US, 일본)"
+            emptyHint="지원 전체국 대상(국가를 선택하면 좁혀집니다)"
           />
-        </label>
-        <label>
-          업종 <span className="muted">(쉼표구분, 필수)</span>
-          <input
+        </div>
+        <div className="field">
+          <span className="field-label">
+            업종 <span className="muted">(1개 이상 필수 — 표준 업종만 선택)</span>
+          </span>
+          <MultiPicker
+            options={industryOpts}
             value={industries}
-            onChange={(e) => setIndustries(e.target.value)}
-            placeholder="예: 건설,반도체,바이오"
+            onChange={setIndustries}
+            placeholder="업종 검색 (예: 건설, construction)"
+            emptyHint="업종을 1개 이상 선택하세요(정확한 업종 필터를 위해 표준 목록에서만 선택)"
           />
-        </label>
+        </div>
         <label>
           상장여부
           <select value={listed} onChange={(e) => setListed(e.target.value as Listed)}>

@@ -123,6 +123,25 @@ class AuditEntry(BaseModel):
     at: str | None = None
 
 
+class CountryOption(BaseModel):
+    """지원 국가 1건 — 크롤 타깃 국가 선택 UI(검색+리스트)용."""
+
+    iso2: str  # 저장값(쉼표구분 ISO2 의 한 토큰)
+    label: str  # 한글 표시명
+    aliases: list[str] = []  # 검색용 별칭(영문/ISO3/한글 — 'UK'→영국 등 매칭)
+
+
+class IndustryOption(BaseModel):
+    """선택 가능한 표준 업종 1건 — 크롤 타깃 업종 선택 UI(검색+리스트)용.
+
+    이 목록에서만 고르게 해, 자유 텍스트 입력이 매핑을 빗나가 업종 필터가 풀리는 것을 막는다.
+    """
+
+    value: str  # 저장값(쉼표구분 업종의 한 토큰, 한글 표준 업종명)
+    label: str  # 표시명(한글)
+    aliases: list[str] = []  # 검색용 별칭(영문 — 'construction'→건설 등 매칭)
+
+
 class CrawlTargetInfo(BaseModel):
     """현재 크롤 타깃(스케줄러가 매일 읽는 값) — 관리자 화면 표시·폼 초기값."""
 

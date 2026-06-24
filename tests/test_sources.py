@@ -49,7 +49,8 @@ def test_dry_run_sources_are_deterministic() -> None:
 
 
 def test_discover_segment_merges_applicable_sources() -> None:
-    seg = Segment(country="KR", industry="건설")
+    # 광범위 업종(미매핑 '전체'): 업종 필터를 못 하는 집계원도 적용된다.
+    seg = Segment(country="KR", industry="전체")
     rows = discover_segment(seg, _dry_settings())
     sources = {r.source for r in rows}
     # KR 세그먼트: DART + 집계원(GLEIF/Wikidata/OpenCorporates) + 검색 적용,
@@ -60,14 +61,36 @@ def test_discover_segment_merges_applicable_sources() -> None:
     assert len(keys) == len(set(keys))
 
 
+def test_specific_industry_gates_unfiltered_sources() -> None:
+    # 정밀도 우선: 구체 업종(건설) 지정 시 업종 필터를 못 하는 GLEIF/Wikidata 는 빠지고,
+    # 등록처(DART)·검색·업종질의 가능한 OpenCorporates 만 남는다.
+    rows = discover_segment(Segment(country="KR", industry="건설"), _dry_settings())
+    assert {r.source for r in rows} == {"dart", "opencorporates", "search"}
+
+
 def test_aggregator_applies_to_resolvable_countries_only() -> None:
     s = _dry_settings()
-    ph = Segment(country="필리핀", industry="제조")  # 한글 별칭 해석.
-    th = Segment(country="TH", industry="제조")  # ISO2.
-    unknown = Segment(country="Atlantis", industry="제조")  # 미등록 → 폴백(검색만).
+    # 광범위 업종(미매핑 '전체')으로 순수 국가 라우팅만 검증(집계원 업종 게이팅과 분리).
+    ph = Segment(country="필리핀", industry="전체")  # 한글 별칭 해석.
+    th = Segment(country="TH", industry="전체")  # ISO2.
+    unknown = Segment(country="Atlantis", industry="전체")  # 미등록 → 폴백(검색만).
     for cls in (GleifSource, WikidataSource, OpenCorporatesSource):
         assert cls(s).applies_to(ph) and cls(s).applies_to(th)
         assert not cls(s).applies_to(unknown)
+
+
+def test_specific_industry_gates_aggregators_not_opencorporates() -> None:
+    # 구체 업종(제조): GLEIF/Wikidata/거래소는 업종 필터를 못 해 빠지고, 업종을 영어
+    # 검색어로 질의하는 OpenCorporates 는 남는다(정밀도 우선).
+    s = _dry_settings()
+    ph = Segment(country="필리핀", industry="제조")
+    assert not GleifSource(s).applies_to(ph)
+    assert not WikidataSource(s).applies_to(ph)
+    assert not PseSource(s).applies_to(ph)  # 거래소 상장목록도 업종 필터 없음 → 제외.
+    assert OpenCorporatesSource(s).applies_to(ph)  # 업종 질의 가능 → 유지.
+    # 광범위 업종이면 집계원·거래소도 다시 적용된다.
+    broad = Segment(country="필리핀", industry="전체")
+    assert GleifSource(s).applies_to(broad) and PseSource(s).applies_to(broad)
 
 
 def test_unknown_country_routes_to_search_only() -> None:
@@ -140,7 +163,8 @@ def test_new_placeholder_sources_dry_run_registry_keyed() -> None:
 
 
 def test_discover_segment_gb_routes_companies_house() -> None:
-    rows = discover_segment(Segment(country="영국", industry="건설"), _dry_settings())
+    # 광범위 업종(미매핑 '전체')으로 GB 전체 소스 라우팅 검증(집계원 포함).
+    rows = discover_segment(Segment(country="영국", industry="전체"), _dry_settings())
     sources = {r.source for r in rows}
     # GB: CompaniesHouse(등록처) + GLEIF/Wikidata/OpenCorporates(집계원) + 검색.
     assert sources == {"companies_house", "gleif", "wikidata", "opencorporates", "search"}
@@ -172,9 +196,10 @@ def test_build_sources_registers_all_adapters() -> None:
 
 def test_exchange_applies_to_country_routing() -> None:
     s = _dry_settings()
-    ph = Segment(country="필리핀", industry="제조")
-    th = Segment(country="TH", industry="제조")
-    kr = Segment(country="KR", industry="제조")
+    # 광범위 업종(미매핑 '전체')으로 순수 국가 라우팅만 검증(업종 게이팅과 분리).
+    ph = Segment(country="필리핀", industry="전체")
+    th = Segment(country="TH", industry="전체")
+    kr = Segment(country="KR", industry="전체")
     assert PseSource(s).applies_to(ph) and not PseSource(s).applies_to(th)
     assert SetSource(s).applies_to(th) and not SetSource(s).applies_to(kr)
 
@@ -194,10 +219,11 @@ def test_exchange_dry_run_is_listed_and_registry_keyed() -> None:
 
 def test_new_exchanges_applies_to_country_routing() -> None:
     s = _dry_settings()
-    sg = Segment(country="싱가포르", industry="제조")
-    idn = Segment(country="인도네시아", industry="제조")
-    my = Segment(country="말레이시아", industry="제조")
-    kr = Segment(country="KR", industry="제조")
+    # 광범위 업종(미매핑 '전체')으로 순수 국가 라우팅만 검증(업종 게이팅과 분리).
+    sg = Segment(country="싱가포르", industry="전체")
+    idn = Segment(country="인도네시아", industry="전체")
+    my = Segment(country="말레이시아", industry="전체")
+    kr = Segment(country="KR", industry="전체")
     assert SgxSource(s).applies_to(sg) and not SgxSource(s).applies_to(kr)
     assert IdxSource(s).applies_to(idn) and not IdxSource(s).applies_to(kr)
     assert BursaSource(s).applies_to(my) and not BursaSource(s).applies_to(kr)
@@ -257,7 +283,8 @@ def test_discover_segment_merges_by_domain_equivalence(monkeypatch) -> None:
 
 
 def test_discover_segment_ph_routes_pse_aggregators_search() -> None:
-    rows = discover_segment(Segment(country="PH", industry="제조"), _dry_settings())
+    # 광범위 업종(미매핑 '전체')으로 PH 전체 소스 라우팅 검증(거래소·집계원 포함).
+    rows = discover_segment(Segment(country="PH", industry="전체"), _dry_settings())
     sources = {r.source for r in rows}
     # PH: PSE(거래소) + GLEIF/Wikidata/OpenCorporates(집계원) + 검색. EDGAR/DART/SET 미적용.
     assert sources == {"pse", "gleif", "wikidata", "opencorporates", "search"}

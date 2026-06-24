@@ -29,6 +29,7 @@ from ..config import Settings
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company, is_country
 from .http import Fetcher, SupportsFetch
+from .industry import is_specific_industry
 
 log = get_logger("sources.exchanges")
 
@@ -52,8 +53,9 @@ class ExchangeSource:
         self._fetcher = fetcher
 
     def applies_to(self, segment: Segment) -> bool:
-        """해당 거래소 국가 세그먼트에 적용된다(상장여부 무관 — 산출은 항상 listed)."""
-        return is_country(segment, self.countries)
+        """해당 거래소 국가 세그먼트에 적용된다(상장여부 무관 — 산출은 항상 listed). 단 구체
+        업종 지정 시엔 제외 — 상장목록은 업종 필터가 없어 비대상 업종을 섞으므로(정밀도 우선)."""
+        return is_country(segment, self.countries) and not is_specific_industry(segment.industry)
 
     def discover(self, segment: Segment) -> list[DiscoveredCompany]:
         """세그먼트 국가의 상장기업 목록을 반환한다."""

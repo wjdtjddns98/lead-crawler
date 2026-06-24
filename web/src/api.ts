@@ -3,7 +3,9 @@
 // 모든 보호 요청에 Authorization: Bearer 헤더로 동반한다. 401 이면 세션을 비우고 콜백 통지.
 import type {
   AuditEntry,
+  CountryOption,
   CrawlTarget,
+  IndustryOption,
   Listed,
   LoginResponse,
   QueueResponse,
@@ -186,6 +188,18 @@ export async function setUserActive(id: string, active: boolean): Promise<UserSt
 export async function fetchAudit(limit = 100): Promise<AuditEntry[]> {
   return jsonOrThrow<AuditEntry[]>(
     await fetch(`${BASE}/admin/audit?limit=${limit}`, { headers: authHeaders() }),
+  );
+}
+
+export async function fetchCountries(): Promise<CountryOption[]> {
+  return jsonOrThrow<CountryOption[]>(
+    await fetch(`${BASE}/admin/countries`, { headers: authHeaders() }),
+  );
+}
+
+export async function fetchIndustries(): Promise<IndustryOption[]> {
+  return jsonOrThrow<IndustryOption[]>(
+    await fetch(`${BASE}/admin/industries`, { headers: authHeaders() }),
   );
 }
 

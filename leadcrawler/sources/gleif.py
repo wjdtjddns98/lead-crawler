@@ -21,6 +21,7 @@ from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company
 from .countries import resolve_country
 from .http import Fetcher, SupportsFetch
+from .industry import is_specific_industry
 
 log = get_logger("sources.gleif")
 
@@ -48,8 +49,11 @@ class GleifSource:
         self._fetcher = fetcher
 
     def applies_to(self, segment: Segment) -> bool:
-        """ISO2 해석 가능한 국가 세그먼트에 적용된다(업종 무관)."""
-        return resolve_country(segment.country) is not None
+        """ISO2 해석 가능한 국가 세그먼트에 적용된다. 단 구체 업종 지정 시엔 제외 —
+        GLEIF 는 업종 필터를 못 해 비대상 업종을 섞으므로(정밀도 우선, 등록처/검색에 위임)."""
+        return resolve_country(segment.country) is not None and not is_specific_industry(
+            segment.industry
+        )
 
     def discover(self, segment: Segment) -> list[DiscoveredCompany]:
         """세그먼트 국가의 실존(ACTIVE) 법인 목록을 반환한다."""
