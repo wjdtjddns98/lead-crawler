@@ -86,8 +86,11 @@ class DomainResolver:
 
         country = resolve_country(dc.country)
         gl, lr, keyword = _LOCALE.get(country.iso2, _DEFAULT_LOCALE) if country else _DEFAULT_LOCALE
-        # 정확명 인용 + 국가 현지화 키워드(공식/IR) — search.py 와 동일 locale 패턴 재사용.
-        query = f'"{dc.name}" {keyword}'
+        # 회사명 + 국가 현지화 키워드(공식/IR). 정확구문 인용("...")은 쓰지 않는다 — 법인명
+        # 전체를 따옴표로 묶으면(예: "EMCOR Group, Inc.") 구글이 정확일치만 찾아 organic 0건이
+        # 되는 경우가 많다(라이브 확인). 정밀도는 아래 _name_matches(슬러그↔도메인 root) 가
+        # 보장하므로 쿼리는 넓게 두고 후보를 매칭 단계에서 거른다.
+        query = f"{dc.name} {keyword}"
 
         self._used += 1
         items = provider.fetch_page(query, gl=gl, lr=lr, start=1)  # 단일 쿼리(기업당 1회).
