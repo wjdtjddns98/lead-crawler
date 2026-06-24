@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -266,6 +268,48 @@ def save_lead(session: Session, lead: CompanyLead, *, source: str = "") -> Compa
     else:
         clear_email_review(session, cid)
     return company
+
+
+# 사람이 직접 입력하는 이메일의 최소 형식 검증(가비지 후보 차단). 권위있는 검증은
+# 아니지만(MX/SMTP 는 별도), 명백한 오입력을 막는다.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def register_edited_email(session: Session, review_id: str, email: str) -> bool:
+    """확정 전 사람이 입력/수정한 이메일을 연락처 + 검토 후보로 등록한다.
+
+    워크벤치에서 후보를 고르는 것 외에 **임의 이메일을 직접 입력해 확정**할 수 있게 한다
+    (오타 교정·폼만 있던 회사에 이메일 추가). 등록한 이메일은 연락처(role=IR, method=manual)
+    이자 큐 후보가 되어 :func:`set_review_status` 의 '후보에 있어야 함' 검증을 통과하고
+    엑셀 export(load_leads)에도 그대로 반영된다. 이미 후보면 no-op(False), 등록하면 True.
+    형식이 올바르지 않으면 ValueError.
+    """
+    email = (email or "").strip()
+    if not _EMAIL_RE.match(email):
+        raise ValueError(f"올바른 이메일 형식이 아닙니다: {email}")
+    rq = session.get(ReviewQueueRow, review_id)
+    if rq is None:
+        return False
+    cands = candidate_values_of(rq)
+    if email in cands:
+        return False  # 이미 후보 — set_review_status 가 그대로 선택 처리.
+    cid = contact_id_for(rq.company_id, ContactType.EMAIL.value, email)
+    if session.get(ContactRow, cid) is None:
+        session.add(
+            ContactRow(
+                id=cid,
+                company_id=rq.company_id,
+                type=ContactType.EMAIL.value,
+                value=email,
+                role=EmailRole.IR.value,  # 사람이 발송 대상으로 지정 → 최우선.
+                extract_method=ExtractMethod.MANUAL.value,
+                confidence=1.0,
+            )
+        )
+    cands.append(email)
+    rq.candidates = json.dumps(cands, ensure_ascii=False)
+    session.flush()
+    return True
 
 
 def _contact_of(row: ContactRow) -> Contact:

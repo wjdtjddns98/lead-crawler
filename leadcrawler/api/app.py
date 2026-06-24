@@ -23,7 +23,7 @@ from ..logging import get_logger
 from ..schema import ReviewQueueRow, UserRow
 from ..storage.db import get_engine, get_sessionmaker
 from ..storage.export import ExcelExporter
-from ..storage.repository import load_leads
+from ..storage.repository import load_leads, register_edited_email
 from ..storage.review import (
     CONFIRMED,
     REJECTED,
@@ -129,8 +129,20 @@ def create_app() -> FastAPI:
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> ReviewItem:
-        """후보를 확정한다(발송 대상 확정). 담당자=로그인 사용자, 선택 이메일 기록."""
+        """후보를 확정한다(발송 대상 확정). 담당자=로그인 사용자, 선택 이메일 기록.
+
+        ``selected`` 가 기존 후보에 없는 값이면 사람이 직접 입력/수정한 이메일로 보고
+        연락처+후보로 등록한 뒤 확정한다(오타 교정·이메일 추가). 형식 오류는 400.
+        """
         selected = body.selected if body else None
+        if selected and selected.strip():
+            selected = selected.strip()
+            try:
+                register_edited_email(db, review_id, selected)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            selected = None
         return _set_status(db, review_id, CONFIRMED, user, selected=selected)
 
     @app.post("/queue/{review_id}/reject", response_model=ReviewItem)

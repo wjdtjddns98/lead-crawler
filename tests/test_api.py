@@ -126,10 +126,24 @@ def test_confirm_with_selection(client: TestClient) -> None:
     assert r.json()["selected"] == "ir@acme.com" and r.json()["status"] == "confirmed"
 
 
-def test_confirm_invalid_selection_400(client: TestClient) -> None:
+def test_confirm_edited_email_registers(client: TestClient) -> None:
+    # 후보에 없는 '유효한' 이메일은 사람이 직접 수정/입력한 것으로 등록 후 확정된다.
     rid = client.get("/queue").json()["items"][0]["id"]
-    r = client.post(f"/queue/{rid}/confirm", json={"selected": "nope@x.com"})
-    assert r.status_code == 400  # 후보에 없는 선택 → 400
+    r = client.post(f"/queue/{rid}/confirm", json={"selected": "fixed@acme.com"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "confirmed"
+    assert body["selected"] == "fixed@acme.com"  # 수정값이 선택으로 기록.
+    assert "fixed@acme.com" in [c["value"] for c in body["candidates"]]  # 후보로 등록.
+    # 확정 후 export 에도 수정 이메일이 반영(연락처로 등록되므로).
+    assert client.get("/export").status_code == 200
+
+
+def test_confirm_invalid_format_400(client: TestClient) -> None:
+    # 이메일 형식이 아니면 등록 거부(400) — 가비지 후보 차단.
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"selected": "not-an-email"})
+    assert r.status_code == 400
 
 
 def test_confirm_missing_404(client: TestClient) -> None:
