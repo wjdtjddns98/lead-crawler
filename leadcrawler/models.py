@@ -63,6 +63,7 @@ class ExtractMethod(str, Enum):
     OCR_VISION = "ocr_vision"
     API = "api"
     EXISTING_IMPORT = "existing_import"
+    MANUAL = "manual"  # 검증 워크벤치에서 사람이 직접 입력/수정
 
 
 class ValidationStatus(str, Enum):

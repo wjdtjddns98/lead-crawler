@@ -2,13 +2,14 @@
 
 GLEIF·일부 등록처는 법인명만 주고 웹사이트를 안 준다(`domain=None`). 도메인이 없으면
 enrich 가 즉시 빈손으로 끝나 사이트·이메일을 못 얻는다. 이 모듈은 회사명+국가로 검색
-엔진(Google CSE)을 질의해 **가장 그럴듯한 공식 도메인 1건**을 고른다. 못 찾으면 None.
+공급자(:mod:`search_provider` — Serper/CSE)를 질의해 **가장 그럴듯한 공식 도메인 1건**을
+고른다. 못 찾으면 None.
 
 설계 원칙 — **정밀도 우선**:
 - 회사명 토큰이 도메인 등록 root 와 실제로 겹칠 때만 채택한다. 어설픈 1순위 도메인을
   무조건 받으면 틀린 회사 사이트를 저장해 오염되므로(제약 ②), 불확실하면 None 을 낸다.
-- opt-in(`resolve_domains`) + Google CSE 키 필요. 무키·dry_run 은 no-op(결정적 유지).
-- 비용: CSE 무료 100/일 → 런당 캡(`domain_resolve_max`)으로 quota 보호, 초과는 로그.
+- opt-in(`resolve_domains`) + 검색 공급자 필요. 무키·dry_run 은 no-op(결정적 유지).
+- 비용: 런당 캡(`domain_resolve_max`)으로 호출·과금(Serper)을 보호, 초과는 로그.
 - blocklist(포털·뉴스·SNS)는 SearchSource 와 공유해 단일 출처로 둔다.
 """
 
@@ -17,12 +18,14 @@ from __future__ import annotations
 import re
 
 from ..config import Settings
+from ..cost_ledger import SupportsCostLedger
 from ..dedup import normalize_domain
 from ..logging import get_logger
 from .base import DiscoveredCompany
 from .countries import resolve_country
-from .http import Fetcher, SupportsFetch
-from .search import _BLOCKLIST, _DEFAULT_LOCALE, _LOCALE, _CSE_URL
+from .http import SupportsFetch
+from .search import _BLOCKLIST, _DEFAULT_LOCALE, _LOCALE
+from .search_provider import SearchProvider, build_search_provider
 
 log = get_logger("sources.domain_resolver")
 
@@ -36,37 +39,44 @@ _NAME_STOPWORDS = frozenset({
 
 
 class DomainResolver:
-    """회사명으로 공식 도메인을 해석한다(Google CSE, 정밀도 우선, dry_run no-op)."""
+    """회사명으로 공식 도메인을 해석한다(검색 공급자, 정밀도 우선, dry_run no-op)."""
 
-    def __init__(self, settings: Settings, *, fetcher: SupportsFetch | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        fetcher: SupportsFetch | None = None,
+        cost_ledger: SupportsCostLedger | None = None,
+    ) -> None:
         self._settings = settings
         self._fetcher = fetcher
-        self._used = 0  # 런당 CSE 호출 수(quota 캡 추적).
+        self._cost_ledger = cost_ledger
+        self._provider: SearchProvider | None = None
+        self._used = 0  # 런당 해석 호출 수(quota·과금 캡 추적).
         self._capped_logged = False
 
-    def _has_cse(self) -> bool:
-        s = self._settings
-        return bool(s.google_cse_key and s.google_cse_cx)
-
-    def _client(self) -> SupportsFetch:
-        if self._fetcher is None:
-            self._fetcher = Fetcher(
-                min_interval=self._settings.http_request_delay,
-                timeout=self._settings.http_timeout,
+    def _get_provider(self) -> SearchProvider | None:
+        if self._provider is None:
+            self._provider = build_search_provider(
+                self._settings, fetcher=self._fetcher, cost_ledger=self._cost_ledger
             )
-        return self._fetcher
+        return self._provider
 
     def resolve(self, dc: DiscoveredCompany) -> str | None:
         """발견 기업의 공식 도메인을 해석한다(못 찾으면 None).
 
-        dry_run·무키·캡 초과·이미 도메인 보유면 호출하지 않는다(no-op). 한 기업당 CSE
-        1쿼리만 써 quota 를 아낀다.
+        dry_run·무키·캡 초과·이미 도메인 보유면 호출하지 않는다(no-op). 한 기업당 검색
+        1쿼리만 써 quota·과금을 아낀다.
         """
-        if self._settings.dry_run or dc.domain or not self._has_cse():
+        s = self._settings
+        if s.dry_run or dc.domain:
             return None
-        if self._used >= max(0, self._settings.domain_resolve_max):
+        provider = self._get_provider()
+        if provider is None:  # 무키(공급자 없음) → no-op.
+            return None
+        if self._used >= max(0, s.domain_resolve_max):
             if not self._capped_logged:  # 캡 도달은 한 번만 로그(조용한 누락 방지).
-                log.info("resolve.capped", cap=self._settings.domain_resolve_max)
+                log.info("resolve.capped", cap=s.domain_resolve_max)
                 self._capped_logged = True
             return None
 
@@ -76,26 +86,12 @@ class DomainResolver:
 
         country = resolve_country(dc.country)
         gl, lr, keyword = _LOCALE.get(country.iso2, _DEFAULT_LOCALE) if country else _DEFAULT_LOCALE
-        params = {
-            "key": self._settings.google_cse_key,
-            "cx": self._settings.google_cse_cx,
-            # 정확명 인용 + 국가 현지화 키워드(공식/IR) — search.py 와 동일 locale 패턴 재사용.
-            "q": f'"{dc.name}" {keyword}',
-            "num": 10,  # 단일 쿼리(페이지네이션 없음 — 기업당 CSE 1회로 quota 절약).
-        }
-        if gl:
-            params["gl"] = gl
-        if lr:
-            params["lr"] = lr
+        # 정확명 인용 + 국가 현지화 키워드(공식/IR) — search.py 와 동일 locale 패턴 재사용.
+        query = f'"{dc.name}" {keyword}'
 
         self._used += 1
-        try:
-            payload = self._client().get_json(_CSE_URL, params=params)
-        except Exception as exc:  # 검색 실패는 미해석(None)으로 안전 종료.
-            log.info("resolve.cse.error", name=dc.name, err=str(exc))
-            return None
+        items = provider.fetch_page(query, gl=gl, lr=lr, start=1)  # 단일 쿼리(기업당 1회).
 
-        items = payload.get("items") or []
         tld = f".{country.iso2.lower()}" if country else ""
         best: str | None = None
         for item in items:
@@ -106,7 +102,7 @@ class DomainResolver:
                 continue
             if not _name_matches(slug, domain):
                 continue
-            # 첫 일치(=CSE 최상위 관련도)를 기본 채택하되, 국가 TLD 일치 도메인이 있으면 우선.
+            # 첫 일치(=최상위 관련도)를 기본 채택하되, 국가 TLD 일치 도메인이 있으면 우선.
             if best is None:
                 best = domain
             if tld and domain.endswith(tld):

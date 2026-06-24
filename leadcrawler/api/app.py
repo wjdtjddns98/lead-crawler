@@ -13,17 +13,20 @@ from collections.abc import Iterator
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
 from .. import __version__
 from ..config import get_settings
 from ..logging import get_logger
-from ..schema import ReviewQueueRow, UserRow
+from ..outreach import preview as outreach_preview
+from ..outreach import send_campaign
+from ..schema import CompanyRow, ReviewQueueRow, UserRow
+from ..sources.countries import country_match_set
 from ..storage.db import get_engine, get_sessionmaker
 from ..storage.export import ExcelExporter
-from ..storage.repository import load_leads
+from ..storage.repository import load_leads, register_edited_email
 from ..storage.review import (
     CONFIRMED,
     REJECTED,
@@ -37,7 +40,15 @@ from ..storage.review import (
 )
 from .admin import register_admin
 from .auth import make_require_admin, make_require_user, register_auth
-from .schemas import ConfirmRequest, QueueResponse, ReviewItem, ReviewStatus
+from .schemas import (
+    ConfirmRequest,
+    QueueResponse,
+    ReviewItem,
+    ReviewStatus,
+    SendPreview,
+    SendRequest,
+    SendResult,
+)
 
 log = get_logger("api")
 
@@ -129,8 +140,20 @@ def create_app() -> FastAPI:
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> ReviewItem:
-        """후보를 확정한다(발송 대상 확정). 담당자=로그인 사용자, 선택 이메일 기록."""
+        """후보를 확정한다(발송 대상 확정). 담당자=로그인 사용자, 선택 이메일 기록.
+
+        ``selected`` 가 기존 후보에 없는 값이면 사람이 직접 입력/수정한 이메일로 보고
+        연락처+후보로 등록한 뒤 확정한다(오타 교정·이메일 추가). 형식 오류는 400.
+        """
         selected = body.selected if body else None
+        if selected and selected.strip():
+            selected = selected.strip()
+            try:
+                register_edited_email(db, review_id, selected)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            selected = None
         return _set_status(db, review_id, CONFIRMED, user, selected=selected)
 
     @app.post("/queue/{review_id}/reject", response_model=ReviewItem)
@@ -144,15 +167,28 @@ def create_app() -> FastAPI:
 
     @app.get("/export")
     def export(
+        country: str = Query(default="", description="쉼표구분 국가(ISO2) 필터, 빈값=전체"),
+        industry: str = Query(default="", description="쉼표구분 업종 필터, 빈값=전체"),
         db: Session = Depends(get_db),
         _admin: UserRow = Depends(require_admin),
     ) -> FileResponse:
-        """확정(confirmed) 리드를 고정 12컬럼 엑셀로 내려받는다(관리자 전용)."""
-        company_ids = list(
-            db.scalars(
-                select(ReviewQueueRow.company_id).where(ReviewQueueRow.status == CONFIRMED)
-            ).all()
+        """확정(confirmed) 리드를 고정 12컬럼 엑셀로 내려받는다(관리자 전용).
+
+        ``country``/``industry`` 로 국가·업종별 선택 추출(빈값=전체). 국가는 별칭까지
+        대소문자 무시 매칭('KR'↔'대한민국'), 업종은 대소문자 무시 매칭.
+        """
+        stmt = (
+            select(ReviewQueueRow.company_id)
+            .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
+            .where(ReviewQueueRow.status == CONFIRMED)
         )
+        countries = _split_csv(country)
+        industries = _split_csv(industry)
+        if countries:
+            stmt = stmt.where(func.lower(CompanyRow.country).in_(country_match_set(countries)))
+        if industries:
+            stmt = stmt.where(func.lower(CompanyRow.industry).in_({i.lower() for i in industries}))
+        company_ids = list(db.scalars(stmt).all())
         leads = load_leads(db, company_ids=company_ids)
         # 요청마다 고유 임시파일 — 동시 export 의 파일 경합 방지. 응답 후 삭제.
         fd, tmp = tempfile.mkstemp(prefix="leadcrawler_", suffix=".xlsx")
@@ -165,7 +201,44 @@ def create_app() -> FastAPI:
             background=BackgroundTask(os.unlink, tmp),
         )
 
+    @app.get("/send/preview", response_model=SendPreview)
+    def send_preview(
+        country: str = Query(default=""),
+        industry: str = Query(default=""),
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> SendPreview:
+        """발송 전 미리보기 — 수신 N명·일일 잔여 상한·표본(실발송 없음, 관리자 전용)."""
+        result = outreach_preview(
+            get_settings(), db,
+            countries=_split_csv(country), industries=_split_csv(industry),
+        )
+        return SendPreview(**result)
+
+    @app.post("/send", response_model=SendResult)
+    def send(
+        payload: SendRequest,
+        db: Session = Depends(get_db),
+        admin: UserRow = Depends(require_admin),
+    ) -> SendResult:
+        """확정큐 대상 전체발송(관리자 전용). email_send_enabled 가 꺼져 있으면 dry-run.
+
+        제목·본문·발신표시명은 사람 입력. 수신주소당 1통(재발송 방지)·일일 상한·레이트리밋.
+        """
+        result = send_campaign(
+            get_settings(), db,
+            subject=payload.subject, body=payload.body, from_display=payload.from_display,
+            countries=_split_csv(payload.country), industries=_split_csv(payload.industry),
+            sent_by=admin.username,
+        )
+        return SendResult(**result)
+
     return app
+
+
+def _split_csv(value: str) -> list[str]:
+    """쉼표구분 문자열을 트림된 토큰 목록으로(빈 토큰 제거)."""
+    return [t.strip() for t in (value or "").split(",") if t.strip()]
 
 
 def _set_status(

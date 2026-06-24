@@ -24,6 +24,14 @@ class ExcelExporter:
         ws.append(HEADERS)
         for lead in leads:
             ws.append(build_row(lead))
+            # E(홈페이지 문의=폼 URL)·F(사이트 URL)가 URL이면 클릭 가능한 하이퍼링크로.
+            row = ws.max_row
+            for col in (5, 6):
+                cell = ws.cell(row=row, column=col)
+                value = cell.value
+                if isinstance(value, str) and value.startswith(("http://", "https://")):
+                    cell.hyperlink = value
+                    cell.style = "Hyperlink"
 
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)

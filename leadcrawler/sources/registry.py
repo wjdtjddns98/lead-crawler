@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from ..config import Settings, get_settings
+from ..cost_ledger import SupportsCostLedger
 from ..logging import get_logger
 from ..dedup import normalize_domain
 from .base import DiscoveredCompany, DiscoverySource, Segment
@@ -23,12 +24,15 @@ from .wikidata import WikidataSource
 log = get_logger("sources.registry")
 
 
-def build_sources(settings: Settings) -> list[DiscoverySource]:
+def build_sources(
+    settings: Settings, cost_ledger: SupportsCostLedger | None = None
+) -> list[DiscoverySource]:
     """등록된 발견 소스 인스턴스 목록을 만든다(우선순위 순).
 
     순서 = canonical_key '첫 등장 우선' 신뢰도 순서: 등록처·거래소(EDGAR/DART/
     CompaniesHouse/PSE/SET, reg: 키) → 글로벌 집계원(GLEIF/Wikidata/OpenCorporates,
-    reg: 키) → 검색(dom: 키, 가장 약함).
+    reg: 키) → 검색(dom: 키, 가장 약함). ``cost_ledger`` 는 유료 검색(Serper) 과금
+    추적용으로 SearchSource 에 주입된다.
     """
     return [
         EdgarSource(settings),
@@ -42,12 +46,14 @@ def build_sources(settings: Settings) -> list[DiscoverySource]:
         GleifSource(settings),
         WikidataSource(settings),
         OpenCorporatesSource(settings),
-        SearchSource(settings),
+        SearchSource(settings, cost_ledger=cost_ledger),
     ]
 
 
 def discover_segment(
-    segment: Segment, settings: Settings | None = None
+    segment: Segment,
+    settings: Settings | None = None,
+    cost_ledger: SupportsCostLedger | None = None,
 ) -> list[DiscoveredCompany]:
     """세그먼트에 적용 가능한 소스들을 실행해 중복 없는 후보 목록을 반환한다.
 
@@ -64,7 +70,7 @@ def discover_segment(
     out: list[DiscoveredCompany] = []
     seen_keys: set[str] = set()
     seen_domains: set[str] = set()
-    for src in build_sources(settings):
+    for src in build_sources(settings, cost_ledger):
         if not src.applies_to(segment):
             continue
         found = src.discover(segment)

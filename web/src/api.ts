@@ -12,6 +12,8 @@ import type {
   ReviewItem,
   ReviewStatus,
   Role,
+  SendPreview,
+  SendResult,
   UserStats,
 } from "./types";
 
@@ -203,6 +205,32 @@ export async function fetchIndustries(): Promise<IndustryOption[]> {
   );
 }
 
+export async function fetchSendPreview(country = "", industry = ""): Promise<SendPreview> {
+  const q = new URLSearchParams();
+  if (country) q.set("country", country);
+  if (industry) q.set("industry", industry);
+  const qs = q.toString();
+  return jsonOrThrow<SendPreview>(
+    await fetch(`${BASE}/send/preview${qs ? `?${qs}` : ""}`, { headers: authHeaders() }),
+  );
+}
+
+export async function sendCampaign(payload: {
+  subject: string;
+  body: string;
+  from_display: string;
+  country: string;
+  industry: string;
+}): Promise<SendResult> {
+  return jsonOrThrow<SendResult>(
+    await fetch(`${BASE}/send`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
 export async function fetchCrawlTarget(): Promise<CrawlTarget> {
   return jsonOrThrow<CrawlTarget>(
     await fetch(`${BASE}/admin/crawl-target`, { headers: authHeaders() }),
@@ -225,8 +253,13 @@ export async function saveCrawlTarget(t: {
 }
 
 // 확정분 엑셀 다운로드. 인증 헤더가 필요해 평범한 링크 대신 fetch→blob 으로 받아 저장한다.
-export async function exportConfirmed(): Promise<void> {
-  const res = await fetch(`${BASE}/export`, { headers: authHeaders() });
+// country/industry(쉼표구분)로 국가·업종별 선택 추출(빈값=전체).
+export async function exportConfirmed(country = "", industry = ""): Promise<void> {
+  const q = new URLSearchParams();
+  if (country) q.set("country", country);
+  if (industry) q.set("industry", industry);
+  const qs = q.toString();
+  const res = await fetch(`${BASE}/export${qs ? `?${qs}` : ""}`, { headers: authHeaders() });
   handle401(res);
   if (!res.ok) throw new Error(`엑셀 내보내기 실패: ${res.status}`);
   const blob = await res.blob();

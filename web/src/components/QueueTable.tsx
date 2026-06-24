@@ -20,6 +20,15 @@ function safeHref(url: string | null): string | null {
   }
 }
 
+// URL 에서 표시용 호스트(도메인)를 뽑는다(www. 제거). 실패 시 원문.
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
 // 불리언/널 3-state 를 O/X/— 로 표시.
 function tri(v: boolean | null): string {
   if (v === null) return "—";
@@ -63,14 +72,7 @@ const QueueRow = memo(
         <td>{item.country}</td>
         <td>{item.industry}</td>
         <td className="emails">
-          {item.candidates.length === 0 ? (
-            <span className="muted">—</span>
-          ) : item.candidates.length === 1 ? (
-            <span className="cand-single" title={item.candidates[0].value}>
-              {item.candidates[0].value}{" "}
-              <EmailBadge status={item.candidates[0].email_status} />
-            </span>
-          ) : (
+          {item.candidates.length > 1 && (
             <div className="cands">
               {item.candidates.map((c) => (
                 <label key={c.value} className="cand" title={c.value}>
@@ -87,6 +89,17 @@ const QueueRow = memo(
               ))}
             </div>
           )}
+          {/* 확정 전 이메일 직접 수정/입력 — 후보 선택값을 채우되 사람이 덮어쓸 수 있다.
+              폼만 있던(후보 0) 행엔 새 이메일 추가도 가능. */}
+          <input
+            className="email-edit"
+            type="email"
+            value={choice ?? ""}
+            disabled={done}
+            placeholder="이메일 직접 입력/수정"
+            onChange={(e) => onPick(item.id, e.target.value)}
+            title="확정 전 이메일을 수정하거나 직접 입력할 수 있습니다"
+          />
         </td>
         <td className="mailstat">
           <EmailBadge status={item.email_status} />
@@ -95,8 +108,14 @@ const QueueRow = memo(
         </td>
         <td>
           {href ? (
-            <a href={href} target="_blank" rel="noreferrer">
-              {item.site_alive ? "↗ 생존" : "↗"}
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className={item.site_alive ? "" : "site-dead"}
+              title={item.site_alive ? "사이트 생존" : "사이트 미응답"}
+            >
+              ↗ {hostOf(href)}
             </a>
           ) : (
             <span className="muted">—</span>
@@ -116,7 +135,7 @@ const QueueRow = memo(
           <button
             className="btn confirm"
             disabled={busy || item.status === "confirmed"}
-            onClick={() => onConfirm(item.id, choice)}
+            onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
           >
             확정
           </button>

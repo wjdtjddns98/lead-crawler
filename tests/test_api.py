@@ -114,6 +114,40 @@ def test_confirm_then_export(client: TestClient) -> None:
     assert len(ex.content) > 0
 
 
+def test_export_filter_by_country_industry(client: TestClient) -> None:
+    import io
+
+    from openpyxl import load_workbook
+
+    rid = client.get("/queue").json()["items"][0]["id"]
+    client.post(f"/queue/{rid}/confirm")  # 시드 리드(KR/건설) 확정.
+
+    def data_rows(resp) -> int:
+        return load_workbook(io.BytesIO(resp.content)).active.max_row - 1  # 헤더 제외.
+
+    # 매칭(KR/건설) → 1행. 별칭(소문자 'kr')으로도 잡혀야 한다.
+    assert data_rows(client.get("/export?country=KR&industry=건설")) == 1
+    assert data_rows(client.get("/export?country=대한민국")) == 1  # 한글 별칭 매칭.
+    # 불일치 국가/업종 → 0행(헤더만).
+    assert data_rows(client.get("/export?country=JP")) == 0
+    assert data_rows(client.get("/export?industry=반도체")) == 0
+
+
+def test_send_preview_and_dry_run(client: TestClient) -> None:
+    # 확정 후 발송 미리보기/발송 — email_send_enabled 기본 false 라 dry-run(실발송 0).
+    rid = client.get("/queue").json()["items"][0]["id"]
+    client.post(f"/queue/{rid}/confirm")
+    prev = client.get("/send/preview").json()
+    assert prev["recipients"] == 1 and prev["enabled"] is False
+    r = client.post("/send", json={"subject": "안녕하세요", "body": "본문입니다"}).json()
+    assert r["dry_run"] is True and r["recipients"] == 1 and r["sent"] == 0
+
+
+def test_send_empty_subject_422(client: TestClient) -> None:
+    # 제목/본문은 필수(min_length=1) → 빈 값이면 422.
+    assert client.post("/send", json={"subject": "", "body": "x"}).status_code == 422
+
+
 def test_reject(client: TestClient) -> None:
     rid = client.get("/queue").json()["items"][0]["id"]
     assert client.post(f"/queue/{rid}/reject").json()["status"] == "rejected"
@@ -126,10 +160,24 @@ def test_confirm_with_selection(client: TestClient) -> None:
     assert r.json()["selected"] == "ir@acme.com" and r.json()["status"] == "confirmed"
 
 
-def test_confirm_invalid_selection_400(client: TestClient) -> None:
+def test_confirm_edited_email_registers(client: TestClient) -> None:
+    # 후보에 없는 '유효한' 이메일은 사람이 직접 수정/입력한 것으로 등록 후 확정된다.
     rid = client.get("/queue").json()["items"][0]["id"]
-    r = client.post(f"/queue/{rid}/confirm", json={"selected": "nope@x.com"})
-    assert r.status_code == 400  # 후보에 없는 선택 → 400
+    r = client.post(f"/queue/{rid}/confirm", json={"selected": "fixed@acme.com"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "confirmed"
+    assert body["selected"] == "fixed@acme.com"  # 수정값이 선택으로 기록.
+    assert "fixed@acme.com" in [c["value"] for c in body["candidates"]]  # 후보로 등록.
+    # 확정 후 export 에도 수정 이메일이 반영(연락처로 등록되므로).
+    assert client.get("/export").status_code == 200
+
+
+def test_confirm_invalid_format_400(client: TestClient) -> None:
+    # 이메일 형식이 아니면 등록 거부(400) — 가비지 후보 차단.
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"selected": "not-an-email"})
+    assert r.status_code == 400
 
 
 def test_confirm_missing_404(client: TestClient) -> None:

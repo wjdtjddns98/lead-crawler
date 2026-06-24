@@ -41,7 +41,7 @@ def test_row_rules_full() -> None:
     assert row[0] == "KR"  # 국가
     assert row[1] == "테스트기업"  # 업체명
     assert row[3] == "ir@x.com"  # 이메일
-    assert row[4] == "O"  # 홈페이지 문의(폼 있음)
+    assert row[4] == "https://x.com/contact"  # 홈페이지 문의 = 폼 URL(클릭 이동)
     assert row[6] == "" and row[7] == "" and row[11] == ""  # G·H·L 공란
     assert row[8] == "건설"  # 구분=업종만
     assert row[9] == "O"  # 이메일 실존(valid)
@@ -55,7 +55,18 @@ def test_form_only_note() -> None:
     )
     row = build_row(lead)
     assert row[3] == ""  # 이메일 없음
+    assert row[4] == "https://x.com/contact"  # E = 폼 URL
     assert row[9] == FORM_ONLY_NOTE  # J = "사이트 내 문의폼"
+
+
+def test_no_form_is_x() -> None:
+    # 폼이 없으면 E 는 X(스캔용 유지).
+    lead = CompanyLead(
+        company=_company(),
+        email=Contact(type=ContactType.EMAIL, value="ir@x.com", role=EmailRole.IR),
+        email_validation=EmailValidation(status=ValidationStatus.VALID),
+    )
+    assert build_row(lead)[4] == "X"
 
 
 def test_export_writes_headers(tmp_path: Path) -> None:

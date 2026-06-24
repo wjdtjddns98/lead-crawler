@@ -142,6 +142,38 @@ class IndustryOption(BaseModel):
     aliases: list[str] = []  # 검색용 별칭(영문 — 'construction'→건설 등 매칭)
 
 
+class SendPreview(BaseModel):
+    """발송 미리보기 — 수신 N명·일일 잔여·발신계정·표본(실발송 없음)."""
+
+    recipients: int
+    enabled: bool  # email_send_enabled — false 면 dry-run(실발송 차단)
+    daily_cap: int
+    remaining_today: int
+    sender: str = ""
+    sample: list[str] = []
+
+
+class SendRequest(BaseModel):
+    """확정큐 전체발송 요청 — 제목·본문·발신표시명은 사람이 직접 입력."""
+
+    subject: str = Field(min_length=1, max_length=512)
+    body: str = Field(min_length=1)
+    from_display: str = ""  # 발신 표시명(From 주소는 인증 계정으로 고정)
+    country: str = ""  # 쉼표구분 국가 필터(빈값=전체)
+    industry: str = ""  # 쉼표구분 업종 필터(빈값=전체)
+
+
+class SendResult(BaseModel):
+    """발송 결과 요약."""
+
+    dry_run: bool
+    recipients: int
+    attempted: int = 0
+    sent: int = 0
+    failed: int = 0
+    capped: int = 0  # 일일 상한 초과로 미발송
+
+
 class CrawlTargetInfo(BaseModel):
     """현재 크롤 타깃(스케줄러가 매일 읽는 값) — 관리자 화면 표시·폼 초기값."""
 

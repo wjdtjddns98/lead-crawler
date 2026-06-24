@@ -253,6 +253,29 @@ table.queue {
   gap: 6px;
 }
 
+/* 확정 전 이메일 직접 수정/입력 칸. */
+.email-edit {
+  width: 100%;
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: "Consolas", monospace;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.email-edit:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.email-edit:disabled {
+  opacity: 0.5;
+}
+
 .actions {
   display: flex;
   gap: 6px;
@@ -265,6 +288,12 @@ table.queue {
 
 a {
   color: var(--accent);
+}
+
+/* 사이트 미응답(site_alive=false) 링크 — 도메인은 보이되 죽은 표시(취소선·흐림). */
+.site-dead {
+  color: var(--muted);
+  text-decoration: line-through;
 }
 
 .muted {
@@ -457,6 +486,43 @@ a {
 
 .crawl-target label.inline input {
   min-width: 0;
+}
+
+/* 확정큐 이메일 발송 폼. */
+.send-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 780px;
+}
+
+.send-form > label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.send-form input,
+.send-form textarea {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.send-form textarea {
+  resize: vertical;
+  font-family: "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+}
+
+.send-actions {
+  display: flex;
+  gap: 8px;
 }
 
 /* 멀티셀렉트 피커(국가·업종 공용 — 검색 + 체크리스트) ----------------- */
