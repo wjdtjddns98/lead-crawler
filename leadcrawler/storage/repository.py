@@ -49,7 +49,6 @@ from ..schema import (
 from ..sources.base import DiscoveredCompany
 from .review import (
     candidate_values_of,
-    clear_email_review,
     effective_selected,
     enqueue_email_review,
     review_id_for,
@@ -258,15 +257,18 @@ def save_lead(session: Session, lead: CompanyLead, *, source: str = "") -> Compa
         ev.provider = v.provider
         ev.checked_at = v.checked_at
 
-    # enqueue 규칙: 이메일 후보가 있으면 전체 후보를 검증 큐에 등록(상태·선택 보존 멱등).
-    # 재크롤로 후보가 0건이 되면 기존 큐 행의 후보를 비운다(죽은 후보 잔존 방지).
-    if email_contacts:
-        default = lead.email.value if lead.email is not None else email_contacts[0].value
-        enqueue_email_review(
-            session, cid, [ct.value for ct in email_contacts], selected_default=default
-        )
-    else:
-        clear_email_review(session, cid)
+    # enqueue 규칙(PO 갱신 2026-06-24): 실존 리드는 **이메일이 없어도 큐에 넣는다** —
+    # 사람이 워크벤치에서 직접 이메일을 찾아 입력/확정할 수 있고, 문의폼만 있는 회사도
+    # 검토·발송(사이트 문의폼) 대상이다. 이메일 후보가 있으면 후보를 싣고, 없으면 빈
+    # 후보로 등록한다(상태·선택은 멱등 보존 — 재크롤이 사람 확정을 되돌리지 않음).
+    default = (
+        lead.email.value
+        if lead.email is not None
+        else (email_contacts[0].value if email_contacts else None)
+    )
+    enqueue_email_review(
+        session, cid, [ct.value for ct in email_contacts], selected_default=default
+    )
     return company
 
 

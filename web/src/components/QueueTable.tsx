@@ -64,6 +64,7 @@ const QueueRow = memo(
   function QueueRow({ item, busy, choice, onPick, onConfirm, onReject }: RowProps) {
     const done = item.status !== "pending";
     const href = safeHref(item.homepage);
+    const formHref = safeHref(item.form);
     return (
       <tr className={`row-${item.status}${done ? " done" : ""}`}>
         <td className="name" title={item.name}>
@@ -119,6 +120,14 @@ const QueueRow = memo(
             </a>
           ) : (
             <span className="muted">—</span>
+          )}
+          {formHref && (
+            <div>
+              <a href={formHref} target="_blank" rel="noreferrer" className="form-link"
+                title="사이트 내 문의폼">
+                📝 문의폼
+              </a>
+            </div>
           )}
         </td>
         <td>

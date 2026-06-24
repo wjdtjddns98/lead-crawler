@@ -25,6 +25,7 @@ export interface ReviewItem {
   industry: string;
   homepage: string | null;
   site_alive: boolean;
+  form: string | null;
   email_status: string | null;
   email_mx: boolean | null;
   email_smtp: boolean | null;

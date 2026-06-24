@@ -1,8 +1,10 @@
 """검증 큐(review_queue) 영속화 계층 — 웹앱 워크벤치의 데이터 접근.
 
-enqueue 규칙(PO 확정): **이메일 후보가 있는 리드는 전부** 큐에 넣어 사람이 발송 전
-확인한다. 큐 행 PK 는 (company_id, field) 에서 결정적으로 파생해, 24/7 재크롤이 같은
-회사를 다시 적재해도 **사람이 내린 확정/거부 상태가 초기화되지 않는다**(후보만 갱신).
+enqueue 규칙(PO 갱신 2026-06-24): **실존 리드는 이메일이 없어도 전부** 큐에 넣는다 —
+사람이 워크벤치에서 직접 이메일을 찾아 입력/확정하거나, 문의폼만 있는 회사를 폼으로
+처리한다(빈 후보 행도 등록). 큐 행 PK 는 (company_id, field) 에서 결정적으로 파생해,
+24/7 재크롤이 같은 회사를 다시 적재해도 **사람이 내린 확정/거부 상태가 초기화되지
+않는다**(후보만 갱신).
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..logging import get_logger
+from ..models import ContactType
 from ..schema import (
     CompanyRow,
     ContactRow,
@@ -135,6 +138,21 @@ def _email_signals_by_value(
     return {(cid, value): (status, mx, smtp) for cid, value, status, mx, smtp in rows}
 
 
+def _forms_by_company(session: Session, company_ids: Sequence[str]) -> dict[str, str]:
+    """회사별 문의폼 URL 맵(회사당 1건). 이메일 없는 리드의 폼 처리 표시용."""
+    if not company_ids:
+        return {}
+    rows = session.execute(
+        select(ContactRow.company_id, ContactRow.value)
+        .where(ContactRow.company_id.in_(list(company_ids)))
+        .where(ContactRow.type == ContactType.FORM.value)
+    ).all()
+    forms: dict[str, str] = {}
+    for cid, value in rows:
+        forms.setdefault(cid, value)  # 첫 폼만(여러 개여도 대표 1개).
+    return forms
+
+
 def query_reviews(
     session: Session, *, status: str | None = None, limit: int = 50, offset: int = 0
 ) -> list[dict]:
@@ -154,8 +172,10 @@ def query_reviews(
     if status is not None:
         stmt = stmt.where(ReviewQueueRow.status == status)
     rows = session.execute(stmt).all()
-    signals = _email_signals_by_value(session, [company.id for _, company in rows])
-    return [_to_dict(rq, company, signals) for rq, company in rows]
+    ids = [company.id for _, company in rows]
+    signals = _email_signals_by_value(session, ids)
+    forms = _forms_by_company(session, ids)
+    return [_to_dict(rq, company, signals, forms) for rq, company in rows]
 
 
 def get_review(session: Session, review_id: str) -> dict | None:
@@ -165,7 +185,8 @@ def get_review(session: Session, review_id: str) -> dict | None:
         return None
     company = session.get(CompanyRow, rq.company_id)
     signals = _email_signals_by_value(session, [rq.company_id])
-    return _to_dict(rq, company, signals)
+    forms = _forms_by_company(session, [rq.company_id])
+    return _to_dict(rq, company, signals, forms)
 
 
 def _parse_candidates(rq: ReviewQueueRow) -> list[str]:
@@ -344,8 +365,10 @@ def claim_work(
         )
         session.flush()
         current = _my_active_rows(session, user_id, ttl_minutes=ttl_minutes, now=now)
-    signals = _email_signals_by_value(session, [c.id for _, c in current])
-    return [_to_dict(rq, company, signals) for rq, company in current]
+    ids = [c.id for _, c in current]
+    signals = _email_signals_by_value(session, ids)
+    forms = _forms_by_company(session, ids)
+    return [_to_dict(rq, company, signals, forms) for rq, company in current]
 
 
 def release_my_claims(session: Session, user_id: str) -> int:
@@ -362,6 +385,7 @@ def _to_dict(
     rq: ReviewQueueRow,
     company: CompanyRow | None,
     signals: dict[tuple[str, str], _EmailSignal],
+    forms: dict[str, str] | None = None,
 ) -> dict:
     """ORM 행 + 후보별 이메일 신호를 API DTO dict 로 평탄화한다."""
     candidates = _parse_candidates(rq)
@@ -391,6 +415,7 @@ def _to_dict(
         "industry": company.industry if company else "",
         "homepage": company.homepage if company else None,
         "site_alive": company.site_alive if company else False,
+        "form": (forms or {}).get(rq.company_id),  # 문의폼 URL(없으면 None) — 폼 처리 표시.
         "email_status": rep_status,
         "email_mx": rep_mx,
         "email_smtp": rep_smtp,
