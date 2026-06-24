@@ -488,6 +488,43 @@ a {
   min-width: 0;
 }
 
+/* 확정큐 이메일 발송 폼. */
+.send-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 780px;
+}
+
+.send-form > label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.send-form input,
+.send-form textarea {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.send-form textarea {
+  resize: vertical;
+  font-family: "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+}
+
+.send-actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* 멀티셀렉트 피커(국가·업종 공용 — 검색 + 체크리스트) ----------------- */
 .crawl-target .field {
   display: flex;

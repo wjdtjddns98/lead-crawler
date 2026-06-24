@@ -133,6 +133,21 @@ def test_export_filter_by_country_industry(client: TestClient) -> None:
     assert data_rows(client.get("/export?industry=반도체")) == 0
 
 
+def test_send_preview_and_dry_run(client: TestClient) -> None:
+    # 확정 후 발송 미리보기/발송 — email_send_enabled 기본 false 라 dry-run(실발송 0).
+    rid = client.get("/queue").json()["items"][0]["id"]
+    client.post(f"/queue/{rid}/confirm")
+    prev = client.get("/send/preview").json()
+    assert prev["recipients"] == 1 and prev["enabled"] is False
+    r = client.post("/send", json={"subject": "안녕하세요", "body": "본문입니다"}).json()
+    assert r["dry_run"] is True and r["recipients"] == 1 and r["sent"] == 0
+
+
+def test_send_empty_subject_422(client: TestClient) -> None:
+    # 제목/본문은 필수(min_length=1) → 빈 값이면 422.
+    assert client.post("/send", json={"subject": "", "body": "x"}).status_code == 422
+
+
 def test_reject(client: TestClient) -> None:
     rid = client.get("/queue").json()["items"][0]["id"]
     assert client.post(f"/queue/{rid}/reject").json()["status"] == "rejected"

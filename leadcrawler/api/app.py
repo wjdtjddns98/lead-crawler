@@ -20,8 +20,10 @@ from starlette.background import BackgroundTask
 from .. import __version__
 from ..config import get_settings
 from ..logging import get_logger
+from ..outreach import preview as outreach_preview
+from ..outreach import send_campaign
 from ..schema import CompanyRow, ReviewQueueRow, UserRow
-from ..sources.countries import resolve_country
+from ..sources.countries import country_match_set
 from ..storage.db import get_engine, get_sessionmaker
 from ..storage.export import ExcelExporter
 from ..storage.repository import load_leads, register_edited_email
@@ -38,7 +40,15 @@ from ..storage.review import (
 )
 from .admin import register_admin
 from .auth import make_require_admin, make_require_user, register_auth
-from .schemas import ConfirmRequest, QueueResponse, ReviewItem, ReviewStatus
+from .schemas import (
+    ConfirmRequest,
+    QueueResponse,
+    ReviewItem,
+    ReviewStatus,
+    SendPreview,
+    SendRequest,
+    SendResult,
+)
 
 log = get_logger("api")
 
@@ -175,7 +185,7 @@ def create_app() -> FastAPI:
         countries = _split_csv(country)
         industries = _split_csv(industry)
         if countries:
-            stmt = stmt.where(func.lower(CompanyRow.country).in_(_country_match_set(countries)))
+            stmt = stmt.where(func.lower(CompanyRow.country).in_(country_match_set(countries)))
         if industries:
             stmt = stmt.where(func.lower(CompanyRow.industry).in_({i.lower() for i in industries}))
         company_ids = list(db.scalars(stmt).all())
@@ -191,27 +201,44 @@ def create_app() -> FastAPI:
             background=BackgroundTask(os.unlink, tmp),
         )
 
+    @app.get("/send/preview", response_model=SendPreview)
+    def send_preview(
+        country: str = Query(default=""),
+        industry: str = Query(default=""),
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> SendPreview:
+        """발송 전 미리보기 — 수신 N명·일일 잔여 상한·표본(실발송 없음, 관리자 전용)."""
+        result = outreach_preview(
+            get_settings(), db,
+            countries=_split_csv(country), industries=_split_csv(industry),
+        )
+        return SendPreview(**result)
+
+    @app.post("/send", response_model=SendResult)
+    def send(
+        payload: SendRequest,
+        db: Session = Depends(get_db),
+        admin: UserRow = Depends(require_admin),
+    ) -> SendResult:
+        """확정큐 대상 전체발송(관리자 전용). email_send_enabled 가 꺼져 있으면 dry-run.
+
+        제목·본문·발신표시명은 사람 입력. 수신주소당 1통(재발송 방지)·일일 상한·레이트리밋.
+        """
+        result = send_campaign(
+            get_settings(), db,
+            subject=payload.subject, body=payload.body, from_display=payload.from_display,
+            countries=_split_csv(payload.country), industries=_split_csv(payload.industry),
+            sent_by=admin.username,
+        )
+        return SendResult(**result)
+
     return app
 
 
 def _split_csv(value: str) -> list[str]:
     """쉼표구분 문자열을 트림된 토큰 목록으로(빈 토큰 제거)."""
     return [t.strip() for t in (value or "").split(",") if t.strip()]
-
-
-def _country_match_set(tokens: list[str]) -> set[str]:
-    """국가 토큰들을 매칭용 소문자 집합으로 확장한다(별칭 포함, 'KR'↔'대한민국' 호환).
-
-    저장된 company.country 표기가 ISO2('KR')든 한글('대한민국')이든 잡히도록
-    :func:`resolve_country` 별칭을 모두 소문자로 펼친다.
-    """
-    vals: set[str] = set()
-    for token in tokens:
-        vals.add(token.lower())
-        country = resolve_country(token)
-        if country is not None:
-            vals.update(alias.lower() for alias in country.aliases)
-    return vals
 
 
 def _set_status(

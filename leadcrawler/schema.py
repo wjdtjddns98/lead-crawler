@@ -243,3 +243,25 @@ class AuthSessionRow(Base):
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class EmailSendLogRow(Base):
+    """아웃리치 발송 로그 — 수신주소당 1행(재발송 방지 + 발송 이력/책임추적).
+
+    PK 는 이메일 주소에서 결정적으로 파생해, 같은 주소에 두 번 발송하지 않도록 한다
+    (status='sent' 면 스킵). 실패(status='failed')는 재시도 시 덮어쓴다. dry-run 은
+    status='dryrun' 으로 남겨 미리보기 추적(실발송 카운트와 구분).
+    """
+
+    __tablename__ = "email_send_log"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # 'e_' + sha1(email)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    company_id: Mapped[str] = mapped_column(String(40), index=True)
+    subject: Mapped[str] = mapped_column(String(512), default="", server_default=text("''"))
+    status: Mapped[str] = mapped_column(String(16), index=True)  # sent | failed | dryrun
+    error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    sent_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now(), index=True
+    )
