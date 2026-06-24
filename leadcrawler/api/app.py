@@ -13,14 +13,15 @@ from collections.abc import Iterator
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
 from .. import __version__
 from ..config import get_settings
 from ..logging import get_logger
-from ..schema import ReviewQueueRow, UserRow
+from ..schema import CompanyRow, ReviewQueueRow, UserRow
+from ..sources.countries import resolve_country
 from ..storage.db import get_engine, get_sessionmaker
 from ..storage.export import ExcelExporter
 from ..storage.repository import load_leads, register_edited_email
@@ -156,15 +157,28 @@ def create_app() -> FastAPI:
 
     @app.get("/export")
     def export(
+        country: str = Query(default="", description="쉼표구분 국가(ISO2) 필터, 빈값=전체"),
+        industry: str = Query(default="", description="쉼표구분 업종 필터, 빈값=전체"),
         db: Session = Depends(get_db),
         _admin: UserRow = Depends(require_admin),
     ) -> FileResponse:
-        """확정(confirmed) 리드를 고정 12컬럼 엑셀로 내려받는다(관리자 전용)."""
-        company_ids = list(
-            db.scalars(
-                select(ReviewQueueRow.company_id).where(ReviewQueueRow.status == CONFIRMED)
-            ).all()
+        """확정(confirmed) 리드를 고정 12컬럼 엑셀로 내려받는다(관리자 전용).
+
+        ``country``/``industry`` 로 국가·업종별 선택 추출(빈값=전체). 국가는 별칭까지
+        대소문자 무시 매칭('KR'↔'대한민국'), 업종은 대소문자 무시 매칭.
+        """
+        stmt = (
+            select(ReviewQueueRow.company_id)
+            .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
+            .where(ReviewQueueRow.status == CONFIRMED)
         )
+        countries = _split_csv(country)
+        industries = _split_csv(industry)
+        if countries:
+            stmt = stmt.where(func.lower(CompanyRow.country).in_(_country_match_set(countries)))
+        if industries:
+            stmt = stmt.where(func.lower(CompanyRow.industry).in_({i.lower() for i in industries}))
+        company_ids = list(db.scalars(stmt).all())
         leads = load_leads(db, company_ids=company_ids)
         # 요청마다 고유 임시파일 — 동시 export 의 파일 경합 방지. 응답 후 삭제.
         fd, tmp = tempfile.mkstemp(prefix="leadcrawler_", suffix=".xlsx")
@@ -178,6 +192,26 @@ def create_app() -> FastAPI:
         )
 
     return app
+
+
+def _split_csv(value: str) -> list[str]:
+    """쉼표구분 문자열을 트림된 토큰 목록으로(빈 토큰 제거)."""
+    return [t.strip() for t in (value or "").split(",") if t.strip()]
+
+
+def _country_match_set(tokens: list[str]) -> set[str]:
+    """국가 토큰들을 매칭용 소문자 집합으로 확장한다(별칭 포함, 'KR'↔'대한민국' 호환).
+
+    저장된 company.country 표기가 ISO2('KR')든 한글('대한민국')이든 잡히도록
+    :func:`resolve_country` 별칭을 모두 소문자로 펼친다.
+    """
+    vals: set[str] = set()
+    for token in tokens:
+        vals.add(token.lower())
+        country = resolve_country(token)
+        if country is not None:
+            vals.update(alias.lower() for alias in country.aliases)
+    return vals
 
 
 def _set_status(
