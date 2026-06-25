@@ -262,3 +262,8 @@ def _set_status(
     if item is None:
         raise HTTPException(status_code=404, detail="검증 항목을 찾을 수 없습니다")
     return ReviewItem(**item)
+
+
+# 모듈 레벨 별칭 — `uvicorn leadcrawler.api.app:app` 표준 명령이 그대로 동작하게 한다.
+# 팩토리(create_app)는 테스트용으로 유지하고, 여기서는 기본 설정으로 앱 한 개를 만든다.
+app = create_app()

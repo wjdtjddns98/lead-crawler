@@ -60,6 +60,23 @@ class DiscoveredCompanyRow(Base):
     last_crawled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # ── Entity Resolution(중복해소) — 전부 additive·기본 NULL. C1 배치 리포트는 읽기전용이고,
+    # 실제 머지 기록(C3 골든레코드)·사람 확정(C4)이 이 컬럼들을 채운다(가역·감사 가능).
+    # 캐노니컬(법인 정식) 회사명 라벨 — survivorship 결과(C3). NULL=아직 라벨 안 함.
+    canonical_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # 이 행이 중복으로 판정돼 흡수된 **생존 레코드**의 canonical_key(자기참조). NULL=생존/미판정.
+    # 생존 레코드가 지워져도 이 행은 남아야 하므로(제약② 리드손실 방지) ON DELETE SET NULL.
+    duplicate_of: Mapped[str | None] = mapped_column(
+        ForeignKey("discovered_company.canonical_key", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # 머지 감사 — 언제·누가/무엇이·어떤 근거로 중복 판정했는지(전부 가역 추적용).
+    merged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 'auto'(최상위 티어 자동) | 'human'(워크벤치 확정) | username.
+    merged_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 판정 근거 티어(예: 'name+domain', 'llm', 'human') — 사후 검수·롤백 근거.
+    merge_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class CompanyRow(Base):

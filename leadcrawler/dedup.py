@@ -25,12 +25,20 @@ _WS = re.compile(r"\s+")
 _NON_ALNUM = re.compile(r"[^0-9a-z가-힣]+")
 
 
-def normalize_name(name: str) -> str:
-    """회사명을 비교용으로 정규화한다(소문자·법인격 제거·기호 제거)."""
+def tokenize_name(name: str) -> list[str]:
+    """회사명을 비교용 토큰 목록으로 정규화한다(소문자·기호제거·법인격 제거).
+
+    ``normalize_name``(concat 키)과 중복해소의 토큰셋 유사도가 같은 규칙을 쓰도록
+    토큰화를 단일 출처로 둔다.
+    """
     s = (name or "").strip().lower()
     s = _NON_ALNUM.sub(" ", s)
-    tokens = [t for t in _WS.sub(" ", s).split() if t and t not in _LEGAL_SUFFIXES]
-    return "".join(tokens)
+    return [t for t in _WS.sub(" ", s).split() if t and t not in _LEGAL_SUFFIXES]
+
+
+def normalize_name(name: str) -> str:
+    """회사명을 비교용으로 정규화한다(소문자·법인격 제거·기호 제거)."""
+    return "".join(tokenize_name(name))
 
 
 def normalize_domain(value: str | None) -> str | None:
