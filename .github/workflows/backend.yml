@@ -1,10 +1,14 @@
-name: CI
+name: Backend CI
 
+# 백엔드(파이썬) 전용 — web/** 만 바뀐 PR/푸시에는 돌지 않는다(프론트 변경에 안 막힘).
+# 역할 분담: 이 파일은 백엔드(리드+Claude) 소유. 프론트 CI 는 web.yml(프론트 개발자 소유).
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
+    paths-ignore: ['web/**']
   pull_request:
-    branches: [main, dev]
+    branches: [main]
+    paths-ignore: ['web/**']
 
 jobs:
   test:
@@ -70,20 +74,3 @@ jobs:
         run: alembic check
       - name: PG 통합 테스트
         run: pytest -q tests/test_pg_integration.py
-
-  web-build:
-    name: 프론트엔드 빌드(타입체크)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Install + build (tsc --noEmit + vite build)
-        working-directory: web
-        run: |
-          npm ci
-          npm run build

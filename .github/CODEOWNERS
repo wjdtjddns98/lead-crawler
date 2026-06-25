@@ -1,0 +1,17 @@
+# 코드 소유권 — PR 시 해당 경로 소유자에게 자동으로 리뷰가 요청된다.
+# 규칙은 위에서 아래로 평가되며, 더 아래의 더 구체적인 규칙이 덮어쓴다.
+# 참고: 소유자는 리포 협업자(collaborator)여야 자동 리뷰요청이 걸린다.
+
+# 기본값 — 백엔드(리드+Claude)가 전부 소유.
+*                               @wjdtjddns98
+
+# 백엔드 핵심(명시) — 파이썬 패키지·테스트·마이그레이션·백엔드 CI.
+/leadcrawler/                   @wjdtjddns98
+/tests/                         @wjdtjddns98
+/alembic/                       @wjdtjddns98
+/.github/workflows/backend.yml  @wjdtjddns98
+
+# 프론트엔드 — 프론트 개발자 전담.
+# TODO: 아래 @FRONTEND-HANDLE 을 프론트 개발자 GitHub 핸들로 바꾸고 주석 해제.
+# /web/                         @FRONTEND-HANDLE
+# /.github/workflows/web.yml    @FRONTEND-HANDLE
