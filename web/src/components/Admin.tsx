@@ -27,6 +27,15 @@ import type {
   UserStats,
 } from "../types";
 import { MultiPicker, type PickerOption } from "./MultiPicker";
+import { BTN, BTN_CONFIRM, BTN_EXPORT, BTN_REJECT, EMPTY, ERROR_BOX, TD, TH } from "../ui";
+
+// 폼 요소 공용 클래스 — 섹션 컨테이너·필드 라벨·입력·셀.
+const SECTION_H2 = "text-base mt-0 mb-3";
+const FIELD = "flex flex-col gap-1 text-muted text-[13px]";
+const FIELD_INLINE = "flex flex-row items-center gap-1.5 text-muted text-[13px]";
+const INPUT = "bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md";
+const INPUT_WIDE = `${INPUT} min-w-[200px]`;
+const CRAWL_TARGET = "flex flex-wrap items-end gap-3";
 
 // 관리자 페이지 — 계정별 처리 통계·역할/활성 관리·계정 생성 + 최근 검증 감사 로그.
 export function Admin() {
@@ -64,8 +73,8 @@ export function Admin() {
   };
 
   return (
-    <div className="admin">
-      {error && <div className="error">⚠ {error}</div>}
+    <div className="flex flex-col gap-7">
+      {error && <div className={ERROR_BOX}>⚠ {error}</div>}
 
       <CrawlNowSection />
 
@@ -76,48 +85,52 @@ export function Admin() {
       <SendSection />
 
       <section>
-        <h2>계정 {loading && <span className="muted">· 불러오는 중…</span>}</h2>
+        <h2 className={SECTION_H2}>
+          계정 {loading && <span className="text-muted">· 불러오는 중…</span>}
+        </h2>
         <CreateUserForm onCreate={(u, p, r) => act(() => createUser(u, p, r))} />
-        <table className="queue">
+        <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
           <thead>
             <tr>
-              <th>아이디</th>
-              <th>권한</th>
-              <th>상태</th>
-              <th>확정</th>
-              <th>거부</th>
-              <th>마지막 처리</th>
-              <th>액션</th>
+              <th className={TH}>아이디</th>
+              <th className={TH}>권한</th>
+              <th className={TH}>상태</th>
+              <th className={TH}>확정</th>
+              <th className={TH}>거부</th>
+              <th className={TH}>마지막 처리</th>
+              <th className={TH}>액션</th>
             </tr>
           </thead>
           <tbody>
             {users.map((u) => (
-              <tr key={u.id} className={u.is_active ? "" : "done"}>
-                <td className="name">{u.username}</td>
-                <td>{u.role === "admin" ? "관리자" : "직원"}</td>
-                <td>{u.is_active ? "활성" : "비활성"}</td>
-                <td>{u.confirmed}</td>
-                <td>{u.rejected}</td>
-                <td className="muted">{fmt(u.last_action_at)}</td>
-                <td className="actions">
-                  {u.role === "admin" ? (
-                    <button className="btn" onClick={() => void act(() => changeUserRole(u.id, "worker"))}>
-                      직원으로
-                    </button>
-                  ) : (
-                    <button className="btn" onClick={() => void act(() => changeUserRole(u.id, "admin"))}>
-                      관리자로
-                    </button>
-                  )}
-                  {u.is_active ? (
-                    <button className="btn reject" onClick={() => void act(() => setUserActive(u.id, false))}>
-                      비활성
-                    </button>
-                  ) : (
-                    <button className="btn confirm" onClick={() => void act(() => setUserActive(u.id, true))}>
-                      활성
-                    </button>
-                  )}
+              <tr key={u.id} className={u.is_active ? "" : "opacity-60"}>
+                <td className={`${TD} font-semibold`}>{u.username}</td>
+                <td className={TD}>{u.role === "admin" ? "관리자" : "직원"}</td>
+                <td className={TD}>{u.is_active ? "활성" : "비활성"}</td>
+                <td className={TD}>{u.confirmed}</td>
+                <td className={TD}>{u.rejected}</td>
+                <td className={`${TD} text-muted`}>{fmt(u.last_action_at)}</td>
+                <td className={TD}>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {u.role === "admin" ? (
+                      <button className={BTN} onClick={() => void act(() => changeUserRole(u.id, "worker"))}>
+                        직원으로
+                      </button>
+                    ) : (
+                      <button className={BTN} onClick={() => void act(() => changeUserRole(u.id, "admin"))}>
+                        관리자로
+                      </button>
+                    )}
+                    {u.is_active ? (
+                      <button className={BTN_REJECT} onClick={() => void act(() => setUserActive(u.id, false))}>
+                        비활성
+                      </button>
+                    ) : (
+                      <button className={BTN_CONFIRM} onClick={() => void act(() => setUserActive(u.id, true))}>
+                        활성
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -126,28 +139,28 @@ export function Admin() {
       </section>
 
       <section>
-        <h2>최근 검증 이력</h2>
+        <h2 className={SECTION_H2}>최근 검증 이력</h2>
         {audit.length === 0 ? (
-          <p className="empty">기록된 처리 이력이 없습니다.</p>
+          <p className={EMPTY}>기록된 처리 이력이 없습니다.</p>
         ) : (
-          <table className="queue">
+          <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
             <thead>
               <tr>
-                <th>시각</th>
-                <th>담당자</th>
-                <th>액션</th>
-                <th>업체</th>
-                <th>선택 이메일</th>
+                <th className={TH}>시각</th>
+                <th className={TH}>담당자</th>
+                <th className={TH}>액션</th>
+                <th className={TH}>업체</th>
+                <th className={TH}>선택 이메일</th>
               </tr>
             </thead>
             <tbody>
               {audit.map((a) => (
                 <tr key={a.id}>
-                  <td className="muted">{fmt(a.at)}</td>
-                  <td>{a.actor_username || "—"}</td>
-                  <td>{a.action === "confirmed" ? "확정" : "거부"}</td>
-                  <td className="name">{a.company_name || "—"}</td>
-                  <td>{a.selected ?? "—"}</td>
+                  <td className={`${TD} text-muted`}>{fmt(a.at)}</td>
+                  <td className={TD}>{a.actor_username || "—"}</td>
+                  <td className={TD}>{a.action === "confirmed" ? "확정" : "거부"}</td>
+                  <td className={`${TD} font-semibold`}>{a.company_name || "—"}</td>
+                  <td className={TD}>{a.selected ?? "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -250,12 +263,12 @@ function CrawlNowSection() {
 
   return (
     <section>
-      <h2>지금 크롤 실행</h2>
-      {err && <div className="error">⚠ {err}</div>}
-      <div className="crawl-target">
-        <div className="field">
-          <span className="field-label">
-            국가 <span className="muted">(선택 안 함=지원 전체국)</span>
+      <h2 className={SECTION_H2}>지금 크롤 실행</h2>
+      {err && <div className={ERROR_BOX}>⚠ {err}</div>}
+      <div className={CRAWL_TARGET}>
+        <div className={FIELD}>
+          <span>
+            국가 <span className="text-muted">(선택 안 함=지원 전체국)</span>
           </span>
           <MultiPicker
             options={countryOpts}
@@ -265,9 +278,9 @@ function CrawlNowSection() {
             emptyHint="지원 전체국 대상(국가를 선택하면 좁혀집니다)"
           />
         </div>
-        <div className="field">
-          <span className="field-label">
-            업종 <span className="muted">(1개 이상 필수 — 표준 업종만 선택)</span>
+        <div className={FIELD}>
+          <span>
+            업종 <span className="text-muted">(1개 이상 필수 — 표준 업종만 선택)</span>
           </span>
           <MultiPicker
             options={industryOpts}
@@ -277,9 +290,13 @@ function CrawlNowSection() {
             emptyHint="업종을 1개 이상 선택하세요"
           />
         </div>
-        <label>
+        <label className={FIELD}>
           상장여부
-          <select value={listed} onChange={(e) => setListed(e.target.value as Listed)}>
+          <select
+            className={INPUT_WIDE}
+            value={listed}
+            onChange={(e) => setListed(e.target.value as Listed)}
+          >
             {LISTED_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
@@ -287,13 +304,13 @@ function CrawlNowSection() {
             ))}
           </select>
         </label>
-        <label className="inline">
+        <label className={FIELD_INLINE}>
           <input type="checkbox" checked={persist} onChange={(e) => setPersist(e.target.checked)} />
           DB 적재(검증 큐로)
         </label>
-        <div className="send-actions">
+        <div className="flex gap-2">
           <button
-            className="btn confirm"
+            className={BTN_CONFIRM}
             type="button"
             disabled={busy || running || !industries.trim()}
             onClick={() => void run()}
@@ -301,7 +318,7 @@ function CrawlNowSection() {
             {running ? "실행 중…" : "지금 크롤 실행 ▶"}
           </button>
           {running && (
-            <button className="btn reject" type="button" disabled={busy} onClick={() => void stop()}>
+            <button className={BTN_REJECT} type="button" disabled={busy} onClick={() => void stop()}>
               중지 ■
             </button>
           )}
@@ -319,19 +336,19 @@ function CrawlProgress({ job }: { job: CrawlJob }) {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const stale = job.status === "running" && job.cancel_requested;
   return (
-    <div className="crawl-progress">
-      <p>
+    <div className="mt-3 p-3 border border-line rounded-md bg-[rgba(127,127,127,0.06)]">
+      <p className="my-1">
         <strong>상태: {CRAWL_STATUS_LABEL[job.status]}</strong>
-        {stale && <span className="muted"> · 중지 요청됨…</span>}
-        {job.triggered_by && <span className="muted"> · {job.triggered_by}</span>}
+        {stale && <span className="text-muted"> · 중지 요청됨…</span>}
+        {job.triggered_by && <span className="text-muted"> · {job.triggered_by}</span>}
       </p>
-      <progress value={done} max={total || 1} style={{ width: "100%" }} />
-      <p className="muted">
+      <progress className="w-full h-3.5" value={done} max={total || 1} />
+      <p className="text-muted my-1">
         세그먼트 {done}/{total} ({pct}%) · 발견 {job.discovered} · 처리 {job.enriched} · 저장(실존){" "}
         {job.saved}
       </p>
-      {job.error && <div className="error">⚠ {job.error}</div>}
-      {job.finished_at && <p className="muted">종료: {fmt(job.finished_at)}</p>}
+      {job.error && <div className={ERROR_BOX}>⚠ {job.error}</div>}
+      {job.finished_at && <p className="text-muted my-1">종료: {fmt(job.finished_at)}</p>}
     </div>
   );
 }
@@ -404,12 +421,12 @@ function CrawlTargetSection() {
 
   return (
     <section>
-      <h2>내일 크롤 타깃</h2>
-      {err && <div className="error">⚠ {err}</div>}
-      <form className="crawl-target" onSubmit={(e) => void save(e)}>
-        <div className="field">
-          <span className="field-label">
-            국가 <span className="muted">(선택 안 함=지원 전체국)</span>
+      <h2 className={SECTION_H2}>내일 크롤 타깃</h2>
+      {err && <div className={ERROR_BOX}>⚠ {err}</div>}
+      <form className={CRAWL_TARGET} onSubmit={(e) => void save(e)}>
+        <div className={FIELD}>
+          <span>
+            국가 <span className="text-muted">(선택 안 함=지원 전체국)</span>
           </span>
           <MultiPicker
             options={countryOpts}
@@ -419,9 +436,9 @@ function CrawlTargetSection() {
             emptyHint="지원 전체국 대상(국가를 선택하면 좁혀집니다)"
           />
         </div>
-        <div className="field">
-          <span className="field-label">
-            업종 <span className="muted">(1개 이상 필수 — 표준 업종만 선택)</span>
+        <div className={FIELD}>
+          <span>
+            업종 <span className="text-muted">(1개 이상 필수 — 표준 업종만 선택)</span>
           </span>
           <MultiPicker
             options={industryOpts}
@@ -431,9 +448,13 @@ function CrawlTargetSection() {
             emptyHint="업종을 1개 이상 선택하세요(정확한 업종 필터를 위해 표준 목록에서만 선택)"
           />
         </div>
-        <label>
+        <label className={FIELD}>
           상장여부
-          <select value={listed} onChange={(e) => setListed(e.target.value as Listed)}>
+          <select
+            className={INPUT_WIDE}
+            value={listed}
+            onChange={(e) => setListed(e.target.value as Listed)}
+          >
             {LISTED_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
@@ -441,7 +462,7 @@ function CrawlTargetSection() {
             ))}
           </select>
         </label>
-        <label className="inline">
+        <label className={FIELD_INLINE}>
           <input
             type="checkbox"
             checked={persist}
@@ -449,13 +470,13 @@ function CrawlTargetSection() {
           />
           DB 적재(검증 큐로)
         </label>
-        <button className="btn confirm" type="submit" disabled={saving || !industries.trim()}>
+        <button className={BTN_CONFIRM} type="submit" disabled={saving || !industries.trim()}>
           {saving ? "저장 중…" : "타깃 저장"}
         </button>
       </form>
-      {msg && <p className="muted">{msg}</p>}
+      {msg && <p className="text-muted">{msg}</p>}
       {target?.updated_by && (
-        <p className="muted">
+        <p className="text-muted">
           최근 설정: {target.updated_by} · {fmt(target.updated_at)}
         </p>
       )}
@@ -537,29 +558,35 @@ function SendSection() {
   const canSend = subject.trim().length > 0 && bodyText.trim().length > 0;
   return (
     <section>
-      <h2>확정큐 이메일 발송</h2>
-      {err && <div className="error">⚠ {err}</div>}
-      <div className="send-form">
-        <label>
+      <h2 className={SECTION_H2}>확정큐 이메일 발송</h2>
+      {err && <div className={ERROR_BOX}>⚠ {err}</div>}
+      <div className="flex flex-col gap-3 max-w-[780px]">
+        <label className={FIELD}>
           제목
-          <input value={subject} onChange={(e) => setSubject(e.target.value)} />
+          <input className={INPUT} value={subject} onChange={(e) => setSubject(e.target.value)} />
         </label>
-        <label>
-          발신 표시명 <span className="muted">(From 주소는 서버 발신계정 고정)</span>
+        <label className={FIELD}>
+          발신 표시명 <span className="text-muted">(From 주소는 서버 발신계정 고정)</span>
           <input
+            className={INPUT}
             value={fromName}
             onChange={(e) => setFromName(e.target.value)}
             placeholder="예: Zenith Asset IR"
           />
         </label>
-        <label className="full">
+        <label className={FIELD}>
           본문
-          <textarea value={bodyText} rows={6} onChange={(e) => setBodyText(e.target.value)} />
+          <textarea
+            className={`${INPUT} text-[13px] resize-y font-sans`}
+            value={bodyText}
+            rows={6}
+            onChange={(e) => setBodyText(e.target.value)}
+          />
         </label>
-        <div className="crawl-target">
-          <div className="field">
-            <span className="field-label">
-              국가 <span className="muted">(선택 안 함=전체)</span>
+        <div className={CRAWL_TARGET}>
+          <div className={FIELD}>
+            <span>
+              국가 <span className="text-muted">(선택 안 함=전체)</span>
             </span>
             <MultiPicker
               options={countryOpts}
@@ -569,9 +596,9 @@ function SendSection() {
               emptyHint="전체 국가"
             />
           </div>
-          <div className="field">
-            <span className="field-label">
-              업종 <span className="muted">(선택 안 함=전체)</span>
+          <div className={FIELD}>
+            <span>
+              업종 <span className="text-muted">(선택 안 함=전체)</span>
             </span>
             <MultiPicker
               options={industryOpts}
@@ -582,12 +609,12 @@ function SendSection() {
             />
           </div>
         </div>
-        <div className="send-actions">
-          <button className="btn" type="button" disabled={busy} onClick={() => void doPreview()}>
+        <div className="flex gap-2">
+          <button className={BTN} type="button" disabled={busy} onClick={() => void doPreview()}>
             미리보기(수신 N명)
           </button>
           <button
-            className="btn confirm"
+            className={BTN_CONFIRM}
             type="button"
             disabled={busy || !canSend}
             onClick={() => void doSend()}
@@ -597,7 +624,7 @@ function SendSection() {
         </div>
       </div>
       {preview && (
-        <p className="muted">
+        <p className="text-muted">
           수신 {preview.recipients}명 · 발신 {preview.sender || "(.env 미설정)"} ·{" "}
           {preview.enabled
             ? `오늘 잔여 ${preview.remaining_today}건`
@@ -606,7 +633,7 @@ function SendSection() {
         </p>
       )}
       {result && (
-        <p className={result.dry_run ? "muted" : ""}>
+        <p className={result.dry_run ? "text-muted" : ""}>
           {result.dry_run
             ? `dry-run: 수신 ${result.recipients}명 (실발송 안 함 — email_send_enabled=true 필요)`
             : `발송 완료 — 성공 ${result.sent} · 실패 ${result.failed} · 상한초과 ${result.capped} (수신 ${result.recipients})`}
@@ -656,12 +683,12 @@ function ExportSection() {
 
   return (
     <section>
-      <h2>확정분 엑셀 추출</h2>
-      {err && <div className="error">⚠ {err}</div>}
-      <div className="crawl-target">
-        <div className="field">
-          <span className="field-label">
-            국가 <span className="muted">(선택 안 함=전체)</span>
+      <h2 className={SECTION_H2}>확정분 엑셀 추출</h2>
+      {err && <div className={ERROR_BOX}>⚠ {err}</div>}
+      <div className={CRAWL_TARGET}>
+        <div className={FIELD}>
+          <span>
+            국가 <span className="text-muted">(선택 안 함=전체)</span>
           </span>
           <MultiPicker
             options={countryOpts}
@@ -671,9 +698,9 @@ function ExportSection() {
             emptyHint="전체 국가 대상(선택하면 좁혀집니다)"
           />
         </div>
-        <div className="field">
-          <span className="field-label">
-            업종 <span className="muted">(선택 안 함=전체)</span>
+        <div className={FIELD}>
+          <span>
+            업종 <span className="text-muted">(선택 안 함=전체)</span>
           </span>
           <MultiPicker
             options={industryOpts}
@@ -683,12 +710,7 @@ function ExportSection() {
             emptyHint="전체 업종 대상(선택하면 좁혀집니다)"
           />
         </div>
-        <button
-          className="btn export"
-          type="button"
-          disabled={busy}
-          onClick={() => void download()}
-        >
+        <button className={BTN_EXPORT} type="button" disabled={busy} onClick={() => void download()}>
           {busy ? "추출 중…" : "엑셀 다운로드 ↓"}
         </button>
       </div>
@@ -714,25 +736,27 @@ function CreateUserForm({
   };
 
   return (
-    <form className="create-user" onSubmit={submit}>
+    <form className="flex gap-2 mb-3.5 flex-wrap" onSubmit={submit}>
       <input
+        className={INPUT}
         placeholder="아이디"
         value={username}
         onChange={(e) => setUsername(e.target.value)}
         autoComplete="off"
       />
       <input
+        className={INPUT}
         type="password"
         placeholder="비밀번호(8자 이상)"
         value={password}
         onChange={(e) => setPassword(e.target.value)}
         autoComplete="new-password"
       />
-      <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
+      <select className={INPUT} value={role} onChange={(e) => setRole(e.target.value as Role)}>
         <option value="worker">직원</option>
         <option value="admin">관리자</option>
       </select>
-      <button className="btn confirm" type="submit" disabled={!username || password.length < 8}>
+      <button className={BTN_CONFIRM} type="submit" disabled={!username || password.length < 8}>
         계정 생성
       </button>
     </form>
