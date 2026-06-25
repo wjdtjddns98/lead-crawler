@@ -1,0 +1,141 @@
+name: CI
+
+# 단일 워크플로 + 영역 path 필터 + 단일 게이트(ci-ok).
+# - 백엔드 잡(test·pg)은 web/** 만 바뀐 PR 에선 skip, 프론트 잡(web-build)은 web/** 바뀔 때만 run.
+#   → 백엔드 PR 은 프론트 빌드를, 프론트 PR 은 백엔드 테스트를 서로 안 기다린다.
+# - 브랜치 보호의 required check 는 **ci-ok 하나만** 건다. ci-ok 는 항상 돌고 관련 잡이
+#   다 통과(또는 해당없음/skip)면 green → path 필터와 required check 충돌(미실행=영구 pending)을 회피.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: 변경 영역 감지
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - '**'
+              - '!web/**'
+            web:
+              - 'web/**'
+
+  test:
+    name: Lint & Test (py${{ matrix.python-version }})
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,api]"
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Test (pytest)
+        run: pytest -q
+        env:
+          LEADCRAWLER_DRY_RUN: "true"
+
+  pg-integration:
+    name: PostgreSQL 통합 테스트
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: leadcrawler
+          POSTGRES_PASSWORD: leadcrawler
+          POSTGRES_DB: leadcrawler
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U leadcrawler -d leadcrawler"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      LEADCRAWLER_DRY_RUN: "true"
+      LEADCRAWLER_PG_TEST: "1"
+      LEADCRAWLER_DATABASE_URL: "postgresql+psycopg://leadcrawler:leadcrawler@localhost:5432/leadcrawler"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies (+db)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,db]"
+      - name: Alembic 마이그레이션 적용(실 PG)
+        run: alembic upgrade head
+      - name: 마이그레이션 드리프트 검사(autogenerate 빈 diff)
+        # server_default 표현 차이로 양성오탐 가능 → 비차단(로그로 드리프트 가시화).
+        continue-on-error: true
+        run: alembic check
+      - name: PG 통합 테스트
+        run: pytest -q tests/test_pg_integration.py
+
+  web-build:
+    name: 프론트엔드 빌드(타입체크)
+    needs: changes
+    if: ${{ needs.changes.outputs.web == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install + build (tsc --noEmit + vite build)
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+  ci-ok:
+    name: CI Gate
+    # 브랜치 보호에서 required 로 거는 **유일한** 체크. 항상 실행해 path 필터로 skip 된
+    # 잡이 있어도 머지가 영구 pending 되지 않게 한다.
+    needs: [test, pg-integration, web-build]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 관련 잡 결과 집계(skip=통과, failure/cancelled=차단)
+        run: |
+          for r in "${{ needs.test.result }}" "${{ needs.pg-integration.result }}" "${{ needs.web-build.result }}"; do
+            echo "result: $r"
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+              echo "::error::필수 잡이 실패/취소됨($r)"
+              exit 1
+            fi
+          done
+          echo "모든 관련 잡 통과(또는 해당 없음)."
