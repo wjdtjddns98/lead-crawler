@@ -134,6 +134,65 @@ def import_existing(
     typer.echo(f"DB 시드 완료: 신규 {new}건, 기존 스킵 {skipped}건 (source='import')")
 
 
+@app.command("dedup-report")
+def dedup_report(
+    out: str = typer.Option("exports/dedup_report.json", help="리포트 JSON 산출 경로"),
+    min_score: float = typer.Option(
+        84.0, help="이름 유사도 쇼트리스트 하한(이상만 후보, 0~100)"
+    ),
+    strong_score: float = typer.Option(
+        90.0, help="이름 高 임계(이상 + 도메인일치면 auto 자동제거 후보)"
+    ),
+    max_block: int = typer.Option(
+        1000, help="블록당 비교 상한(초과 블록은 O(n²) 폭발 방지로 생략·보고)"
+    ),
+    include_merged: bool = typer.Option(
+        False, "--include-merged", help="이미 머지된 행(duplicate_of)도 비교 대상에 포함"
+    ),
+) -> None:
+    """발견 원장(discovered_company) 전건에서 중복 후보 쌍을 찾아 JSON 리포트로 저장한다.
+
+    수집 파이프라인과 무관한 읽기전용 오프라인 배치(dry_run 무관). 블로킹 + rapidfuzz
+    토큰셋 유사도 + 도메인root 일치로 결정적 분류한다. 자동제거는 최상위(auto) 티어만
+    가역적으로 제안하고, 나머지는 LLM/사람 검토 쇼트리스트로 남긴다(제약② 리드손실 방지).
+    """
+    if min_score > strong_score:
+        raise typer.BadParameter(
+            f"--min-score({min_score}) 는 --strong-score({strong_score}) 보다 클 수 없습니다",
+            param_hint="--min-score",
+        )
+
+    from .dedup_resolve.report import run_dedup_report
+    from .storage.db import get_sessionmaker
+
+    configure_logging()
+    session = get_sessionmaker(get_settings())()
+    try:
+        rpt = run_dedup_report(
+            session,
+            out,
+            include_merged=include_merged,
+            name_strong=strong_score,
+            name_medium=min_score,
+            max_block_size=max_block,
+        )
+    finally:
+        session.close()
+    typer.echo(
+        f"중복 리포트 저장: {out} / 레코드 {rpt.total_records:,}건 중 후보 {rpt.total_candidates:,}쌍 "
+        f"(자동제거 가능 {rpt.auto_removable:,}쌍, 둘다유지 {rpt.keep_both:,}쌍)"
+    )
+    for tier, count in sorted(rpt.by_tier.items()):
+        typer.echo(f"  - {tier}: {count:,}쌍")
+    if rpt.skipped_blocks:
+        skipped_pairs = sum(b.size for b in rpt.skipped_blocks)
+        typer.echo(
+            f"⚠ 크기초과로 생략된 블록 {len(rpt.skipped_blocks):,}개(레코드 {skipped_pairs:,}건) "
+            f"— --max-block 을 높여 완전 재실행 가능"
+        )
+    typer.echo("주의: C1 은 비완전(이름·도메인 둘 다 다른 동일기업은 C2/C4 위임)")
+
+
 @app.command()
 def report(
     date: str = typer.Argument(..., help="보고 일자 YYYY-MM-DD"),
