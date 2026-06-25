@@ -91,14 +91,19 @@ def _classify(
     rec_a: CompanyRecord,
     rec_b: CompanyRecord,
     tokens: dict[str, list[str]],
+    domains: dict[str, str | None],
     *,
     name_strong: float,
     name_medium: float,
 ) -> DuplicateCandidate | None:
-    """두 레코드를 비교해 티어를 매긴다(후보 아니면 None)."""
+    """두 레코드를 비교해 티어를 매긴다(후보 아니면 None).
+
+    토큰·정규화 도메인은 레코드당 1회만 산정해 ``tokens``/``domains`` 로 넘긴다(쌍마다
+    재계산하면 블록당 O(n²) 호출로 폭증 — 전건 배치에서 도메인 파싱이 지배비용이 됨).
+    """
     score = _name_score(tokens[rec_a.key], tokens[rec_b.key])
-    dom_a = normalize_domain(rec_a.domain)
-    dom_b = normalize_domain(rec_b.domain)
+    dom_a = domains[rec_a.key]
+    dom_b = domains[rec_b.key]
     both_dom = dom_a is not None and dom_b is not None
     dom_equal = both_dom and dom_a == dom_b
 
@@ -137,18 +142,23 @@ def _classify(
     )
 
 
-def _blocks(records: list[CompanyRecord]) -> dict[tuple[str, str, str], list[CompanyRecord]]:
+def _blocks(
+    records: list[CompanyRecord],
+    tokens: dict[str, list[str]],
+    domains: dict[str, str | None],
+) -> dict[tuple[str, str, str], list[CompanyRecord]]:
     """비교쌍 폭발을 막는 블로킹 — 같은 (국가, 도메인root) 또는 (국가, 이름prefix) 끼리 묶는다.
 
     한 레코드가 도메인 블록과 이름 블록 양쪽에 들어갈 수 있다(서로 다른 후보를 잡기 위함).
+    토큰·도메인은 미리 산정한 ``tokens``/``domains`` 를 재사용한다(레코드당 1회).
     """
     by_block: dict[tuple[str, str, str], list[CompanyRecord]] = defaultdict(list)
     for rec in records:
         country = rec.country or ""
-        dom = normalize_domain(rec.domain)
+        dom = domains[rec.key]
         if dom:
             by_block[("dom", country, dom)].append(rec)
-        name_key = "".join(tokenize_name(rec.name))
+        name_key = "".join(tokens[rec.key])
         if name_key:
             by_block[("name", country, name_key[:NAME_PREFIX_BLOCK])].append(rec)
     return by_block
@@ -171,10 +181,12 @@ def match_records(
     결과 후보는 (티어, -점수, key) 순으로 결정적 정렬한다.
     """
     recs = list(records)
+    # 레코드당 1회만 토큰화·도메인 정규화(쌍마다 재계산 회피 — 전건 배치 핫패스).
     tokens = {r.key: tokenize_name(r.name) for r in recs}
+    domains = {r.key: normalize_domain(r.domain) for r in recs}
     found: dict[tuple[str, str], DuplicateCandidate] = {}
     skipped: list[SkippedBlock] = []
-    for (kind, country, bucket), block in _blocks(recs).items():
+    for (kind, country, bucket), block in _blocks(recs, tokens, domains).items():
         if len(block) < 2:
             continue
         if len(block) > max_block_size:
@@ -194,7 +206,9 @@ def match_records(
             pair = (a.key, b.key) if a.key < b.key else (b.key, a.key)
             if pair in found:
                 continue  # first-wins — _classify 가 블록무관 순수함수라 안전(m3)
-            cand = _classify(a, b, tokens, name_strong=name_strong, name_medium=name_medium)
+            cand = _classify(
+                a, b, tokens, domains, name_strong=name_strong, name_medium=name_medium
+            )
             if cand is not None:
                 found[pair] = cand
     candidates = sorted(

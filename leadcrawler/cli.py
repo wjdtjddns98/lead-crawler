@@ -156,10 +156,13 @@ def dedup_report(
     토큰셋 유사도 + 도메인root 일치로 결정적 분류한다. 자동제거는 최상위(auto) 티어만
     가역적으로 제안하고, 나머지는 LLM/사람 검토 쇼트리스트로 남긴다(제약② 리드손실 방지).
     """
-    if min_score > strong_score:
+    # 유사도 점수는 0~100 범위이고 min<=strong 이어야 한다. strong 을 100 초과로 주면
+    # auto/keep_both 가 영영 도달 불가(조용히 auto_removable=0)라, 범위까지 검증한다.
+    if not 0.0 <= min_score <= strong_score <= 100.0:
         raise typer.BadParameter(
-            f"--min-score({min_score}) 는 --strong-score({strong_score}) 보다 클 수 없습니다",
-            param_hint="--min-score",
+            f"임계값은 0 <= --min-score({min_score}) <= --strong-score({strong_score}) <= 100 "
+            "이어야 합니다",
+            param_hint="--min-score/--strong-score",
         )
 
     from .dedup_resolve.report import run_dedup_report
