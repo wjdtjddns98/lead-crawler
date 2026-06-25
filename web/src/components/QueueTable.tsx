@@ -1,7 +1,8 @@
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useState, type MouseEvent } from "react";
 import type { ReviewItem } from "../types";
 import { BTN_CONFIRM, BTN_REJECT, EMPTY, TD, TH } from "../ui";
 import { EmailBadge, StatusBadge } from "./StatusBadge";
+import { SiteExplorer, type SiteTab } from "./SiteExplorer";
 
 // 상태별 행 좌측 색 띠(첫 칸에 inset 그림자로 표현) — 한눈에 스캔.
 const STRIPE: Record<ReviewItem["status"], string> = {
@@ -58,6 +59,14 @@ function tri(v: boolean | null): string {
   return v ? "O" : "X";
 }
 
+// 사이트 링크 클릭 — 수정키(Ctrl/Cmd/Shift)·가운데 클릭은 브라우저 기본(새 탭)을 살리고,
+// 평범한 좌클릭만 가로채 페이지 내 미리보기 창을 연다.
+function openOrTab(e: MouseEvent, open: () => void) {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+  e.preventDefault();
+  open();
+}
+
 // ISO8601 → 월-일 시:분(처리 시각 축약 표기). 파싱 실패면 빈 문자열.
 function fmtTime(iso: string): string {
   const d = new Date(iso);
@@ -77,6 +86,7 @@ interface RowProps {
   onPick: (id: string, value: string) => void;
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
+  onOpen: (id: string, tab: SiteTab) => void;
 }
 
 // 행은 memo — item·busy·choice 가 같으면 리렌더를 건너뛴다(한 행 처리 시 나머지 행이
@@ -84,7 +94,7 @@ interface RowProps {
 // 핸들러를 매 렌더 새로 만들어도 논리는 동일하고, 행은 item 이 바뀔 때 최신 핸들러로
 // 갱신되므로 안전하다(필터 변경 시 item 객체가 새로 와 자연히 재렌더).
 const QueueRow = memo(
-  function QueueRow({ item, busy, choice, onPick, onConfirm, onReject }: RowProps) {
+  function QueueRow({ item, busy, choice, onPick, onConfirm, onReject, onOpen }: RowProps) {
     const done = item.status !== "pending";
     const href = safeHref(item.homepage);
     const formHref = safeHref(item.form);
@@ -142,7 +152,8 @@ const QueueRow = memo(
               target="_blank"
               rel="noreferrer"
               className={item.site_alive ? "text-accent" : "text-muted line-through"}
-              title={item.site_alive ? "사이트 생존" : "사이트 미응답"}
+              title={item.site_alive ? "클릭: 미리보기 창 (Ctrl+클릭: 새 탭)" : "사이트 미응답"}
+              onClick={(e) => openOrTab(e, () => onOpen(item.id, "home"))}
             >
               ↗ {hostOf(href)}
             </a>
@@ -156,7 +167,8 @@ const QueueRow = memo(
                 target="_blank"
                 rel="noreferrer"
                 className="text-accent"
-                title="사이트 내 문의폼"
+                title="클릭: 미리보기 창 (Ctrl+클릭: 새 탭)"
+                onClick={(e) => openOrTab(e, () => onOpen(item.id, "form"))}
               >
                 📝 문의폼
               </a>
@@ -208,9 +220,15 @@ export function QueueTable({ items, busyIds, onConfirm, onReject }: Props) {
     setPicked((p) => ({ ...p, [id]: value }));
   }, []);
 
+  // 사이트 미리보기 창 — 열린 행 id 와 초기 탭(홈/문의폼). 닫히면 null.
+  const [open, setOpen] = useState<{ id: string; tab: SiteTab } | null>(null);
+  const onOpen = useCallback((id: string, tab: SiteTab) => setOpen({ id, tab }), []);
+
   if (items.length === 0) {
     return <p className={EMPTY}>표시할 검증 항목이 없습니다.</p>;
   }
+  // 처리·필터 변경으로 항목이 목록에서 빠지면 창도 자연히 닫힌다(find 결과 없음).
+  const openItem = open ? items.find((it) => it.id === open.id) : undefined;
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
@@ -233,10 +251,24 @@ export function QueueTable({ items, busyIds, onConfirm, onReject }: Props) {
               onPick={onPick}
               onConfirm={onConfirm}
               onReject={onReject}
+              onOpen={onOpen}
             />
           ))}
         </tbody>
       </table>
+      {open && openItem && (
+        <SiteExplorer
+          item={openItem}
+          tab={open.tab}
+          choice={picked[openItem.id] ?? openItem.selected ?? openItem.candidates[0]?.value}
+          busy={busyIds.has(openItem.id)}
+          onTab={(tab) => setOpen({ id: openItem.id, tab })}
+          onPick={onPick}
+          onConfirm={onConfirm}
+          onReject={onReject}
+          onClose={() => setOpen(null)}
+        />
+      )}
     </div>
   );
 }
