@@ -10,8 +10,19 @@ const STRIPE: Record<ReviewItem["status"], string> = {
   rejected: "shadow-[inset_3px_0_0_var(--color-danger)]",
 };
 
-// 컬럼 폭(table-fixed 기준, 합 100%) — 업체명·이메일은 넓게, 단문 컬럼은 좁게.
-const COL_W = ["w-[16%]", "w-[6%]", "w-[8%]", "w-[27%]", "w-[14%]", "w-[8%]", "w-[11%]", "w-[10%]"];
+// 컬럼 폭(table-auto) — 고정 % 대신 핵심 컬럼만 최소폭을 주고 나머지는 내용 길이에
+// 맞춰 늘어난다. 사이트는 줄바꿈 금지(whitespace-nowrap)로 '↗ 도메인 / 📝 문의폼'이
+// 4줄로 접히지 않고 문자열 길이만큼 칸이 넓어진다.
+const COL_W = [
+  "min-w-[120px]", // 업체명
+  "", // 국가
+  "", // 구분
+  "min-w-[240px]", // 이메일 후보(편집 입력 포함 — 넓게 유지)
+  "", // 메일
+  "whitespace-nowrap", // 사이트(내용 길이만큼 유동 확장)
+  "", // 상태
+  "min-w-[120px]", // 액션(버튼 2개 가로 유지)
+];
 const HEADERS = ["업체명", "국가", "구분", "이메일 후보", "메일", "사이트", "상태", "액션"];
 
 interface Props {
@@ -202,7 +213,7 @@ export function QueueTable({ items, busyIds, onConfirm, onReject }: Props) {
   }
   return (
     <div className="overflow-x-auto">
-      <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden table-fixed">
+      <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
         <thead>
           <tr>
             {HEADERS.map((h, i) => (
