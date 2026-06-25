@@ -13,6 +13,7 @@ import { Admin } from "./components/Admin";
 import { MyWork } from "./components/MyWork";
 import { QueueTable } from "./components/QueueTable";
 import { Login } from "./components/Login";
+import { BTN, BTN_EXPORT, ERROR_BOX, tabCls } from "./ui";
 import type { ReviewItem, ReviewStatus, Role } from "./types";
 
 type Filter = ReviewStatus | "";
@@ -150,26 +151,26 @@ function Workbench({
   // 내부 선택 상태가 사라지므로 인라인 element 로 유지).
   const queueView = (
     <>
-      <div className="toolbar">
-        <div className="filters">
+      <div className="flex items-center gap-4 mb-4 flex-wrap">
+        <div className="flex gap-1">
           {FILTERS.map((f) => (
             <button
               key={f.value}
-              className={`tab ${filter === f.value ? "active" : ""}`}
+              className={tabCls(filter === f.value)}
               onClick={() => changeFilter(f.value)}
             >
               {f.label}
             </button>
           ))}
         </div>
-        <button className="btn" onClick={() => void load()} disabled={loading}>
+        <button className={BTN} onClick={() => void load()} disabled={loading}>
           새로고침
         </button>
       </div>
 
-      {error && <div className="error">⚠ {error}</div>}
+      {error && <div className={ERROR_BOX}>⚠ {error}</div>}
 
-      <p className="count">
+      <p className="text-muted my-2">
         총 {total}건 {filter && `(${FILTERS.find((f) => f.value === filter)?.label})`}
         {loading && " · 불러오는 중…"}
       </p>
@@ -181,9 +182,9 @@ function Workbench({
         onReject={(id) => void act(id, "reject")}
       />
 
-      <div className="pager">
+      <div className="flex items-center gap-4 justify-center mt-[18px] text-muted">
         <button
-          className="btn"
+          className={BTN}
           disabled={offset === 0}
           onClick={() => setOffset(Math.max(0, offset - PAGE))}
         >
@@ -193,7 +194,7 @@ function Workbench({
           {page} / {pages}
         </span>
         <button
-          className="btn"
+          className={BTN}
           disabled={offset + PAGE >= total}
           onClick={() => setOffset(offset + PAGE)}
         >
@@ -204,42 +205,33 @@ function Workbench({
   );
 
   return (
-    <div className="app">
-      <header>
-        <h1>검증 워크벤치</h1>
-        <div className="session">
-          <nav className="views">
-            <button
-              className={`tab ${view === "mine" ? "active" : ""}`}
-              onClick={() => setView("mine")}
-            >
+    <div className="mx-auto max-w-[1200px] p-6">
+      <header className="flex items-center justify-between mb-5">
+        <h1 className="text-[22px] m-0">검증 워크벤치</h1>
+        <div className="flex items-center gap-2.5 text-muted">
+          <nav className="flex gap-1 mr-2">
+            <button className={tabCls(view === "mine")} onClick={() => setView("mine")}>
               내 작업
             </button>
-            <button
-              className={`tab ${view === "browse" ? "active" : ""}`}
-              onClick={() => setView("browse")}
-            >
+            <button className={tabCls(view === "browse")} onClick={() => setView("browse")}>
               전체 큐
             </button>
             {isAdmin && (
-              <button
-                className={`tab ${view === "admin" ? "active" : ""}`}
-                onClick={() => setView("admin")}
-              >
+              <button className={tabCls(view === "admin")} onClick={() => setView("admin")}>
                 관리자
               </button>
             )}
           </nav>
-          <span className="muted">
+          <span className="text-muted">
             {user}
             {isAdmin && " · 관리자"}
           </span>
           {isAdmin && (
-            <button className="btn export" onClick={() => void doExport()}>
+            <button className={BTN_EXPORT} onClick={() => void doExport()}>
               전체 확정분 엑셀 ↓
             </button>
           )}
-          <button className="btn" onClick={() => void doLogout()}>
+          <button className={BTN} onClick={() => void doLogout()}>
             로그아웃
           </button>
         </div>

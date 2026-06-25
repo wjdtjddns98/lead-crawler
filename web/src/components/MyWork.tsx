@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { claimWork, confirmReview, rejectReview, releaseWork } from "../api";
 import { QueueTable } from "./QueueTable";
+import { BTN, EMPTY, ERROR_BOX } from "../ui";
 import type { ReviewItem } from "../types";
 
 // 내 작업 뷰(당겨가기) — 내 작업분만 보여 6명 동시 검증 충돌을 막는다. 처리하면 자동 리필.
@@ -57,24 +58,24 @@ export function MyWork() {
 
   return (
     <>
-      <div className="toolbar">
-        <p className="count">
+      <div className="flex items-center gap-4 mb-4 flex-wrap">
+        <p className="text-muted my-2">
           내 작업 {items.length}건{loading && " · 불러오는 중…"}
         </p>
-        <div className="filters">
-          <button className="btn" onClick={() => void refill()} disabled={loading}>
+        <div className="flex gap-1">
+          <button className={BTN} onClick={() => void refill()} disabled={loading}>
             더 받기 / 새로고침
           </button>
-          <button className="btn" onClick={() => void release()} disabled={items.length === 0}>
+          <button className={BTN} onClick={() => void release()} disabled={items.length === 0}>
             작업 종료(반납)
           </button>
         </div>
       </div>
 
-      {error && <div className="error">⚠ {error}</div>}
+      {error && <div className={ERROR_BOX}>⚠ {error}</div>}
 
       {items.length === 0 && !loading ? (
-        <p className="empty">받을 작업분이 없습니다 — 큐가 비었거나 모두 처리되었습니다.</p>
+        <p className={EMPTY}>받을 작업분이 없습니다 — 큐가 비었거나 모두 처리되었습니다.</p>
       ) : (
         <QueueTable
           items={items}

@@ -54,44 +54,55 @@ export function MultiPicker({
   const selectedOpts = options.filter(isSelected);
 
   return (
-    <div className="multi-picker">
+    <div className="flex flex-col gap-1.5 min-w-[260px]">
       <input
-        className="picker-search"
+        className="bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md w-full"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         placeholder={placeholder}
       />
       {selectedOpts.length > 0 ? (
-        <div className="picker-chips">
+        <div className="flex flex-wrap gap-1.5 items-center">
           {selectedOpts.map((o) => (
             <button
               key={o.value}
               type="button"
-              className="chip"
+              className="bg-canvas border border-line text-ink rounded-full py-[3px] px-2.5 text-xs cursor-pointer hover:border-muted"
               onClick={() => toggle(o)}
               title="제거"
             >
-              {o.label} <span className="chip-x">×</span>
+              {o.label} <span className="text-muted ml-0.5">×</span>
             </button>
           ))}
-          <button type="button" className="chip-clear" onClick={() => onChange("")}>
+          <button
+            type="button"
+            className="bg-transparent border-0 text-muted text-xs cursor-pointer underline"
+            onClick={() => onChange("")}
+          >
             전체 해제
           </button>
         </div>
       ) : (
-        <p className="muted picker-all">{emptyHint}</p>
+        <p className="text-muted m-0 text-xs">{emptyHint}</p>
       )}
-      <ul className="picker-list">
+      <ul className="list-none m-0 p-1 max-h-[200px] overflow-y-auto border border-line rounded-md bg-canvas">
         {filtered.map((o) => (
           <li key={o.value}>
-            <label className="picker-item">
-              <input type="checkbox" checked={isSelected(o)} onChange={() => toggle(o)} />
-              <span className="picker-name">{o.label}</span>
-              {o.code && <span className="muted picker-code">{o.code}</span>}
+            <label className="flex flex-row items-center gap-2 py-[5px] px-1.5 rounded cursor-pointer text-ink text-[13px] hover:bg-line">
+              <input
+                type="checkbox"
+                className="min-w-0 m-0 flex-none"
+                checked={isSelected(o)}
+                onChange={() => toggle(o)}
+              />
+              <span className="flex-1">{o.label}</span>
+              {o.code && <span className="text-muted text-[11px] tracking-[0.04em]">{o.code}</span>}
             </label>
           </li>
         ))}
-        {filtered.length === 0 && <li className="muted picker-empty">검색 결과 없음</li>}
+        {filtered.length === 0 && (
+          <li className="text-muted py-2 px-1.5 text-[13px]">검색 결과 없음</li>
+        )}
       </ul>
     </div>
   );

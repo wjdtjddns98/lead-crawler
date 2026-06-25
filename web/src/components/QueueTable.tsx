@@ -1,6 +1,18 @@
 import { memo, useCallback, useState } from "react";
 import type { ReviewItem } from "../types";
+import { BTN_CONFIRM, BTN_REJECT, EMPTY, TD, TH } from "../ui";
 import { EmailBadge, StatusBadge } from "./StatusBadge";
+
+// 상태별 행 좌측 색 띠(첫 칸에 inset 그림자로 표현) — 한눈에 스캔.
+const STRIPE: Record<ReviewItem["status"], string> = {
+  pending: "shadow-[inset_3px_0_0_var(--color-warn)]",
+  confirmed: "shadow-[inset_3px_0_0_var(--color-ok)]",
+  rejected: "shadow-[inset_3px_0_0_var(--color-danger)]",
+};
+
+// 컬럼 폭(table-fixed 기준, 합 100%) — 업체명·이메일은 넓게, 단문 컬럼은 좁게.
+const COL_W = ["w-[16%]", "w-[6%]", "w-[8%]", "w-[27%]", "w-[14%]", "w-[8%]", "w-[11%]", "w-[10%]"];
+const HEADERS = ["업체명", "국가", "구분", "이메일 후보", "메일", "사이트", "상태", "액션"];
 
 interface Props {
   items: ReviewItem[];
@@ -66,25 +78,30 @@ const QueueRow = memo(
     const href = safeHref(item.homepage);
     const formHref = safeHref(item.form);
     return (
-      <tr className={`row-${item.status}${done ? " done" : ""}`}>
-        <td className="name" title={item.name}>
+      <tr className={`hover:bg-white/[0.03] ${done ? "opacity-60" : ""}`}>
+        <td className={`${TD} ${COL_W[0]} font-semibold ${STRIPE[item.status]}`} title={item.name}>
           {item.name}
         </td>
-        <td>{item.country}</td>
-        <td>{item.industry}</td>
-        <td className="emails">
+        <td className={`${TD} ${COL_W[1]}`}>{item.country}</td>
+        <td className={`${TD} ${COL_W[2]}`}>{item.industry}</td>
+        <td className={`${TD} ${COL_W[3]} font-mono text-[13px]`}>
           {item.candidates.length > 1 && (
-            <div className="cands">
+            <div className="flex flex-col gap-1">
               {item.candidates.map((c) => (
-                <label key={c.value} className="cand" title={c.value}>
+                <label
+                  key={c.value}
+                  className="flex items-start gap-1.5 cursor-pointer"
+                  title={c.value}
+                >
                   <input
                     type="radio"
+                    className="cursor-pointer flex-none mt-0.5"
                     name={`sel-${item.id}`}
                     checked={choice === c.value}
                     disabled={done}
                     onChange={() => onPick(item.id, c.value)}
                   />
-                  <span className="cand-val">{c.value}</span>
+                  <span className="font-mono [overflow-wrap:anywhere]">{c.value}</span>
                   <EmailBadge status={c.email_status} />
                 </label>
               ))}
@@ -93,7 +110,7 @@ const QueueRow = memo(
           {/* 확정 전 이메일 직접 수정/입력 — 후보 선택값을 채우되 사람이 덮어쓸 수 있다.
               폼만 있던(후보 0) 행엔 새 이메일 추가도 가능. */}
           <input
-            className="email-edit"
+            className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
             type="email"
             value={choice ?? ""}
             disabled={done}
@@ -102,59 +119,68 @@ const QueueRow = memo(
             title="확정 전 이메일을 수정하거나 직접 입력할 수 있습니다"
           />
         </td>
-        <td className="mailstat">
+        <td className={`${TD} ${COL_W[4]} text-xs`}>
           <EmailBadge status={item.email_status} />
-          <span className="sig">MX {tri(item.email_mx)}</span>
-          <span className="sig">SMTP {tri(item.email_smtp)}</span>
+          <span className="text-muted ml-2 whitespace-nowrap">MX {tri(item.email_mx)}</span>
+          <span className="text-muted ml-2 whitespace-nowrap">SMTP {tri(item.email_smtp)}</span>
         </td>
-        <td>
+        <td className={`${TD} ${COL_W[5]}`}>
           {href ? (
             <a
               href={href}
               target="_blank"
               rel="noreferrer"
-              className={item.site_alive ? "" : "site-dead"}
+              className={item.site_alive ? "text-accent" : "text-muted line-through"}
               title={item.site_alive ? "사이트 생존" : "사이트 미응답"}
             >
               ↗ {hostOf(href)}
             </a>
           ) : (
-            <span className="muted">—</span>
+            <span className="text-muted">—</span>
           )}
           {formHref && (
             <div>
-              <a href={formHref} target="_blank" rel="noreferrer" className="form-link"
-                title="사이트 내 문의폼">
+              <a
+                href={formHref}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent"
+                title="사이트 내 문의폼"
+              >
                 📝 문의폼
               </a>
             </div>
           )}
         </td>
-        <td>
+        <td className={`${TD} ${COL_W[6]}`}>
           <StatusBadge status={item.status} />
           {item.assignee && (
-            <span className="assignee" title={item.reviewed_at ?? undefined}>
+            <span className="text-muted text-xs" title={item.reviewed_at ?? undefined}>
               {" · "}
               {item.assignee}
-              {item.reviewed_at && <small className="muted"> {fmtTime(item.reviewed_at)}</small>}
+              {item.reviewed_at && (
+                <small className="text-muted text-[11px] ml-0.5"> {fmtTime(item.reviewed_at)}</small>
+              )}
             </span>
           )}
         </td>
-        <td className="actions">
-          <button
-            className="btn confirm"
-            disabled={busy || item.status === "confirmed"}
-            onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
-          >
-            확정
-          </button>
-          <button
-            className="btn reject"
-            disabled={busy || item.status === "rejected"}
-            onClick={() => onReject(item.id)}
-          >
-            거부
-          </button>
+        <td className={`${TD} ${COL_W[7]}`}>
+          <div className="flex gap-1.5 flex-wrap">
+            <button
+              className={BTN_CONFIRM}
+              disabled={busy || item.status === "confirmed"}
+              onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
+            >
+              확정
+            </button>
+            <button
+              className={BTN_REJECT}
+              disabled={busy || item.status === "rejected"}
+              onClick={() => onReject(item.id)}
+            >
+              거부
+            </button>
+          </div>
         </td>
       </tr>
     );
@@ -172,21 +198,18 @@ export function QueueTable({ items, busyIds, onConfirm, onReject }: Props) {
   }, []);
 
   if (items.length === 0) {
-    return <p className="empty">표시할 검증 항목이 없습니다.</p>;
+    return <p className={EMPTY}>표시할 검증 항목이 없습니다.</p>;
   }
   return (
-    <div className="table-scroll">
-      <table className="queue">
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden table-fixed">
         <thead>
           <tr>
-            <th>업체명</th>
-            <th>국가</th>
-            <th>구분</th>
-            <th>이메일 후보</th>
-            <th>메일</th>
-            <th>사이트</th>
-            <th>상태</th>
-            <th>액션</th>
+            {HEADERS.map((h, i) => (
+              <th key={h} className={`${TH} ${COL_W[i]}`}>
+                {h}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
