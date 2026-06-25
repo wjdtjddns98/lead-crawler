@@ -12,5 +12,4 @@
 /.github/                       @wjdtjddns98
 
 # 프론트엔드 — 프론트 개발자 전담.
-# TODO: 아래 @FRONTEND-HANDLE 을 프론트 개발자 GitHub 핸들로 바꾸고 주석 해제.
-# /web/                         @FRONTEND-HANDLE
+/web/                           @jinxuyeon
