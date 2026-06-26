@@ -224,6 +224,27 @@ def dedup_report(
     typer.echo("주의: C1 은 비완전(이름·도메인 둘 다 다른 동일기업은 C2/C4 위임)")
 
 
+def confirmed_pairs_from_report(
+    data: dict, *, include_llm: bool, min_confidence: float
+) -> list[tuple[str, str]]:
+    """리포트(dict)에서 **확정 중복 쌍**을 수집한다(머지 입력). 결정적·순수.
+
+    - auto 티어는 항상 포함(최상위 자동제거 후보).
+    - ``include_llm`` 이면 LLM 판정도 포함하되 ① same=True ② confidence>=임계 ③ **비-스텁**만.
+      스텁(dry_run/키없음)은 도메인root 동일이면 무조건 same 이라 실제 머지 근거로 쓰면
+      공유호스팅·별개 사업부를 오병합한다(제약② — 확실치 않으면 보존). key_a<key_b 보장됨.
+    """
+    pairs: list[tuple[str, str]] = [
+        (c["key_a"], c["key_b"]) for c in data.get("candidates", []) if c.get("tier") == "auto"
+    ]
+    if include_llm:
+        for j in data.get("judged", []):
+            v = j.get("verdict", {})
+            if v.get("same") and v.get("confidence", 0) >= min_confidence and v.get("model") != "stub":
+                pairs.append((j["candidate"]["key_a"], j["candidate"]["key_b"]))
+    return pairs
+
+
 @app.command("dedup-merge")
 def dedup_merge(
     report_path: str = typer.Option(
@@ -252,18 +273,7 @@ def dedup_merge(
 
     configure_logging()
     data = json.loads(Path(report_path).read_text(encoding="utf-8"))
-    # 확정 쌍 수집: auto 티어는 항상, LLM same 은 opt-in. (key_a<key_b 는 리포트에서 보장됨)
-    pairs: list[tuple[str, str]] = [
-        (c["key_a"], c["key_b"]) for c in data.get("candidates", []) if c.get("tier") == "auto"
-    ]
-    if include_llm:
-        # same=True 라도 confidence 가 임계 미만이면 채택 안 함(제약② — 확실치 않으면 보존).
-        pairs += [
-            (j["candidate"]["key_a"], j["candidate"]["key_b"])
-            for j in data.get("judged", [])
-            if j.get("verdict", {}).get("same")
-            and j.get("verdict", {}).get("confidence", 0) >= min_confidence
-        ]
+    pairs = confirmed_pairs_from_report(data, include_llm=include_llm, min_confidence=min_confidence)
     if not pairs:
         typer.echo("확정 중복 쌍이 없습니다(auto 티어 0건). 머지할 것 없음.")
         return
