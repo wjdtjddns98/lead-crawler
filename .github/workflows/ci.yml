@@ -1,14 +1,43 @@
 name: CI
 
+# 단일 워크플로 + 영역 path 필터 + 단일 게이트(ci-ok).
+# - 백엔드 잡(test·pg)은 web/** 만 바뀐 PR 에선 skip, 프론트 잡(web-build)은 web/** 바뀔 때만 run.
+#   → 백엔드 PR 은 프론트 빌드를, 프론트 PR 은 백엔드 테스트를 서로 안 기다린다.
+# - 브랜치 보호의 required check 는 **ci-ok 하나만** 건다. ci-ok 는 항상 돌고 관련 잡이
+#   다 통과(또는 해당없음/skip)면 green → path 필터와 required check 충돌(미실행=영구 pending)을 회피.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  changes:
+    name: 변경 영역 감지
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - '**'
+              - '!web/**'
+            web:
+              - 'web/**'
+
   test:
     name: Lint & Test (py${{ matrix.python-version }})
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -34,6 +63,8 @@ jobs:
 
   pg-integration:
     name: PostgreSQL 통합 테스트
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -73,6 +104,8 @@ jobs:
 
   web-build:
     name: 프론트엔드 빌드(타입체크)
+    needs: changes
+    if: ${{ needs.changes.outputs.web == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -87,3 +120,22 @@ jobs:
         run: |
           npm ci
           npm run build
+
+  ci-ok:
+    name: CI Gate
+    # 브랜치 보호에서 required 로 거는 **유일한** 체크. 항상 실행해 path 필터로 skip 된
+    # 잡이 있어도 머지가 영구 pending 되지 않게 한다.
+    needs: [test, pg-integration, web-build]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 관련 잡 결과 집계(skip=통과, failure/cancelled=차단)
+        run: |
+          for r in "${{ needs.test.result }}" "${{ needs.pg-integration.result }}" "${{ needs.web-build.result }}"; do
+            echo "result: $r"
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+              echo "::error::필수 잡이 실패/취소됨($r)"
+              exit 1
+            fi
+          done
+          echo "모든 관련 잡 통과(또는 해당 없음)."

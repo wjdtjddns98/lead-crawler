@@ -88,3 +88,23 @@ def test_empty_db_yields_empty_report(session: Session, tmp_path) -> None:
     assert rpt.total_records == 0
     assert rpt.total_candidates == 0
     assert rpt.by_tier == {}
+
+
+def test_report_with_stub_judge_populates_verdicts(session: Session, tmp_path) -> None:
+    # 도메인 다른 동명 쌍 → C1 은 keep_both(판정 제외), 도메인 불명 쌍 → lexical(판정 대상).
+    s = session
+    s.add_all(
+        [
+            DiscoveredCompanyRow(canonical_key="reg:kr:1", name="Orion Tech", country="KR", domain=None),
+            DiscoveredCompanyRow(canonical_key="reg:kr:2", name="Orion Tech", country="KR", domain=None),
+        ]
+    )
+    s.flush()
+    from leadcrawler.dedup_resolve.llm_judge import StubJudge
+
+    rpt = run_dedup_report(s, tmp_path / "judged.json", judge=StubJudge())
+    # 이름高·도메인불명 → lexical 쇼트리스트 1쌍이 스텁 판정됨(도메인 불명이라 미확정).
+    assert rpt.llm_judged_count == 1
+    assert len(rpt.judged) == 1
+    assert rpt.judged[0].candidate.tier == "lexical"
+    assert rpt.judged[0].verdict.same is False  # 스텁: 도메인 불명 → 사람 위임
