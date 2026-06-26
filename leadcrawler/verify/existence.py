@@ -66,7 +66,7 @@ def looks_parked(html: str | None) -> bool:
     text = _WS.sub(" ", _TAG.sub(" ", cleaned)).strip().lower()
     if any(marker in text for marker in _PARKING_MARKERS) and len(text) < _PARKING_MAX_TEXT:
         return True
-    if len(text) < _MIN_BODY_TEXT and _STRUCTURE.search(html) is None:
+    if len(text) < _MIN_BODY_TEXT and _STRUCTURE.search(cleaned) is None:
         return True
     return False
 

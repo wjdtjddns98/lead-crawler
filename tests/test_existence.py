@@ -177,6 +177,12 @@ def test_js_blank_spa_is_parked() -> None:
     assert looks_parked(spa) is True
 
 
+def test_js_blank_spa_with_anchor_string_in_script_still_parked() -> None:
+    # 리뷰어 LOW-1/LOW-3: 스크립트가 '<a href' 문자열을 포함해도(가시 구조 아님) blank 로 잡혀야.
+    spa = '<html><head><script>var link="<a href=x>";' + "y;" * 100 + '</script></head><body></body></html>'
+    assert looks_parked(spa) is True
+
+
 # === Track B: HEAD 405 → GET 폴백(B2) =================================
 
 class _GetResp:
