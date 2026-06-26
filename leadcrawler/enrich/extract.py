@@ -78,7 +78,7 @@ _FORM_EXCLUDE_HINTS = (
 )
 # 문의 페이지(폼 미탐지 시 폴백) 판정용 — 경로는 세그먼트 일치(부분일치 금지: /support·
 # /customer 등 광역 오탐 차단), 한국어는 토큰분해가 안 돼 고정밀 단어만 부분일치.
-_CONTACT_PATH_SEGMENTS = ("contact", "contactus", "inquiry", "enquiry", "contact-us")
+_CONTACT_PATH_SEGMENTS = ("contact", "contactus", "inquiry", "enquiry")
 _CONTACT_PATH_SUBSTR = ("문의",)
 _CONTACT_TITLE_HINTS = ("문의", "contact us", "contactus", "inquiry", "enquiry")
 
