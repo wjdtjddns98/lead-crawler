@@ -21,6 +21,7 @@ from .extract import (
     extract_emails,
     extract_form,
     extract_phones,
+    is_contact_page,
 )
 from .emailapi import ApolloFinder, HunterFinder, SupportsEmailFinder
 from .headless import PlaywrightRenderer, SupportsRender
@@ -305,6 +306,7 @@ class Enricher:
         emails: dict[str, Contact] = {}
         phones: dict[str, Contact] = {}
         form: Contact | None = None
+        contact_page: str | None = None  # 폼 미탐지 시 폴백용 문의페이지 URL.
 
         for url in pages:
             html = home_html if url == home else _safe_get(fetcher, url)
@@ -318,6 +320,19 @@ class Enricher:
                 phones.setdefault(c.value, c)
             if form is None:
                 form = extract_form(html, page_url=url)
+            if contact_page is None and is_contact_page(url, html):
+                contact_page = url
+
+        # 폴백: 이메일·폼 모두 없지만 문의 페이지가 있으면(JS 렌더 폼 등) 그 URL 을 낮은
+        # 신뢰도 폼으로 채택 — 사람 워크벤치가 폼 경로로 처리할 수 있게(제약② 리드손실 방지).
+        if form is None and not emails and contact_page is not None:
+            form = Contact(
+                type=ContactType.FORM,
+                value=contact_page,
+                extract_method=ExtractMethod.STATIC,
+                source_url=contact_page,
+                confidence=0.3,
+            )
 
         out: list[Contact] = [*emails.values(), *phones.values()]
         if form is not None:
