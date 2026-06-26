@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Protocol
 
 from pydantic import BaseModel
@@ -21,6 +22,53 @@ from ..config import Settings, get_settings
 from ..logging import get_logger
 
 log = get_logger("verify.existence")
+
+# 파킹/판매중 도메인 표지(소문자 비교). 강한 다어절 표현만 — 오탐(정상 사이트가 단어를
+# 우연히 포함) 회피. **가시 텍스트** 기준으로만 매치하고(스크립트/속성 오탐 차단), 마커가
+# 있어도 본문이 풍부하면(레지스트라/호스팅사 제품설명 등) 파킹으로 보지 않는다.
+_PARKING_MARKERS = (
+    "domain is for sale",
+    "buy this domain",
+    "this domain is parked",
+    "domain may be for sale",
+    "this domain may be for sale",
+    "the domain has expired",
+    "domain is parked free",
+    "이 도메인은 판매",
+    "도메인을 구매하",
+    "주차된 도메인",
+)
+# 가시 텍스트가 이 길이 미만이고 **구조 신호(링크·이미지)도 없으면** JS-blank/빈 페이지로 본다.
+# 구조 신호를 요구해 이미지-only 소규모 정상 홈페이지(텍스트 적음)를 오탐하지 않는다(제약② 보존).
+_MIN_BODY_TEXT = 20
+# 파킹 표지가 있어도 가시 텍스트가 이 길이 이상이면 정상(마커를 제품명으로 쓰는 레지스트라 등).
+_PARKING_MAX_TEXT = 200
+_TAG = re.compile(r"<[^>]+>")
+_WS = re.compile(r"\s+")
+# script/style **내용**까지 제거(태그만 떼면 minified JS 가 본문에 남아 길이·마커가 오염됨).
+_SCRIPT_STYLE = re.compile(r"(?is)<(script|style)[^>]*>.*?</\1>")
+_STRUCTURE = re.compile(r"(?i)<(a[ >]|img)")
+
+
+def looks_parked(html: str | None) -> bool:
+    """렌더/응답 HTML 이 파킹·판매중·JS-blank(실접속 생존 아님)로 보이면 True.
+
+    script/style 내용을 제거한 **가시 텍스트** 기준으로 판정한다(제약② — 정상 기업을
+    떨구지 않도록 보수적):
+    - 파킹 표지가 가시 텍스트에 있고 **본문이 빈약**(< _PARKING_MAX_TEXT)할 때만 파킹(마커를
+      제품명으로 쓰는 레지스트라/호스팅 홈페이지는 본문이 풍부해 제외).
+    - 마커가 없어도 가시 텍스트가 거의 없고 **링크·이미지 구조도 없으면** 빈/JS-blank(죽음).
+      이미지-only 정상 홈페이지(img 보유)는 구조 신호로 보존.
+    """
+    if not html or not html.strip():
+        return True
+    cleaned = _SCRIPT_STYLE.sub(" ", html)
+    text = _WS.sub(" ", _TAG.sub(" ", cleaned)).strip().lower()
+    if any(marker in text for marker in _PARKING_MARKERS) and len(text) < _PARKING_MAX_TEXT:
+        return True
+    if len(text) < _MIN_BODY_TEXT and _STRUCTURE.search(cleaned) is None:
+        return True
+    return False
 
 
 class ExistenceResult(BaseModel):
@@ -47,6 +95,14 @@ class SupportsDnsProbe(Protocol):
         ...
 
 
+class SupportsRender(Protocol):
+    """헤드리스 렌더러(테스트 더블·Playwright 가 구현) — JS 실행 후 HTML 반환."""
+
+    def render(self, domain: str) -> str | None:
+        """``https?://domain`` 을 헤드리스로 렌더해 최종 HTML 을 반환(실패 시 None)."""
+        ...
+
+
 class SupportsRegistryActive(Protocol):
     """등록처 active 신호 체커(주입형 placeholder — 미주입이면 미사용)."""
 
@@ -70,16 +126,37 @@ class HttpSiteProbe:
         import httpx
 
         for scheme in ("https", "http"):
+            url = f"{scheme}://{domain}"
             try:
-                resp = httpx.head(
-                    f"{scheme}://{domain}", timeout=self._timeout, follow_redirects=True
-                )
-                if resp.status_code < 400:
-                    return True
+                resp = httpx.head(url, timeout=self._timeout, follow_redirects=True)
             except Exception as exc:  # 연결 실패·타임아웃 등 → 다음 스킴.
                 log.debug("existence.http.fail", domain=domain, scheme=scheme, err=str(exc))
                 continue
+            # B2: HEAD 차단(405/501 미지원, 403 WAF/안티봇)이면 GET 폴백 — 살아있는데 HEAD 만
+            # 막힌 사이트의 오탐(false-negative=리드손실)을 줄인다. GET 도 죽음/파킹이면 그대로 탈락.
+            if resp.status_code in (403, 405, 501):
+                if self._get_alive(url):
+                    return True
+                continue
+            if resp.status_code < 400:
+                return True
         return False
+
+    def _get_alive(self, url: str) -> bool:
+        """GET 으로 생존을 재확인한다(B2) — 200대이고 본문이 파킹/blank 가 아니면 True."""
+        import httpx
+
+        try:
+            resp = httpx.get(url, timeout=self._timeout, follow_redirects=True)
+        except Exception as exc:
+            log.debug("existence.http.get_fail", url=url, err=str(exc))
+            return False
+        if resp.status_code >= 400:
+            return False
+        if looks_parked(resp.text):  # GET 본문이 파킹/판매중/blank → 실접속 생존 아님.
+            log.info("existence.http.parked", url=url)
+            return False
+        return True
 
 
 class DnsProbe:
@@ -109,11 +186,13 @@ class ExistenceVerifier:
         site_probe: SupportsSiteProbe | None = None,
         dns_probe: SupportsDnsProbe | None = None,
         registry_checker: SupportsRegistryActive | None = None,
+        render_probe: SupportsRender | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self._site_probe = site_probe
         self._dns_probe = dns_probe
         self._registry_checker = registry_checker
+        self._render_probe = render_probe
 
     def verify(
         self,
@@ -130,6 +209,14 @@ class ExistenceVerifier:
             )
 
         site_alive = self._site().head_ok(domain) if domain else False
+        # B1 헤드리스 확인(opt-in) — HTTP 가 살아있다 해도 파킹/JS-blank 면 실접속 생존 아님.
+        # site_alive 후보만 렌더(불필요한 렌더 회피). 렌더 실패(None)는 graceful 통과(기존 판정
+        # 유지) — 헤드리스 미설치로 실존 기업을 떨구지 않기 위함. 파킹/blank 확인 시에만 떨군다.
+        if site_alive and domain and self.settings.verify_headless:
+            rendered = self._render().render(domain)
+            if rendered is not None and looks_parked(rendered):
+                log.info("existence.headless.parked", domain=domain)
+                site_alive = False
         dns_alive = self._dns().resolves(domain) if domain else False
 
         # 등록처 active 신호(주입 시) — 가장 강한 신호로 우선한다.
@@ -176,3 +263,41 @@ class ExistenceVerifier:
         if self._dns_probe is None:
             self._dns_probe = DnsProbe()
         return self._dns_probe
+
+    def _render(self) -> SupportsRender:
+        if self._render_probe is None:
+            self._render_probe = PlaywrightRender(timeout=self.settings.headless_timeout)
+        return self._render_probe
+
+
+class PlaywrightRender:
+    """Playwright 기반 헤드리스 렌더러 — 미설치/오류 시 None(graceful, 기존 판정 유지)."""
+
+    def __init__(self, *, timeout: float = 20.0) -> None:
+        self._timeout_ms = int(timeout * 1000)
+
+    def render(self, domain: str) -> str | None:
+        try:
+            from playwright.sync_api import sync_playwright
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                try:
+                    page = browser.new_page()
+                    for scheme in ("https", "http"):
+                        try:
+                            page.goto(
+                                f"{scheme}://{domain}",
+                                timeout=self._timeout_ms,
+                                wait_until="domcontentloaded",
+                            )
+                            return page.content()
+                        except Exception as exc:  # 해당 스킴 렌더 실패 → 다음 스킴.
+                            log.debug("existence.render.fail", domain=domain, scheme=scheme, err=str(exc))
+                            continue
+                    return None
+                finally:
+                    browser.close()
+        except Exception as exc:  # Playwright 미설치(ImportError)·브라우저 없음 → graceful None.
+            log.info("existence.render.unavailable", err=str(exc))
+            return None

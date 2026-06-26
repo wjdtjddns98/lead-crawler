@@ -127,3 +127,164 @@ def test_dns_probe_resolves_and_fails(monkeypatch) -> None:
 
     monkeypatch.setattr(dns.resolver, "resolve", _noanswer)
     assert DnsProbe().resolves("nope.invalid") is False
+
+
+# === Track B: 파킹 휴리스틱 ============================================
+
+from leadcrawler.verify.existence import HttpSiteProbe, looks_parked  # noqa: E402
+
+
+def test_parked_markers_detected() -> None:
+    assert looks_parked("<html><body>This domain is parked. Buy this domain!</body></html>")
+    assert looks_parked("<h1>this domain is for sale</h1> 부가 텍스트를 충분히 채워 길이 통과")
+
+
+def test_blank_or_short_is_parked() -> None:
+    assert looks_parked("") is True
+    assert looks_parked("   ") is True
+    assert looks_parked("<html><body></body></html>") is True  # 본문 텍스트 0
+    assert looks_parked(None) is True
+
+
+def test_real_content_not_parked() -> None:
+    html = "<html><body><h1>삼성전자 IR</h1><p>투자자 정보와 재무제표, 공시 자료를 제공합니다.</p></body></html>"
+    assert looks_parked(html) is False
+
+
+def test_registrar_with_marker_but_rich_content_not_parked() -> None:
+    # 리뷰어 MEDIUM-1 회귀: '주차된 도메인'을 제품명으로 쓰는 레지스트라(가비아 등) 정상 홈페이지.
+    # 마커가 있어도 본문이 풍부하면 파킹 아님(제약② 리드손실 방지).
+    body = (
+        "<nav>홈 서비스소개 도메인 호스팅 서버 보안 고객센터 마이페이지 로그인 회원가입</nav>"
+        "<h1>가비아 — 대한민국 1위 인터넷 인프라 서비스</h1>"
+        "<section>도메인 등록과 이전, 웹호스팅, 클라우드 서버, 매니지드 서비스, SSL 인증서, 기업메일까지 "
+        "한 곳에서 제공합니다. 부가 상품 중 '주차된 도메인' 관리 기능으로 미사용 도메인을 손쉽게 운영할 수 있습니다. "
+        "최신 클라우드 인프라와 24시간 365일 기술지원, 안정적인 백본망을 바탕으로 수십만 고객사가 신뢰합니다. "
+        "스타트업부터 대기업까지 규모에 맞는 요금제와 전담 컨설팅을 제공하며, 데이터센터 이중화로 무중단 운영을 보장합니다.</section>"
+        "<footer>회사소개 채용 투자정보 약관 개인정보처리방침 이용안내 제휴문의 공지사항</footer>"
+    )
+    assert looks_parked(f"<html><body>{body}</body></html>") is False
+
+
+def test_image_only_homepage_not_blank() -> None:
+    # 리뷰어 MEDIUM-2 회귀: 텍스트 적은 이미지-only 소규모 정상 홈페이지(img 구조 신호로 보존).
+    assert looks_parked('<html><body><h1>OO</h1><img src="hero.jpg"><a href="/about">회사</a></body></html>') is False
+
+
+def test_js_blank_spa_is_parked() -> None:
+    # 리뷰어 LOW-1 회귀: script 내용 제거 후 본문 0 + 구조 없음 → JS-blank 죽음 처리.
+    spa = '<html><head><script>var x=' + "1;" * 200 + '</script></head><body><div id="root"></div></body></html>'
+    assert looks_parked(spa) is True
+
+
+def test_js_blank_spa_with_anchor_string_in_script_still_parked() -> None:
+    # 리뷰어 LOW-1/LOW-3: 스크립트가 '<a href' 문자열을 포함해도(가시 구조 아님) blank 로 잡혀야.
+    spa = '<html><head><script>var link="<a href=x>";' + "y;" * 100 + '</script></head><body></body></html>'
+    assert looks_parked(spa) is True
+
+
+# === Track B: HEAD 405 → GET 폴백(B2) =================================
+
+class _GetResp:
+    def __init__(self, status_code: int, text: str = "") -> None:
+        self.status_code = status_code
+        self.text = text
+
+
+def _patch_head_get(monkeypatch, *, head_status: int, get_resp: _GetResp | None) -> dict:
+    import httpx
+
+    calls = {"head": 0, "get": 0}
+
+    def fake_head(url, **kw):
+        calls["head"] += 1
+        return _GetResp(head_status)
+
+    def fake_get(url, **kw):
+        calls["get"] += 1
+        if get_resp is None:
+            raise RuntimeError("refused")
+        return get_resp
+
+    monkeypatch.setattr(httpx, "head", fake_head)
+    monkeypatch.setattr(httpx, "get", fake_get)
+    return calls
+
+
+def test_head_405_falls_back_to_get_alive(monkeypatch) -> None:
+    calls = _patch_head_get(
+        monkeypatch, head_status=405,
+        get_resp=_GetResp(200, "<html><body><p>실제 회사 홈페이지 콘텐츠가 충분히 깁니다.</p></body></html>"),
+    )
+    assert HttpSiteProbe().head_ok("acme.com") is True
+    assert calls["head"] == 1 and calls["get"] == 1
+
+
+def test_head_405_get_parked_is_dead(monkeypatch) -> None:
+    _patch_head_get(monkeypatch, head_status=405, get_resp=_GetResp(200, "This domain is parked"))
+    assert HttpSiteProbe().head_ok("acme.com") is False
+
+
+def test_head_200_skips_get(monkeypatch) -> None:
+    calls = _patch_head_get(monkeypatch, head_status=200, get_resp=None)
+    assert HttpSiteProbe().head_ok("acme.com") is True
+    assert calls["get"] == 0
+
+
+def test_head_403_waf_falls_back_to_get(monkeypatch) -> None:
+    # WAF/안티봇이 HEAD 에 403 → GET 폴백으로 생존 회복(false-negative 리드손실 방지).
+    calls = _patch_head_get(
+        monkeypatch, head_status=403,
+        get_resp=_GetResp(200, "<html><body><p>실제 회사 홈페이지 콘텐츠가 충분히 깁니다.</p></body></html>"),
+    )
+    assert HttpSiteProbe().head_ok("acme.com") is True
+    assert calls["get"] == 1
+
+
+# === Track B: 헤드리스 확인(B1) =======================================
+
+class _Render:
+    def __init__(self, html) -> None:
+        self.html = html
+        self.calls = 0
+
+    def render(self, domain: str) -> str | None:
+        self.calls += 1
+        return self.html
+
+
+def _headless_verify(html, *, headless: bool, site: bool = True):
+    render = _Render(html)
+    v = ExistenceVerifier(
+        Settings(dry_run=False, verify_headless=headless),
+        site_probe=_Site(site), dns_probe=_Dns(True), render_probe=render,
+    )
+    return v.verify("acme.com"), render
+
+
+def test_headless_parked_marks_inactive() -> None:
+    res, render = _headless_verify("<html><body>buy this domain</body></html>", headless=True)
+    assert res.is_active is False and render.calls == 1
+
+
+def test_headless_real_content_stays_active() -> None:
+    html = "<html><body><h1>회사</h1><p>충분히 긴 실제 본문 콘텐츠가 여기 있습니다 IR 정보 공시.</p></body></html>"
+    res, _ = _headless_verify(html, headless=True)
+    assert res.is_active is True
+
+
+def test_headless_render_none_is_graceful() -> None:
+    # 렌더 실패(None) → 기존 HTTP 판정 유지(실존 기업 보존).
+    res, _ = _headless_verify(None, headless=True)
+    assert res.is_active is True
+
+
+def test_headless_off_skips_render() -> None:
+    res, render = _headless_verify("buy this domain", headless=False)
+    assert res.is_active is True and render.calls == 0
+
+
+def test_headless_dry_run_skips_render() -> None:
+    render = _Render("buy this domain")
+    v = ExistenceVerifier(Settings(dry_run=True, verify_headless=True), render_probe=render)
+    assert v.verify("acme.com").is_active is True and render.calls == 0
