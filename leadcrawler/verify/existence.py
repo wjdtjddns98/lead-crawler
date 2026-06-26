@@ -24,42 +24,51 @@ from ..logging import get_logger
 log = get_logger("verify.existence")
 
 # 파킹/판매중 도메인 표지(소문자 비교). 강한 다어절 표현만 — 오탐(정상 사이트가 단어를
-# 우연히 포함) 회피. 한쪽이라도 매치하면 파킹으로 본다.
+# 우연히 포함) 회피. **가시 텍스트** 기준으로만 매치하고(스크립트/속성 오탐 차단), 마커가
+# 있어도 본문이 풍부하면(레지스트라/호스팅사 제품설명 등) 파킹으로 보지 않는다.
 _PARKING_MARKERS = (
     "domain is for sale",
     "buy this domain",
     "this domain is parked",
     "domain may be for sale",
     "this domain may be for sale",
-    "parked domain",
-    "domain parking",
     "the domain has expired",
     "domain is parked free",
     "이 도메인은 판매",
-    "도메인을 구매",
+    "도메인을 구매하",
     "주차된 도메인",
 )
-# 태그 제거 후 본문 텍스트가 이 길이 미만이면 JS-blank/빈 페이지로 본다(헤드리스 미동작 SPA 등).
-# 낮게 잡는다: 실제 홈페이지는 nav/footer 만으로도 수백자라 여유롭게 넘고, CJK 는 정보밀도가
-# 높아(한글 1자=1) 과도한 임계는 짧은 정상 콘텐츠를 오탐한다. 진짜 빈/플레이스홀더만 걸린다.
+# 가시 텍스트가 이 길이 미만이고 **구조 신호(링크·이미지)도 없으면** JS-blank/빈 페이지로 본다.
+# 구조 신호를 요구해 이미지-only 소규모 정상 홈페이지(텍스트 적음)를 오탐하지 않는다(제약② 보존).
 _MIN_BODY_TEXT = 20
+# 파킹 표지가 있어도 가시 텍스트가 이 길이 이상이면 정상(마커를 제품명으로 쓰는 레지스트라 등).
+_PARKING_MAX_TEXT = 200
 _TAG = re.compile(r"<[^>]+>")
 _WS = re.compile(r"\s+")
+# script/style **내용**까지 제거(태그만 떼면 minified JS 가 본문에 남아 길이·마커가 오염됨).
+_SCRIPT_STYLE = re.compile(r"(?is)<(script|style)[^>]*>.*?</\1>")
+_STRUCTURE = re.compile(r"(?i)<(a[ >]|img)")
 
 
 def looks_parked(html: str | None) -> bool:
     """렌더/응답 HTML 이 파킹·판매중·JS-blank(실접속 생존 아님)로 보이면 True.
 
-    ① 빈/없음 → True(죽었거나 JS 전용으로 정적 본문 0). ② 태그 제거 후 본문 텍스트가
-    매우 짧으면 True(콘텐츠 없는 플레이스홀더). ③ 알려진 파킹 표지 포함 시 True.
+    script/style 내용을 제거한 **가시 텍스트** 기준으로 판정한다(제약② — 정상 기업을
+    떨구지 않도록 보수적):
+    - 파킹 표지가 가시 텍스트에 있고 **본문이 빈약**(< _PARKING_MAX_TEXT)할 때만 파킹(마커를
+      제품명으로 쓰는 레지스트라/호스팅 홈페이지는 본문이 풍부해 제외).
+    - 마커가 없어도 가시 텍스트가 거의 없고 **링크·이미지 구조도 없으면** 빈/JS-blank(죽음).
+      이미지-only 정상 홈페이지(img 보유)는 구조 신호로 보존.
     """
     if not html or not html.strip():
         return True
-    low = html.lower()
-    text = _WS.sub(" ", _TAG.sub(" ", low)).strip()
-    if len(text) < _MIN_BODY_TEXT:
+    cleaned = _SCRIPT_STYLE.sub(" ", html)
+    text = _WS.sub(" ", _TAG.sub(" ", cleaned)).strip().lower()
+    if any(marker in text for marker in _PARKING_MARKERS) and len(text) < _PARKING_MAX_TEXT:
         return True
-    return any(marker in low for marker in _PARKING_MARKERS)
+    if len(text) < _MIN_BODY_TEXT and _STRUCTURE.search(html) is None:
+        return True
+    return False
 
 
 class ExistenceResult(BaseModel):
@@ -123,8 +132,9 @@ class HttpSiteProbe:
             except Exception as exc:  # 연결 실패·타임아웃 등 → 다음 스킴.
                 log.debug("existence.http.fail", domain=domain, scheme=scheme, err=str(exc))
                 continue
-            # B2: HEAD 미지원(405/501)면 GET 폴백 — 일부 서버가 HEAD 를 막는다(살아있는데 오탐).
-            if resp.status_code in (405, 501):
+            # B2: HEAD 차단(405/501 미지원, 403 WAF/안티봇)이면 GET 폴백 — 살아있는데 HEAD 만
+            # 막힌 사이트의 오탐(false-negative=리드손실)을 줄인다. GET 도 죽음/파킹이면 그대로 탈락.
+            if resp.status_code in (403, 405, 501):
                 if self._get_alive(url):
                     return True
                 continue

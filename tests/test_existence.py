@@ -151,6 +151,32 @@ def test_real_content_not_parked() -> None:
     assert looks_parked(html) is False
 
 
+def test_registrar_with_marker_but_rich_content_not_parked() -> None:
+    # 리뷰어 MEDIUM-1 회귀: '주차된 도메인'을 제품명으로 쓰는 레지스트라(가비아 등) 정상 홈페이지.
+    # 마커가 있어도 본문이 풍부하면 파킹 아님(제약② 리드손실 방지).
+    body = (
+        "<nav>홈 서비스소개 도메인 호스팅 서버 보안 고객센터 마이페이지 로그인 회원가입</nav>"
+        "<h1>가비아 — 대한민국 1위 인터넷 인프라 서비스</h1>"
+        "<section>도메인 등록과 이전, 웹호스팅, 클라우드 서버, 매니지드 서비스, SSL 인증서, 기업메일까지 "
+        "한 곳에서 제공합니다. 부가 상품 중 '주차된 도메인' 관리 기능으로 미사용 도메인을 손쉽게 운영할 수 있습니다. "
+        "최신 클라우드 인프라와 24시간 365일 기술지원, 안정적인 백본망을 바탕으로 수십만 고객사가 신뢰합니다. "
+        "스타트업부터 대기업까지 규모에 맞는 요금제와 전담 컨설팅을 제공하며, 데이터센터 이중화로 무중단 운영을 보장합니다.</section>"
+        "<footer>회사소개 채용 투자정보 약관 개인정보처리방침 이용안내 제휴문의 공지사항</footer>"
+    )
+    assert looks_parked(f"<html><body>{body}</body></html>") is False
+
+
+def test_image_only_homepage_not_blank() -> None:
+    # 리뷰어 MEDIUM-2 회귀: 텍스트 적은 이미지-only 소규모 정상 홈페이지(img 구조 신호로 보존).
+    assert looks_parked('<html><body><h1>OO</h1><img src="hero.jpg"><a href="/about">회사</a></body></html>') is False
+
+
+def test_js_blank_spa_is_parked() -> None:
+    # 리뷰어 LOW-1 회귀: script 내용 제거 후 본문 0 + 구조 없음 → JS-blank 죽음 처리.
+    spa = '<html><head><script>var x=' + "1;" * 200 + '</script></head><body><div id="root"></div></body></html>'
+    assert looks_parked(spa) is True
+
+
 # === Track B: HEAD 405 → GET 폴백(B2) =================================
 
 class _GetResp:
@@ -197,6 +223,16 @@ def test_head_200_skips_get(monkeypatch) -> None:
     calls = _patch_head_get(monkeypatch, head_status=200, get_resp=None)
     assert HttpSiteProbe().head_ok("acme.com") is True
     assert calls["get"] == 0
+
+
+def test_head_403_waf_falls_back_to_get(monkeypatch) -> None:
+    # WAF/안티봇이 HEAD 에 403 → GET 폴백으로 생존 회복(false-negative 리드손실 방지).
+    calls = _patch_head_get(
+        monkeypatch, head_status=403,
+        get_resp=_GetResp(200, "<html><body><p>실제 회사 홈페이지 콘텐츠가 충분히 깁니다.</p></body></html>"),
+    )
+    assert HttpSiteProbe().head_ok("acme.com") is True
+    assert calls["get"] == 1
 
 
 # === Track B: 헤드리스 확인(B1) =======================================
