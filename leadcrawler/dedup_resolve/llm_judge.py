@@ -53,6 +53,9 @@ class JudgeVerdict(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)  # 0~1 확신도(0=불확실/판정불가)
     reason: str  # 한 문장 근거(한국어)
     model: str = ""  # 판정 주체("stub" 또는 모델명) — audit 추적용
+    # 이 판정이 **실제 과금 API 왕복**으로 나왔는지. 미설치(ImportError)·키오류 등 호출 전
+    # 실패는 False(과금 안 됨 → 원장에 안 적재). 응답을 받은 뒤의 파싱실패는 True(이미 과금됨).
+    billed: bool = False
 
 
 class JudgedPair(BaseModel):
@@ -64,6 +67,8 @@ class JudgedPair(BaseModel):
 
 class SupportsJudge(Protocol):
     """판정기 인터페이스(테스트 더블·스텁·실제 Claude 가 구현)."""
+
+    model: str  # 판정 주체 식별자 — "stub"=무과금, 그 외=유료(예산 가드·과금 대상 판별).
 
     def judge(self, candidate: DuplicateCandidate) -> JudgeVerdict:
         """후보 1쌍이 동일 기업인지 판정한다(실패해도 예외 없이 불확실 반환)."""
@@ -121,7 +126,7 @@ class ClaudeJudge:
 
     def __init__(self, api_key: str, *, model: str, max_tokens: int = 200) -> None:
         self._api_key = api_key
-        self._model = model
+        self.model = model  # public — SupportsJudge 계약(과금 판별·audit 단일 출처)
         self._max_tokens = max_tokens
 
     def judge(self, candidate: DuplicateCandidate) -> JudgeVerdict:
@@ -137,16 +142,19 @@ class ClaudeJudge:
 
             client = anthropic.Anthropic(api_key=self._api_key)
             msg = client.messages.create(
-                model=self._model,
+                model=self.model,
                 max_tokens=self._max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
-            log.info("dedup.llm_judge.call", model=self._model)  # 과금 호출 추적
+            # 여기까지 왔으면 과금 왕복 성공 — 이후 파싱이 실패해도 billed=True(이미 청구됨).
+            log.info("dedup.llm_judge.call", model=self.model)
             text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
-            return _parse_verdict(text, model=self._model)
-        except Exception as exc:  # 미설치(ImportError)·키오류·API오류 → 불확실 폴백.
+            verdict = _parse_verdict(text, model=self.model)
+            verdict.billed = True
+            return verdict
+        except Exception as exc:  # 미설치(ImportError)·키오류·호출 전 API오류 → 불확실·미과금.
             log.info("dedup.llm_judge.error", err=str(exc))
-            return _uncertain(f"LLM 호출 실패: {exc}", model=self._model)
+            return _uncertain(f"LLM 호출 실패: {exc}", model=self.model)
 
 
 def judge_candidates(
@@ -159,24 +167,27 @@ def judge_candidates(
     """쇼트리스트 티어 후보만 판정한다(예산 가드 + 런당 캡 + audit 로그).
 
     - ``JUDGE_TIERS`` 외(auto/keep_both)는 건너뛴다(이미 해소/결론).
-    - ``ledger`` 가 주어지면 호출 **직전마다** ``is_over_budget`` 를 확인해 초과 시 중단한다
-      (남은 후보는 판정하지 않음 — 사람 워크벤치로 남음). 판정 1건마다 ``record`` 로 과금 적재.
-      스텁(model=="stub")은 무료라 과금하지 않는다(dry_run 0원 행 방지).
-    - ``max_pairs`` 로 런당 유료 판정 수를 제한한다(우발적 대량 과금 방지). 초과분은 미판정.
+    - ``ledger`` 가 주어지고 판정기가 유료(model!="stub")면 호출 **직전마다**
+      ``is_over_budget`` 를 확인해 초과 시 중단한다(남은 후보는 사람 워크벤치로 남음).
+    - 과금 적재는 **실제 API 왕복이 일어난 판정(verdict.billed)만** — 미설치/키오류 등
+      호출 전 실패는 과금되지 않으므로 원장에 거짓 0차감을 남기지 않는다. 스텁(무과금)도
+      billed=False 라 적재 안 됨(dry_run 0원 행 방지).
+    - ``max_pairs`` 로 런당 판정 수를 제한한다(우발적 대량 과금 방지). 유료 판정기에선 이
+      값이 곧 과금 상한. 초과분은 미판정으로 남긴다.
     결과는 입력 순서(= C1 의 결정적 정렬)를 보존한다.
     """
     targets = [c for c in candidates if c.tier in JUDGE_TIERS]
+    paid_capable = ledger is not None and getattr(judge, "model", "") != "stub"
     judged: list[JudgedPair] = []
     for cand in targets:
         if len(judged) >= max_pairs:
             log.warning("dedup.llm_judge.cap_reached", cap=max_pairs, remaining=len(targets) - len(judged))
             break
-        paid = ledger is not None and getattr(judge, "model", "") != "stub"
-        if paid and ledger.is_over_budget():
+        if paid_capable and ledger.is_over_budget():
             log.warning("dedup.llm_judge.over_budget", judged=len(judged), remaining=len(targets) - len(judged))
             break
         verdict = judge.judge(cand)
-        if paid:
+        if ledger is not None and verdict.billed:
             ledger.record(PROVIDER)
         log.info(
             "dedup.llm_judge.verdict",

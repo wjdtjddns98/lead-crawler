@@ -24,16 +24,23 @@ def _cand(tier: str, *, key_a: str = "a", key_b: str = "b", dom_a=None, dom_b=No
 
 
 class FakeJudge:
-    """판정 호출을 세고 고정 verdict 를 반환하는 더블. model 로 유료/스텁 구분 흉내."""
+    """판정 호출을 세고 고정 verdict 를 반환하는 더블. model 로 유료/스텁 구분 흉내.
 
-    def __init__(self, *, same: bool = True, model: str = "fake") -> None:
+    ``billed`` 는 기본적으로 유료 판정기(model!="stub")의 성공 왕복을 흉내내 True 로 둔다.
+    호출 전 실패(미과금)를 흉내내려면 ``billed=False`` 를 명시한다.
+    """
+
+    def __init__(self, *, same: bool = True, model: str = "fake", billed: bool | None = None) -> None:
         self.calls = 0
         self._same = same
         self.model = model
+        self._billed = billed if billed is not None else (model != "stub")
 
     def judge(self, candidate: DuplicateCandidate) -> JudgeVerdict:
         self.calls += 1
-        return JudgeVerdict(same=self._same, confidence=0.7, reason="fake", model=self.model)
+        return JudgeVerdict(
+            same=self._same, confidence=0.7, reason="fake", model=self.model, billed=self._billed
+        )
 
 
 class FakeLedger:
@@ -99,6 +106,14 @@ def test_stub_judge_is_not_charged() -> None:
     ledger = FakeLedger(over=False)
     judge_candidates(cands, StubJudge(), ledger=ledger)
     assert ledger.records == []  # 스텁은 무료 → 0원 행 안 남김
+
+
+def test_unbilled_failure_not_charged() -> None:
+    # 유료 판정기지만 호출 전 실패(미설치/키오류)로 billed=False → 과금 안 함(거짓 차감 방지).
+    cands = [_cand("domain", key_a=f"k{i}", key_b=f"k{i}b") for i in range(3)]
+    ledger = FakeLedger(over=False)
+    out = judge_candidates(cands, FakeJudge(model="claude", billed=False), ledger=ledger)
+    assert len(out) == 3 and ledger.records == []  # 판정은 남되 과금은 0건
 
 
 # ── 런당 캡 ────────────────────────────────────────────────────────────────────
