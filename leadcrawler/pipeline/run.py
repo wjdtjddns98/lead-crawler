@@ -239,13 +239,21 @@ def _persist_inline_dup(session: Session, dc: DiscoveredCompany, survivor_key: s
     try:
         save_discovered(session, dc)
         row = session.get(DiscoveredCompanyRow, dc.canonical_key)
-        if row is not None and row.duplicate_of is None and dc.canonical_key != survivor_key:
+        linked = (
+            row is not None and row.duplicate_of is None and dc.canonical_key != survivor_key
+        )
+        if linked:
             row.duplicate_of = survivor_key
             row.merged_at = datetime.now(timezone.utc)
             row.merged_by = "auto"
-            row.merge_reason = "inline near-dup (이름高+도메인root 일치)"
+            # merge_reason 은 stable 토큰(report/rollback 파싱용) — schema.py 컨벤션 준수.
+            row.merge_reason = "inline:name+domain"
         session.commit()
-        log.info("dedup.inline.absorb", key=dc.canonical_key, survivor=survivor_key)
+        # 실제 링크가 써졌을 때만 absorb 로그(이미 링크됨/가드 실패 시 오탐 audit 방지).
+        if linked:
+            log.info("dedup.inline.absorb", key=dc.canonical_key, survivor=survivor_key)
+        else:
+            log.info("dedup.inline.touch", key=dc.canonical_key)
     except IntegrityError:
         session.rollback()
         log.info("persist.skip.conflict", key=dc.canonical_key)
