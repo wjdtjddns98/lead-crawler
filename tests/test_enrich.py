@@ -678,11 +678,27 @@ def test_extract_form_prefers_message_textarea_form() -> None:
 
 def test_is_contact_page_by_path_and_title() -> None:
     assert is_contact_page("https://x.com/contact")
+    assert is_contact_page("https://x.com/contact-us")
     assert is_contact_page("https://x.com/inquiry")
+    assert is_contact_page("https://x.com/문의")
     assert is_contact_page("https://x.com/page", "<title>고객문의</title>")
     assert is_contact_page("https://x.com/page", "<h1>온라인 문의</h1>")
     # 문의와 무관한 페이지는 False.
     assert not is_contact_page("https://x.com/about", "<title>회사소개</title>")
+
+
+def test_is_contact_page_path_is_segment_not_substring() -> None:
+    # 좁힌 경로 매칭(아키텍트 MAJOR3) — /support·/customer 등 광역 단어는 문의페이지 아님.
+    assert not is_contact_page("https://x.com/support")
+    assert not is_contact_page("https://x.com/support-center")
+    assert not is_contact_page("https://x.com/customer/notice")
+    assert not is_contact_page("https://x.com/contacts-list")  # 'contacts' 세그먼트≠contact
+
+
+def test_extract_form_iframe_ignores_provider_name_in_query() -> None:
+    # 호스트 앵커링(아키텍트 MINOR4) — 쿼리/경로에 제공자명만 든 광고 iframe 은 폼 아님.
+    html = '<iframe src="https://ads.example.com/t?utm_source=typeform.com"></iframe>'
+    assert extract_form(html, page_url="https://x.com/p") is None
 
 
 def test_enricher_fallback_to_contact_page_when_no_static_form() -> None:

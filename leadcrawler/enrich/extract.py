@@ -62,23 +62,25 @@ _FORM_HINTS = (
     # 일본어
     "お問い合わせ", "問い合わせ", "お問合せ",
 )
-# iframe 으로 임베드되는 알려진 제3자 폼 제공자(URL 부분일치) — JS 렌더와 무관하게 잡힌다.
+# iframe 임베드 제3자 폼 제공자 — 호스트(서브도메인 포함)로 앵커링해 매칭한다.
+# (전체 URL 부분일치는 utm_source=typeform.com 같은 쿼리값 오탐을 부른다 — 호스트만 본다.)
 _FORM_EMBED_HOSTS = (
-    "docs.google.com/forms", "forms.gle", "typeform.com", "jotform.com",
-    "form.naver.com", "naver.me", "tally.so", "hsforms.com", "hsforms.net",
-    "forms.office.com", "surveymonkey.com", "wufoo.com", "formstack.com",
-    "zohopublic.com", "zoho.com/forms",
+    "forms.gle", "typeform.com", "jotform.com", "form.naver.com", "naver.me",
+    "tally.so", "hsforms.com", "hsforms.net", "forms.office.com",
+    "surveymonkey.com", "wufoo.com", "formstack.com", "zohopublic.com",
 )
+# 호스트만으로 못 가르는 제공자(공용 도메인 + 경로) — host+path 접두로 본다.
+_FORM_EMBED_HOSTPATHS = ("docs.google.com/forms", "zoho.com/forms")
 # 오탐 폼 키워드 — 검색/로그인/뉴스레터구독은 문의폼이 아니다(J컬럼 오염 방지).
 _FORM_EXCLUDE_HINTS = (
     "search", "검색", "login", "log-in", "signin", "sign-in", "로그인",
     "newsletter", "subscribe", "구독", "mailing", "메일링",
 )
-# 문의 페이지(폼 미탐지 시 폴백) 판정용 — URL 경로 / title·h1 키워드.
-_CONTACT_PATH_HINTS = (
-    "contact", "inquiry", "enquiry", "support", "문의", "고객", "상담", "견적",
-)
-_CONTACT_TITLE_HINTS = ("문의", "contact", "inquiry", "enquiry", "상담", "고객문의")
+# 문의 페이지(폼 미탐지 시 폴백) 판정용 — 경로는 세그먼트 일치(부분일치 금지: /support·
+# /customer 등 광역 오탐 차단), 한국어는 토큰분해가 안 돼 고정밀 단어만 부분일치.
+_CONTACT_PATH_SEGMENTS = ("contact", "contactus", "inquiry", "enquiry", "contact-us")
+_CONTACT_PATH_SUBSTR = ("문의",)
+_CONTACT_TITLE_HINTS = ("문의", "contact us", "contactus", "inquiry", "enquiry")
 
 
 def extract_emails(
@@ -177,10 +179,21 @@ def extract_phones(html: str, *, source_url: str = "") -> list[Contact]:
 
 
 def _embedded_form_url(tree: HTMLParser, page_url: str) -> str | None:
-    """iframe src 가 알려진 제3자 폼 제공자면 그 절대 URL 을 돌려준다(JS 폼도 잡음)."""
+    """iframe src 가 알려진 제3자 폼 제공자면 그 절대 URL 을 돌려준다(JS 폼도 잡음).
+
+    호스트(서브도메인 포함)로 앵커링해, 쿼리/경로에 제공자명이 우연히 든 광고·트래킹
+    iframe 오탐을 막는다.
+    """
     for ifr in tree.css("iframe[src]"):
         src = (ifr.attributes.get("src") or "").strip()
-        if src and any(host in src.lower() for host in _FORM_EMBED_HOSTS):
+        if not src:
+            continue
+        parsed = urlparse(urljoin(page_url, src).lower())
+        host = parsed.netloc
+        hostpath = host + parsed.path
+        if any(host == h or host.endswith("." + h) for h in _FORM_EMBED_HOSTS) or any(
+            hostpath.startswith(hp) for hp in _FORM_EMBED_HOSTPATHS
+        ):
             return urljoin(page_url, src)
     return None
 
@@ -271,7 +284,9 @@ def is_contact_page(url: str, html: str = "") -> bool:
 
     정적 <form> 이 안 잡히는 JS 렌더 문의폼 페이지를 폼 미탐지 시 폴백 채택하기 위함.
     """
-    if any(h in urlparse(url).path.lower() for h in _CONTACT_PATH_HINTS):
+    path = urlparse(url).path.lower()
+    segments = set(re.split(r"[/_.\-]+", path))  # 경로 세그먼트(부분일치 광역 오탐 차단).
+    if segments & set(_CONTACT_PATH_SEGMENTS) or any(s in path for s in _CONTACT_PATH_SUBSTR):
         return True
     if html:
         tree = HTMLParser(html)
