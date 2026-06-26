@@ -11,6 +11,7 @@ from leadcrawler.enrich.extract import (
     extract_emails,
     extract_form,
     extract_phones,
+    is_contact_page,
 )
 from leadcrawler.models import ContactType, EmailRole, ExtractMethod
 from leadcrawler.sources.base import DiscoveredCompany
@@ -628,3 +629,101 @@ def test_email_finder_graceful_on_error() -> None:
             raise RuntimeError("api down")
 
     assert HunterFinder("k", fetcher=Boom()).find_emails("acme.co.kr") == []
+
+
+# ── 문의폼 탐지 강화(recall + precision) ────────────────────────────────────
+
+
+def test_extract_form_broadened_multilingual_keywords() -> None:
+    # 확대 키워드(한/영/일)가 메시지폼으로 각각 탐지된다.
+    for kw in ("상담신청", "견적문의", "고객센터", "support", "enquiry", "お問い合わせ"):
+        html = f'<form action="/s" id="x">{kw}<textarea name="msg"></textarea></form>'
+        form = extract_form(html, page_url="https://x.com/p")
+        assert form is not None and form.type is ContactType.FORM, kw
+        assert form.value == "https://x.com/s", kw
+
+
+def test_extract_form_detects_iframe_embed_providers() -> None:
+    cases = {
+        "google": '<iframe src="https://docs.google.com/forms/d/e/AB/viewform"></iframe>',
+        "typeform": '<iframe src="https://acme.typeform.com/to/abc"></iframe>',
+        "naver": '<iframe src="https://form.naver.com/response/xyz"></iframe>',
+    }
+    for name, html in cases.items():
+        form = extract_form(html, page_url="https://x.com/contact")
+        assert form is not None, name
+        assert form.type is ContactType.FORM and form.value.startswith("http"), name
+        assert form.confidence >= 0.7, name  # 임베드는 고신뢰.
+
+
+def test_extract_form_excludes_search_login_newsletter() -> None:
+    # contact/문의 글자가 있어도 검색·로그인·뉴스레터 폼은 문의폼이 아니다.
+    search = '<form role="search" id="contact" action="/s">문의 검색<input type="search"></form>'
+    login = '<form action="/login" id="contact">문의<input type="password"></form>'
+    news = '<form class="newsletter" action="/sub">문의 구독<input type="email" name="email"></form>'
+    for html in (search, login, news):
+        assert extract_form(html, page_url="https://x.com/p") is None
+
+
+def test_extract_form_prefers_message_textarea_form() -> None:
+    # 키워드만 맞는 폼보다 textarea(메시지) 있는 진짜 문의폼을 우선 선택한다.
+    html = (
+        '<form action="/a" id="contact">문의</form>'
+        '<form action="/b" id="contact2">문의<textarea name="msg"></textarea></form>'
+    )
+    form = extract_form(html, page_url="https://x.com/p")
+    assert form is not None and form.value == "https://x.com/b"
+    assert form.confidence >= 0.6
+
+
+def test_is_contact_page_by_path_and_title() -> None:
+    assert is_contact_page("https://x.com/contact")
+    assert is_contact_page("https://x.com/contact-us")
+    assert is_contact_page("https://x.com/inquiry")
+    assert is_contact_page("https://x.com/문의")
+    assert is_contact_page("https://x.com/page", "<title>고객문의</title>")
+    assert is_contact_page("https://x.com/page", "<h1>온라인 문의</h1>")
+    # 문의와 무관한 페이지는 False.
+    assert not is_contact_page("https://x.com/about", "<title>회사소개</title>")
+
+
+def test_is_contact_page_path_is_segment_not_substring() -> None:
+    # 좁힌 경로 매칭(아키텍트 MAJOR3) — /support·/customer 등 광역 단어는 문의페이지 아님.
+    assert not is_contact_page("https://x.com/support")
+    assert not is_contact_page("https://x.com/support-center")
+    assert not is_contact_page("https://x.com/customer/notice")
+    assert not is_contact_page("https://x.com/contacts-list")  # 'contacts' 세그먼트≠contact
+
+
+def test_extract_form_iframe_ignores_provider_name_in_query() -> None:
+    # 호스트 앵커링(아키텍트 MINOR4) — 쿼리/경로에 제공자명만 든 광고 iframe 은 폼 아님.
+    html = '<iframe src="https://ads.example.com/t?utm_source=typeform.com"></iframe>'
+    assert extract_form(html, page_url="https://x.com/p") is None
+
+
+def test_enricher_fallback_to_contact_page_when_no_static_form() -> None:
+    # 정적 <form> 없는(=JS 렌더) 문의페이지를 폼 미탐지 시 낮은 신뢰도 폼으로 폴백 채택.
+    pages = {
+        "https://acme.co.kr": '<a href="/contact">문의하기</a>',
+        "https://acme.co.kr/contact": "<html><body>아래 양식을 작성하세요(JS 폼)</body></html>",
+    }
+    settings = Settings(dry_run=False)
+    dc = DiscoveredCompany(canonical_key="dom:acme.co.kr", name="ACME", domain="acme.co.kr")
+    out = Enricher(settings, fetcher=FakeFetcher(pages)).enrich(dc)
+    forms = [c for c in out if c.type is ContactType.FORM]
+    assert not [c for c in out if c.type is ContactType.EMAIL]
+    assert forms and forms[0].value == "https://acme.co.kr/contact"
+    assert forms[0].confidence <= 0.3  # 폴백은 낮은 신뢰.
+
+
+def test_enricher_no_form_fallback_when_email_present() -> None:
+    # 이메일이 있으면 문의페이지 폴백 폼을 만들지 않는다(폼은 이메일 없을 때만).
+    pages = {
+        "https://acme.co.kr": '<a href="/contact">문의</a> <a href="mailto:ir@acme.co.kr">IR</a>',
+        "https://acme.co.kr/contact": "<html><body>문의 안내(폼 없음)</body></html>",
+    }
+    settings = Settings(dry_run=False)
+    dc = DiscoveredCompany(canonical_key="dom:acme.co.kr", name="ACME", domain="acme.co.kr")
+    out = Enricher(settings, fetcher=FakeFetcher(pages)).enrich(dc)
+    assert any(c.value == "ir@acme.co.kr" for c in out)
+    assert not [c for c in out if c.type is ContactType.FORM]  # 폴백 없음.

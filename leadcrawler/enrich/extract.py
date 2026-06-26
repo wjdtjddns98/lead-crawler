@@ -52,6 +52,36 @@ _IMG_EXT = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")
 # 이메일이 담겼을 가능성이 높은 이미지 힌트(src/alt) — 우선 OCR.
 _MAIL_IMG_HINTS = ("mail", "email", "contact", "이메일", "메일", "문의")
 
+# 문의 성격 <form> 판정 키워드(action/id/class/name/aria-label + 폼 텍스트, 다국어).
+_FORM_HINTS = (
+    # 한국어
+    "문의", "문의하기", "온라인문의", "1:1", "상담", "상담신청", "견적", "견적문의",
+    "제휴", "제휴문의", "고객센터", "고객지원", "연락", "연락처",
+    # 영어
+    "contact", "inquiry", "enquiry", "get in touch", "getintouch", "support",
+    # 일본어
+    "お問い合わせ", "問い合わせ", "お問合せ",
+)
+# iframe 임베드 제3자 폼 제공자 — 호스트(서브도메인 포함)로 앵커링해 매칭한다.
+# (전체 URL 부분일치는 utm_source=typeform.com 같은 쿼리값 오탐을 부른다 — 호스트만 본다.)
+_FORM_EMBED_HOSTS = (
+    "forms.gle", "typeform.com", "jotform.com", "form.naver.com", "naver.me",
+    "tally.so", "hsforms.com", "hsforms.net", "forms.office.com",
+    "surveymonkey.com", "wufoo.com", "formstack.com", "zohopublic.com",
+)
+# 호스트만으로 못 가르는 제공자(공용 도메인 + 경로) — host+path 접두로 본다.
+_FORM_EMBED_HOSTPATHS = ("docs.google.com/forms", "zoho.com/forms")
+# 오탐 폼 키워드 — 검색/로그인/뉴스레터구독은 문의폼이 아니다(J컬럼 오염 방지).
+_FORM_EXCLUDE_HINTS = (
+    "search", "검색", "login", "log-in", "signin", "sign-in", "로그인",
+    "newsletter", "subscribe", "구독", "mailing", "메일링",
+)
+# 문의 페이지(폼 미탐지 시 폴백) 판정용 — 경로는 세그먼트 일치(부분일치 금지: /support·
+# /customer 등 광역 오탐 차단), 한국어는 토큰분해가 안 돼 고정밀 단어만 부분일치.
+_CONTACT_PATH_SEGMENTS = ("contact", "contactus", "inquiry", "enquiry")
+_CONTACT_PATH_SUBSTR = ("문의",)
+_CONTACT_TITLE_HINTS = ("문의", "contact us", "contactus", "inquiry", "enquiry")
+
 
 def extract_emails(
     html: str, *, source_url: str = "", method: ExtractMethod = ExtractMethod.STATIC
@@ -148,27 +178,125 @@ def extract_phones(html: str, *, source_url: str = "") -> list[Contact]:
     return list(found.values())
 
 
+def _embedded_form_url(tree: HTMLParser, page_url: str) -> str | None:
+    """iframe src 가 알려진 제3자 폼 제공자면 그 절대 URL 을 돌려준다(JS 폼도 잡음).
+
+    호스트(서브도메인 포함)로 앵커링해, 쿼리/경로에 제공자명이 우연히 든 광고·트래킹
+    iframe 오탐을 막는다.
+    """
+    for ifr in tree.css("iframe[src]"):
+        src = (ifr.attributes.get("src") or "").strip()
+        if not src:
+            continue
+        parsed = urlparse(urljoin(page_url, src).lower())
+        host = parsed.netloc
+        hostpath = host + parsed.path
+        if any(host == h or host.endswith("." + h) for h in _FORM_EMBED_HOSTS) or any(
+            hostpath.startswith(hp) for hp in _FORM_EMBED_HOSTPATHS
+        ):
+            return urljoin(page_url, src)
+    return None
+
+
+def _is_excluded_form(form) -> bool:  # noqa: ANN001 (selectolax 노드 타입 비공개)
+    """검색/로그인/뉴스레터구독 폼이면 True — 문의폼 오탐을 거른다."""
+    if form.css_first("input[type='password']") is not None:
+        return True  # 비밀번호 입력 → 로그인 폼.
+    if (form.attributes.get("role") or "").lower() == "search":
+        return True
+    haystack = " ".join(
+        (form.attributes.get(a) or "")
+        for a in ("action", "id", "class", "name", "aria-label")
+    ).lower()
+    # 사용자 입력 가능한 필드(hidden/submit/button 등 제외) 개수 — 단일 입력 = 검색/구독 신호.
+    fields = [
+        n
+        for n in form.css("input, textarea, select")
+        if (n.attributes.get("type") or "text").lower()
+        not in ("hidden", "submit", "button", "checkbox", "radio", "image", "reset")
+    ]
+    has_message = form.css_first("textarea") is not None
+    types = {(n.attributes.get("type") or "text").lower() for n in form.css("input")}
+    if "search" in types and len(fields) <= 1:
+        return True  # 검색 input 단독.
+    # 뉴스레터/구독·검색·로그인 키워드 + 메시지필드 없음 + 입력 1개 이하 → 문의폼 아님.
+    if (
+        not has_message
+        and len(fields) <= 1
+        and any(h in haystack for h in _FORM_EXCLUDE_HINTS)
+    ):
+        return True
+    return False
+
+
 def extract_form(
     html: str, *, page_url: str, method: ExtractMethod = ExtractMethod.STATIC
 ) -> Contact | None:
-    """문의 성격의 <form> 이 있으면 폼 URL 연락처를 만든다(이메일 없을 때 폴백용)."""
+    """문의 성격의 폼이 있으면 폼 URL 연락처를 만든다(이메일 없을 때 폴백용).
+
+    탐지 우선순위(높을수록 신뢰): ① iframe 임베드 제3자 폼(Google Forms/Typeform/네이버폼
+    등) ② textarea(메시지) 있는 진짜 문의폼 ③ 키워드만 맞는 폼. 검색/로그인/뉴스레터구독
+    폼은 ``contact`` 글자가 있어도 배제한다(:func:`_is_excluded_form`). 결정적(문서순 +
+    동점 시 먼저 나온 것 유지).
+    """
     tree = HTMLParser(html or "")
+    # ① 제3자 임베드 폼 — JS 렌더와 무관하게 src 로 잡힌다(최우선·고신뢰).
+    embed = _embedded_form_url(tree, page_url)
+    if embed:
+        return Contact(
+            type=ContactType.FORM,
+            value=embed,
+            extract_method=method,
+            source_url=page_url,
+            confidence=0.7,
+        )
+    # ② 페이지 내 <form> — 오탐 배제 후 메시지(textarea)폼 우선.
+    best_rank = 0
+    best: Contact | None = None
     for form in tree.css("form"):
         haystack = " ".join(
-            (form.attributes.get(a) or "") for a in ("action", "id", "class", "name")
+            (form.attributes.get(a) or "")
+            for a in ("action", "id", "class", "name", "aria-label")
         ).lower()
         text = (form.text() or "").lower()
-        if any(h in haystack or h in text for h in ("contact", "inquiry", "문의", "1:1")):
-            action = form.attributes.get("action") or ""
-            url = urljoin(page_url, action) if action else page_url
-            return Contact(
-                type=ContactType.FORM,
-                value=url,
-                extract_method=method,
-                source_url=page_url,
-                confidence=0.5,
-            )
-    return None
+        if not any(h in haystack or h in text for h in _FORM_HINTS):
+            continue
+        if _is_excluded_form(form):
+            continue
+        has_message = form.css_first("textarea") is not None
+        rank = 2 if has_message else 1
+        if rank <= best_rank:
+            continue  # 동점/하위는 먼저 나온 것 유지(결정적).
+        action = form.attributes.get("action") or ""
+        best = Contact(
+            type=ContactType.FORM,
+            value=urljoin(page_url, action) if action else page_url,
+            extract_method=method,
+            source_url=page_url,
+            confidence=0.6 if has_message else 0.45,
+        )
+        best_rank = rank
+    return best
+
+
+def is_contact_page(url: str, html: str = "") -> bool:
+    """URL 경로 또는 title/h1 키워드로 '문의 페이지' 여부를 판정한다(폴백용 순수함수).
+
+    정적 <form> 이 안 잡히는 JS 렌더 문의폼 페이지를 폼 미탐지 시 폴백 채택하기 위함.
+    """
+    path = urlparse(url).path.lower()
+    segments = set(re.split(r"[/_.\-]+", path))  # 경로 세그먼트(부분일치 광역 오탐 차단).
+    if segments & set(_CONTACT_PATH_SEGMENTS) or any(s in path for s in _CONTACT_PATH_SUBSTR):
+        return True
+    if html:
+        tree = HTMLParser(html)
+        title_node = tree.css_first("title")
+        title = (title_node.text() if title_node else "") or ""
+        h1 = " ".join((n.text() or "") for n in tree.css("h1"))
+        blob = (title + " " + h1).lower()
+        if any(h in blob for h in _CONTACT_TITLE_HINTS):
+            return True
+    return False
 
 
 def candidate_links(

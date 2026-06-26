@@ -21,6 +21,7 @@ from .extract import (
     extract_emails,
     extract_form,
     extract_phones,
+    is_contact_page,
 )
 from .emailapi import ApolloFinder, HunterFinder, SupportsEmailFinder
 from .headless import PlaywrightRenderer, SupportsRender
@@ -51,6 +52,7 @@ class Enricher:
         self._vision = vision
         self._email_finders = email_finders
         self._cost_ledger = cost_ledger
+        self._contact_page: str | None = None  # 현재 기업의 문의페이지 힌트(폴백용).
 
     def enrich(self, dc: DiscoveredCompany) -> list[Contact]:
         """발견 기업의 연락처 후보(이메일·전화·폼) 목록을 반환한다."""
@@ -58,6 +60,7 @@ class Enricher:
             return _dry_contacts(dc)
         if not dc.domain:
             return []
+        self._contact_page = None  # 이번 기업의 문의페이지 힌트 초기화(폴백용).
         contacts = self._live(dc)
         # escalation 체인 — 이메일을 못 찾았고 해당 단계가 켜져 있을 때만 순차 시도.
         if self._settings.enrich_headless and not _has_email(contacts):
@@ -79,6 +82,20 @@ class Enricher:
             and not self._budget_blocked()
         ):
             contacts = self._escalate_vision(dc, contacts)
+        # 최후 폴백(제약② 리드손실 방지): 모든 단계에서 이메일·폼 0건이지만 문의페이지가
+        # 있으면 그 URL 을 저신뢰 폼으로 채택(JS 렌더 문의폼 구제). 헤드리스가 진짜 폼을
+        # 올리거나 비울 기회를 다 준 뒤라, 오탐이면 앞 단계가 정정했을 것이다.
+        if self._contact_page and not _has_email(contacts) and not _has_form(contacts):
+            contacts = [
+                *contacts,
+                Contact(
+                    type=ContactType.FORM,
+                    value=self._contact_page,
+                    extract_method=ExtractMethod.STATIC,
+                    source_url=self._contact_page,
+                    confidence=0.3,
+                ),
+            ]
         return contacts
 
     def _budget_blocked(self) -> bool:
@@ -305,6 +322,7 @@ class Enricher:
         emails: dict[str, Contact] = {}
         phones: dict[str, Contact] = {}
         form: Contact | None = None
+        contact_page: str | None = None  # 폼 미탐지 시 폴백용 문의페이지 URL.
 
         for url in pages:
             html = home_html if url == home else _safe_get(fetcher, url)
@@ -318,6 +336,13 @@ class Enricher:
                 phones.setdefault(c.value, c)
             if form is None:
                 form = extract_form(html, page_url=url)
+            if contact_page is None and is_contact_page(url, html):
+                contact_page = url
+
+        # 문의페이지 힌트는 여기서 폼으로 만들지 않는다 — enrich() 체인 끝(헤드리스/OCR/
+        # API/Vision 모두 실패) 최후 폴백에서만 쓴다. 정적 단계에서 폼 슬롯을 채우면 이후
+        # 헤드리스가 진짜 JS폼을 못 올리고, 오탐 폴백도 정정 못 한다(아키텍트 MAJOR1).
+        self._contact_page = contact_page
 
         out: list[Contact] = [*emails.values(), *phones.values()]
         if form is not None:
@@ -332,6 +357,11 @@ class Enricher:
 def _has_email(contacts: list[Contact]) -> bool:
     """채택된 이메일 연락처가 하나라도 있는지."""
     return any(c.type is ContactType.EMAIL for c in contacts)
+
+
+def _has_form(contacts: list[Contact]) -> bool:
+    """문의폼 연락처가 하나라도 있는지(폴백 중복 생성 방지)."""
+    return any(c.type is ContactType.FORM for c in contacts)
 
 
 def _safe_get(fetcher: SupportsFetch, url: str) -> str | None:
