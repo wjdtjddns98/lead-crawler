@@ -15,7 +15,7 @@
 
   /* 상태별 밝은 글자색 + 보조 배경(원본 CSS 의 하드코딩 톤 유지). */
   --color-ok-fg: #7ee29a;
-  --color-danger-fg: #f1928d;
+  --color-danger-fg: #ff7b73; /* 또렷한 빨강 — 연한 살구빛(흰색처럼 보임) 보정 */
   --color-accent-fg: #aecbff;
   --color-tab-active: #1e2a44;
   --color-err-bg: #3a1c1c;

@@ -401,6 +401,23 @@ def enqueue() -> None:
         session.close()
 
 
+@app.command("seed-mock")
+def seed_mock() -> None:
+    """로컬 개발용 목 리드 5건을 DB 에 적재한다(검증 웹앱 둘러보기용 — 멱등).
+
+    docker-compose PG 를 띄우고 ``db-upgrade`` 로 스키마를 적용한 뒤 실행하면, 검증
+    워크벤치가 빈 화면 대신 실제 행(단일/다중 후보·해외·문의폼만)을 보여준다. 여러 번
+    실행해도 canonical_key 기준 멱등이라 중복이 생기지 않는다.
+    """
+    from .seed import seed_mock_leads
+    from .storage.db import session_scope
+
+    configure_logging()
+    with session_scope(get_settings()) as s:
+        count = seed_mock_leads(s)
+    typer.echo(f"목 리드 {count}건 적재 완료(검증 큐 등록). 웹앱: `leadcrawler web`")
+
+
 @app.command()
 def web(
     host: str = typer.Option("127.0.0.1", help="바인드 호스트"),
