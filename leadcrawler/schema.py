@@ -323,3 +323,43 @@ class EmailSendLogRow(Base):
     sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now(), index=True
     )
+
+
+class DedupCandidateRow(Base):
+    """중복후보 워크벤치(C4) — 사다리가 못 가른 경계 쌍 1건 + 사람 결정 상태.
+
+    near_dup(C1)/LLM(C2)이 auto 도 keep_both 도 아니라고 분류한 경계 티어
+    (domain/lexical/shortlist)만 적재해, 사람이 '동일 확정(merge)' 또는 '분리(둘 다
+    유지)'를 결정한다. 결정(merged/separated)은 영속되어 리포트 재적재 시 같은 쌍이
+    다시 pending 으로 부활하지 않는다(중복 노동 방지). 동일 확정은 골든레코드
+    survivorship 으로 duplicate_of 를 기록한다(가역·감사).
+
+    PK ``id`` 는 정렬된 (key_a, key_b) 의 sha1 로 결정적 — 입력 순서와 무관하게 같은
+    쌍은 같은 행이라 upsert 가 멱등하다. key_a/key_b 는 FK 를 걸지 않는다 — 원장 행이
+    사라져도 후보 기록은 남아야 하고(감사), 결정 적용 시 storage 계층이 소실 key 를 방어한다.
+    """
+
+    __tablename__ = "dedup_candidate"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # sha1(key_a + NUL + key_b)
+    # 항상 key_a < key_b 로 정렬 저장 — 쌍의 정규형(순서 무관 멱등).
+    key_a: Mapped[str] = mapped_column(String(255), index=True)
+    key_b: Mapped[str] = mapped_column(String(255), index=True)
+    tier: Mapped[str] = mapped_column(String(16))  # domain | lexical | shortlist
+    name_score: Mapped[float] = mapped_column(Float, default=0.0, server_default=text("0"))
+    reason: Mapped[str] = mapped_column(Text, default="", server_default=text("''"))
+    # C2 LLM 판정(opt-in) — 미판정이면 전부 NULL. 표시·우선순위용(결정은 사람).
+    llm_same: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    llm_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    llm_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    llm_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 사람 결정 상태 — pending(미결) | merged(동일확정) | separated(분리=둘 다 유지).
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", server_default=text("'pending'"), index=True
+    )
+    survivor_key: Mapped[str | None] = mapped_column(String(255), nullable=True)  # merged 시 생존자
+    decided_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
