@@ -194,6 +194,13 @@ class ExistenceVerifier:
         self._registry_checker = registry_checker
         self._render_probe = render_probe
 
+    def close(self) -> None:
+        """지연 생성한 프로브 자원을 정리한다(best-effort). registry_checker 는 호출부가 정리."""
+        for probe in (self._site_probe, self._dns_probe, self._render_probe):
+            close = getattr(probe, "close", None)
+            if callable(close):
+                close()
+
     def verify(
         self,
         domain: str | None,

@@ -8,7 +8,9 @@ dry_run 에서는 모든 단계가 네트워크 없이 결정적으로 동작한
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -54,6 +56,56 @@ def _listed_of(dc: DiscoveredCompany) -> Listed:
         return Listed(dc.listed)
     except ValueError:
         return Listed.UNKNOWN
+
+
+def _build_lead(
+    dc: DiscoveredCompany,
+    *,
+    enricher: Enricher,
+    existence: ExistenceVerifier,
+    email_validator: EmailValidator,
+) -> CompanyLead:
+    """기업 1건: 연락처 보강 + 실존 검증 + 이메일 검증 → CompanyLead.
+
+    seen·progress·leads·파이프라인 DB 세션에는 접근하지 않는다(그건 메인 스레드 전담).
+    단, 라이브에서 enrich/validate 는 주입된 **cost_ledger 를 공유**해 record 하고(persist
+    모드면 cost_ledger 테이블에 자체 짧은 세션으로 기록), 이 부분의 스레드안전은
+    ``CostLedger`` 내부 락에 의존한다 — 워커가 '순수'해서가 아니다. 즉 워커 간 공유 가변
+    상태는 cost_ledger 하나뿐이고, lead/company 테이블 적재만 메인 스레드 단독이다.
+    """
+    contacts = enricher.enrich(dc)
+    candidates = accepted_emails(contacts)
+    email = candidates[0] if candidates else None
+    phone = next((c for c in contacts if c.type is ContactType.PHONE), None)
+    form = next((c for c in contacts if c.type is ContactType.FORM), None)
+    ex = existence.verify(dc.domain, registry=dc.registry, registry_id=dc.registry_id)
+    company = Company(
+        canonical_key=dc.canonical_key,
+        name=dc.name,
+        country=dc.country,
+        industry=dc.industry,
+        listed=_listed_of(dc),
+        homepage=f"https://{dc.domain}" if dc.domain else None,
+        domain=dc.domain,
+        segment=dc.segment,
+        is_active=ex.is_active,
+        existence_confidence=ex.confidence,
+        site_alive=ex.site_alive,
+    )
+    # 후보별 검증(MX/도메인/SMTP·딜리버러빌리티 opt-in) — 선택 UI 에 신호 제공.
+    validations = {c.value: email_validator.validate(c.value, dc.domain) for c in candidates}
+    validation = (
+        validations.get(email.value, EmailValidation()) if email else EmailValidation()
+    )
+    return CompanyLead(
+        company=company,
+        email=email,
+        email_candidates=candidates,
+        phone=phone,
+        form=form,
+        email_validation=validation,
+        email_validations=validations,
+    )
 
 
 def run_pipeline(
@@ -110,7 +162,67 @@ def run_pipeline(
         else None
     )
 
+    # 기업 단위 병렬 추출 — enrich/verify/validate 는 I/O 바운드라 동시 처리로 처리량을 올린다.
+    # 워커>1 이면 ThreadPool + 워커별 독립 인스턴스(공유 throttle 경쟁 회피). dedup·카운터·DB
+    # 적재는 메인 스레드 전담. pool.map 순서보존 + _build_lead 결정성 → workers 무관 산출 동일.
+    workers = settings.enrich_workers
+    pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+    _tl = threading.local()
+    _created: list[object] = []  # 워커별 생성 인스턴스(종료 시 close).
+    _created_lock = threading.Lock()
+
+    def _process_one(dc: DiscoveredCompany) -> CompanyLead:
+        if pool is None:  # 순차 — 공유 인스턴스(메인 스레드 단독 실행, 기존 경로와 동일).
+            return _build_lead(
+                dc, enricher=enricher, existence=existence, email_validator=email_validator
+            )
+        w = getattr(_tl, "trio", None)
+        if w is None:  # 워커 스레드당 독립 인스턴스 1회 생성. registry_checker 까지 워커별로
+            # 따로 만들어 공유 Fetcher 의 throttle(self._last) 경쟁을 없앤다(아키텍트 MAJOR).
+            rc = None if settings.dry_run else build_registry_checker(settings)
+            enr = Enricher(settings, cost_ledger=cost_ledger)
+            exi = ExistenceVerifier(settings, registry_checker=rc)
+            val = EmailValidator(settings, cost_ledger=cost_ledger)
+            w = (enr, exi, val)
+            _tl.trio = w
+            with _created_lock:
+                _created.extend([enr, exi, val, *([rc] if rc is not None else [])])
+        enr, exi, val = w
+        return _build_lead(dc, enricher=enr, existence=exi, email_validator=val)
+
     leads: list[CompanyLead] = []
+    pending: list[DiscoveredCompany] = []  # 배치 — 메인 dedup 통과분, 풀로 동시 처리.
+    # workers==1(pool None)이면 배치 1 — 기업별 즉시 처리·적재로 기존 순차 동작과 동일
+    # (진행카운터 타이밍·실패 시 직전까지 보존). 병렬이면 workers*4 로 모은다.
+    batch_size = max(1, workers * 4) if pool is not None else 1
+
+    def _flush() -> None:
+        """대기 배치를 (병렬이면 풀로) 처리하고 결과를 메인 스레드에서 건별 적재한다.
+
+        한 기업이 _build_lead 에서 예외가 나도 그 기업만 건너뛰고(로그) 나머지·이미 성공한
+        기업은 보존한다(배치 전체 유실 방지). 입력 순서로 결과를 받아 적재하므로 leads 순서가
+        발견 순서와 같다(workers 무관·순서 결정적; 라이브 내용은 네트워크 의존이라 순차와 동일
+        수준으로 비결정). 적재·progress·_emit·DB 세션은 메인 스레드 전담 — 워커가 공유하는
+        가변상태는 cost_ledger(자체 락) 뿐이다.
+        """
+        if not pending:
+            return
+        futures = [pool.submit(_process_one, d) for d in pending] if pool is not None else None
+        for i, d in enumerate(pending):
+            try:
+                lead = futures[i].result() if futures is not None else _process_one(d)
+            except Exception as exc:  # 기업 1건 실패 → 스킵(배치 보존). graceful 아닌 예외만 도달.
+                log.warning("pipeline.process.error", key=d.canonical_key, err=str(exc))
+                continue
+            progress["enriched"] += 1
+            leads.append(lead)
+            if lead.company.is_active:
+                progress["saved"] += 1  # 실존 확인분(persist 면 회사·연락처 저장됨).
+            if session is not None:
+                _persist_lead(session, d, lead)
+            _emit()  # 기업 1건 처리 완료 — 카운터 갱신 통지(폴링 표시).
+        pending.clear()
+
     session: Session | None = get_sessionmaker(settings)() if persist else None
     cancelled = False
     try:
@@ -164,54 +276,22 @@ def run_pipeline(
                         dc = dc.model_copy(update={"domain": resolved})  # 도메인만 채움
 
                 progress["discovered"] += 1  # 중복제외 신규 발견(처리 대상 확정).
-                contacts = enricher.enrich(dc)
-                progress["enriched"] += 1
-                candidates = accepted_emails(contacts)
-                email = candidates[0] if candidates else None
-                phone = next((c for c in contacts if c.type is ContactType.PHONE), None)
-                form = next((c for c in contacts if c.type is ContactType.FORM), None)
-
-                ex = existence.verify(
-                    dc.domain, registry=dc.registry, registry_id=dc.registry_id
-                )
-                company = Company(
-                    canonical_key=dc.canonical_key,
-                    name=dc.name,
-                    country=dc.country,
-                    industry=dc.industry,
-                    listed=_listed_of(dc),
-                    homepage=f"https://{dc.domain}" if dc.domain else None,
-                    domain=dc.domain,
-                    segment=dc.segment,
-                    is_active=ex.is_active,
-                    existence_confidence=ex.confidence,
-                    site_alive=ex.site_alive,
-                )
-                # 후보별 검증(MX/도메인/SMTP·딜리버러빌리티 opt-in) — 선택 UI 에 신호 제공.
-                validations = {
-                    c.value: email_validator.validate(c.value, dc.domain) for c in candidates
-                }
-                validation = (
-                    validations.get(email.value, EmailValidation()) if email else EmailValidation()
-                )
-                lead = CompanyLead(
-                    company=company, email=email, email_candidates=candidates,
-                    phone=phone, form=form,
-                    email_validation=validation, email_validations=validations,
-                )
-                leads.append(lead)
-                if lead.company.is_active:
-                    progress["saved"] += 1  # 실존 확인분(persist 면 회사·연락처 저장됨).
-
-                if session is not None:
-                    _persist_lead(session, dc, lead)
-                _emit()  # 기업 1건 처리 완료 — 카운터 갱신 통지(폴링 표시).
+                pending.append(dc)  # 배치 적재 — _flush 에서 (병렬이면 풀로) 동시 처리.
+                if len(pending) >= batch_size:
+                    _flush()
+            _flush()  # 세그먼트 경계 — 큐된 분 처리(취소 시에도 이미 발견한 분은 보존).
             if cancelled:
                 break
             progress["segments_done"] += 1
             _emit()
     finally:
-        enricher.close()
+        if pool is not None:
+            pool.shutdown(wait=True)  # 진행 중 워커 완료 대기 후 인스턴스 정리(쓰기 경쟁 없음).
+        # 워커별 + 메인스레드(순차 경로) 인스턴스 모두 정리 — close() 있는 것만(best-effort).
+        for obj in (*_created, enricher, existence, email_validator):
+            close = getattr(obj, "close", None)
+            if callable(close):
+                close()
         if session is not None:
             session.close()
     return leads
