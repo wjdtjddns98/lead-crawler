@@ -149,6 +149,9 @@ def dedup_report(
     include_merged: bool = typer.Option(
         False, "--include-merged", help="이미 머지된 행(duplicate_of)도 비교 대상에 포함"
     ),
+    llm_judge: bool = typer.Option(
+        False, "--llm-judge", help="쇼트리스트 티어를 Claude(Haiku)로 동일기업 판정(C2·유료, dry_run=스텁)"
+    ),
 ) -> None:
     """발견 원장(discovered_company) 전건에서 중복 후보 쌍을 찾아 JSON 리포트로 저장한다.
 
@@ -169,7 +172,17 @@ def dedup_report(
     from .storage.db import get_sessionmaker
 
     configure_logging()
-    session = get_sessionmaker(get_settings())()
+    settings = get_settings()
+    # C2(opt-in): 판정기·원장을 dry_run/키 유무에 맞춰 구성. dry_run·키없음=무료 스텁.
+    judge = ledger = None
+    if llm_judge:
+        from .cost_ledger import CostLedger
+        from .dedup_resolve.llm_judge import build_judge
+
+        judge = build_judge(settings)
+        ledger = CostLedger(settings, persist=not settings.dry_run)
+
+    session = get_sessionmaker(settings)()
     try:
         rpt = run_dedup_report(
             session,
@@ -178,6 +191,9 @@ def dedup_report(
             name_strong=strong_score,
             name_medium=min_score,
             max_block_size=max_block,
+            judge=judge,
+            ledger=ledger,
+            judge_max_pairs=settings.dedup_llm_max_pairs,
         )
     finally:
         session.close()
@@ -187,6 +203,13 @@ def dedup_report(
     )
     for tier, count in sorted(rpt.by_tier.items()):
         typer.echo(f"  - {tier}: {count:,}쌍")
+    if llm_judge:
+        same = sum(1 for j in rpt.judged if j.verdict.same)
+        mode = "스텁(dry_run/키없음)" if (settings.dry_run or not settings.anthropic_api_key) else "Claude"
+        typer.echo(
+            f"LLM 판정({mode}): 쇼트리스트 {rpt.llm_judged_count:,}쌍 판정 → 동일 {same:,}쌍 / 미확정 "
+            f"{rpt.llm_judged_count - same:,}쌍 (확정 머지는 C3/C4 위임)"
+        )
     if rpt.skipped_blocks:
         skipped_pairs = sum(b.size for b in rpt.skipped_blocks)
         typer.echo(

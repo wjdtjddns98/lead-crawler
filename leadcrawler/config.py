@@ -83,6 +83,13 @@ class Settings(BaseSettings):
     # AI (Claude Vision)
     anthropic_api_key: str = Field(default="")
 
+    # 중복해소 LLM 판정(C2, opt-in·유료) — 무료·결정적 사다리가 못 가른 쇼트리스트만
+    # Claude(Haiku)로 동일기업 여부 판정. 호출당 과금이라 기본 off + 런당 캡, anthropic_api_key
+    # 없으면 미동작(StubJudge 폴백). dry_run 은 네트워크 없는 결정적 스텁으로 동작.
+    dedup_llm_judge: bool = Field(default=False)
+    dedup_llm_model: str = Field(default="claude-haiku-4-5-20251001")  # 저가 모델 기본(비용)
+    dedup_llm_max_pairs: int = Field(default=200, ge=0)  # 런당 유료 판정 상한(과금 보호)
+
     # 아웃리치 이메일 발송(확정큐 전체발송) — Gmail SMTP 등. 외부행위라 기본 off(dry-run):
     # email_send_enabled=true 라야 실발송, 아니면 수신 미리보기·로그만 남기고 안 보낸다.
     smtp_send_host: str = Field(default="smtp.gmail.com")

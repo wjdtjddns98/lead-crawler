@@ -15,7 +15,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..cost_ledger import SupportsCostLedger
 from ..schema import DiscoveredCompanyRow
+from .llm_judge import JudgedPair, SupportsJudge, judge_candidates
 from .near_dup import (
     MAX_BLOCK_SIZE,
     NAME_MEDIUM,
@@ -47,6 +49,9 @@ class DuplicateReport(BaseModel):
     skipped_blocks: list[SkippedBlock]  # 크기 초과로 비교 생략된 블록(커버리지 공백 명시)
     note: str = REPORT_NOTE
     candidates: list[DuplicateCandidate]
+    # C2 LLM 판정(opt-in) — 쇼트리스트 티어에 대한 동일기업 판정 결과. 미실행 시 빈 목록.
+    llm_judged_count: int = 0  # 실제 LLM/스텁 판정한 쌍 수(예산·캡으로 일부만일 수 있음)
+    judged: list[JudgedPair] = []
 
 
 def load_company_records(
@@ -77,8 +82,15 @@ def build_report(
     name_strong: float = NAME_STRONG,
     name_medium: float = NAME_MEDIUM,
     max_block_size: int = MAX_BLOCK_SIZE,
+    judge: SupportsJudge | None = None,
+    ledger: SupportsCostLedger | None = None,
+    judge_max_pairs: int = 200,
 ) -> DuplicateReport:
-    """레코드 목록에서 중복 후보를 찾아 요약과 함께 리포트로 만든다(결정적)."""
+    """레코드 목록에서 중복 후보를 찾아 요약과 함께 리포트로 만든다(결정적).
+
+    ``judge`` 가 주어지면 C2 단계로 쇼트리스트 티어(domain/lexical/shortlist) 후보를
+    LLM(또는 스텁)으로 판정해 ``judged`` 에 담는다(예산 가드·캡은 :func:`judge_candidates`).
+    """
     result = match_records(
         records,
         name_strong=name_strong,
@@ -87,6 +99,11 @@ def build_report(
     )
     candidates = result.candidates
     by_tier = dict(Counter(c.tier for c in candidates))
+    judged: list[JudgedPair] = []
+    if judge is not None:
+        judged = judge_candidates(
+            candidates, judge, ledger=ledger, max_pairs=judge_max_pairs
+        )
     return DuplicateReport(
         total_records=len(records),
         total_candidates=len(candidates),
@@ -97,6 +114,8 @@ def build_report(
         name_medium=name_medium,
         skipped_blocks=result.skipped_blocks,
         candidates=candidates,
+        llm_judged_count=len(judged),
+        judged=judged,
     )
 
 
@@ -119,14 +138,23 @@ def run_dedup_report(
     name_strong: float = NAME_STRONG,
     name_medium: float = NAME_MEDIUM,
     max_block_size: int = MAX_BLOCK_SIZE,
+    judge: SupportsJudge | None = None,
+    ledger: SupportsCostLedger | None = None,
+    judge_max_pairs: int = 200,
 ) -> DuplicateReport:
-    """DB 적재 → 리포트 빌드 → JSON 저장을 한 번에 수행한다(CLI 진입점용)."""
+    """DB 적재 → 리포트 빌드 → JSON 저장을 한 번에 수행한다(CLI 진입점용).
+
+    ``judge`` 가 주어지면 C2 LLM 판정도 함께 수행해 리포트에 담는다(opt-in).
+    """
     records = load_company_records(session, include_merged=include_merged)
     report = build_report(
         records,
         name_strong=name_strong,
         name_medium=name_medium,
         max_block_size=max_block_size,
+        judge=judge,
+        ledger=ledger,
+        judge_max_pairs=judge_max_pairs,
     )
     write_report(report, out)
     return report
