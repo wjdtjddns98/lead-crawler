@@ -132,6 +132,9 @@ class Settings(BaseSettings):
 
     # 보강(enrich) 제어
     enrich_max_pages: int = Field(default=6)  # 기업당 정적 크롤 페이지 상한(홈+후보)
+    # 기업 단위 병렬 추출 동시성(enrich+verify+validate 는 I/O 바운드). 1=순차(기존 동작).
+    # 서로 다른 기업=다른 호스트라 동시 처리해도 호스트당 과부하 없음(워커별 독립 페처).
+    enrich_workers: int = Field(default=4, ge=1, le=16)
     # 헤드리스 escalation(opt-in) — 정적으로 이메일 못 찾은 기업만 JS 렌더로 재시도.
     # Playwright(선택적 extra) 미설치면 자동 폴백(정적 결과 유지). 느려서 기본 off.
     enrich_headless: bool = Field(default=False)
