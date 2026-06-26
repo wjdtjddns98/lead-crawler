@@ -30,6 +30,8 @@ crawl = ["playwright>=1.44"]
 ocr = ["pytesseract>=0.3.10", "Pillow>=10.0"]
 ai = ["anthropic>=0.40"]
 db = ["psycopg[binary]>=3.1"]
+# WAF 우회 임베드(Track A) — 벤더링된 insane-search 엔진 런타임 의존(curl_cffi 격자 등).
+bypass = ["curl_cffi>=0.6", "beautifulsoup4>=4.12", "pyyaml>=6.0"]
 api = ["fastapi>=0.110", "uvicorn>=0.29"]
 schedule = ["apscheduler>=3.10"]
 dev = [
@@ -45,6 +47,8 @@ leadcrawler = "leadcrawler.cli:app"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# 벤더링된 third-party 엔진(insane-search, MIT)은 무수정 핀 복사본 — 린트 제외(벤더 무결성).
+extend-exclude = ["leadcrawler/sources/_bypass/engine"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

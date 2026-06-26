@@ -32,6 +32,11 @@ class Settings(BaseSettings):
         default="postgresql+psycopg://leadcrawler:leadcrawler@localhost:5432/leadcrawler"
     )
 
+    # WAF 우회 임베드(Track A, opt-in) — SET/Bursa 등 정적 HTTP 가 WAF 로 막힌 거래소 소스가
+    # 벤더링된 insane-search 엔진(InsaneFetcher)으로 목록 HTML 을 가져온다. [bypass] extra
+    # (curl_cffi 등) 필요, 미설치/실패는 graceful 빈 결과. off(기본)면 기존 no-op 그대로.
+    enable_bypass: bool = Field(default=False)
+
     # 발견 소스
     edgar_user_agent: str = Field(default="")
     dart_api_key: str = Field(default="")

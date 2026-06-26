@@ -463,6 +463,62 @@ def test_set_live_is_disabled_waf_blocked() -> None:
     assert out == []
 
 
+# --- Track A: enable_bypass 시 SET/Bursa 우회 파싱(canned HTML) -----------
+
+_LISTING_HTML = (
+    "<table>"
+    '<tr><td><a href="/q/PTT">PTT</a></td><td>PTT Public Company Limited</td></tr>'
+    '<tr><td><a href="/q/AOT">AOT</a></td><td>Airports of Thailand PCL</td></tr>'
+    "</table>"
+)
+
+
+def test_set_bypass_parses_listing() -> None:
+    # enable_bypass + 우회 페처가 목록 HTML 을 주면 (심볼,회사명) 파싱.
+    settings = Settings(dry_run=False, enable_bypass=True, discovery_max_per_source=10)
+    src = SetSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML))
+    out = src.discover(Segment(country="태국", industry="에너지"))
+    assert len(out) == 2
+    assert out[0].registry == "set" and out[0].registry_id == "PTT"
+    assert out[0].name == "PTT Public Company Limited"
+    assert out[0].canonical_key == "reg:set:ptt" and out[0].listed == "listed"
+
+
+def test_bursa_bypass_parses_listing() -> None:
+    settings = Settings(dry_run=False, enable_bypass=True, discovery_max_per_source=10)
+    src = BursaSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML))
+    out = src.discover(Segment(country="말레이시아", industry="금융"))
+    assert {c.registry_id for c in out} == {"PTT", "AOT"}
+    assert all(c.registry == "bursa" for c in out)
+
+
+def test_set_bypass_empty_html_is_graceful() -> None:
+    # 우회해도 WAF 가 빈 HTML 을 주면(차단 지속) graceful 빈 결과.
+    settings = Settings(dry_run=False, enable_bypass=True)
+    out = SetSource(settings, fetcher=FakeFetcher(text=lambda u, p: "")).discover(
+        Segment(country="태국", industry="에너지")
+    )
+    assert out == []
+
+
+def test_set_bypass_unescapes_html_entities() -> None:
+    # 회사명의 HTML 엔티티(&amp; 등)를 복원해 저장(PSE 경로와 일관).
+    html = '<tr><td><a href="/q/SCC">SCC</a></td><td>Siam Cement &amp; Co.</td></tr>'
+    settings = Settings(dry_run=False, enable_bypass=True)
+    out = SetSource(settings, fetcher=FakeFetcher(text=lambda u, p: html)).discover(
+        Segment(country="태국", industry="건설")
+    )
+    assert out and out[0].name == "Siam Cement & Co."
+
+
+def test_set_bypass_respects_cap() -> None:
+    settings = Settings(dry_run=False, enable_bypass=True, discovery_max_per_source=1)
+    out = SetSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML)).discover(
+        Segment(country="태국", industry="에너지")
+    )
+    assert len(out) == 1  # 캡 적용
+
+
 # --- 검색 현지화(Tier C) ------------------------------------------------
 
 def test_search_localizes_query_and_region_by_country() -> None:

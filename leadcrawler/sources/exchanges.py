@@ -34,12 +34,22 @@ from .industry import is_specific_industry
 log = get_logger("sources.exchanges")
 
 
+# 거래소 목록 행(베스트에포트): <a ...>SYMBOL</a></td><td>회사명</td> 형태를 관대히 잡는다.
+# 실제 SET/Bursa 마크업은 라이브 확인 필요 — 못 맞으면 graceful 빈 결과(A5 한계 문서).
+_LISTING_ROW = re.compile(
+    r'<a[^>]*>\s*([A-Z0-9.\-]{1,12})\s*</a>\s*</td>\s*<td[^>]*>\s*([^<]{2,120}?)\s*</td>',
+    re.S,
+)
+
+
 class ExchangeSource:
     """거래소 상장목록 발견 소스의 공통 베이스(서브클래스가 국가·엔드포인트·_live 제공)."""
 
     name: str = ""
     registry: str = ""
     countries: frozenset[str] = frozenset()
+    # WAF 차단 소스(SET/Bursa)는 True — enable_bypass 시 _client() 가 InsaneFetcher 를 쓴다.
+    bypass_capable: bool = False
 
     def __init__(
         self,
@@ -82,16 +92,49 @@ class ExchangeSource:
     def _client(self) -> SupportsFetch:
         # 소스 인스턴스당 1개만 생성·재사용(discover 호출마다 클라이언트 누수 방지).
         if self._fetcher is None:
-            self._fetcher = Fetcher(
-                user_agent=self._settings.discovery_user_agent,
-                min_interval=self._settings.http_request_delay,
-                timeout=self._settings.http_timeout,
-            )
+            if self.bypass_capable and self._settings.enable_bypass:
+                # WAF 차단 소스 + 우회 활성 → 벤더 엔진 어댑터(미설치 시 graceful 빈 결과).
+                from .insane_fetcher import InsaneFetcher
+
+                self._fetcher = InsaneFetcher(timeout=self._settings.http_timeout)
+            else:
+                self._fetcher = Fetcher(
+                    user_agent=self._settings.discovery_user_agent,
+                    min_interval=self._settings.http_request_delay,
+                    timeout=self._settings.http_timeout,
+                )
         return self._fetcher
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         """실 거래소 발견(서브클래스가 거래소별로 구현)."""
         raise NotImplementedError
+
+    def _parse_listing(self, page_html: str, segment: Segment) -> list[DiscoveredCompany]:
+        """거래소 목록 HTML 에서 (심볼, 회사명) 행을 관대히 추출한다(graceful·캡 적용).
+
+        구조는 거래소마다 달라 **베스트에포트**다(SgxSource 와 동일 철학) — 정규식이 못 잡는
+        형식은 빈 결과로 흘려보낸다. 심볼=registry_id, 도메인은 목록에 없어 None(enrich 위임).
+        실제 셀렉터/구조는 라이브 확인이 필요하다(A5 한계 문서 참조).
+        """
+        cap = self._settings.discovery_max_per_source
+        listed_seg = Segment(country=segment.country, industry=segment.industry, listed="listed")
+        out: list[DiscoveredCompany] = []
+        seen: set[str] = set()
+        for symbol, name in _LISTING_ROW.findall(page_html or ""):
+            # HTML 엔티티 복원(PSE 경로와 일관 — &amp; 등이 회사명에 raw 로 남지 않게).
+            symbol, name = html.unescape(symbol.strip()), html.unescape(name.strip())
+            if not symbol or not name or symbol in seen:
+                continue
+            seen.add(symbol)
+            out.append(
+                build_company(
+                    source=self.name, segment=listed_seg, name=name, domain=None,
+                    registry=self.registry, registry_id=symbol,
+                )
+            )
+            if len(out) >= cap:
+                break
+        return out
 
 
 # PSE 상장사 행: cmDetail('cmpyId','secId')">회사명</a></td> <td..><a..>심볼</a> 순.
@@ -173,15 +216,27 @@ class SetSource(ExchangeSource):
     name = "set"
     registry = "set"
     countries = frozenset({"th", "tha", "thailand", "태국"})
+    bypass_capable = True  # Incapsula WAF 차단 → enable_bypass 시 InsaneFetcher 로 우회.
+    # 베스트에포트 공개 목록 URL(라이브 셀렉터/구조 확인 필요 — A5).
+    list_url = "https://www.set.or.th/en/market/get-quote/stock"
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
-        """SET 공개 API 는 Incapsula WAF(403)로 정적 HTTP 차단(2026-06-19 확인).
+        """SET 공개 목록은 Incapsula WAF(403)로 정적 HTTP 차단(2026-06-19 확인).
 
-        실연동 전까지 라이브는 네트워크 없이 빈 결과(태국은 Tier A 로 커버).
-        TODO(live): 헤드리스 브라우저 또는 대체 데이터소스(SEC Thailand 등) 필요.
+        ``enable_bypass`` 시 벤더 엔진(InsaneFetcher)으로 목록 HTML 을 가져와 파싱한다. off
+        이면 기존대로 빈 결과(태국은 Tier A 로 커버). 우회 실패/형식불일치도 graceful 빈 결과.
         """
-        log.info("set.skip.waf_blocked", segment=segment.label)
-        return []
+        if not self._settings.enable_bypass:
+            log.info("set.skip.bypass_off", segment=segment.label)
+            return []
+        try:
+            html = self._client().get_text(self.list_url)
+        except Exception as exc:  # 우회/네트워크/형식 → graceful 빈 결과.
+            log.info("set.error", err_type=type(exc).__name__, err=str(exc))
+            return []
+        rows = self._parse_listing(html, segment)
+        log.info("set.bypass", segment=segment.label, found=len(rows))
+        return rows
 
 
 class SgxSource(ExchangeSource):
@@ -302,11 +357,26 @@ class BursaSource(ExchangeSource):
     name = "bursa"
     registry = "bursa"
     countries = frozenset({"my", "mys", "malaysia", "말레이시아"})
+    bypass_capable = True  # JS/봇보호 차단 → enable_bypass 시 InsaneFetcher 로 우회.
+    list_url = "https://www.bursamalaysia.com/market_information/equities_prices"
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
-        """Bursa 정적 수집 불가 — 검증 전까지 빈 결과(말레이시아는 Tier A 로 커버)."""
-        log.info("bursa.skip.unverified", segment=segment.label)
-        return []
+        """Bursa 공개 목록은 JS 렌더링/봇 보호로 정적 차단(SET 와 동일 상황).
+
+        ``enable_bypass`` 시 벤더 엔진으로 목록 HTML 을 가져와 파싱, off 면 기존 빈 결과
+        (말레이시아는 Tier A 로 커버). 우회 실패/형식불일치도 graceful 빈 결과.
+        """
+        if not self._settings.enable_bypass:
+            log.info("bursa.skip.bypass_off", segment=segment.label)
+            return []
+        try:
+            html = self._client().get_text(self.list_url)
+        except Exception as exc:
+            log.info("bursa.error", err_type=type(exc).__name__, err=str(exc))
+            return []
+        rows = self._parse_listing(html, segment)
+        log.info("bursa.bypass", segment=segment.label, found=len(rows))
+        return rows
 
 
 def _sgx_rows(payload: Any) -> list[Any]:
