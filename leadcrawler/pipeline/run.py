@@ -26,6 +26,7 @@ from ..models import (
     Listed,
 )
 from ..dedup import normalize_domain
+from ..dedup_resolve.inline import find_inline_duplicate
 from ..sources.base import DiscoveredCompany, Segment
 from ..sources.domain_resolver import DomainResolver
 from ..sources.registry import discover_segment
@@ -128,9 +129,21 @@ def run_pipeline(
                 dom = normalize_domain(dc.domain) if dc.domain else None
                 if dc.canonical_key in seen or (dom is not None and dom in seen_domains):
                     log.info("dedup.skip", key=dc.canonical_key)
-                    # 재발견: 추출은 건너뛰되 last_crawled_at 은 갱신(재크롤 추적).
                     if session is not None:
-                        _persist_touch(session, dc)
+                        # C5 inline 승격(opt-in): **다른 key·같은 도메인**(교차key 중복)이면 단순
+                        # touch 대신 생존자에 duplicate_of 링크 — 원장 골든레코드 그래프를 적재
+                        # 시점에 완성한다(기존 동작은 cross-key 중복을 미연결 행으로 남김). auto
+                        # 티어(이름高+도메인root 일치)만 링크, 그 외·같은key 는 기존대로 touch
+                        # (제약② 보수 — 경계는 배치/워크벤치 위임). off 면 항상 touch(회귀 0).
+                        linked = False
+                        if settings.dedup_inline and dc.canonical_key not in seen and dom is not None:
+                            survivor = find_inline_duplicate(session, dc)
+                            if survivor is not None:
+                                _persist_inline_dup(session, dc, survivor)
+                                linked = True
+                        if not linked:
+                            # 재발견: 추출은 건너뛰되 last_crawled_at 만 갱신(재크롤 추적).
+                            _persist_touch(session, dc)
                     continue
                 seen.add(dc.canonical_key)
                 if dom is not None:
@@ -211,6 +224,31 @@ def _persist_touch(session: Session, dc: DiscoveredCompany) -> None:
         session.commit()
     except IntegrityError:
         session.rollback()
+
+
+def _persist_inline_dup(session: Session, dc: DiscoveredCompany, survivor_key: str) -> None:
+    """inline auto-중복으로 판정된 신규 리드를 원장에 기록하고 기존 생존자에 흡수한다(가역).
+
+    원장엔 항상 남기되(제약① 재추출 방지) ``duplicate_of`` + 머지 audit 를 적어 가역
+    추적한다. 회사 본체·연락처는 만들지 않는다(추출 스킵). per-company 트랜잭션.
+    """
+    from datetime import datetime, timezone
+
+    from ..schema import DiscoveredCompanyRow
+
+    try:
+        save_discovered(session, dc)
+        row = session.get(DiscoveredCompanyRow, dc.canonical_key)
+        if row is not None and row.duplicate_of is None and dc.canonical_key != survivor_key:
+            row.duplicate_of = survivor_key
+            row.merged_at = datetime.now(timezone.utc)
+            row.merged_by = "auto"
+            row.merge_reason = "inline near-dup (이름高+도메인root 일치)"
+        session.commit()
+        log.info("dedup.inline.absorb", key=dc.canonical_key, survivor=survivor_key)
+    except IntegrityError:
+        session.rollback()
+        log.info("persist.skip.conflict", key=dc.canonical_key)
 
 
 def _persist_lead(session: Session, dc: DiscoveredCompany, lead: CompanyLead) -> None:

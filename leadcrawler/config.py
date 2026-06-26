@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     dedup_llm_judge: bool = Field(default=False)
     dedup_llm_model: str = Field(default="claude-haiku-4-5-20251001")  # 저가 모델 기본(비용)
     dedup_llm_max_pairs: int = Field(default=200, ge=0)  # 런당 유료 판정 상한(과금 보호)
+    # 수집 파이프라인 inline 중복 승격(C5, opt-in) — 정확 dedup 통과한 신규 리드를 기존
+    # 원장과 near_dup 대조, 최상위(auto) 티어면 재추출 없이 흡수(제약①). off 면 기존 동작.
+    dedup_inline: bool = Field(default=False)
 
     # 아웃리치 이메일 발송(확정큐 전체발송) — Gmail SMTP 등. 외부행위라 기본 off(dry-run):
     # email_send_enabled=true 라야 실발송, 아니면 수신 미리보기·로그만 남기고 안 보낸다.
