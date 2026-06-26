@@ -244,3 +244,56 @@ class CrawlJobInfo(BaseModel):
     started_at: str | None = None
     updated_at: str | None = None
     finished_at: str | None = None
+
+
+class DedupCandidateItem(BaseModel):
+    """중복후보 1쌍 — 양쪽 회사정보 + 사다리/LLM 근거 + 사람 결정 상태."""
+
+    id: str
+    key_a: str
+    key_b: str
+    name_a: str | None = None
+    name_b: str | None = None
+    country: str = ""
+    domain_a: str | None = None
+    domain_b: str | None = None
+    tier: str  # domain | lexical | shortlist
+    name_score: float = 0.0
+    reason: str = ""
+    llm_same: bool | None = None
+    llm_confidence: float | None = None
+    llm_reason: str | None = None
+    llm_model: str | None = None
+    status: str  # pending | merged | separated
+    survivor_key: str | None = None
+    decided_by: str | None = None
+    decided_at: str | None = None
+    stale: bool = False  # 한쪽이 원장에서 사라짐 — 머지 불가(새로고침 유도)
+
+
+class DedupCandidateList(BaseModel):
+    """중복후보 목록 응답(페이지네이션 메타 포함)."""
+
+    items: list[DedupCandidateItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class DedupSummary(BaseModel):
+    """워크벤치 대시보드 — 상태별 후보 건수."""
+
+    pending: int = 0
+    merged: int = 0
+    separated: int = 0
+    total: int = 0
+
+
+class DedupRefreshResult(BaseModel):
+    """후보 재적재 결과 — near_dup 사다리로 경계쌍을 멱등 적재(네트워크·과금 없음)."""
+
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    total_candidates: int = 0  # 리포트가 찾은 전체 후보(워크벤치 적재 대상 외 포함)
+    total_records: int = 0  # 비교 대상 발견 레코드 수

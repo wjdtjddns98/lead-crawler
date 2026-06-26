@@ -40,6 +40,7 @@ from ..storage.review import (
 )
 from .admin import register_admin
 from .auth import make_require_admin, make_require_user, register_auth
+from .dedup import register_dedup
 from .schemas import (
     ConfirmRequest,
     QueueResponse,
@@ -78,6 +79,7 @@ def create_app() -> FastAPI:
     require_admin = make_require_admin(require_user)  # 관리자 전용(계정관리·export).
     register_auth(app, get_db, require_user)
     register_admin(app, get_db, require_admin)
+    register_dedup(app, get_db, require_user, require_admin)  # 중복후보 워크벤치(C4).
 
     @app.get("/health")
     def health() -> dict[str, str]:
