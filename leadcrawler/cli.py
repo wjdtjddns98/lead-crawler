@@ -224,6 +224,67 @@ def dedup_report(
     typer.echo("주의: C1 은 비완전(이름·도메인 둘 다 다른 동일기업은 C2/C4 위임)")
 
 
+@app.command("dedup-merge")
+def dedup_merge(
+    report_path: str = typer.Option(
+        "exports/dedup_report.json", "--report", help="dedup-report 가 만든 리포트 JSON 경로"
+    ),
+    apply: bool = typer.Option(
+        False, "--apply", help="실제 머지 적용(미지정=미리보기만, DB 안 건드림)"
+    ),
+    include_llm: bool = typer.Option(
+        False, "--include-llm", help="auto 티어 외에 LLM 판정 same=True 쌍도 확정 중복으로 포함"
+    ),
+) -> None:
+    """중복 리포트의 **확정 쌍**(auto 티어 + 선택적 LLM same)에서 골든레코드(C3)를 산정한다.
+
+    기본은 최상위 auto 티어만 자동 머지 대상(제약② 리드손실 방지). ``--include-llm`` 으로
+    Claude 가 same 으로 판정한 쇼트리스트도 포함할 수 있다. ``--apply`` 없으면 미리보기만.
+    """
+    import json
+    from pathlib import Path
+
+    from .dedup_resolve.golden import apply_golden, load_cluster_members, resolve_all
+    from .storage.db import get_sessionmaker
+
+    configure_logging()
+    data = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    # 확정 쌍 수집: auto 티어는 항상, LLM same 은 opt-in. (key_a<key_b 는 리포트에서 보장됨)
+    pairs: list[tuple[str, str]] = [
+        (c["key_a"], c["key_b"]) for c in data.get("candidates", []) if c.get("tier") == "auto"
+    ]
+    if include_llm:
+        pairs += [
+            (j["candidate"]["key_a"], j["candidate"]["key_b"])
+            for j in data.get("judged", [])
+            if j.get("verdict", {}).get("same")
+        ]
+    if not pairs:
+        typer.echo("확정 중복 쌍이 없습니다(auto 티어 0건). 머지할 것 없음.")
+        return
+
+    keys = {k for pair in pairs for k in pair}
+    session = get_sessionmaker(get_settings())()
+    try:
+        members = load_cluster_members(session, keys)
+        goldens = resolve_all(members, pairs, basis="auto+llm" if include_llm else "auto")
+        total_absorbed = sum(len(g.absorbed_keys) for g in goldens)
+        typer.echo(
+            f"확정 쌍 {len(pairs):,}개 → 클러스터 {len(goldens):,}개 / 흡수대상 {total_absorbed:,}건"
+            + ("" if apply else " (미리보기 — --apply 로 실제 머지)")
+        )
+        for g in goldens[:20]:
+            typer.echo(f"  생존 {g.survivor_key} ← {len(g.absorbed_keys)}건 / 캐노니컬명='{g.canonical_name}'")
+        if len(goldens) > 20:
+            typer.echo(f"  …외 {len(goldens) - 20:,}개")
+        if apply:
+            applied = sum(apply_golden(session, g, merged_by="auto") for g in goldens)
+            session.commit()
+            typer.echo(f"머지 적용 완료: {applied:,}건 흡수(duplicate_of 기록·가역). ")
+    finally:
+        session.close()
+
+
 @app.command()
 def report(
     date: str = typer.Argument(..., help="보고 일자 YYYY-MM-DD"),
