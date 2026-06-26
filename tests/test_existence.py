@@ -127,3 +127,122 @@ def test_dns_probe_resolves_and_fails(monkeypatch) -> None:
 
     monkeypatch.setattr(dns.resolver, "resolve", _noanswer)
     assert DnsProbe().resolves("nope.invalid") is False
+
+
+# === Track B: 파킹 휴리스틱 ============================================
+
+from leadcrawler.verify.existence import HttpSiteProbe, looks_parked  # noqa: E402
+
+
+def test_parked_markers_detected() -> None:
+    assert looks_parked("<html><body>This domain is parked. Buy this domain!</body></html>")
+    assert looks_parked("<h1>this domain is for sale</h1> 부가 텍스트를 충분히 채워 길이 통과")
+
+
+def test_blank_or_short_is_parked() -> None:
+    assert looks_parked("") is True
+    assert looks_parked("   ") is True
+    assert looks_parked("<html><body></body></html>") is True  # 본문 텍스트 0
+    assert looks_parked(None) is True
+
+
+def test_real_content_not_parked() -> None:
+    html = "<html><body><h1>삼성전자 IR</h1><p>투자자 정보와 재무제표, 공시 자료를 제공합니다.</p></body></html>"
+    assert looks_parked(html) is False
+
+
+# === Track B: HEAD 405 → GET 폴백(B2) =================================
+
+class _GetResp:
+    def __init__(self, status_code: int, text: str = "") -> None:
+        self.status_code = status_code
+        self.text = text
+
+
+def _patch_head_get(monkeypatch, *, head_status: int, get_resp: _GetResp | None) -> dict:
+    import httpx
+
+    calls = {"head": 0, "get": 0}
+
+    def fake_head(url, **kw):
+        calls["head"] += 1
+        return _GetResp(head_status)
+
+    def fake_get(url, **kw):
+        calls["get"] += 1
+        if get_resp is None:
+            raise RuntimeError("refused")
+        return get_resp
+
+    monkeypatch.setattr(httpx, "head", fake_head)
+    monkeypatch.setattr(httpx, "get", fake_get)
+    return calls
+
+
+def test_head_405_falls_back_to_get_alive(monkeypatch) -> None:
+    calls = _patch_head_get(
+        monkeypatch, head_status=405,
+        get_resp=_GetResp(200, "<html><body><p>실제 회사 홈페이지 콘텐츠가 충분히 깁니다.</p></body></html>"),
+    )
+    assert HttpSiteProbe().head_ok("acme.com") is True
+    assert calls["head"] == 1 and calls["get"] == 1
+
+
+def test_head_405_get_parked_is_dead(monkeypatch) -> None:
+    _patch_head_get(monkeypatch, head_status=405, get_resp=_GetResp(200, "This domain is parked"))
+    assert HttpSiteProbe().head_ok("acme.com") is False
+
+
+def test_head_200_skips_get(monkeypatch) -> None:
+    calls = _patch_head_get(monkeypatch, head_status=200, get_resp=None)
+    assert HttpSiteProbe().head_ok("acme.com") is True
+    assert calls["get"] == 0
+
+
+# === Track B: 헤드리스 확인(B1) =======================================
+
+class _Render:
+    def __init__(self, html) -> None:
+        self.html = html
+        self.calls = 0
+
+    def render(self, domain: str) -> str | None:
+        self.calls += 1
+        return self.html
+
+
+def _headless_verify(html, *, headless: bool, site: bool = True):
+    render = _Render(html)
+    v = ExistenceVerifier(
+        Settings(dry_run=False, verify_headless=headless),
+        site_probe=_Site(site), dns_probe=_Dns(True), render_probe=render,
+    )
+    return v.verify("acme.com"), render
+
+
+def test_headless_parked_marks_inactive() -> None:
+    res, render = _headless_verify("<html><body>buy this domain</body></html>", headless=True)
+    assert res.is_active is False and render.calls == 1
+
+
+def test_headless_real_content_stays_active() -> None:
+    html = "<html><body><h1>회사</h1><p>충분히 긴 실제 본문 콘텐츠가 여기 있습니다 IR 정보 공시.</p></body></html>"
+    res, _ = _headless_verify(html, headless=True)
+    assert res.is_active is True
+
+
+def test_headless_render_none_is_graceful() -> None:
+    # 렌더 실패(None) → 기존 HTTP 판정 유지(실존 기업 보존).
+    res, _ = _headless_verify(None, headless=True)
+    assert res.is_active is True
+
+
+def test_headless_off_skips_render() -> None:
+    res, render = _headless_verify("buy this domain", headless=False)
+    assert res.is_active is True and render.calls == 0
+
+
+def test_headless_dry_run_skips_render() -> None:
+    render = _Render("buy this domain")
+    v = ExistenceVerifier(Settings(dry_run=True, verify_headless=True), render_probe=render)
+    assert v.verify("acme.com").is_active is True and render.calls == 0

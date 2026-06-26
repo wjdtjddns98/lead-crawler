@@ -120,6 +120,11 @@ class Settings(BaseSettings):
         default="LeadCrawler/1.0 (+https://github.com/wjdtjddns98/lead-crawler)"
     )
 
+    # 실존성 헤드리스 확인(Track B, opt-in) — HTTP 200 이어도 파킹/JS-blank 사이트를 거른다.
+    # 켜면 site_alive 후보를 헤드리스 렌더로 재확인(SupportsRender 주입 또는 Playwright 지연
+    # 빌드, 미설치면 graceful 통과). 느려서 기본 off. dry_run 은 미경유(결정적).
+    verify_headless: bool = Field(default=False)
+
     # 보강(enrich) 제어
     enrich_max_pages: int = Field(default=6)  # 기업당 정적 크롤 페이지 상한(홈+후보)
     # 헤드리스 escalation(opt-in) — 정적으로 이메일 못 찾은 기업만 JS 렌더로 재시도.
