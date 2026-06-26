@@ -501,6 +501,16 @@ def test_set_bypass_empty_html_is_graceful() -> None:
     assert out == []
 
 
+def test_set_bypass_unescapes_html_entities() -> None:
+    # 회사명의 HTML 엔티티(&amp; 등)를 복원해 저장(PSE 경로와 일관).
+    html = '<tr><td><a href="/q/SCC">SCC</a></td><td>Siam Cement &amp; Co.</td></tr>'
+    settings = Settings(dry_run=False, enable_bypass=True)
+    out = SetSource(settings, fetcher=FakeFetcher(text=lambda u, p: html)).discover(
+        Segment(country="태국", industry="건설")
+    )
+    assert out and out[0].name == "Siam Cement & Co."
+
+
 def test_set_bypass_respects_cap() -> None:
     settings = Settings(dry_run=False, enable_bypass=True, discovery_max_per_source=1)
     out = SetSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML)).discover(

@@ -109,7 +109,7 @@ class ExchangeSource:
         """실 거래소 발견(서브클래스가 거래소별로 구현)."""
         raise NotImplementedError
 
-    def _parse_listing(self, html: str, segment: Segment) -> list[DiscoveredCompany]:
+    def _parse_listing(self, page_html: str, segment: Segment) -> list[DiscoveredCompany]:
         """거래소 목록 HTML 에서 (심볼, 회사명) 행을 관대히 추출한다(graceful·캡 적용).
 
         구조는 거래소마다 달라 **베스트에포트**다(SgxSource 와 동일 철학) — 정규식이 못 잡는
@@ -120,8 +120,9 @@ class ExchangeSource:
         listed_seg = Segment(country=segment.country, industry=segment.industry, listed="listed")
         out: list[DiscoveredCompany] = []
         seen: set[str] = set()
-        for symbol, name in _LISTING_ROW.findall(html or ""):
-            symbol, name = symbol.strip(), name.strip()
+        for symbol, name in _LISTING_ROW.findall(page_html or ""):
+            # HTML 엔티티 복원(PSE 경로와 일관 — &amp; 등이 회사명에 raw 로 남지 않게).
+            symbol, name = html.unescape(symbol.strip()), html.unescape(name.strip())
             if not symbol or not name or symbol in seen:
                 continue
             seen.add(symbol)
