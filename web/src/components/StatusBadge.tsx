@@ -28,9 +28,18 @@ const EMAIL_CLS: Record<string, string> = {
   unknown: "text-muted border-line",
 };
 
+// 영문 상태값을 한눈에 인지되는 한글 라벨로 — 알 수 없는 값은 원문 그대로 노출(방어).
+const EMAIL_LABEL: Record<string, string> = {
+  valid: "유효",
+  risky: "주의",
+  invalid: "무효",
+  unknown: "미확인",
+};
+
 export function EmailBadge({ status }: { status: string | null }) {
   if (!status || !status.trim()) return <span className="text-muted">—</span>;
   // 알려진 어휘만 색상 클래스 적용, 그 외는 중립 처리(예상 밖 값 방어).
   const cls = EMAIL_CLS[status] ?? "text-muted border-line";
-  return <span className={`${BADGE} ${cls}`}>{status}</span>;
+  const label = EMAIL_LABEL[status] ?? status;
+  return <span className={`${BADGE} ${cls}`} title={status}>{label}</span>;
 }

@@ -24,20 +24,22 @@ def upgrade() -> None:
         "review_queue", sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=True)
     )
     op.create_index("ix_review_queue_claimed_by", "review_queue", ["claimed_by"])
-    op.create_foreign_key(
-        "fk_review_queue_claimed_by_app_user",
-        "review_queue",
-        "app_user",
-        ["claimed_by"],
-        ["id"],
-        ondelete="SET NULL",
-    )
+    # SQLite 는 ALTER 로 제약 추가 불가 → batch(복사·교체)로 감싼다. PG 는 일반 ADD CONSTRAINT.
+    with op.batch_alter_table("review_queue") as batch_op:
+        batch_op.create_foreign_key(
+            "fk_review_queue_claimed_by_app_user",
+            "app_user",
+            ["claimed_by"],
+            ["id"],
+            ondelete="SET NULL",
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "fk_review_queue_claimed_by_app_user", "review_queue", type_="foreignkey"
-    )
+    with op.batch_alter_table("review_queue") as batch_op:
+        batch_op.drop_constraint(
+            "fk_review_queue_claimed_by_app_user", type_="foreignkey"
+        )
     op.drop_index("ix_review_queue_claimed_by", table_name="review_queue")
     op.drop_column("review_queue", "claimed_at")
     op.drop_column("review_queue", "claimed_by")
