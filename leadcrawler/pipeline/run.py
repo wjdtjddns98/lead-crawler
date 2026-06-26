@@ -287,11 +287,11 @@ def run_pipeline(
     finally:
         if pool is not None:
             pool.shutdown(wait=True)  # 진행 중 워커 완료 대기 후 인스턴스 정리(쓰기 경쟁 없음).
-        for obj in _created:  # 워커별 인스턴스 정리 — close() 있는 것만(best-effort).
+        # 워커별 + 메인스레드(순차 경로) 인스턴스 모두 정리 — close() 있는 것만(best-effort).
+        for obj in (*_created, enricher, existence, email_validator):
             close = getattr(obj, "close", None)
             if callable(close):
                 close()
-        enricher.close()
         if session is not None:
             session.close()
     return leads
