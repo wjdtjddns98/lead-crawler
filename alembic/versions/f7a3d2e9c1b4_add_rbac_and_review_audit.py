@@ -33,14 +33,15 @@ def upgrade() -> None:
     op.create_index(
         "ix_review_queue_assignee_id", "review_queue", ["assignee_id"]
     )
-    op.create_foreign_key(
-        "fk_review_queue_assignee_id_app_user",
-        "review_queue",
-        "app_user",
-        ["assignee_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
+    # SQLite 는 ALTER 로 제약 추가 불가 → batch(복사·교체)로 감싼다. PG 는 일반 ADD CONSTRAINT.
+    with op.batch_alter_table("review_queue") as batch_op:
+        batch_op.create_foreign_key(
+            "fk_review_queue_assignee_id_app_user",
+            "app_user",
+            ["assignee_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
 
     # 감사 이력(append-only) — confirm/reject 1건마다 적재.
     op.create_table(
@@ -79,9 +80,10 @@ def downgrade() -> None:
     op.drop_index("ix_review_audit_review_id", table_name="review_audit")
     op.drop_table("review_audit")
 
-    op.drop_constraint(
-        "fk_review_queue_assignee_id_app_user", "review_queue", type_="foreignkey"
-    )
+    with op.batch_alter_table("review_queue") as batch_op:
+        batch_op.drop_constraint(
+            "fk_review_queue_assignee_id_app_user", type_="foreignkey"
+        )
     op.drop_index("ix_review_queue_assignee_id", table_name="review_queue")
     op.drop_column("review_queue", "reviewed_at")
     op.drop_column("review_queue", "assignee_id")
