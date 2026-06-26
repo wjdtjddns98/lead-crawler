@@ -67,8 +67,11 @@ def _build_lead(
 ) -> CompanyLead:
     """기업 1건: 연락처 보강 + 실존 검증 + 이메일 검증 → CompanyLead.
 
-    공유 가변상태(seen·progress·session·cost 누계)에 접근하지 않는 순수 작업 단위라
-    스레드풀 워커로 안전하게 돌릴 수 있다. dedup·카운터·DB 적재는 호출부(메인 스레드)가 한다.
+    seen·progress·leads·파이프라인 DB 세션에는 접근하지 않는다(그건 메인 스레드 전담).
+    단, 라이브에서 enrich/validate 는 주입된 **cost_ledger 를 공유**해 record 하고(persist
+    모드면 cost_ledger 테이블에 자체 짧은 세션으로 기록), 이 부분의 스레드안전은
+    ``CostLedger`` 내부 락에 의존한다 — 워커가 '순수'해서가 아니다. 즉 워커 간 공유 가변
+    상태는 cost_ledger 하나뿐이고, lead/company 테이블 적재만 메인 스레드 단독이다.
     """
     contacts = enricher.enrich(dc)
     candidates = accepted_emails(contacts)
@@ -165,44 +168,52 @@ def run_pipeline(
     workers = settings.enrich_workers
     pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
     _tl = threading.local()
-    _created: list[tuple[Enricher, ExistenceVerifier, EmailValidator]] = []
+    _created: list[object] = []  # 워커별 생성 인스턴스(종료 시 close).
     _created_lock = threading.Lock()
 
     def _process_one(dc: DiscoveredCompany) -> CompanyLead:
-        if pool is None:  # 순차 — 기존 공유 인스턴스 사용(동작 동일).
+        if pool is None:  # 순차 — 공유 인스턴스(메인 스레드 단독 실행, 기존 경로와 동일).
             return _build_lead(
                 dc, enricher=enricher, existence=existence, email_validator=email_validator
             )
-        if not hasattr(_tl, "trio"):  # 워커 스레드당 독립 인스턴스 1회 생성(throttle 격리).
-            trio = (
-                Enricher(settings, cost_ledger=cost_ledger),
-                ExistenceVerifier(settings, registry_checker=registry_checker),
-                EmailValidator(settings, cost_ledger=cost_ledger),
-            )
-            _tl.trio = trio
+        w = getattr(_tl, "trio", None)
+        if w is None:  # 워커 스레드당 독립 인스턴스 1회 생성. registry_checker 까지 워커별로
+            # 따로 만들어 공유 Fetcher 의 throttle(self._last) 경쟁을 없앤다(아키텍트 MAJOR).
+            rc = None if settings.dry_run else build_registry_checker(settings)
+            enr = Enricher(settings, cost_ledger=cost_ledger)
+            exi = ExistenceVerifier(settings, registry_checker=rc)
+            val = EmailValidator(settings, cost_ledger=cost_ledger)
+            w = (enr, exi, val)
+            _tl.trio = w
             with _created_lock:
-                _created.append(trio)  # 종료 시 정리 대상.
-        enr, exi, val = _tl.trio
+                _created.extend([enr, exi, val, *([rc] if rc is not None else [])])
+        enr, exi, val = w
         return _build_lead(dc, enricher=enr, existence=exi, email_validator=val)
 
     leads: list[CompanyLead] = []
     pending: list[DiscoveredCompany] = []  # 배치 — 메인 dedup 통과분, 풀로 동시 처리.
-    batch_size = max(1, workers * 4)
+    # workers==1(pool None)이면 배치 1 — 기업별 즉시 처리·적재로 기존 순차 동작과 동일
+    # (진행카운터 타이밍·실패 시 직전까지 보존). 병렬이면 workers*4 로 모은다.
+    batch_size = max(1, workers * 4) if pool is not None else 1
 
     def _flush() -> None:
-        """대기 배치를 (병렬이면 풀로) 처리하고 결과를 메인 스레드에서 적재·카운트한다.
+        """대기 배치를 (병렬이면 풀로) 처리하고 결과를 메인 스레드에서 건별 적재한다.
 
-        pool.map 은 입력 순서를 보존하므로 결과 순서가 발견 순서와 같다 — workers 값과
-        무관하게 leads 목록이 동일(결정적). 적재·progress·_emit 은 메인 스레드 전담.
+        한 기업이 _build_lead 에서 예외가 나도 그 기업만 건너뛰고(로그) 나머지·이미 성공한
+        기업은 보존한다(배치 전체 유실 방지). 입력 순서로 결과를 받아 적재하므로 leads 순서가
+        발견 순서와 같다(workers 무관·순서 결정적; 라이브 내용은 네트워크 의존이라 순차와 동일
+        수준으로 비결정). 적재·progress·_emit·DB 세션은 메인 스레드 전담 — 워커가 공유하는
+        가변상태는 cost_ledger(자체 락) 뿐이다.
         """
         if not pending:
             return
-        results = (
-            list(pool.map(_process_one, pending))
-            if pool is not None
-            else [_process_one(d) for d in pending]
-        )
-        for d, lead in zip(pending, results):
+        futures = [pool.submit(_process_one, d) for d in pending] if pool is not None else None
+        for i, d in enumerate(pending):
+            try:
+                lead = futures[i].result() if futures is not None else _process_one(d)
+            except Exception as exc:  # 기업 1건 실패 → 스킵(배치 보존). graceful 아닌 예외만 도달.
+                log.warning("pipeline.process.error", key=d.canonical_key, err=str(exc))
+                continue
             progress["enriched"] += 1
             leads.append(lead)
             if lead.company.is_active:
@@ -275,12 +286,11 @@ def run_pipeline(
             _emit()
     finally:
         if pool is not None:
-            pool.shutdown(wait=True)  # 진행 중 워커 완료 대기 후 인스턴스 정리.
-        for trio in _created:  # 워커별 페처·렌더러 정리(리소스 누수 방지).
-            for obj in trio:
-                close = getattr(obj, "close", None)
-                if callable(close):
-                    close()
+            pool.shutdown(wait=True)  # 진행 중 워커 완료 대기 후 인스턴스 정리(쓰기 경쟁 없음).
+        for obj in _created:  # 워커별 인스턴스 정리 — close() 있는 것만(best-effort).
+            close = getattr(obj, "close", None)
+            if callable(close):
+                close()
         enricher.close()
         if session is not None:
             session.close()

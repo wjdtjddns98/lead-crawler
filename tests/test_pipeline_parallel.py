@@ -12,6 +12,7 @@ from leadcrawler.config import Settings
 from leadcrawler.cost_ledger import CostLedger
 from leadcrawler.pipeline import run_pipeline
 from leadcrawler.sources.base import DiscoveredCompany, Segment
+from leadcrawler.storage.db import init_db
 
 
 def _many(n: int):
@@ -73,12 +74,33 @@ def test_parallel_multi_segment(monkeypatch) -> None:
     assert len(leads) == 10
 
 
-def test_cost_ledger_record_is_thread_safe() -> None:
-    # 8 스레드 동시 record — 누계 lost-update 없이 정확(락 보호).
-    led = CostLedger(Settings(dry_run=False), persist=False)
+def test_cost_ledger_record_is_serialized_by_lock(tmp_path) -> None:
+    # 락이 record 의 임계구역(_persist_row + 캐시 RMW)을 실제로 직렬화하는지 결정적으로 검증.
+    # _persist_row 진입을 프로브로 감싸 동시 진입 수를 잰다 — 락이 있으면 최대 1.
+    # (인메모리 append 는 GIL 로 원자라 lost-update 가 비결정적이라 검증 불가 → 직렬화로 검증.
+    #  락을 제거하면 max_concurrent 가 1을 넘어 이 테스트가 실패한다.)
+    import time
+
+    s = Settings(database_url=f"sqlite:///{tmp_path}/cost.db", dry_run=False)
+    init_db(s)
+    led = CostLedger(s, persist=True)
+    state = {"now": 0, "max": 0}
+    probe_lock = threading.Lock()
+    real_persist = led._persist_row
+
+    def _probe(ev) -> None:
+        with probe_lock:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        time.sleep(0.002)  # 임계구역 체류 — 직렬화 안 되면 동시 진입이 잡힌다.
+        real_persist(ev)
+        with probe_lock:
+            state["now"] -= 1
+
+    led._persist_row = _probe  # type: ignore[method-assign]
 
     def worker() -> None:
-        for _ in range(100):
+        for _ in range(10):
             led.record("hunter")
 
     threads = [threading.Thread(target=worker) for _ in range(8)]
@@ -86,4 +108,26 @@ def test_cost_ledger_record_is_thread_safe() -> None:
         t.start()
     for t in threads:
         t.join()
-    assert led.month_total_krw() == 8 * 100 * led.unit_cost("hunter")
+    assert state["max"] == 1  # 락으로 record 가 직렬화됨(동시 진입 없음).
+    led.refresh()
+    assert led.month_total_krw() == 8 * 10 * led.unit_cost("hunter")  # 누계도 정확.
+
+
+def test_parallel_skips_failing_company(monkeypatch) -> None:
+    # 한 기업이 _build_lead 에서 예외가 나도 배치 전체가 아니라 그 기업만 건너뛴다.
+    monkeypatch.setattr(run_mod, "discover_segment", _many(12))
+    real = run_mod._build_lead
+
+    def _maybe_raise(dc, **kw):
+        if dc.canonical_key == "dom:c5.com":
+            raise RuntimeError("boom")
+        return real(dc, **kw)
+
+    monkeypatch.setattr(run_mod, "_build_lead", _maybe_raise)
+    leads = run_pipeline(
+        [Segment(country="KR", industry="건설")],
+        settings=Settings(dry_run=True, enrich_workers=4),
+    )
+    keys = {ld.company.canonical_key for ld in leads}
+    assert "dom:c5.com" not in keys  # 실패건만 제외.
+    assert len(leads) == 11  # 나머지 11건은 보존(배치 전체 유실 아님).

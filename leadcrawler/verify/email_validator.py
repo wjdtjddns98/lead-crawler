@@ -121,6 +121,7 @@ class EmailValidator:
         # 주입되면 더는 빌드하지 않는다(테스트 더블·명시 None 모두 존중).
         self._deliverability_built = deliverability_checker is not None
         self._cost_ledger = cost_ledger
+        self._deliv_fetcher: object | None = None  # 지연 생성 Fetcher(close 대상).
 
     def _prober(self) -> SupportsSmtpProbe:
         if self._smtp_prober is None:
@@ -139,9 +140,16 @@ class EmailValidator:
                 min_interval=self.settings.http_request_delay,
                 timeout=self.settings.http_timeout,
             )
+            self._deliv_fetcher = fetcher
             self._deliverability = build_deliverability_checker(self.settings, fetcher=fetcher)
             self._deliverability_built = True
         return self._deliverability
+
+    def close(self) -> None:
+        """지연 생성한 딜리버러빌리티 Fetcher(httpx)를 정리한다(병렬 워커 누수 방지)."""
+        close = getattr(self._deliv_fetcher, "close", None)
+        if callable(close):
+            close()
 
     def _budget_blocked(self) -> bool:
         """예산 가드 — 원장이 있고 enforce 가 켜졌고 월 누계가 예산 이상이면 차단."""

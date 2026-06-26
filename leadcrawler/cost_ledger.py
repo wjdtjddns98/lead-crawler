@@ -89,8 +89,10 @@ class CostLedger:
         }
         self._now = now or _utcnow
         # 병렬 추출(enrich_workers>1)에서 워커들이 동시에 record 할 수 있어 _mem/_total_cache
-        # 변경을 직렬화한다(누계 lost-update 방지). 예산 게이트↔호출 사이 soft-cap 경합은
-        # 위 docstring 대로 수용(가드는 best-effort). RLock — 재진입 안전.
+        # read-modify-write(특히 persist 모드 캐시 증분)를 직렬화한다(누계 lost-update 방지).
+        # 유료 호출은 opt-in·희소라 record 가 _persist_row(짧은 DB 세션)까지 락 안에서 직렬화돼도
+        # 무거운 HTTP I/O 는 락 밖이라 처리량 영향 미미. 예산 게이트↔호출 soft-cap 경합은 위
+        # docstring 대로 수용(best-effort). 현재 재진입 경로는 없으나 향후 안전 위해 RLock.
         self._lock = threading.RLock()
         self._mem: list[CostEvent] = []  # 인메모리 모드 누계
         # persist 모드 월 누계 캐시(month_key→원) — per-call DB 집계를 줄인다. 최초 1회 DB 에서

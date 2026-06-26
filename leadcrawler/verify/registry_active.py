@@ -73,6 +73,12 @@ class RegistryActiveChecker:
             )
         return self._fetcher
 
+    def close(self) -> None:
+        """지연 생성한 Fetcher(httpx)를 정리한다(병렬 워커별 인스턴스 누수 방지)."""
+        close = getattr(self._fetcher, "close", None)
+        if callable(close):
+            close()
+
     def _companies_house(self, number: str) -> bool | None:
         key = self._settings.companies_house_api_key
         if not key or not _SAFE_ID.match(number):
