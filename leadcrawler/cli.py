@@ -235,6 +235,9 @@ def dedup_merge(
     include_llm: bool = typer.Option(
         False, "--include-llm", help="auto 티어 외에 LLM 판정 same=True 쌍도 확정 중복으로 포함"
     ),
+    min_confidence: float = typer.Option(
+        0.8, help="--include-llm 시 LLM same 채택 최소 confidence(미만은 워크벤치 위임, 제약②)"
+    ),
 ) -> None:
     """중복 리포트의 **확정 쌍**(auto 티어 + 선택적 LLM same)에서 골든레코드(C3)를 산정한다.
 
@@ -254,10 +257,12 @@ def dedup_merge(
         (c["key_a"], c["key_b"]) for c in data.get("candidates", []) if c.get("tier") == "auto"
     ]
     if include_llm:
+        # same=True 라도 confidence 가 임계 미만이면 채택 안 함(제약② — 확실치 않으면 보존).
         pairs += [
             (j["candidate"]["key_a"], j["candidate"]["key_b"])
             for j in data.get("judged", [])
             if j.get("verdict", {}).get("same")
+            and j.get("verdict", {}).get("confidence", 0) >= min_confidence
         ]
     if not pairs:
         typer.echo("확정 중복 쌍이 없습니다(auto 티어 0건). 머지할 것 없음.")
@@ -278,7 +283,9 @@ def dedup_merge(
         if len(goldens) > 20:
             typer.echo(f"  …외 {len(goldens) - 20:,}개")
         if apply:
-            applied = sum(apply_golden(session, g, merged_by="auto") for g in goldens)
+            # 머지 주체 audit — LLM 판정을 포함했으면 자동(auto)과 구분(롤백 선택성).
+            actor = "auto+llm" if include_llm else "auto"
+            applied = sum(apply_golden(session, g, merged_by=actor) for g in goldens)
             session.commit()
             typer.echo(f"머지 적용 완료: {applied:,}건 흡수(duplicate_of 기록·가역). ")
     finally:

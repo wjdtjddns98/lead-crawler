@@ -45,6 +45,7 @@ class ClusterMember(BaseModel):
     registry: str | None = None
     registry_id: str | None = None
     source: str = ""
+    duplicate_of: str | None = None  # 이미 흡수된 행이면 생존자 key(체인 방지 판단용)
 
 
 class GoldenRecord(BaseModel):
@@ -144,20 +145,21 @@ def resolve_all(
 ) -> list[GoldenRecord]:
     """확정 쌍으로 클러스터를 만들고 멤버 정보로 각 골든레코드를 산정한다(생존자 key 정렬).
 
-    ``pairs`` 에 등장하는 key 중 ``members_by_key`` 에 없는 것은 조용히 버리지 않고 경고만
-    남기고 제외한다(원장에서 사라진 key 방어). 멤버가 0이 된 클러스터는 건너뛴다.
+    원장에 없는 key 가 낀 **쌍 자체를 버린 뒤** 살아남은 쌍으로만 클러스터를 재구성한다 —
+    허브 멤버가 사라져 그 멤버로만 연결돼 있던 두 행이 직접 중복근거 없이 잘못 합쳐지는
+    것을 막는다(제약② 리드손실 방지). 끊긴 부분그래프는 자연히 분리돼 단독이면 제외된다.
     """
+    pair_list = list(pairs)
+    missing = sorted({k for a, b in pair_list for k in (a, b) if k not in members_by_key})
+    for k in missing:
+        log.warning("dedup.golden.missing_member", key=k)
+    # 양 끝이 모두 원장에 있는 쌍만 사용 → 연결성 보존(허브 소실 시 컴포넌트 자연 분리).
+    live_pairs = [(a, b) for a, b in pair_list if a in members_by_key and b in members_by_key]
     out: list[GoldenRecord] = []
-    for cluster in build_clusters(pairs):
-        members = []
-        for k in cluster:
-            m = members_by_key.get(k)
-            if m is None:
-                log.warning("dedup.golden.missing_member", key=k)
-                continue
-            members.append(m)
+    for cluster in build_clusters(live_pairs):
+        members = [members_by_key[k] for k in cluster]
         if len(members) < 2:
-            continue  # 멤버 소실로 클러스터가 깨지면 머지하지 않음(제약② 보수)
+            continue
         out.append(resolve_golden(members, basis=basis))
     return sorted(out, key=lambda g: g.survivor_key)
 
@@ -183,14 +185,16 @@ def load_cluster_members(session, keys: Iterable[str]) -> dict[str, "ClusterMemb
             DiscoveredCompanyRow.registry,
             DiscoveredCompanyRow.registry_id,
             DiscoveredCompanyRow.source,
+            DiscoveredCompanyRow.duplicate_of,
         ).where(DiscoveredCompanyRow.canonical_key.in_(key_list))
     ).all()
     return {
         key: ClusterMember(
             key=key, name=name, country=country or "", domain=domain,
             registry=registry, registry_id=registry_id, source=source or "",
+            duplicate_of=duplicate_of,
         )
-        for key, name, country, domain, registry, registry_id, source in rows
+        for key, name, country, domain, registry, registry_id, source, duplicate_of in rows
     }
 
 
@@ -204,10 +208,18 @@ def apply_golden(
 ) -> int:
     """골든레코드를 원장에 반영한다 — 생존자에 canonical_name, 흡수행에 duplicate_of+audit.
 
-    가역적(전부 audit 컬럼 기록)이고, 이미 머지된 행(``duplicate_of`` 채워짐)은 건드리지
-    않아 재실행 안전(idempotent). flush 만 하고 commit 은 호출부 트랜잭션에 맡긴다.
-    흡수한 행 수를 반환한다(0=적용 없음).
+    가역적(전부 audit 컬럼 기록)이고 재실행 안전(idempotent — 이미 머지된 행은 안 건드림).
+    flush 만 하고 commit 은 호출부 트랜잭션에 맡긴다. 흡수한 행 수를 반환한다(0=적용 없음).
+
+    **체인 방지(가역성 불변)**: ``duplicate_of`` 는 항상 살아있는 root 를 가리켜야 한다.
+    ① 생존 후보가 이미 흡수된 비-root 면(다른 행의 자식) 머지를 거부한다(제약② 보수 — 비-root
+       로 흡수하면 b→a→root 체인이 생겨 단일 조인이 손자를 놓침). ② 어떤 행을 흡수할 때 그
+       행이 과거 다른 행들의 생존자였다면(자식 보유) 그 자식들을 **새 생존자로 재지정**해
+       체인을 평탄화한다(고아 방지). 생존자 도메인은 비어 있을 때만 권위 도메인으로 채운다
+       (이미 값이 있으면 덮지 않음 — key 안정성·기존 값 보존).
     """
+    from sqlalchemy import update
+
     from ..schema import DiscoveredCompanyRow
 
     _now = now or _utcnow
@@ -215,25 +227,46 @@ def apply_golden(
     if survivor is None:
         log.warning("dedup.golden.survivor_gone", key=golden.survivor_key)
         return 0
+    if survivor.duplicate_of is not None:
+        # 생존 후보가 이미 흡수된 비-root → 체인 생성 방지로 머지 거부(워크벤치/재리포트 위임).
+        log.warning(
+            "dedup.golden.survivor_already_absorbed",
+            key=golden.survivor_key,
+            root=survivor.duplicate_of,
+        )
+        return 0
     survivor.canonical_name = golden.canonical_name
     if golden.canonical_domain and not survivor.domain:
-        survivor.domain = golden.canonical_domain  # 생존자 도메인 비었으면 권위 도메인 채움
+        survivor.domain = golden.canonical_domain  # 생존자 도메인 비었을 때만 권위 도메인 채움
 
     stamp = _now()
     reason = merge_reason or golden.reason
     absorbed = 0
     for key in golden.absorbed_keys:
+        if key == golden.survivor_key:
+            continue  # 자기참조 방어
         row = session.get(DiscoveredCompanyRow, key)
         if row is None or row.duplicate_of is not None:
             continue  # 사라졌거나 이미 머지됨 → 재실행 안전(덮어쓰지 않음)
-        if key == golden.survivor_key:
-            continue  # 자기참조 방어
+        # 이 행이 과거 생존자라 자식을 보유했다면 자식들을 새 생존자로 재지정(체인 평탄화).
+        session.execute(
+            update(DiscoveredCompanyRow)
+            .where(DiscoveredCompanyRow.duplicate_of == key)
+            .values(
+                duplicate_of=golden.survivor_key,
+                merged_at=stamp,
+                merged_by=merged_by,
+                merge_reason=f"{reason} (rechained)",
+            ),
+            execution_options={"synchronize_session": False},
+        )
         row.duplicate_of = golden.survivor_key
         row.merged_at = stamp
         row.merged_by = merged_by
         row.merge_reason = reason
         absorbed += 1
     session.flush()
+    session.expire_all()  # 벌크 update 로 갱신된 자식 행의 ORM 캐시 무효화(이후 조회 정합)
     log.info(
         "dedup.golden.applied",
         survivor=golden.survivor_key,

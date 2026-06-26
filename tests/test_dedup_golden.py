@@ -6,11 +6,13 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from leadcrawler.config import Settings
 from leadcrawler.dedup_resolve.golden import (
     ClusterMember,
+    GoldenRecord,
     apply_golden,
     build_clusters,
     load_cluster_members,
@@ -140,3 +142,74 @@ def test_resolve_all_skips_broken_cluster(session: Session) -> None:
     members = load_cluster_members(session, ["dom:a.com", "dom:gone.com"])
     goldens = resolve_all(members, [("dom:a.com", "dom:gone.com")])
     assert goldens == []  # 한쪽이 사라져 클러스터 깨짐 → 머지 없음
+
+
+def test_bridge_member_loss_does_not_merge_unrelated(session: Session) -> None:
+    # 허브 C 로만 연결된 A·B (직접 (A,B) 쌍 없음). C 가 원장에 없으면 A·B 는
+    # 직접 중복근거가 없으므로 합쳐지면 안 된다(제약② — 리뷰어 재현 MEDIUM 회귀).
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="dom:alpha.com", name="Alpha", country="KR", domain="alpha.com"),
+        DiscoveredCompanyRow(canonical_key="dom:beta.com", name="Beta", country="KR", domain="beta.com"),
+    ])
+    session.flush()
+    members = load_cluster_members(session, ["dom:alpha.com", "dom:beta.com", "dom:hub.com"])
+    goldens = resolve_all(members, [("dom:alpha.com", "dom:hub.com"), ("dom:beta.com", "dom:hub.com")])
+    assert goldens == []  # 허브 소실 → 컴포넌트 분리 → 머지 없음
+
+
+def test_cross_run_chain_is_flattened(session: Session) -> None:
+    # 리뷰어 재현 HIGH: 2회 실행에 걸친 체인. b→a 머지 후, 더 권위 높은 reg 가 a 를 흡수하면
+    # b 가 a(비-root)를 가리켜 고아가 되면 안 됨 → 자식 재지정으로 평탄화돼야 한다.
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="dom:a.com", name="Acme", country="KR", domain="a.com"),
+        DiscoveredCompanyRow(canonical_key="dom:b.com", name="Acme", country="KR", domain="a.com"),
+        DiscoveredCompanyRow(canonical_key="reg:dart:9", name="에이스 주식회사",
+                             country="KR", registry="dart", registry_id="9", domain="a.com"),
+    ])
+    session.flush()
+    fixed = datetime(2026, 6, 26, tzinfo=timezone.utc)
+
+    # Run 1: (a,b) → 둘 다 도메인 a.com → survivor=a(key 사전순), b 흡수.
+    m1 = load_cluster_members(session, ["dom:a.com", "dom:b.com"])
+    g1 = resolve_all(m1, [("dom:a.com", "dom:b.com")])
+    for g in g1:
+        apply_golden(session, g, now=lambda: fixed)
+    session.flush()
+    assert session.get(DiscoveredCompanyRow, "dom:b.com").duplicate_of == "dom:a.com"
+
+    # Run 2: (a, reg) → reg 가 등록처 보유로 생존, a 흡수. a 의 자식 b 는 reg 로 재지정돼야.
+    m2 = load_cluster_members(session, ["dom:a.com", "reg:dart:9"])
+    g2 = resolve_all(m2, [("dom:a.com", "reg:dart:9")])
+    for g in g2:
+        apply_golden(session, g, now=lambda: fixed)
+    session.commit()
+
+    a = session.get(DiscoveredCompanyRow, "dom:a.com")
+    b = session.get(DiscoveredCompanyRow, "dom:b.com")
+    assert a.duplicate_of == "reg:dart:9"
+    assert b.duplicate_of == "reg:dart:9"  # 평탄화 — 고아(b→a) 아님
+    # root 로 단일 조인하면 두 자식 모두 잡힘(불변 회복).
+    children = session.scalars(
+        select(DiscoveredCompanyRow.canonical_key).where(
+            DiscoveredCompanyRow.duplicate_of == "reg:dart:9"
+        )
+    ).all()
+    assert set(children) == {"dom:a.com", "dom:b.com"}
+
+
+def test_survivor_already_absorbed_is_refused(session: Session) -> None:
+    # 생존 후보가 이미 흡수된 비-root 면 머지 거부(체인 방지·제약② 보수).
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="root", name="R", country="KR", domain="r.com"),
+        DiscoveredCompanyRow(canonical_key="dom:a.com", name="Acme", country="KR",
+                             domain="a.com", duplicate_of="root"),  # 이미 흡수됨
+        DiscoveredCompanyRow(canonical_key="name:kr:acme", name="Acme Inc", country="KR"),
+    ])
+    session.flush()
+    # a(도메인 보유) 가 생존 후보가 되지만 이미 흡수됨 → 거부.
+    g = GoldenRecord(
+        survivor_key="dom:a.com", canonical_name="Acme", canonical_domain="a.com",
+        country="KR", absorbed_keys=["name:kr:acme"], reason="t",
+    )
+    assert apply_golden(session, g) == 0
+    assert session.get(DiscoveredCompanyRow, "name:kr:acme").duplicate_of is None
