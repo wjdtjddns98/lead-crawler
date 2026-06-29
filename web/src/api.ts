@@ -3,12 +3,14 @@
 // 모든 보호 요청에 Authorization: Bearer 헤더로 동반한다. 401 이면 세션을 비우고 콜백 통지.
 import type {
   AuditEntry,
+  ClaimFilter,
   CountryOption,
   CrawlJob,
   CrawlTarget,
   IndustryOption,
   Listed,
   LoginResponse,
+  QueueFilters,
   QueueResponse,
   ReviewItem,
   ReviewStatus,
@@ -106,20 +108,40 @@ export async function fetchQueue(params: {
   status?: ReviewStatus | "";
   limit: number;
   offset: number;
+  filter?: ClaimFilter; // 빈값=전체. total 도 이 필터 반영분으로 내려온다(잔여건수용).
 }): Promise<QueueResponse> {
   const q = new URLSearchParams();
   if (params.status) q.set("status", params.status);
   q.set("limit", String(params.limit));
   q.set("offset", String(params.offset));
+  if (params.filter?.country) q.set("country", params.filter.country);
+  if (params.filter?.industry) q.set("industry", params.filter.industry);
+  if (params.filter?.listed) q.set("listed", params.filter.listed);
   return jsonOrThrow<QueueResponse>(
     await fetch(`${BASE}/queue?${q.toString()}`, { headers: authHeaders() }),
   );
 }
 
 // 내 작업분을 배치 크기까지 채워 받는다(당겨가기 — 6명 동시 충돌 방지·자동 리필).
-export async function claimWork(): Promise<ReviewItem[]> {
+// filter(국가·업종·상장)를 동반하면 그 조건의 pending 만 배정받는다(빈 객체/생략=전체, 하위호환).
+export async function claimWork(filter?: ClaimFilter): Promise<ReviewItem[]> {
   return jsonOrThrow<ReviewItem[]>(
-    await fetch(`${BASE}/queue/claim`, { method: "POST", headers: authHeaders() }),
+    await fetch(`${BASE}/queue/claim`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        country: filter?.country ?? "",
+        industry: filter?.industry ?? "",
+        listed: filter?.listed ?? "",
+      }),
+    }),
+  );
+}
+
+// 검증 직원용 필터 옵션(국가+업종) — /admin/* 는 worker 가 403 이므로 비관리자 경로로 받는다.
+export async function fetchQueueFilters(): Promise<QueueFilters> {
+  return jsonOrThrow<QueueFilters>(
+    await fetch(`${BASE}/queue/filters`, { headers: authHeaders() }),
   );
 }
 

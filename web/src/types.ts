@@ -97,6 +97,22 @@ export interface SendResult {
 
 export type Listed = "unknown" | "listed" | "unlisted";
 
+// 검증 큐 당겨가기 세션 필터 — 빈값=전체. listed 는 ""(전체)+Listed 3값.
+// (계약: POST /queue/claim 본문 · GET /queue 쿼리파라미터, PRD-queue-filtered-claim §4)
+export interface ClaimFilter {
+  country: string; // 쉼표구분 ISO2/별칭, 빈값=전체
+  industry: string; // 쉼표구분 업종, 빈값=전체
+  listed: "" | Listed; // 빈값=전체
+}
+
+// 검증 직원용 필터 옵션(국가+업종 한 번에) — GET /queue/filters (worker 접근 가능).
+// listed 는 고정 3값(전체("")는 FE 가 덧붙임) — 셀렉트는 FE 하드코딩이라 소비 안 함.
+export interface QueueFilters {
+  countries: CountryOption[];
+  industries: IndustryOption[];
+  listed: string[];
+}
+
 export interface CrawlTarget {
   countries: string;
   industries: string;
