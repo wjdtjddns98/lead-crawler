@@ -131,6 +131,7 @@ def run_pipeline(
     persist: bool = False,
     on_progress: ProgressCallback | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    target_saved: int | None = None,
 ) -> list[CompanyLead]:
     """세그먼트들을 처리해 검증된 :class:`CompanyLead` 목록을 반환한다.
 
@@ -141,6 +142,16 @@ def run_pipeline(
     ``on_progress`` 가 주어지면 발견/보강/저장·세그먼트 진행 카운터 dict 를 단계마다
     호출한다(웹 직접 크롤의 실시간 현황). ``should_cancel`` 이 매 기업 처리 직전 True 를
     반환하면 협조적으로 중단한다(이미 처리된 결과는 보존). 둘 다 None 이면 기존 동작 그대로.
+
+    ``target_saved`` 가 주어지면 실존 저장(``saved``) 누계가 그 값에 도달하는 즉시 세그먼트를
+    더 돌지 않고 조기 종료한다("정해진 양만큼 뽑고 멈춤"). None(기본)이면 주어진 세그먼트를
+    전부 깊게 소진한다(소스당 ``discovery_max_per_source`` 까지). 어느 경우든 dedup(제약①)으로
+    이미 본 기업은 건너뛰므로, 같은 스코프 재크롤이 아니라 **새 기업을 계속 발견**할 때 채워진다.
+
+    조기종료는 배치(flush) 경계에서만 평가하므로 정확히 ``target_saved`` 에서 멈추지 않고
+    최대 ``batch_size``(병렬 시 ``workers*4``, 순차 시 1)만큼 오버슈트할 수 있다 — 마지막
+    배치가 통째로 처리·적재된 뒤 카운터를 확인하기 때문. 상한이 아니라 하한 보장이다
+    (``saved >= target_saved``).
     """
     settings = settings or get_settings()
     seg_list = list(segments)
@@ -155,6 +166,10 @@ def run_pipeline(
     def _emit() -> None:
         if on_progress is not None:
             on_progress(dict(progress))
+
+    def _target_hit() -> bool:
+        """목표 실존 저장수(target_saved)에 도달했는지 — 도달 시 세그먼트 순회를 조기 종료."""
+        return target_saved is not None and progress["saved"] >= target_saved
     seen = seen if seen is not None else set()
     # 도메인 동치 dedup(제약 ①) — 같은 기업이 등록처 key(reg:)와 검색 key(dom:)로 다르게
     # 잡혀도 정규화 도메인이 같으면 한 번만 추출한다. seen(키)과 짝을 이뤄 런 전체·DB 영속을
@@ -310,9 +325,11 @@ def run_pipeline(
                 pending.append(dc)  # 배치 적재 — _flush 에서 (병렬이면 풀로) 동시 처리.
                 if len(pending) >= batch_size:
                     _flush()
+                    if _target_hit():
+                        break  # 목표 실존수 도달 — 이 세그먼트 내 추가 발견 중단.
             _flush()  # 세그먼트 경계 — 큐된 분 처리(취소 시에도 이미 발견한 분은 보존).
-            if cancelled:
-                break
+            if cancelled or _target_hit():
+                break  # 취소 또는 목표 도달 → 남은 세그먼트는 돌지 않고 종료.
             progress["segments_done"] += 1
             _emit()
     finally:
