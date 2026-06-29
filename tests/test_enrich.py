@@ -79,6 +79,40 @@ def test_candidate_links_prioritizes_ir_and_same_domain() -> None:
     assert all("other.com" not in u for u in links)
 
 
+def test_shared_tree_matches_html_parse() -> None:
+    """tree 공유 호출 == html 파싱 호출(추출물·순서 동일) — 재파싱 제거가 결과를 안 바꾼다."""
+    from selectolax.parser import HTMLParser
+
+    url = "https://acme.co.kr"
+    tree = HTMLParser(_HOME)
+    assert [c.value for c in extract_emails(_HOME, source_url=url)] == [
+        c.value for c in extract_emails(_HOME, source_url=url, tree=tree)
+    ]
+    assert [c.value for c in extract_phones(_HOME)] == [
+        c.value for c in extract_phones(_HOME, tree=tree)
+    ]
+    assert candidate_links(_HOME, base_url=url, domain="acme.co.kr") == candidate_links(
+        _HOME, base_url=url, domain="acme.co.kr", tree=tree
+    )
+
+    ctree = HTMLParser(_CONTACT)
+    f_html = extract_form(_CONTACT, page_url=url)
+    f_tree = extract_form(_CONTACT, page_url=url, tree=ctree)
+    assert (f_html.value if f_html else None) == (f_tree.value if f_tree else None)
+
+    # is_contact_page title 분기도 tree 로 동일 판정.
+    contact_html = "<html><head><title>Contact Us</title></head><body></body></html>"
+    assert is_contact_page("https://x.com/page", contact_html) is True
+    assert (
+        is_contact_page("https://x.com/page", contact_html, tree=HTMLParser(contact_html)) is True
+    )
+
+    img_html = '<img src="/mail-icon.png" alt="email"><img src="/logo.png">'
+    assert candidate_images(img_html, base_url=url) == candidate_images(
+        img_html, base_url=url, tree=HTMLParser(img_html)
+    )
+
+
 class FakeFetcher:
     def __init__(self, pages: dict[str, str], images: dict[str, bytes] | None = None) -> None:
         self._pages = pages
