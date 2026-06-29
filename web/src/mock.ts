@@ -2,9 +2,25 @@
 // main.tsx 가 installMock() 을 호출한다. window.fetch 를 가로채 검증 큐 API 를 메모리 상태로 응답하므로
 // api.ts·컴포넌트는 전혀 수정하지 않는다. 상태는 메모리 전용 — 새로고침 시 초기 샘플로 리셋된다.
 // admin 세션을 localStorage 에 시드해 로그인 화면을 건너뛴다. 매칭 안 되는 API 는 빈/스텁으로 응답.
-import type { CandidateInfo, ReviewItem } from "./types";
+import type { CandidateInfo, ClaimFilter, Listed, ReviewItem } from "./types";
 
 const BATCH = 10;
+
+// 상장여부는 큐 DTO(ReviewItem)에 없고 BE 가 DiscoveredCompanyRow 조인으로 거른다.
+// mock 에선 id→listed 사이드맵으로 그 조인을 흉내 낸다(필터 동작 시연용).
+const MOCK_LISTED: Record<string, Listed> = {
+  c1: "listed",
+  c11: "listed",
+  c2: "listed",
+  c3: "unlisted",
+  c4: "listed",
+  c5: "unlisted",
+  c6: "listed",
+  c7: "unknown",
+  c8: "unlisted",
+  c9: "listed",
+  c10: "unknown",
+};
 
 function cand(
   value: string,
@@ -179,6 +195,39 @@ function jsonRes(body: unknown, status = 200): Response {
   });
 }
 
+// 쉼표구분 문자열 → 소문자 토큰 집합(빈값=빈 집합).
+function csvSet(s: string | null | undefined): Set<string> {
+  return new Set(
+    (s ?? "").split(",").map((t) => t.trim().toLowerCase()).filter(Boolean),
+  );
+}
+
+// 항목이 필터에 맞는지. 빈 조건은 통과.
+// ponytail: 국가는 단순 소문자 일치(BE 의 country_match_set 별칭확장은 흉내 안 냄 — mock 시연용).
+function matches(it: ReviewItem, f: ClaimFilter): boolean {
+  const countries = csvSet(f.country);
+  if (countries.size && !countries.has(it.country.toLowerCase())) return false;
+  const industries = csvSet(f.industry);
+  if (industries.size && !industries.has(it.industry.toLowerCase())) return false;
+  if (f.listed && MOCK_LISTED[it.id] !== f.listed) return false;
+  return true;
+}
+
+function readFilter(u: URL, init?: RequestInit): ClaimFilter {
+  // GET /queue 는 쿼리파라미터, POST /queue/claim 은 JSON 본문.
+  let body: Partial<ClaimFilter> = {};
+  try {
+    body = JSON.parse(String(init?.body ?? "{}")) as Partial<ClaimFilter>;
+  } catch {
+    // 본문 없음 — 쿼리파라미터만 사용.
+  }
+  return {
+    country: u.searchParams.get("country") ?? body.country ?? "",
+    industry: u.searchParams.get("industry") ?? body.industry ?? "",
+    listed: (u.searchParams.get("listed") as "" | Listed | null) ?? body.listed ?? "",
+  };
+}
+
 // URL+메서드를 검증 큐 API 로 라우팅. 매칭되면 Response, 아니면 undefined(=실제 fetch 로 통과).
 function route(url: string, method: string, init?: RequestInit): Response | undefined {
   const u = new URL(url, location.origin);
@@ -191,12 +240,32 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
   if (path === "/auth/logout") return jsonRes({});
   if (path === "/health") return jsonRes({ status: "ok" });
 
+  // 검증 큐 필터 옵션(국가+업종) — 시드에 등장하는 실제 업종으로 셀렉트를 채운다.
+  if (path === "/queue/filters" && method === "GET") {
+    const industries = [...new Set(db.map((x) => x.industry))].map((v) => ({
+      value: v,
+      label: v,
+      aliases: [],
+    }));
+    return jsonRes({
+      countries: [
+        { iso2: "KR", label: "대한민국", aliases: ["korea", "한국"] },
+        { iso2: "US", label: "미국", aliases: ["usa", "united states"] },
+      ],
+      industries,
+      listed: ["listed", "unlisted", "unknown"],
+    });
+  }
+
   // 검증 큐.
   if (path === "/queue" && method === "GET") {
     const status = u.searchParams.get("status");
     const limit = Number(u.searchParams.get("limit") ?? "50");
     const offset = Number(u.searchParams.get("offset") ?? "0");
-    const filtered = status ? db.filter((x) => x.status === status) : db;
+    const f = readFilter(u, init);
+    const filtered = db.filter(
+      (x) => (!status || x.status === status) && matches(x, f),
+    );
     return jsonRes({
       items: filtered.slice(offset, offset + limit),
       total: filtered.length,
@@ -204,7 +273,10 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
       offset,
     });
   }
-  if (path === "/queue/claim" && method === "POST") return jsonRes(pending().slice(0, BATCH));
+  if (path === "/queue/claim" && method === "POST") {
+    const f = readFilter(u, init);
+    return jsonRes(pending().filter((x) => matches(x, f)).slice(0, BATCH));
+  }
   if (path === "/queue/release" && method === "POST")
     return jsonRes({ released: pending().length });
 
