@@ -6,6 +6,7 @@
   "description": "lead-crawler 검증 워크벤치 프론트엔드 (Vite + React + TS)",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "vite --mode mock",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
