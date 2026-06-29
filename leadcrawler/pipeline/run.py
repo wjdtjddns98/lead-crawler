@@ -32,7 +32,7 @@ from ..dedup_resolve.inline import find_inline_duplicate
 from ..dedup_resolve.inline_lexical import InlineLexicalMatcher
 from ..sources.base import DiscoveredCompany, Segment
 from ..sources.domain_resolver import DomainResolver
-from ..sources.registry import discover_segment
+from ..sources.registry import build_sources, close_sources, discover_segment
 from ..storage.db import get_sessionmaker
 from ..storage.repository import (
     load_seen_domains,
@@ -240,7 +240,11 @@ def run_pipeline(
 
     session: Session | None = get_sessionmaker(settings)() if persist else None
     cancelled = False
+    disco_sources: list = []  # finally 가 항상 참조할 수 있게 try 전 바인딩(빌드 실패 시 no-op).
     try:
+        # 발견 소스를 런 시작에 1회만 빌드해 모든 세그먼트에 재사용한다(세그먼트마다 재생성·
+        # httpx 누수 제거 + keep-alive 연결 재사용). 발견 루프는 단일 스레드라 공유 안전.
+        disco_sources = build_sources(settings, cost_ledger)
         if session is not None:
             seen |= load_seen_keys(session)
             seen_domains |= load_seen_domains(session)
@@ -256,7 +260,9 @@ def run_pipeline(
             if should_cancel is not None and should_cancel():
                 cancelled = True
                 break
-            for dc in discover_segment(segment, settings, cost_ledger=cost_ledger):
+            for dc in discover_segment(
+                segment, settings, cost_ledger=cost_ledger, sources=disco_sources
+            ):
                 if should_cancel is not None and should_cancel():
                     cancelled = True
                     break  # 다음 기업 처리 전 협조적 중단(처리분은 보존).
@@ -317,6 +323,7 @@ def run_pipeline(
             close = getattr(obj, "close", None)
             if callable(close):
                 close()
+        close_sources(disco_sources)  # 발견 소스 httpx 클라이언트 정리(런당 1회).
         if session is not None:
             session.close()
     return leads

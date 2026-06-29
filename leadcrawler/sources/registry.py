@@ -50,10 +50,25 @@ def build_sources(
     ]
 
 
+def close_sources(sources: list[DiscoverySource]) -> None:
+    """발견 소스들이 내부에 만든 httpx 클라이언트(Fetcher)를 정리한다(누수 방지).
+
+    소스는 ``self._fetcher`` 를 지연 생성하지만 close() 를 노출하지 않으므로, 그 내부
+    fetcher 의 close 만 best-effort 로 호출한다(없으면 no-op). 런 종료 시 1회 호출한다.
+    """
+    for src in sources:
+        fetcher = getattr(src, "_fetcher", None)
+        close = getattr(fetcher, "close", None)
+        if callable(close):
+            close()
+
+
 def discover_segment(
     segment: Segment,
     settings: Settings | None = None,
     cost_ledger: SupportsCostLedger | None = None,
+    *,
+    sources: list[DiscoverySource] | None = None,
 ) -> list[DiscoveredCompany]:
     """세그먼트에 적용 가능한 소스들을 실행해 중복 없는 후보 목록을 반환한다.
 
@@ -65,12 +80,18 @@ def discover_segment(
     주의: 여기서의 도메인 동치는 **세그먼트 1건 내부**에서만 적용된다. 세그먼트를
     가로지르거나(다국가/다업종) DB 영속을 거친 cross-run 중복은 파이프라인
     (:func:`run_pipeline`)이 런 전체 ``seen``/``seen_domains`` 로 처리한다.
+
+    ``sources`` 가 주어지면 그 인스턴스를 재사용한다(파이프라인이 런 시작에 1회 빌드해
+    모든 세그먼트에 넘김 — 세그먼트마다 Fetcher 재생성·httpx 누수를 막고 keep-alive
+    연결을 재사용). 미지정 시 매 호출 build_sources(직접/테스트 호출 하위호환).
+    발견 루프는 단일 스레드라(파이프라인 main 스레드) 소스 공유에 경합이 없다.
     """
     settings = settings or get_settings()
+    src_list = sources if sources is not None else build_sources(settings, cost_ledger)
     out: list[DiscoveredCompany] = []
     seen_keys: set[str] = set()
     seen_domains: set[str] = set()
-    for src in build_sources(settings, cost_ledger):
+    for src in src_list:
         if not src.applies_to(segment):
             continue
         found = src.discover(segment)

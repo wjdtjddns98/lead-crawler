@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from selectolax.parser import HTMLParser
+
 from ..config import Settings, get_settings
 from ..cost_ledger import SupportsCostLedger
 from ..logging import get_logger
@@ -199,7 +201,8 @@ class Enricher:
         if home_html is None:  # 렌더 불가(미설치·실패) → 정적 결과 유지.
             return static_contacts
 
-        links = candidate_links(home_html, base_url=home, domain=dc.domain, limit=cap)
+        home_tree = HTMLParser(home_html or "")  # home 1회 파싱 — 링크추출·아래 루프가 공유.
+        links = candidate_links(home_html, base_url=home, domain=dc.domain, limit=cap, tree=home_tree)
         pages = [home, *links][:cap]
         emails: dict[str, Contact] = {}
         form: Contact | None = next(
@@ -209,12 +212,14 @@ class Enricher:
             html = home_html if url == home else renderer.render(url)
             if html is None:
                 continue
-            for c in extract_emails(html, source_url=url, method=ExtractMethod.HEADLESS):
+            # 페이지당 1회 파싱 — 이메일·폼 추출이 공유. home 은 위에서 만든 트리 재사용.
+            tree = home_tree if url == home else HTMLParser(html or "")
+            for c in extract_emails(html, source_url=url, method=ExtractMethod.HEADLESS, tree=tree):
                 cur = emails.get(c.value)
                 if cur is None or c.confidence > cur.confidence:
                     emails[c.value] = c
             if form is None:
-                form = extract_form(html, page_url=url, method=ExtractMethod.HEADLESS)
+                form = extract_form(html, page_url=url, method=ExtractMethod.HEADLESS, tree=tree)
             if emails:  # 이메일 확보 시 조기 종료(불필요한 렌더 비용 절감).
                 break
 
@@ -342,7 +347,8 @@ class Enricher:
             log.info("enrich.home.error", domain=dc.domain, err=str(exc))
             return []
 
-        links = candidate_links(home_html, base_url=home, domain=dc.domain, limit=cap)
+        home_tree = HTMLParser(home_html or "")  # home 1회 파싱 — 링크추출·아래 루프가 공유.
+        links = candidate_links(home_html, base_url=home, domain=dc.domain, limit=cap, tree=home_tree)
         pages = [home, *links][:cap]
         emails: dict[str, Contact] = {}
         phones: dict[str, Contact] = {}
@@ -353,15 +359,17 @@ class Enricher:
             html = home_html if url == home else _safe_get(fetcher, url)
             if html is None:
                 continue
-            for c in extract_emails(html, source_url=url):
+            # 페이지당 1회 파싱 — 추출기들이 공유(재파싱 제거). home 은 위에서 만든 트리 재사용.
+            tree = home_tree if url == home else HTMLParser(html or "")
+            for c in extract_emails(html, source_url=url, tree=tree):
                 cur = emails.get(c.value)
                 if cur is None or c.confidence > cur.confidence:
                     emails[c.value] = c
-            for c in extract_phones(html, source_url=url):
+            for c in extract_phones(html, source_url=url, tree=tree):
                 phones.setdefault(c.value, c)
             if form is None:
-                form = extract_form(html, page_url=url)
-            if contact_page is None and is_contact_page(url, html):
+                form = extract_form(html, page_url=url, tree=tree)
+            if contact_page is None and is_contact_page(url, html, tree=tree):
                 contact_page = url
 
         # 문의페이지 힌트는 여기서 폼으로 만들지 않는다 — enrich() 체인 끝(헤드리스/OCR/

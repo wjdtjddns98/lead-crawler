@@ -29,7 +29,7 @@ from leadcrawler.verify.existence import ExistenceResult
 
 
 def _many(n: int):
-    def _disc(segment, settings, cost_ledger=None):  # noqa: ARG001
+    def _disc(segment, settings, cost_ledger=None, *, sources=None):  # noqa: ARG001
         return [
             DiscoveredCompany(canonical_key=f"dom:c{i}.com", name=f"C{i}", domain=f"c{i}.com")
             for i in range(n)
@@ -40,7 +40,7 @@ def _many(n: int):
 
 def _many_no_domain(n: int):
     # 도메인 미보유 발견(GLEIF 등) — 라이브 DomainResolver 분기(run.py 277)를 타게 한다.
-    def _disc(segment, settings, cost_ledger=None):  # noqa: ARG001
+    def _disc(segment, settings, cost_ledger=None, *, sources=None):  # noqa: ARG001
         return [
             DiscoveredCompany(canonical_key=f"lei:c{i}", name=f"C{i}", domain=None)
             for i in range(n)

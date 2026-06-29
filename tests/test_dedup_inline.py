@@ -75,7 +75,7 @@ def test_excludes_already_absorbed_survivor(session: Session) -> None:
 def _two_segment_discover():
     """seg '건설'=기존(dom:acme.com), seg '제조'=교차key 같은도메인(reg:dart:1)."""
 
-    def _fake(segment, settings, cost_ledger=None):  # noqa: ARG001
+    def _fake(segment, settings, cost_ledger=None, *, sources=None):  # noqa: ARG001
         if segment.industry == "건설":
             return [_dc("dom:acme.com", "Acme Corporation", domain="acme.com")]
         return [_dc("reg:dart:1", "Acme Corp", domain="www.acme.com", registry="dart", registry_id="1")]
