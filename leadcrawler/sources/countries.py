@@ -27,32 +27,69 @@ class Country(BaseModel):
 
 
 # 우선순위 순(SEA 포함 — 필리핀·태국 등 사용자 요구 반영). QID 는 Wikidata 안정 식별자.
+# 별칭은 ISO2/ISO3 + 영문(축약·공식명) + 현지/한글 표기를 폭넓게 담는다 — import 엑셀의
+# 자유표기('Republic of Korea', 'Deutschland', '中国' 등)와 크롤 세그먼트(ISO2)가 같은
+# canonical_key 로 수렴하도록(제약①). 별칭은 전부 소문자·중복 없음(아래 _INDEX 무결성 +
+# tests/test_countries.py 가 중복 별칭을 차단).
 _COUNTRIES: tuple[Country, ...] = (
-    Country(iso2="US", qid="Q30", aliases=("us", "usa", "united states", "america", "미국")),
-    Country(iso2="KR", qid="Q884",
-            aliases=("kr", "kor", "korea", "south korea", "대한민국", "한국")),
-    Country(iso2="JP", qid="Q17", aliases=("jp", "jpn", "japan", "일본")),
-    Country(iso2="CN", qid="Q148", aliases=("cn", "chn", "china", "중국")),
-    Country(iso2="PH", qid="Q928", aliases=("ph", "phl", "philippines", "필리핀")),
-    Country(iso2="TH", qid="Q869", aliases=("th", "tha", "thailand", "태국")),
-    Country(iso2="ID", qid="Q252", aliases=("id", "idn", "indonesia", "인도네시아")),
+    Country(iso2="US", qid="Q30", aliases=(
+        "us", "usa", "u.s.", "u.s.a.", "united states", "united states of america",
+        "america", "미국")),
+    Country(iso2="KR", qid="Q884", aliases=(
+        "kr", "kor", "korea", "south korea", "republic of korea", "rok",
+        "대한민국", "한국", "코리아", "남한")),
+    Country(iso2="JP", qid="Q17", aliases=(
+        "jp", "jpn", "japan", "nippon", "nihon", "일본", "日本")),
+    Country(iso2="CN", qid="Q148", aliases=(
+        "cn", "chn", "china", "prc", "people's republic of china", "mainland china",
+        "중국", "中国", "中國")),
+    Country(iso2="PH", qid="Q928", aliases=(
+        "ph", "phl", "philippines", "republic of the philippines", "pilipinas", "필리핀")),
+    Country(iso2="TH", qid="Q869", aliases=(
+        "th", "tha", "thailand", "kingdom of thailand", "태국", "타이")),
+    Country(iso2="ID", qid="Q252", aliases=(
+        "id", "idn", "indonesia", "republic of indonesia", "인도네시아")),
     Country(iso2="MY", qid="Q833", aliases=("my", "mys", "malaysia", "말레이시아")),
-    Country(iso2="SG", qid="Q334", aliases=("sg", "sgp", "singapore", "싱가포르")),
-    Country(iso2="VN", qid="Q881", aliases=("vn", "vnm", "vietnam", "viet nam", "베트남")),
-    Country(iso2="IN", qid="Q668", aliases=("in", "ind", "india", "인도")),
-    Country(iso2="TW", qid="Q865", aliases=("tw", "twn", "taiwan", "대만")),
-    Country(iso2="HK", qid="Q8646", aliases=("hk", "hkg", "hong kong", "홍콩")),
-    Country(iso2="GB", qid="Q145",
-            aliases=("gb", "uk", "gbr", "united kingdom", "britain", "영국")),
-    Country(iso2="DE", qid="Q183", aliases=("de", "deu", "germany", "독일")),
-    Country(iso2="FR", qid="Q142", aliases=("fr", "fra", "france", "프랑스")),
-    Country(iso2="AU", qid="Q408", aliases=("au", "aus", "australia", "호주")),
+    Country(iso2="SG", qid="Q334", aliases=(
+        "sg", "sgp", "singapore", "republic of singapore", "싱가포르", "新加坡")),
+    Country(iso2="VN", qid="Q881", aliases=(
+        "vn", "vnm", "vietnam", "viet nam", "socialist republic of vietnam", "베트남", "越南")),
+    Country(iso2="IN", qid="Q668", aliases=(
+        "in", "ind", "india", "republic of india", "bharat", "인도")),
+    Country(iso2="TW", qid="Q865", aliases=(
+        "tw", "twn", "taiwan", "chinese taipei", "대만", "台灣", "台湾")),
+    Country(iso2="HK", qid="Q8646", aliases=(
+        "hk", "hkg", "hong kong", "hong kong sar", "hksar", "홍콩", "香港")),
+    Country(iso2="GB", qid="Q145", aliases=(
+        "gb", "uk", "u.k.", "gbr", "united kingdom",
+        "united kingdom of great britain and northern ireland", "britain", "great britain",
+        "영국")),
+    Country(iso2="DE", qid="Q183", aliases=(
+        "de", "deu", "germany", "deutschland", "federal republic of germany", "독일")),
+    Country(iso2="FR", qid="Q142", aliases=(
+        "fr", "fra", "france", "french republic", "république française", "프랑스")),
+    Country(iso2="AU", qid="Q408", aliases=(
+        "au", "aus", "australia", "commonwealth of australia", "호주", "오스트레일리아")),
     Country(iso2="CA", qid="Q16", aliases=("ca", "can", "canada", "캐나다")),
-    Country(iso2="BR", qid="Q155", aliases=("br", "bra", "brazil", "브라질")),
+    Country(iso2="BR", qid="Q155", aliases=(
+        "br", "bra", "brazil", "brasil", "federative republic of brazil", "브라질")),
 )
 
-# 별칭(소문자) → Country 역인덱스.
-_INDEX: dict[str, Country] = {alias: c for c in _COUNTRIES for alias in c.aliases}
+def _build_index() -> dict[str, Country]:
+    """별칭(소문자) → Country 역인덱스. 한 별칭이 두 국가에 걸리면 조용히 덮어써 잘못
+    해석되므로, 중복을 import 시점에 즉시 드러낸다(fail-loud)."""
+    index: dict[str, Country] = {}
+    for country in _COUNTRIES:
+        for alias in country.aliases:
+            if alias in index:
+                raise ValueError(
+                    f"중복 국가 별칭 {alias!r}: {index[alias].iso2} vs {country.iso2}"
+                )
+            index[alias] = country
+    return index
+
+
+_INDEX: dict[str, Country] = _build_index()
 
 
 def resolve_country(name: str) -> Country | None:
