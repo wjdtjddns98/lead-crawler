@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, tabCls } from "../ui";
 import { EmailBadge } from "./StatusBadge";
@@ -22,6 +22,31 @@ function tri(v: boolean | null): string {
 
 export type SiteTab = "home" | "form";
 
+// 팝업 창 크롬 최소화 — popup=yes 로 탭/툴바 없는 최소 창. location/menubar/status 는
+// 브라우저가 가능한 만큼만 따른다(최신 브라우저는 보안상 주소창을 강제 표시할 수 있음).
+const POPUP_FEATURES =
+  "popup=yes,width=1100,height=820,location=no,toolbar=no,menubar=no,status=no";
+
+// 슬롯 div 의 화면상 위치·크기에 팝업을 맞춰 연다(모달 안 사이트 영역과 동일 좌표·사이즈).
+// 같은 창 이름은 재사용되며 features 를 무시하므로 열린 뒤 moveTo/resizeTo 로 다시 맞춘다.
+// 뷰포트→스크린 변환의 크롬(주소창/툴바) 높이는 outer-inner 로 근사.
+// ponytail: 크롬 높이 근사값 — 멀티모니터·줌·DevTools 에서 수십px 어긋나면 top 에 상수 보정.
+function openSitePopup(url: string, slot: HTMLElement | null): Window | null {
+  if (!slot) return window.open(url, "site-preview", POPUP_FEATURES);
+  const r = slot.getBoundingClientRect();
+  const left = Math.round(window.screenX + r.left);
+  const top = Math.round(window.screenY + (window.outerHeight - window.innerHeight) + r.top);
+  const width = Math.round(r.width);
+  const height = Math.round(r.height);
+  const feat =
+    `popup=yes,location=no,toolbar=no,menubar=no,status=no,` +
+    `left=${left},top=${top},width=${width},height=${height}`;
+  const win = window.open(url, "site-preview", feat);
+  win?.moveTo(left, top);
+  win?.resizeTo(width, height);
+  return win;
+}
+
 interface Props {
   item: ReviewItem;
   tab: SiteTab;
@@ -34,9 +59,9 @@ interface Props {
   onClose: () => void;
 }
 
-// 사이트 탐색 플로팅 윈도우 — 좌측 iframe 으로 사이트를 보며 우측 사이드바에서 곧바로
-// 이메일을 선택/수정하고 확정·거부까지 끝낸다('복사→닫기→테이블 붙여넣기' 왕복 제거).
-// 일부 사이트는 X-Frame-Options/CSP 로 임베드를 거부하므로 '새 탭 ↗' 을 항상 함께 둔다.
+// 사이트 탐색 플로팅 윈도우 — 우측 사이드바에서 곧바로 이메일을 선택/수정하고 확정·거부까지
+// 끝낸다('복사→닫기→테이블 붙여넣기' 왕복 제거). 사이트 본문은 iframe 임베드를 거부하는 곳이
+// 많아(X-Frame-Options/CSP) 별도 팝업 창으로 띄운다(크롬 최소화).
 export function SiteExplorer({
   item,
   tab,
@@ -69,6 +94,15 @@ export function SiteExplorer({
   // 묶어 '문의폼 요청했는데 폼 URL 이 없어 홈을 보여주며 탭은 무표시' 같은 불일치를 막는다.
   const activeTab: SiteTab = tab === "form" && formHref ? "form" : homeHref ? "home" : "form";
   const activeHref = activeTab === "form" ? formHref : homeHref;
+
+  // 열림·탭 전환으로 activeHref 가 바뀌면 팝업을 열거나 같은 창을 새 URL 로 이동시킨다.
+  // 모달이 닫히면(언마운트) 팝업도 같이 닫는다.
+  const popupRef = useRef<Window | null>(null);
+  const slotRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (activeHref) popupRef.current = openSitePopup(activeHref, slotRef.current);
+  }, [activeHref]);
+  useEffect(() => () => popupRef.current?.close(), []);
 
   return (
     <div
@@ -113,31 +147,31 @@ export function SiteExplorer({
 
         {/* 본문 — 좌: 사이트 iframe / 우: 이메일 편집 사이드바 */}
         <div className="flex flex-1 min-h-0">
-          <div className="flex-1 min-w-0 bg-canvas">
+          <div
+            ref={slotRef}
+            className="flex-1 min-w-0 bg-canvas flex flex-col items-center justify-center gap-3 p-6 text-center"
+          >
             {activeHref ? (
-              // sandbox 에 allow-same-origin 을 의도적으로 빼 'allow-scripts + allow-same-origin'
-              // escape-pair 를 차단한다. 어차피 교차출처(우리 앱과 다른 도메인)라 same-origin 을
-              // 줘도 우리 앱 origin 엔 접근 못 하지만, 빼면 프레임 콘텐츠의 sandbox 무력화 경로
-              // 자체가 사라진다. 사이트가 자기 origin 접근에 의존하면 '새 탭 ↗' 으로 폴백.
-              <iframe
-                key={activeHref}
-                src={activeHref}
-                title={`${item.name} 사이트`}
-                className="w-full h-full border-0"
-                sandbox="allow-scripts allow-forms allow-popups"
-                referrerPolicy="no-referrer"
-              />
+              <>
+                <p className="text-muted text-sm leading-relaxed">
+                  사이트는 별도 팝업 창에서 열립니다. 팝업이 차단됐거나 닫혔다면 아래 버튼으로
+                  다시 여세요.
+                </p>
+                <button
+                  className={BTN}
+                  onClick={() => (popupRef.current = openSitePopup(activeHref, slotRef.current))}
+                >
+                  사이트 팝업 열기 ↗
+                </button>
+              </>
             ) : (
-              <div className="flex items-center justify-center h-full text-muted">
-                표시할 사이트가 없습니다.
-              </div>
+              <span className="text-muted">표시할 사이트가 없습니다.</span>
             )}
           </div>
 
           <aside className="w-[340px] flex-none border-l border-line p-3 overflow-y-auto flex flex-col gap-3">
             <p className="text-muted text-xs leading-relaxed">
-              사이트가 비어 보이면 임베드 차단입니다 — 상단 '새 탭 ↗' 으로 여세요. 찾은
-              이메일을 아래에 입력/수정한 뒤 확정하세요.
+              사이트는 팝업 창에서 열립니다. 찾은 이메일을 아래에 입력/수정한 뒤 확정하세요.
             </p>
 
             {/* 이메일 후보(라디오) — 여러 개면 골라 입력란을 채운다. */}
