@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from leadcrawler.dedup import canonical_key, normalize_domain, normalize_name
+from leadcrawler.dedup import (
+    canonical_key,
+    normalize_country,
+    normalize_domain,
+    normalize_name,
+)
 
 
 def test_registry_id_takes_priority() -> None:
@@ -16,6 +21,39 @@ def test_domain_used_when_no_registry() -> None:
 
 def test_name_country_fallback() -> None:
     assert canonical_key(name="삼성전자 주식회사", country="KR") == "name:kr:삼성전자"
+
+
+def test_name_tier_country_normalized_to_iso2() -> None:
+    # AC1: 도메인 없는 같은 기업이 표기차(한글·ISO2·영문)로 들어와도 동일 name: key.
+    expected = "name:kr:삼성물산"
+    assert canonical_key(name="삼성물산", country="대한민국") == expected
+    assert canonical_key(name="삼성물산", country="KR") == expected
+    assert canonical_key(name="삼성물산", country="korea") == expected
+    assert canonical_key(name="삼성물산", country="South Korea") == expected
+
+
+def test_name_tier_unregistered_country_falls_back() -> None:
+    # AC2: 미등록 국가는 기존 동작(원문 strip/lower) 유지 — 회귀 0.
+    assert canonical_key(name="Acme", country="Narnia") == "name:narnia:acme"
+    assert canonical_key(name="Acme", country="") == "name::acme"
+    assert canonical_key(name="Acme", country=None) == "name::acme"
+
+
+def test_normalize_country_helper() -> None:
+    assert normalize_country("대한민국") == "kr"
+    assert normalize_country("미국") == "us"
+    assert normalize_country("  Japan ") == "jp"
+    assert normalize_country("Narnia") == "narnia"  # 미등록=폴백
+    assert normalize_country(None) == ""
+
+
+def test_country_normalization_only_affects_name_tier() -> None:
+    # AC3: domain/registry 티어는 국가 정규화 무관(불변).
+    assert canonical_key(domain="samsung.com", country="대한민국") == "dom:samsung.com"
+    assert (
+        canonical_key(registry="dart", registry_id="123", country="대한민국")
+        == "reg:dart:123"
+    )
 
 
 def test_normalize_domain_handles_two_level_tld() -> None:

@@ -91,5 +91,23 @@ def canonical_key(
         return _clamp_key(f"dom:{norm_domain}")
     norm_name = normalize_name(name or "")
     if norm_name:
-        return _clamp_key(f"name:{(country or '').strip().lower()}:{norm_name}")
+        return _clamp_key(f"name:{normalize_country(country)}:{norm_name}")
     raise ValueError("canonical_key 를 만들 식별 정보가 없습니다(registry/domain/name 모두 없음)")
+
+
+def normalize_country(country: str | None) -> str:
+    """국가 표기를 ISO2 소문자로 정규화한다(``name:`` 티어 key 일관성).
+
+    같은 도메인 없는 기업이 import 시드('대한민국')와 라이브 크롤(세그먼트 'KR')에서
+    서로 다른 표기로 들어와도 동일 ``name:`` key 로 모이도록(제약 ① — 재추출 금지),
+    ISO2/ISO3/영문/한글 별칭을 :func:`sources.countries.resolve_country` 단일 출처로
+    해석한다. 미등록 국가는 기존 동작(원문 strip/lower)으로 폴백해 회귀를 막는다.
+
+    ``sources`` 패키지 → ``dedup`` 역방향 import 사이클을 피하려고 지역 import 한다
+    (모듈은 첫 호출 후 캐시되므로 비용 무시 가능).
+    """
+    from .sources.countries import resolve_country
+
+    raw = (country or "").strip().lower()
+    resolved = resolve_country(raw)
+    return resolved.iso2.lower() if resolved else raw

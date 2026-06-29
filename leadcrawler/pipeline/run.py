@@ -29,6 +29,7 @@ from ..models import (
 )
 from ..dedup import normalize_domain
 from ..dedup_resolve.inline import find_inline_duplicate
+from ..dedup_resolve.inline_lexical import InlineLexicalMatcher
 from ..sources.base import DiscoveredCompany, Segment
 from ..sources.domain_resolver import DomainResolver
 from ..sources.registry import discover_segment
@@ -98,8 +99,16 @@ def _build_lead(
         existence_confidence=ex.confidence,
         site_alive=ex.site_alive,
     )
-    # 후보별 검증(MX/도메인/SMTP·딜리버러빌리티 opt-in) — 선택 UI 에 신호 제공.
-    validations = {c.value: email_validator.validate(c.value, dc.domain) for c in candidates}
+    # 후보별 검증(MX/도메인/SMTP·딜리버러빌리티) — 선택 UI 에 신호 제공. validate_all_candidates
+    # 가 꺼지면 선택 이메일(candidates[0])만 심층검증(SMTP/유료)하고 나머지는 형식/MX 까지만 —
+    # 후보 수만큼 곱해지던 SMTP 핸드셰이크·유료 호출을 줄인다(산출의 선택 이메일 신호는 동일).
+    deep_all = email_validator.settings.validate_all_candidates
+    validations = {
+        c.value: email_validator.validate(
+            c.value, dc.domain, deep=deep_all or (email is not None and c.value == email.value)
+        )
+        for c in candidates
+    }
     validation = (
         validations.get(email.value, EmailValidation()) if email else EmailValidation()
     )
@@ -235,6 +244,13 @@ def run_pipeline(
         if session is not None:
             seen |= load_seen_keys(session)
             seen_domains |= load_seen_domains(session)
+        # 인라인 렉시컬 후보 탐지(opt-in, 갭1) — 도메인 없는 신규 기업을 기존 name: 티어와
+        # 이름 유사도로 대조해 dedup_candidate(워크벤치)로 적재. 자동 스킵 안 함(제약②).
+        lexical_matcher = (
+            InlineLexicalMatcher(session)
+            if session is not None and settings.dedup_inline_lexical
+            else None
+        )
         _emit()  # 초기 상태(세그먼트 총수) 통지 — 시작 즉시 진행바가 보이도록.
         for segment in seg_list:
             if should_cancel is not None and should_cancel():
@@ -282,6 +298,9 @@ def run_pipeline(
                         dc = dc.model_copy(update={"domain": resolved})  # 도메인만 채움
 
                 progress["discovered"] += 1  # 중복제외 신규 발견(처리 대상 확정).
+                # 도메인 없는(name: 티어) 신규 기업만 렉시컬 후보 대조(워크벤치 적재, 추출은 진행).
+                if lexical_matcher is not None and dc.canonical_key.startswith("name:"):
+                    lexical_matcher.consider(session, dc.canonical_key, dc.name, dc.country or "")
                 pending.append(dc)  # 배치 적재 — _flush 에서 (병렬이면 풀로) 동시 처리.
                 if len(pending) >= batch_size:
                     _flush()

@@ -187,6 +187,21 @@ def _client(app, username: str) -> TestClient:
     return c
 
 
+def _refresh_and_wait(admin: TestClient, *, tries: int = 200) -> dict:
+    """refresh(비동기) 를 시작하고 status 폴링으로 완료까지 대기한 뒤 결과를 반환."""
+    import time
+
+    r = admin.post("/dedup/refresh")
+    assert r.status_code == 202 and r.json()["status"] == "running"
+    for _ in range(tries):
+        snap = admin.get("/dedup/refresh/status").json()
+        if snap["status"] in ("done", "error"):
+            assert snap["status"] == "done", snap.get("error")
+            return snap
+        time.sleep(0.02)
+    raise AssertionError("refresh 가 제한 시간 내 완료되지 않음")
+
+
 def test_api_requires_auth(app) -> None:
     assert TestClient(app).get("/dedup/candidates").status_code == 401
 
@@ -194,15 +209,62 @@ def test_api_requires_auth(app) -> None:
 def test_api_refresh_admin_only(app) -> None:
     worker = _client(app, _WORKER)
     assert worker.post("/dedup/refresh").status_code == 403
+    assert worker.get("/dedup/refresh/status").status_code == 403  # 상태도 관리자 전용
     admin = _client(app, _ADMIN)
-    r = admin.post("/dedup/refresh")
-    assert r.status_code == 200
-    assert r.json()["created"] == 1
+    snap = _refresh_and_wait(admin)  # 비동기: 202→폴링→done
+    assert snap["result"]["created"] == 1
+
+
+def test_api_refresh_concurrent_guard(app, monkeypatch) -> None:
+    # 실행 중 재시작 요청은 409(동시 중복 차단). _RefreshJob.start 가 running 가드로 거부.
+    import threading
+    import time
+
+    import leadcrawler.api.dedup as dedup_mod
+
+    gate = threading.Event()
+    real = dedup_mod._run_refresh
+
+    def _blocking_refresh(session):  # noqa: ANN001
+        gate.wait(2.0)  # 두 번째 요청이 running 을 만나도록 첫 작업을 잠시 멈춘다.
+        return real(session)
+
+    monkeypatch.setattr(dedup_mod, "_run_refresh", _blocking_refresh)
+    admin = _client(app, _ADMIN)
+    assert admin.post("/dedup/refresh").status_code == 202  # 실행 시작(블록 중)
+    assert admin.post("/dedup/refresh").status_code == 409  # 이미 실행 중 → 거부
+    gate.set()  # 첫 작업 진행 재개
+    for _ in range(200):
+        if admin.get("/dedup/refresh/status").json()["status"] == "done":
+            break
+        time.sleep(0.02)
+
+
+def test_refresh_job_session_failure_sets_error_not_stuck(monkeypatch) -> None:
+    # 세션 생성 실패(DB 접속 불가)에도 status 가 running 에 고착되지 않고 error 로 풀린다.
+    import time
+
+    import leadcrawler.api.dedup as dedup_mod
+
+    def _boom(_settings):  # noqa: ANN001
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(dedup_mod, "get_sessionmaker", _boom)
+    job = dedup_mod._RefreshJob()
+    assert job.start() is True
+    snap = job.snapshot()
+    for _ in range(200):
+        snap = job.snapshot()
+        if snap.status != "running":
+            break
+        time.sleep(0.01)
+    assert snap.status == "error" and "db down" in (snap.error or "")
+    assert job.start() is True  # 고착 아님 — 재시작 가능(running 가드에 막히지 않음)
 
 
 def test_api_list_merge_flow(app) -> None:
     admin = _client(app, _ADMIN)
-    admin.post("/dedup/refresh")
+    _refresh_and_wait(admin)
     worker = _client(app, _WORKER)
     items = worker.get("/dedup/candidates").json()["items"]
     assert len(items) == 1
@@ -219,7 +281,7 @@ def test_api_list_merge_flow(app) -> None:
 
 def test_api_separate_and_missing(app) -> None:
     admin = _client(app, _ADMIN)
-    admin.post("/dedup/refresh")
+    _refresh_and_wait(admin)
     worker = _client(app, _WORKER)
     cid = worker.get("/dedup/candidates").json()["items"][0]["id"]
     assert worker.post(f"/dedup/candidates/{cid}/separate").status_code == 200

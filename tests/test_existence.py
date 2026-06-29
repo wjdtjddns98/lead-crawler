@@ -350,10 +350,14 @@ class _Render:
     def __init__(self, html) -> None:
         self.html = html
         self.calls = 0
+        self.closed = False
 
     def render(self, domain: str) -> str | None:
         self.calls += 1
         return self.html
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _headless_verify(html, *, headless: bool, site: bool = True):
@@ -391,3 +395,80 @@ def test_headless_dry_run_skips_render() -> None:
     render = _Render("buy this domain")
     v = ExistenceVerifier(Settings(dry_run=True, verify_headless=True), render_probe=render)
     assert v.verify("acme.com").is_active is True and render.calls == 0
+
+
+# === D: PlaywrightRender 브라우저 재사용(콜드스타트 제거) ====================
+
+class _FakePage:
+    def __init__(self, fail_schemes: tuple[str, ...] = ()) -> None:
+        self.fail = set(fail_schemes)
+        self.gotos: list[str] = []
+        self.closed = False
+
+    def goto(self, url, timeout, wait_until):  # noqa: ANN001, ARG002
+        self.gotos.append(url)
+        if url.split("://", 1)[0] in self.fail:
+            raise RuntimeError("nav fail")
+
+    def content(self) -> str:
+        return "<html>rendered</html>"
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeBrowser:
+    def __init__(self, page: _FakePage) -> None:
+        self._page = page
+        self.new_page_calls = 0
+        self.closed = False
+
+    def new_page(self) -> _FakePage:
+        self.new_page_calls += 1
+        return self._page
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_render_reuses_browser_across_calls() -> None:
+    from leadcrawler.verify.existence import PlaywrightRender
+
+    r = PlaywrightRender(timeout=1.0)
+    page = _FakePage()
+    browser = _FakeBrowser(page)
+    r._browser = browser  # 기동 우회(_ensure True) — 재사용 검증.
+    assert r.render("a.com") == "<html>rendered</html>"
+    assert r.render("b.com") == "<html>rendered</html>"
+    assert browser.new_page_calls == 2  # 페이지는 매 호출 생성
+    assert browser.closed is False  # 브라우저는 재사용(닫지 않음)
+    r.close()
+    assert browser.closed is True  # close() 가 정리
+
+
+def test_render_falls_back_https_to_http() -> None:
+    from leadcrawler.verify.existence import PlaywrightRender
+
+    r = PlaywrightRender()
+    page = _FakePage(fail_schemes=("https",))
+    r._browser = _FakeBrowser(page)
+    assert r.render("a.com") == "<html>rendered</html>"
+    assert page.gotos == ["https://a.com", "http://a.com"]  # https 실패→http 폴백
+    assert page.closed is True  # 페이지 정리(finally)
+
+
+def test_render_caches_unavailability() -> None:
+    from leadcrawler.verify.existence import PlaywrightRender
+
+    r = PlaywrightRender()
+    r._unavailable = True  # 미설치/기동실패 캐시 → 재시도 안 함.
+    assert r._ensure() is False
+    assert r.render("a.com") is None
+
+
+def test_verifier_close_propagates_to_render_probe() -> None:
+    # ExistenceVerifier.close() 가 재사용 렌더러 자원정리(close)를 전파한다(브라우저 누수 방지).
+    render = _Render("<html>x</html>")
+    v = ExistenceVerifier(Settings(dry_run=False, verify_headless=True), render_probe=render)
+    v.close()  # close() 는 주입된 프로브를 순회 정리(네트워크 불필요).
+    assert render.closed is True

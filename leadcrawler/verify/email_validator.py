@@ -191,8 +191,14 @@ class EmailValidator:
             or frm.endswith(("example.com", "example.org", "example.net", ".local"))
         )
 
-    def validate(self, email: str, company_domain: str | None = None) -> EmailValidation:
-        """이메일 1건을 검증해 :class:`EmailValidation` 을 반환한다."""
+    def validate(
+        self, email: str, company_domain: str | None = None, *, deep: bool = True
+    ) -> EmailValidation:
+        """이메일 1건을 검증해 :class:`EmailValidation` 을 반환한다.
+
+        ``deep`` 이 False 면 형식·MX·도메인일치까지만 하고 SMTP RCPT·딜리버러빌리티(유료)는
+        건너뛴다 — 선택되지 않은 후보의 핸드셰이크·과금 곱셈을 줄이기 위한 경량 경로다.
+        """
         now = datetime.now(timezone.utc)
         if not _format_ok(email):
             return EmailValidation(status=ValidationStatus.INVALID, checked_at=now)
@@ -216,7 +222,7 @@ class EmailValidator:
         # 2차(opt-in 라이브): SMTP RCPT 프로브로 보정.
         smtp_result = SMTP_UNKNOWN
         provider = "dry_run" if self.settings.dry_run else "mx"
-        if mx and not self.settings.dry_run and self.settings.email_smtp_check:
+        if deep and mx and not self.settings.dry_run and self.settings.email_smtp_check:
             if self._placeholder_from():
                 # 예약/빈 MAIL FROM 으로 라이브 프로브 시 차단·오판 위험 → 스킵(MX 판정 유지).
                 log.info("smtp.skip.placeholder_from", mail_from=self.settings.email_smtp_from)
@@ -232,7 +238,8 @@ class EmailValidator:
         # 3차(opt-in 라이브·유료): 딜리버러빌리티 API 로 최종 보정. 이미 INVALID 면
         # 제외 확정이라 과금 호출을 아낀다(VALID/RISKY 만 질의).
         if (
-            mx
+            deep
+            and mx
             and not self.settings.dry_run
             and self.settings.email_deliverability_check
             and status is not ValidationStatus.INVALID

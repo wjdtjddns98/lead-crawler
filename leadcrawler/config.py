@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     # 제3자 DB에 이메일을 질의해 수신가능 여부를 권위있게 보정. 호출당 과금/크레딧이라 기본
     # off, 키 있는 제공자만 활성(ZeroBounce→NeverBounce 순). dry_run 미경유.
     email_deliverability_check: bool = Field(default=False)
+    # 후보 전수 심층검증 — True(기본)면 모든 이메일 후보에 SMTP/딜리버러빌리티를 수행(선택 UI
+    # 신호 풍부). False 면 선택 이메일(candidates[0])만 심층검증하고 나머지는 형식/MX 까지만 —
+    # 후보 수만큼 곱해지던 SMTP 핸드셰이크·유료 호출을 줄인다(처리량·비용 절감, 산출 선택은 동일).
+    validate_all_candidates: bool = Field(default=True)
 
     # AI (Claude Vision)
     anthropic_api_key: str = Field(default="")
@@ -97,6 +101,10 @@ class Settings(BaseSettings):
     # 수집 파이프라인 inline 중복 승격(C5, opt-in) — 정확 dedup 통과한 신규 리드를 기존
     # 원장과 near_dup 대조, 최상위(auto) 티어면 재추출 없이 흡수(제약①). off 면 기존 동작.
     dedup_inline: bool = Field(default=False)
+    # 수집 시점 도메인 없는(name: 티어) 신규 기업을 기존 name: 티어와 렉시컬(이름) 대조해
+    # 유사쌍을 dedup_candidate(워크벤치 pending)로 적재(opt-in). **자동 스킵/머지 안 함** —
+    # 동명이인 리드손실 방지(제약②)라 사람 확정 위임. off 면 기존 동작(회귀 0).
+    dedup_inline_lexical: bool = Field(default=False)
 
     # 아웃리치 이메일 발송(확정큐 전체발송) — Gmail SMTP 등. 외부행위라 기본 off(dry-run):
     # email_send_enabled=true 라야 실발송, 아니면 수신 미리보기·로그만 남기고 안 보낸다.
