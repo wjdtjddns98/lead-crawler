@@ -16,6 +16,8 @@ import os
 import pytest
 from sqlalchemy import select
 
+from datetime import datetime, timezone
+
 from leadcrawler.config import Settings
 from leadcrawler.dedup import canonical_key
 from leadcrawler.models import (
@@ -25,11 +27,14 @@ from leadcrawler.models import (
     ContactType,
     EmailRole,
     EmailValidation,
+    Listed,
     ValidationStatus,
 )
-from leadcrawler.schema import Base, CompanyRow, DiscoveredCompanyRow, EmailValidationRow
-from leadcrawler.storage.db import get_engine, session_scope
+from leadcrawler.schema import Base, CompanyRow, DiscoveredCompanyRow, EmailValidationRow, UserRow
+from leadcrawler.security import create_user
+from leadcrawler.storage.db import get_engine, get_sessionmaker, session_scope
 from leadcrawler.storage.repository import load_seen_keys, save_lead
+from leadcrawler.storage.review import claim_work
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("LEADCRAWLER_PG_TEST"),
@@ -93,3 +98,70 @@ def test_pg_datetime_is_timezone_aware(pg_settings: Settings) -> None:
         row = s.scalars(select(DiscoveredCompanyRow)).first()
         assert row is not None
         assert row.first_seen.tzinfo is not None
+
+
+# ── Filtered Claim — PG 동시성(SKIP LOCKED + 조인 잠금 회귀) ──────────────────
+
+_T0 = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+
+
+def _seed_filtered(pg_settings: Settings) -> tuple[str, str]:
+    """KR 4 + US/listed 6 회사 + 두 직원 시드 → (alice_id, bob_id)."""
+    rows = [(f"kr{i}.com", "KR", "건설", Listed.UNKNOWN) for i in range(4)]
+    rows += [(f"us{i}.com", "US", "Finance", Listed.LISTED) for i in range(6)]
+    with session_scope(pg_settings) as s:
+        for dom, country, industry, listed in rows:
+            lead = CompanyLead(
+                company=Company(
+                    canonical_key=f"dom:{dom}", name=dom, country=country, industry=industry,
+                    domain=dom, is_active=True, site_alive=True, listed=listed,
+                ),
+                email=Contact(type=ContactType.EMAIL, value=f"ir@{dom}", role=EmailRole.IR),
+                email_validation=EmailValidation(status=ValidationStatus.VALID, mx=True),
+            )
+            save_lead(s, lead, source="t")
+        create_user(s, "alice", "pw-12345678")
+        create_user(s, "bob", "pw-12345678")
+    with session_scope(pg_settings) as s:
+        a = s.scalar(select(UserRow.id).where(UserRow.username == "alice"))
+        b = s.scalar(select(UserRow.id).where(UserRow.username == "bob"))
+    return a, b
+
+
+def test_pg_concurrent_claim_same_filter_disjoint(pg_settings: Settings) -> None:
+    """두 직원이 **같은 필터**로 동시 claim — SKIP LOCKED 로 행겹침 0(조인 있어도 회귀 없음)."""
+    a, b = _seed_filtered(pg_settings)
+    sm = get_sessionmaker(pg_settings)
+    sa, sb = sm(), sm()
+    try:
+        # alice 의 트랜잭션이 열린(미커밋) 상태에서 bob 가 같은 US 풀을 claim → 잠긴 행 건너뜀.
+        ai = claim_work(sa, a, target=4, ttl_minutes=30, now=_T0, countries=["US"], listed="listed")
+        bi = claim_work(sb, b, target=4, ttl_minutes=30, now=_T0, countries=["US"], listed="listed")
+        sa.commit()
+        sb.commit()
+    finally:
+        sa.close()
+        sb.close()
+    aids = {it["id"] for it in ai}
+    bids = {it["id"] for it in bi}
+    assert not (aids & bids)  # 행겹침 0 — of=ReviewQueueRow SKIP LOCKED 가 조인하에서도 작동.
+    assert len(ai) == 4 and len(bi) == 2  # US/listed 6건을 4 + 2 로 분할(중복 없음).
+    assert all(it["country"] == "US" for it in ai + bi)
+
+
+def test_pg_concurrent_claim_different_filters(pg_settings: Settings) -> None:
+    """두 직원이 **다른 필터**로 동시 claim — 각자 범위만, 잠금 충돌/에러 없음."""
+    a, b = _seed_filtered(pg_settings)
+    sm = get_sessionmaker(pg_settings)
+    sa, sb = sm(), sm()
+    try:
+        ai = claim_work(sa, a, target=10, ttl_minutes=30, now=_T0, countries=["KR"])
+        bi = claim_work(sb, b, target=10, ttl_minutes=30, now=_T0, countries=["US"])
+        sa.commit()
+        sb.commit()
+    finally:
+        sa.close()
+        sb.close()
+    assert {it["country"] for it in ai} == {"KR"} and len(ai) == 4
+    assert {it["country"] for it in bi} == {"US"} and len(bi) == 6
+    assert not ({it["id"] for it in ai} & {it["id"] for it in bi})

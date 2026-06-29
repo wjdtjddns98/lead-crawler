@@ -59,6 +59,18 @@ class QueueResponse(BaseModel):
     offset: int
 
 
+class ClaimRequest(BaseModel):
+    """당겨가기 작업범위 필터(전부 선택, 빈값=전체) — 직원이 스스로 거는 세션 필터.
+
+    국가/업종은 ``/export``·``/send`` 와 동일한 쉼표구분 CSV 규약을 재사용한다. ``listed`` 는
+    화이트리스트 검증(잘못된 값은 FastAPI 가 422). 본문 생략/빈 객체 = 전체(하위호환).
+    """
+
+    country: str = ""  # 쉼표구분 ISO2/별칭(country_match_set 로 별칭 확장)
+    industry: str = ""  # 쉼표구분 업종(대소문자 무시 매칭)
+    listed: Literal["", "listed", "unlisted", "unknown"] = ""  # 빈값=전체
+
+
 class ConfirmRequest(BaseModel):
     """확정 요청 본문 — 사람이 고른 최종 이메일 후보(선택)."""
 
@@ -143,6 +155,18 @@ class IndustryOption(BaseModel):
     value: str  # 저장값(쉼표구분 업종의 한 토큰, 한글 표준 업종명)
     label: str  # 표시명(한글)
     aliases: list[str] = []  # 검색용 별칭(영문 — 'construction'→건설 등 매칭)
+
+
+class QueueFilterOptions(BaseModel):
+    """작업범위 필터 옵션(직원 접근) — 국가/업종/상장 셀렉트의 단일 출처.
+
+    옵션 출처는 ``/admin/countries``·``/admin/industries`` 와 동일하나, 직원(worker)도
+    필요하므로 admin 라우트를 오염시키지 않고 별도 비관리자 경로로 노출한다.
+    """
+
+    countries: list[CountryOption]
+    industries: list[IndustryOption]
+    listed: list[str]  # 고정 3값(listed/unlisted/unknown)
 
 
 class SendPreview(BaseModel):
