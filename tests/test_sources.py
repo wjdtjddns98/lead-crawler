@@ -334,3 +334,150 @@ def test_discover_segment_ph_routes_pse_aggregators_search() -> None:
     assert sources == {"pse", "gleif", "wikidata", "opencorporates", "search"}
     keys = [r.canonical_key for r in rows]
     assert len(keys) == len(set(keys))  # 병합 후 중복 없음(제약 ①).
+
+
+# ── ① 유료 검색 비용 가드: 글로벌 seen 인지 + 페이지 중복률 조기중단 ──────────────
+
+
+class _FakeProvider:
+    """검색 공급자 스텁 — 호출수 카운트 + 페이지별 결과 주입(CSE 다페이지 모사)."""
+
+    page_size = 10
+    max_start = 91
+
+    def __init__(self, pages: list[list[dict]]) -> None:
+        self.pages = pages
+        self.calls = 0
+
+    def fetch_page(self, query: str, *, gl: str, lr: str, start: int) -> list[dict]:  # noqa: ARG002
+        self.calls += 1
+        idx = (start - 1) // self.page_size
+        return self.pages[idx] if idx < len(self.pages) else []
+
+
+def _page(*roots: str) -> list[dict]:
+    """도메인 root 들로 검색결과 페이지(link+title) 생성."""
+    return [{"link": f"https://{r}.com", "title": r.capitalize()} for r in roots]
+
+
+def test_search_live_filters_global_seen_domains() -> None:
+    """① seen 에 있는 도메인은 산출에서 빠지고 신규만 반환된다(중복 비적재)."""
+    provider = _FakeProvider([_page("acme0", "acme1", "acme2")])
+    src = SearchSource(Settings(dry_run=False))
+    seg = Segment(country="KR", industry="건설")
+    rows = src._live(seg, provider, seen={"acme0.com"})  # acme0 는 글로벌 기지(중복).
+    domains = {r.domain for r in rows}
+    assert domains == {"acme1.com", "acme2.com"}  # acme0 제외, 신규만.
+
+
+def test_search_live_early_aborts_on_low_new_ratio() -> None:
+    """① 페이지 신규 비율이 search_min_new_ratio 미만이면 다음 페이지를 사지 않는다."""
+    # page1: 10개 중 9개가 기지(seen) → 신규비율 0.1 < 0.2 → page2 fetch 안 함.
+    p1 = _page(*[f"d{i}" for i in range(10)])
+    p2 = _page(*[f"e{i}" for i in range(10)])
+    provider = _FakeProvider([p1, p2])
+    src = SearchSource(Settings(dry_run=False))
+    seg = Segment(country="KR", industry="건설")
+    seen = {f"d{i}.com" for i in range(9)}  # d0..d8 기지, d9 만 신규.
+    rows = src._live(seg, provider, seen=seen)
+    assert provider.calls == 1  # 조기중단 — page2 과금 안 함.
+    assert {r.domain for r in rows} == {"d9.com"}
+
+
+def test_search_live_no_seen_is_backward_compatible() -> None:
+    """① seen=None 이면 기존처럼 전량 페이징(조기중단 없음, 회귀 0)."""
+    p1 = _page(*[f"d{i}" for i in range(10)])
+    p2 = _page(*[f"e{i}" for i in range(10)])
+    provider = _FakeProvider([p1, p2])
+    src = SearchSource(Settings(dry_run=False))
+    seg = Segment(country="KR", industry="건설")
+    rows = src._live(seg, provider, seen=None)
+    assert provider.calls == 3  # page1·page2·빈page(종료) — 끝까지 페이징.
+    assert len(rows) == 20  # 전부 신규로 적재.
+
+
+# ── ② 글로벌 seen 주입 + 무료-우선 유료검색 스킵 ─────────────────────────────
+
+
+class _FreeSrc:
+    """무료(비검색) 발견 소스 스텁."""
+
+    name = "freesrc"
+
+    def __init__(self, results: list) -> None:
+        self._results = results
+
+    def applies_to(self, segment: Segment) -> bool:  # noqa: ARG002
+        return True
+
+    def discover(self, segment: Segment) -> list:  # noqa: ARG002
+        return list(self._results)
+
+
+class _SpySearch(SearchSource):
+    """SearchSource 스파이 — discover 호출수·주입된 seen 기록(isinstance 게이트 통과용 서브클래스)."""
+
+    def __init__(self, settings: Settings, results: list) -> None:
+        super().__init__(settings)
+        self.calls = 0
+        self.seen_arg: set | None = None
+        self._results = results
+
+    def applies_to(self, segment: Segment) -> bool:  # noqa: ARG002
+        return True
+
+    def discover(self, segment: Segment, *, seen: set | None = None) -> list:  # noqa: ARG002
+        self.calls += 1
+        self.seen_arg = seen
+        return list(self._results)
+
+
+def test_discover_segment_injects_global_and_segment_seen_to_search() -> None:
+    """② 검색 소스에 (글로벌 ∪ 이번 세그먼트 무료소스 도메인)을 seen 으로 주입한다."""
+    from leadcrawler.sources.base import DiscoveredCompany
+
+    free = _FreeSrc([DiscoveredCompany(
+        canonical_key="reg:dart:001", name="삼성", domain="samsung.com", source="freesrc",
+    )])
+    spy = _SpySearch(_dry_settings(), results=[DiscoveredCompany(
+        canonical_key="dom:new.com", name="뉴", domain="new.com", source="search",
+    )])
+    rows = discover_segment(
+        Segment(country="KR", industry="제조"), _dry_settings(),
+        sources=[free, spy], seen_domains={"db-seed.com"},
+    )
+    # 글로벌(db-seed) + 세그먼트 내 무료소스(samsung) 도메인이 검색에 주입됐다.
+    assert spy.seen_arg == {"db-seed.com", "samsung.com"}
+    assert spy.calls == 1
+    assert {r.domain for r in rows} == {"samsung.com", "new.com"}
+
+
+def test_discover_segment_skips_paid_search_when_free_covers() -> None:
+    """② 무료 소스가 search_skip_if_free_ge 이상 신규를 찾으면 유료 검색 호출 자체를 스킵."""
+    from leadcrawler.sources.base import DiscoveredCompany
+
+    free = _FreeSrc([DiscoveredCompany(
+        canonical_key="reg:dart:001", name="삼성", domain="samsung.com", source="freesrc",
+    )])
+    spy = _SpySearch(_dry_settings(search_skip_if_free_ge=1), results=[])
+    rows = discover_segment(
+        Segment(country="KR", industry="제조"),
+        _dry_settings(search_skip_if_free_ge=1),
+        sources=[free, spy],
+    )
+    assert spy.calls == 0  # 무료가 1건 커버 → 유료 검색 미호출(비용 절감).
+    assert {r.source for r in rows} == {"freesrc"}
+
+
+def test_discover_segment_skip_disabled_by_default() -> None:
+    """② search_skip_if_free_ge=0(기본)이면 무료가 찾아도 유료 검색은 정상 호출(하위호환)."""
+    from leadcrawler.sources.base import DiscoveredCompany
+
+    free = _FreeSrc([DiscoveredCompany(
+        canonical_key="reg:dart:001", name="삼성", domain="samsung.com", source="freesrc",
+    )])
+    spy = _SpySearch(_dry_settings(), results=[])  # 기본 skip_ge=0.
+    discover_segment(
+        Segment(country="KR", industry="제조"), _dry_settings(), sources=[free, spy],
+    )
+    assert spy.calls == 1  # 스킵 비활성 → 검색 호출됨.

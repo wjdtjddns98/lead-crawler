@@ -276,7 +276,11 @@ def run_pipeline(
                 cancelled = True
                 break
             for dc in discover_segment(
-                segment, settings, cost_ledger=cost_ledger, sources=disco_sources
+                segment,
+                settings,
+                cost_ledger=cost_ledger,
+                sources=disco_sources,
+                seen_domains=seen_domains,  # 글로벌 dedup 시드 주입 — 유료 검색 비과금(제약①·②).
             ):
                 if should_cancel is not None and should_cancel():
                     cancelled = True

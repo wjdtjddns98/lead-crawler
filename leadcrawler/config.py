@@ -128,6 +128,16 @@ class Settings(BaseSettings):
     # 보수적 50 에서 크게 올린다(등록처 유니버스까지 깊게 긁음). 과도한 호출은 target_count
     # 조기종료 + cost_ledger 예산 가드 + 취소로 막는다(무한 캡 대신 '깊은 캡 + N 에서 정지').
     discovery_max_per_source: int = Field(default=500)
+    # 유료 검색(Serper/CSE) 비용 가드 — 글로벌 seen(DB시드+런 누적)을 검색에 주입해 중복에
+    # 돈을 쓰지 않게 한다. ① 한 페이지의 실후보 대비 신규 비율이 이 값 미만이면 다음 페이지를
+    # 더 사지 않고 페이징 중단(CSE 다페이지 절감). 0.0 이면 항상 끝까지 페이징(기존 동작).
+    # 주의: 신규 도메인이 뒤페이지에 몰린 쿼리는 과소수확 가능. 주공급자 Serper 는 1페이지/세그
+    # (조기중단 무관)라 실질 무해, CSE(다페이지·폐기경로)에서만 영향 — 보수적 0.2 기본.
+    search_min_new_ratio: float = Field(default=0.2)
+    # ② 무료 등록처가 한 세그먼트에서 신규 N건 이상 발견하면 그 세그먼트의 유료 검색 호출을
+    # 통째로 건너뛴다(Serper 1콜/세그먼트 바닥까지 절감). 0=비활성(유료검색 항상 실행).
+    # 주의: 올리면 비용↓이지만 등록처에 안 잡히는 장기꼬리(비상장 SME) 발견이 줄 수 있다.
+    search_skip_if_free_ge: int = Field(default=0)
     http_request_delay: float = Field(default=0.12)  # 요청 간 최소 간격(초)
     http_timeout: float = Field(default=15.0)
     # 무키 집계원(GLEIF/Wikidata) 공통 UA. Wikidata WDQS 는 WMF 로봇 정책상 연락처

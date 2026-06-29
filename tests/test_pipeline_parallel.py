@@ -16,7 +16,7 @@ from leadcrawler.storage.db import init_db
 
 
 def _many(n: int):
-    def _disc(segment, settings, cost_ledger=None, *, sources=None):  # noqa: ARG001
+    def _disc(segment, settings, cost_ledger=None, *, sources=None, seen_domains=None):  # noqa: ARG001
         return [
             DiscoveredCompany(canonical_key=f"dom:c{i}.com", name=f"C{i}", domain=f"c{i}.com")
             for i in range(n)

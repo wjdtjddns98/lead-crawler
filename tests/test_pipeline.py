@@ -22,7 +22,7 @@ def test_target_saved_stops_early(monkeypatch) -> None:
     """target_saved 도달 시 남은 세그먼트를 돌지 않고 조기 종료('정해진 양만큼 뽑고 멈춤')."""
     import leadcrawler.pipeline.run as run_mod
 
-    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None):  # noqa: ARG001
+    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None, seen_domains=None):  # noqa: ARG001
         # 세그먼트마다 활성 더미 5개(도메인 유일 → dedup 스킵 안 됨).
         return [
             DiscoveredCompany(
@@ -50,7 +50,7 @@ def test_target_saved_overshoots_by_batch_with_workers(monkeypatch) -> None:
     """
     import leadcrawler.pipeline.run as run_mod
 
-    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None):  # noqa: ARG001
+    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None, seen_domains=None):  # noqa: ARG001
         # 단일 세그먼트에서 20건 발견 → 배치(8) 경계에서 flush.
         return [
             DiscoveredCompany(
@@ -74,7 +74,7 @@ def test_no_target_processes_all_segments(monkeypatch) -> None:
     """target_saved=None(기본)이면 주어진 세그먼트를 전부 소진(continuous, 회귀 0)."""
     import leadcrawler.pipeline.run as run_mod
 
-    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None):  # noqa: ARG001
+    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None, seen_domains=None):  # noqa: ARG001
         return [
             DiscoveredCompany(
                 canonical_key=f"dom:{segment.industry}{i}.com",
@@ -103,7 +103,7 @@ def test_cross_segment_domain_dedup(monkeypatch) -> None:
     # 같은 도메인을 서로 다른 세그먼트가 다른 key(reg:/dom:)로 잡아도 런 전체에서 1회만 추출.
     from leadcrawler.sources.base import DiscoveredCompany
 
-    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None):  # noqa: ARG001
+    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None, seen_domains=None):  # noqa: ARG001
         if segment.industry == "건설":
             return [DiscoveredCompany(
                 canonical_key="reg:dart:001", name="삼성", domain="samsung.com",
@@ -156,7 +156,7 @@ def test_should_cancel_midway_preserves_processed(monkeypatch) -> None:
     # 첫 기업 처리 후 취소 신호 → 처리된 분은 보존, 이후 기업은 중단.
     from leadcrawler.sources.base import DiscoveredCompany
 
-    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None):  # noqa: ARG001
+    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None, seen_domains=None):  # noqa: ARG001
         return [
             DiscoveredCompany(
                 canonical_key="dom:a.com", name="A", domain="a.com", source="search"
