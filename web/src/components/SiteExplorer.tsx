@@ -105,15 +105,21 @@ export function SiteExplorer({
   const popupRef = useRef<Window | null>(null);
   const slotRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    if (activeHref) popupRef.current = openSitePopup(activeHref, slotRef.current);
+    if (!activeHref) return;
+    // 이미 열린 팝업이 있으면 재사용 — window.open(name) 재호출은 features 가 있으면 기존
+    // 창을 새 URL 로 이동시키지 않는 브라우저가 있어(자동 전진 시 빈 창), location 으로 직접
+    // 이동시킨다(교차출처 이동은 허용). 위치는 같은 슬롯이라 유지. 없거나 닫혔으면 새로 연다.
+    const win = popupRef.current;
+    if (win && !win.closed) win.location.href = activeHref;
+    else popupRef.current = openSitePopup(activeHref, slotRef.current);
   }, [activeHref]);
   useEffect(() => () => popupRef.current?.close(), []);
 
-  // 실제 확정 — 확인창을 닫고 선택 이메일로 확정한 뒤 모달을 닫는다(테이블이 결과 반영).
+  // 실제 확정 — 확인창을 닫고 선택 이메일로 확정한다. 모달 닫기/다음 행 전진은 부모가
+  // 처리 성공 여부를 보고 결정하므로(성공만 전진, 실패는 현재 항목 유지) 여기선 닫지 않는다.
   const doConfirm = () => {
     setConfirming(false);
     onConfirm(item.id, choice?.trim() ? choice.trim() : undefined);
-    onClose();
   };
 
   // 키보드: Enter=확정(1차 확인창 → 2차 실제 확정), Esc=확인창 닫기 또는 모달 닫기.
@@ -306,25 +312,20 @@ export function SiteExplorer({
               <span className="text-muted whitespace-nowrap">SMTP {tri(item.email_smtp)}</span>
             </div>
 
-            {/* 확정 / 거부 — 처리 후 윈도우를 닫는다(테이블이 결과/오류를 반영). */}
+            {/* 확정 / 거부 — 모달 닫기/다음 행 전진은 부모가 처리 성공 시에만 수행한다
+                (성공만 전진, 실패는 현재 항목·에러 유지). 여기선 처리 요청만 보낸다. */}
             <div className="flex gap-2 mt-auto">
               <button
                 className={`${BTN_CONFIRM} flex-1`}
                 disabled={busy || item.status === "confirmed"}
-                onClick={() => {
-                  onConfirm(item.id, choice?.trim() ? choice.trim() : undefined);
-                  onClose();
-                }}
+                onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
               >
                 확정
               </button>
               <button
                 className={`${BTN_REJECT} flex-1`}
                 disabled={busy || item.status === "rejected"}
-                onClick={() => {
-                  onReject(item.id);
-                  onClose();
-                }}
+                onClick={() => onReject(item.id)}
               >
                 거부
               </button>

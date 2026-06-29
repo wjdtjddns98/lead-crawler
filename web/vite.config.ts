@@ -14,6 +14,7 @@ export default defineConfig({
       "/auth": API_TARGET,
       "/admin": API_TARGET,
       "/queue": API_TARGET,
+      "/send": API_TARGET,
       "/export": API_TARGET,
       "/health": API_TARGET,
     },
