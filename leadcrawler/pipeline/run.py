@@ -78,7 +78,13 @@ def _build_lead(
     email = candidates[0] if candidates else None
     phone = next((c for c in contacts if c.type is ContactType.PHONE), None)
     form = next((c for c in contacts if c.type is ContactType.FORM), None)
-    ex = existence.verify(dc.domain, registry=dc.registry, registry_id=dc.registry_id)
+    # enrich 가 이미 받은 home 생존신호를 넘겨 실존검증의 중복 HTTP 왕복을 없앤다(architect C).
+    ex = existence.verify(
+        dc.domain,
+        registry=dc.registry,
+        registry_id=dc.registry_id,
+        home_html=enricher.last_home_html,
+    )
     company = Company(
         canonical_key=dc.canonical_key,
         name=dc.name,
