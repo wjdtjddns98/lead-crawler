@@ -297,3 +297,13 @@ class DedupRefreshResult(BaseModel):
     skipped: int = 0
     total_candidates: int = 0  # 리포트가 찾은 전체 후보(워크벤치 적재 대상 외 포함)
     total_records: int = 0  # 비교 대상 발견 레코드 수
+
+
+class DedupRefreshStatus(BaseModel):
+    """후보 재적재 백그라운드 작업 상태(폴링) — 대용량서 요청을 막지 않게 비동기 실행."""
+
+    status: str  # idle | running | done | error
+    started_at: str | None = None  # ISO8601(UTC)
+    finished_at: str | None = None
+    error: str | None = None  # status==error 일 때 사유
+    result: DedupRefreshResult | None = None  # status==done 일 때 적재 결과
