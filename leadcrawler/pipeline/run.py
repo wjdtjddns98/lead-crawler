@@ -98,8 +98,16 @@ def _build_lead(
         existence_confidence=ex.confidence,
         site_alive=ex.site_alive,
     )
-    # 후보별 검증(MX/도메인/SMTP·딜리버러빌리티 opt-in) — 선택 UI 에 신호 제공.
-    validations = {c.value: email_validator.validate(c.value, dc.domain) for c in candidates}
+    # 후보별 검증(MX/도메인/SMTP·딜리버러빌리티) — 선택 UI 에 신호 제공. validate_all_candidates
+    # 가 꺼지면 선택 이메일(candidates[0])만 심층검증(SMTP/유료)하고 나머지는 형식/MX 까지만 —
+    # 후보 수만큼 곱해지던 SMTP 핸드셰이크·유료 호출을 줄인다(산출의 선택 이메일 신호는 동일).
+    deep_all = email_validator.settings.validate_all_candidates
+    validations = {
+        c.value: email_validator.validate(
+            c.value, dc.domain, deep=deep_all or (email is not None and c.value == email.value)
+        )
+        for c in candidates
+    }
     validation = (
         validations.get(email.value, EmailValidation()) if email else EmailValidation()
     )
