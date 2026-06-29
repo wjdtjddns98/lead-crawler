@@ -28,6 +28,9 @@ _CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
 _COMPANY_URL = "https://opendart.fss.or.kr/api/company.json"
 # 상장 시장 구분(corp_cls): 유가증권(Y)/코스닥(K)/코넥스(N).
 _LISTED_CLS = {"Y": "listed", "K": "listed", "N": "listed"}
+# 업종 필터 시 cap*10 까지 넓게 스캔하되, 후보당 company.json 1 콜이 발생하므로(무료 쿼터
+# 보호) 절대 상한을 둔다 — 예산가드는 Serper 유료검색에만 걸려 무료 등록처는 무방비라서다.
+_SCAN_LIMIT_ABS = 2000
 
 
 class DartSource:
@@ -96,8 +99,8 @@ class DartSource:
         except Exception as exc:  # 깨진 ZIP/응답이면 전체 크래시 대신 빈 결과.
             log.info("dart.corpcode.error", err=str(exc))
             return []
-        # 업종 필터가 없으면 상한만큼만, 있으면 더 넓게 스캔(상한*10)하며 매칭 수집.
-        scan_limit = cap if prefixes is None else cap * 10
+        # 업종 필터가 없으면 상한만큼만, 있으면 더 넓게 스캔(상한*10·절대상한 cap)하며 매칭 수집.
+        scan_limit = cap if prefixes is None else min(cap * 10, _SCAN_LIMIT_ABS)
 
         out: list[DiscoveredCompany] = []
         for corp_code, corp_name in listed[:scan_limit]:
