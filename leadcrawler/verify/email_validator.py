@@ -122,6 +122,22 @@ class EmailValidator:
         self._deliverability_built = deliverability_checker is not None
         self._cost_ledger = cost_ledger
         self._deliv_fetcher: object | None = None  # 지연 생성 Fetcher(close 대상).
+        # 도메인 MX 조회 메모이즈 — 같은 회사 도메인 후보 N개의 DNS MX 왕복을 1회로 축약.
+        self._mx_cache: dict[str, tuple[bool, list[str]]] = {}
+
+    def _mx(self, email_domain: str) -> tuple[bool, list[str]]:
+        """도메인 MX 조회를 인스턴스 범위로 메모이즈한다(같은 도메인 후보 N회→1회).
+
+        같은 회사 도메인의 이메일 후보가 여럿이면 동일 MX 를 반복 조회하던 DNS 왕복을
+        제거한다(negative 결과도 캐시해 죽은 도메인 재조회 회피). MX 는 런 내 도메인안정
+        이고 인스턴스가 워커 스레드 전용(run.py 워커별 독립 EmailValidator)이라 스레드안전.
+        반환 호스트 리스트는 호출부에서 슬라이스만 하고 변형하지 않아 공유 안전.
+        """
+        cached = self._mx_cache.get(email_domain)
+        if cached is None:
+            cached = _resolve_mx(email_domain, self.settings)
+            self._mx_cache[email_domain] = cached
+        return cached
 
     def _prober(self) -> SupportsSmtpProbe:
         if self._smtp_prober is None:
@@ -187,7 +203,7 @@ class EmailValidator:
             if company_domain
             else False
         )
-        mx, mx_hosts = _resolve_mx(email_domain, self.settings)
+        mx, mx_hosts = self._mx(email_domain)
 
         # 1차: MX + 도메인 일치 기반 판정.
         if not mx:
