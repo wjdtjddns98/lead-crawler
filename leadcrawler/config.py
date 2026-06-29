@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     # 제3자 DB에 이메일을 질의해 수신가능 여부를 권위있게 보정. 호출당 과금/크레딧이라 기본
     # off, 키 있는 제공자만 활성(ZeroBounce→NeverBounce 순). dry_run 미경유.
     email_deliverability_check: bool = Field(default=False)
+    # 후보 전수 심층검증 — True(기본)면 모든 이메일 후보에 SMTP/딜리버러빌리티를 수행(선택 UI
+    # 신호 풍부). False 면 선택 이메일(candidates[0])만 심층검증하고 나머지는 형식/MX 까지만 —
+    # 후보 수만큼 곱해지던 SMTP 핸드셰이크·유료 호출을 줄인다(처리량·비용 절감, 산출 선택은 동일).
+    validate_all_candidates: bool = Field(default=True)
 
     # AI (Claude Vision)
     anthropic_api_key: str = Field(default="")

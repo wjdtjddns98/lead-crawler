@@ -176,6 +176,36 @@ def test_home_fetch_failure_is_not_cached() -> None:
     assert isinstance(out, list)
 
 
+def test_deep_false_skips_smtp_and_deliverability(monkeypatch) -> None:
+    # E: deep=False 면 SMTP RCPT·딜리버러빌리티(유료)를 모두 건너뛰고 형식/MX 까지만.
+    monkeypatch.setattr(ev_mod, "_resolve_mx", lambda d, s: (True, ["mx1.acme.com"]))  # noqa: ARG005
+    probe_calls: list[str] = []
+    deliv_calls: list[str] = []
+
+    class _Prober:
+        def probe(self, email, mx_hosts):  # noqa: ANN001, ARG002
+            probe_calls.append(email)
+            return ev_mod.SMTP_UNKNOWN
+
+    class _Deliv:
+        name = "stub-deliv"
+
+        def check(self, email):  # noqa: ANN001
+            deliv_calls.append(email)
+            return ev_mod.DELIV_OK
+
+    settings = Settings(
+        dry_run=False, email_smtp_check=True, email_deliverability_check=True,
+        email_smtp_from="probe@leadcrawler.io",
+    )
+    val = EmailValidator(settings, smtp_prober=_Prober(), deliverability_checker=_Deliv())
+    shallow = val.validate("info@acme.com", "acme.com", deep=False)
+    assert probe_calls == [] and deliv_calls == []  # deep=False → SMTP·딜리버러빌리티 미수행
+    assert shallow.mx is True and shallow.domain_match is True  # 형식/MX 는 수행
+    val.validate("ir@acme.com", "acme.com", deep=True)
+    assert probe_calls == ["ir@acme.com"] and deliv_calls == ["ir@acme.com"]  # deep=True → 둘 다 수행
+
+
 def test_mx_cache_preserves_validation_output(monkeypatch) -> None:
     # IO-002: 캐시 전후 validate 산출 동치(status/mx/domain_match) — 메모이즈가 결과를 안 바꾼다.
     monkeypatch.setattr(ev_mod, "_resolve_mx", lambda d, s: (True, ["mx1.acme.com"]))  # noqa: ARG005
