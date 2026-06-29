@@ -326,6 +326,20 @@ def _contact_of(row: ContactRow) -> Contact:
     )
 
 
+def _scalars_in_chunks(session: Session, build_stmt, values, *, size: int = 500):
+    """``column IN (values)`` 류 조회를 청크로 나눠 실행한 행을 모두 모은다.
+
+    SQLite 의 바인드 파라미터 한도(기본 999)를 넘지 않도록 ``size`` 씩 끊는다. PG 는 한도가
+    크지만 동일 경로로 안전하게 동작한다. ``build_stmt`` 는 청크(list)를 받아 select 를 만든다.
+    """
+    out: list = []
+    for i in range(0, len(values), size):
+        chunk = values[i : i + size]
+        if chunk:
+            out.extend(session.scalars(build_stmt(chunk)).all())
+    return out
+
+
 def load_leads(
     session: Session, *, company_ids: list[str] | None = None
 ) -> list[CompanyLead]:
@@ -335,16 +349,70 @@ def load_leads(
     회사명 정렬로 결정적 순서를 보장한다. **재저장(save_lead)용이 아니다** — 선택된
     이메일 1건만 채우고 ``email_candidates``/``email_validations`` 는 복원하지 않으므로,
     이 결과를 다시 save_lead 에 넘기면 나머지 후보가 stale 로 삭제된다.
+
+    적재는 회사당 개별 get/select(~4N 쿼리) 대신 **IN 배치**로 묶는다(2만건 export 병목
+    제거): disc/contacts/review_queue/email_validation 을 각 1세트의 청크 조회로 끌어와
+    파이썬 dict 인덱싱으로 조립한다(쿼리수 O(N/chunk)). 산출은 회사당 조립과 동일하다.
     """
     stmt = select(CompanyRow).order_by(CompanyRow.name)
     if company_ids is not None:
         if not company_ids:
             return []
         stmt = stmt.where(CompanyRow.id.in_(company_ids))
+    companies = session.scalars(stmt).all()
+    if not companies:
+        return []
+
+    ids = [c.id for c in companies]
+    keys = list({c.canonical_key for c in companies})
+    # 발견원장(상장·도메인) — canonical_key 로 1:1 인덱싱.
+    disc_by_key = {
+        d.canonical_key: d
+        for d in _scalars_in_chunks(
+            session,
+            lambda ks: select(DiscoveredCompanyRow).where(
+                DiscoveredCompanyRow.canonical_key.in_(ks)
+            ),
+            keys,
+        )
+    }
+    # 연락처 — 회사별 그룹화(반환 순서 보존: 회사당 select 와 동일한 rowid 순서로 phone/form 선택).
+    contacts_by_company: dict[str, list[ContactRow]] = {}
+    for r in _scalars_in_chunks(
+        session,
+        lambda cs: select(ContactRow).where(ContactRow.company_id.in_(cs)),
+        ids,
+    ):
+        contacts_by_company.setdefault(r.company_id, []).append(r)
+    # 검증 큐 — review_id 는 (company_id,'email')에서 파생되므로 역인덱스로 회사에 되돌린다.
+    rid_by_company = {cid: review_id_for(cid, "email") for cid in ids}
+    rq_by_id = {
+        rq.id: rq
+        for rq in _scalars_in_chunks(
+            session,
+            lambda rs: select(ReviewQueueRow).where(ReviewQueueRow.id.in_(rs)),
+            list(rid_by_company.values()),
+        )
+    }
+    # 이메일 검증 신호 — 연락처 id(=EmailValidationRow.id) 로 인덱싱(이메일 연락처만 대상).
+    email_contact_ids = [
+        r.id
+        for rows in contacts_by_company.values()
+        for r in rows
+        if r.type == ContactType.EMAIL.value
+    ]
+    ev_by_id = {
+        ev.contact_id: ev
+        for ev in _scalars_in_chunks(
+            session,
+            lambda es: select(EmailValidationRow).where(EmailValidationRow.contact_id.in_(es)),
+            email_contact_ids,
+        )
+    }
 
     leads: list[CompanyLead] = []
-    for crow in session.scalars(stmt).all():
-        disc = session.get(DiscoveredCompanyRow, crow.canonical_key)
+    for crow in companies:
+        disc = disc_by_key.get(crow.canonical_key)
         company = Company(
             id=crow.id,
             canonical_key=crow.canonical_key,
@@ -358,9 +426,7 @@ def load_leads(
             existence_confidence=crow.existence_confidence,
             site_alive=crow.site_alive,
         )
-        contacts = session.scalars(
-            select(ContactRow).where(ContactRow.company_id == crow.id)
-        ).all()
+        contacts = contacts_by_company.get(crow.id, [])
         emails = [_contact_of(r) for r in contacts if r.type == ContactType.EMAIL.value]
         phone = next(
             (_contact_of(r) for r in contacts if r.type == ContactType.PHONE.value), None
@@ -370,7 +436,7 @@ def load_leads(
         )
         # export 는 사람이 검증 웹앱에서 고른 이메일을 쓴다. DTO 표시와 **동일 규칙**
         # (effective_selected) 으로 골라 워크벤치 표시 ≠ export 불일치를 막는다.
-        rq = session.get(ReviewQueueRow, review_id_for(crow.id, "email"))
+        rq = rq_by_id.get(rid_by_company[crow.id])
         chosen = (
             effective_selected(rq.selected, candidate_values_of(rq)) if rq is not None else None
         )
@@ -381,7 +447,7 @@ def load_leads(
 
         validation = EmailValidation()
         if email is not None:
-            evrow = session.get(EmailValidationRow, email.id)
+            evrow = ev_by_id.get(email.id)
             if evrow is not None:
                 validation = EmailValidation(
                     status=ValidationStatus(evrow.status),
