@@ -394,7 +394,7 @@ def load_leads(
             list(rid_by_company.values()),
         )
     }
-    # 이메일 검증 신호 — 연락처 id(=EmailValidationRow.id) 로 인덱싱(이메일 연락처만 대상).
+    # 이메일 검증 신호 — 연락처 id(=EmailValidationRow.contact_id, PK) 로 인덱싱(이메일 연락처만 대상).
     email_contact_ids = [
         r.id
         for rows in contacts_by_company.values()

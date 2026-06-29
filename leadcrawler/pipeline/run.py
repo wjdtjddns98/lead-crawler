@@ -240,10 +240,11 @@ def run_pipeline(
 
     session: Session | None = get_sessionmaker(settings)() if persist else None
     cancelled = False
-    # 발견 소스를 런 시작에 1회만 빌드해 모든 세그먼트에 재사용한다(세그먼트마다 재생성·
-    # httpx 누수 제거 + keep-alive 연결 재사용). 발견 루프는 단일 스레드라 공유 안전.
-    disco_sources = build_sources(settings, cost_ledger)
+    disco_sources: list = []  # finally 가 항상 참조할 수 있게 try 전 바인딩(빌드 실패 시 no-op).
     try:
+        # 발견 소스를 런 시작에 1회만 빌드해 모든 세그먼트에 재사용한다(세그먼트마다 재생성·
+        # httpx 누수 제거 + keep-alive 연결 재사용). 발견 루프는 단일 스레드라 공유 안전.
+        disco_sources = build_sources(settings, cost_ledger)
         if session is not None:
             seen |= load_seen_keys(session)
             seen_domains |= load_seen_domains(session)
