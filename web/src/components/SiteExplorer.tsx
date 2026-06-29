@@ -110,8 +110,12 @@ export function SiteExplorer({
     // 창을 새 URL 로 이동시키지 않는 브라우저가 있어(자동 전진 시 빈 창), location 으로 직접
     // 이동시킨다(교차출처 이동은 허용). 위치는 같은 슬롯이라 유지. 없거나 닫혔으면 새로 연다.
     const win = popupRef.current;
-    if (win && !win.closed) win.location.href = activeHref;
-    else popupRef.current = openSitePopup(activeHref, slotRef.current);
+    if (win && !win.closed) {
+      win.location.href = activeHref;
+      win.focus(); // 자동 전진 시 뒤에 가려진 팝업을 다시 최상단으로.
+    } else {
+      popupRef.current = openSitePopup(activeHref, slotRef.current);
+    }
   }, [activeHref]);
   useEffect(() => () => popupRef.current?.close(), []);
 
