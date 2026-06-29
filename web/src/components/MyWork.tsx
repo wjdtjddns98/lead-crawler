@@ -99,10 +99,13 @@ export function MyWork() {
 
   // 작업범위 변경 — 조건만 상태·localStorage 에 저장하고 네트워크는 건드리지 않는다(claim/release 없음).
   // 실제 당겨오기는 '더 받기' 버튼이 현재 필터로 수행. 직전 잔여 카운트는 새 조건엔 무의미하므로 숨긴다.
+  // 화면의 옛 조건 행도 비운다 — 안 비우면 그 행을 처리할 때 act() 자동리필이 '더 받기' 없이 새 조건으로
+  // 화면을 통째 바꿔버려(명시적 당겨오기 모델 위반). 비워서 다음 '더 받기'를 강제한다.
   const setFilterValue = (next: ClaimFilter) => {
     setFilter(next);
     localStorage.setItem(FILTER_KEY, JSON.stringify(next));
     setRemaining(null);
+    setItems([]);
   };
 
   // 성공(처리 완료)이면 true — 팝업의 '성공 시에만 다음 행 전진' 판단에 쓰인다.
