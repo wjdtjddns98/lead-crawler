@@ -239,6 +239,8 @@ class CrawlJobRequest(BaseModel):
     industries: str = Field(min_length=1, max_length=512)
     listed: Literal["unknown", "listed", "unlisted"] = "unknown"
     persist: bool = True
+    # 확보 목표 실존 회사 수 — 도달 시 조기 종료. 0=세그먼트 전부 깊게 소진(continuous).
+    target_count: int = Field(default=0, ge=0)
 
     @field_validator("industries", mode="before")
     @classmethod

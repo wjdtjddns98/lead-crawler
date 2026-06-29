@@ -124,7 +124,10 @@ class Settings(BaseSettings):
     notion_status_db: str = Field(default="dd74e2f7c25f425cbf030117031c9f92")
 
     # 라이브 발견 제어(예산·레이트리밋)
-    discovery_max_per_source: int = Field(default=50)  # 소스·세그먼트당 후보 상한
+    # 소스·세그먼트당 후보 상한 — 이 프로그램의 핵심 가치는 "계속 데이터를 추출"하는 것이라
+    # 보수적 50 에서 크게 올린다(등록처 유니버스까지 깊게 긁음). 과도한 호출은 target_count
+    # 조기종료 + cost_ledger 예산 가드 + 취소로 막는다(무한 캡 대신 '깊은 캡 + N 에서 정지').
+    discovery_max_per_source: int = Field(default=500)
     http_request_delay: float = Field(default=0.12)  # 요청 간 최소 간격(초)
     http_timeout: float = Field(default=15.0)
     # 무키 집계원(GLEIF/Wikidata) 공통 UA. Wikidata WDQS 는 WMF 로봇 정책상 연락처

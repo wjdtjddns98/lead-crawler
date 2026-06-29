@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from leadcrawler.config import Settings
 from leadcrawler.models import ValidationStatus
 from leadcrawler.pipeline import run_pipeline
-from leadcrawler.sources.base import Segment
+from leadcrawler.sources.base import DiscoveredCompany, Segment
 
 
 def test_dry_run_pipeline_produces_leads() -> None:
@@ -15,6 +16,49 @@ def test_dry_run_pipeline_produces_leads() -> None:
     assert lead.email is not None and lead.email.value.startswith("ir@")
     assert lead.form is not None
     assert lead.email_validation.status is ValidationStatus.VALID
+
+
+def test_target_saved_stops_early(monkeypatch) -> None:
+    """target_saved 도달 시 남은 세그먼트를 돌지 않고 조기 종료('정해진 양만큼 뽑고 멈춤')."""
+    import leadcrawler.pipeline.run as run_mod
+
+    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None):  # noqa: ARG001
+        # 세그먼트마다 활성 더미 5개(도메인 유일 → dedup 스킵 안 됨).
+        return [
+            DiscoveredCompany(
+                canonical_key=f"dom:{segment.industry}{i}.com",
+                name=f"C{i}", domain=f"{segment.industry}{i}.com",
+            )
+            for i in range(5)
+        ]
+
+    monkeypatch.setattr(run_mod, "discover_segment", _fake_discover)
+    segs = [Segment(country="KR", industry=f"ind{j}") for j in range(10)]  # 최대 50 가능
+    leads = run_pipeline(
+        segs, settings=Settings(dry_run=True, enrich_workers=1), target_saved=7
+    )
+    saved = [ld for ld in leads if ld.company.is_active]
+    assert len(saved) >= 7  # 목표 도달
+    assert len(saved) < 50  # 전부 안 돌고 조기 종료(과수확 제한)
+
+
+def test_no_target_processes_all_segments(monkeypatch) -> None:
+    """target_saved=None(기본)이면 주어진 세그먼트를 전부 소진(continuous, 회귀 0)."""
+    import leadcrawler.pipeline.run as run_mod
+
+    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None):  # noqa: ARG001
+        return [
+            DiscoveredCompany(
+                canonical_key=f"dom:{segment.industry}{i}.com",
+                name=f"C{i}", domain=f"{segment.industry}{i}.com",
+            )
+            for i in range(5)
+        ]
+
+    monkeypatch.setattr(run_mod, "discover_segment", _fake_discover)
+    segs = [Segment(country="KR", industry=f"ind{j}") for j in range(4)]  # 4×5=20
+    leads = run_pipeline(segs, settings=Settings(dry_run=True, enrich_workers=1))
+    assert len([ld for ld in leads if ld.company.is_active]) == 20  # 전부 처리.
 
 
 def test_seen_keys_dedup() -> None:

@@ -47,7 +47,8 @@ _running = False
 _PROGRESS_THROTTLE_SEC = 1.5
 
 # 테스트가 동기 실행을 주입할 수 있게 하는 러너 시그니처(기본은 데몬 스레드 spawn).
-JobRunner = Callable[[Settings, str, list[Segment], bool], None]
+# (settings, job_id, segments, persist, target_count)
+JobRunner = Callable[[Settings, str, list[Segment], bool, int], None]
 
 
 class CrawlBusy(RuntimeError):
@@ -76,10 +77,12 @@ def trigger_crawl_job(
     persist: bool,
     triggered_by: str | None,
     runner: JobRunner | None = None,
+    target_count: int = 0,
 ) -> dict[str, object]:
     """크롤 작업을 만들고 백그라운드 실행을 시작한다 — 작업 스냅샷(dict) 반환.
 
     이미 진행 중이면 :class:`CrawlBusy`. ``runner`` 주입 시 그것으로 실행(테스트 동기화).
+    ``target_count`` >0 이면 실존 저장 누계가 그 값에 도달할 때 조기 종료(0=세그먼트 전부 소진).
     """
     global _running
     inds = [s for s in industries.split(",") if s.strip()]
@@ -123,7 +126,7 @@ def trigger_crawl_job(
     job_id = str(info["id"])
     log.info("crawl_job.start", job=job_id, countries=countries, industries=industries)
     try:
-        (runner or _spawn_thread)(settings, job_id, segments, persist)
+        (runner or _spawn_thread)(settings, job_id, segments, persist, target_count)
     except Exception as exc:  # 스레드 spawn 실패 — 가드 누수 방지 + 작업을 failed 로.
         log.warning("crawl_job.spawn_failed", job=job_id, err=str(exc))
         _finalize(get_sessionmaker(settings), job_id, status=FAILED, error=f"실행 시작 실패: {exc}")
@@ -133,11 +136,13 @@ def trigger_crawl_job(
     return info
 
 
-def _spawn_thread(settings: Settings, job_id: str, segments: list[Segment], persist: bool) -> None:
+def _spawn_thread(
+    settings: Settings, job_id: str, segments: list[Segment], persist: bool, target_count: int = 0
+) -> None:
     """데몬 스레드로 작업을 실행한다(요청 스레드를 막지 않음)."""
     thread = threading.Thread(
         target=run_crawl_job,
-        args=(settings, job_id, segments, persist),
+        args=(settings, job_id, segments, persist, target_count),
         name=f"crawl-{job_id}",
         daemon=True,
     )
@@ -145,7 +150,8 @@ def _spawn_thread(settings: Settings, job_id: str, segments: list[Segment], pers
 
 
 def run_crawl_job(
-    settings: Settings, job_id: str, segments: list[Segment], persist: bool
+    settings: Settings, job_id: str, segments: list[Segment], persist: bool,
+    target_count: int = 0,
 ) -> None:
     """작업 본체 — 파이프라인을 돌리며 카운터/취소를 DB로 중계하고 종료 상태를 적는다.
 
@@ -171,6 +177,7 @@ def run_crawl_job(
             persist=persist,
             on_progress=_on_progress,
             should_cancel=lambda: _read_cancel(sm, job_id),
+            target_saved=target_count or None,  # 0 → None(세그먼트 전부 소진).
         )
         if state["counts"] is not None:  # throttle 로 누락된 최종 카운터를 확정 기록.
             _write_progress(sm, job_id, state["counts"])  # type: ignore[arg-type]
