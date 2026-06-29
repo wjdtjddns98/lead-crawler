@@ -53,6 +53,7 @@ class Enricher:
         self._email_finders = email_finders
         self._cost_ledger = cost_ledger
         self._contact_page: str | None = None  # 현재 기업의 문의페이지 힌트(폴백용).
+        self._home_html_cache: str | None = None  # 현재 기업의 home HTML(에스컬레이션 단계 간 재사용).
 
     def enrich(self, dc: DiscoveredCompany) -> list[Contact]:
         """발견 기업의 연락처 후보(이메일·전화·폼) 목록을 반환한다."""
@@ -61,6 +62,7 @@ class Enricher:
         if not dc.domain:
             return []
         self._contact_page = None  # 이번 기업의 문의페이지 힌트 초기화(폴백용).
+        self._home_html_cache = None  # 이번 기업의 home HTML 캐시 초기화(기업 간 누수 방지).
         contacts = self._live(dc)
         # escalation 체인 — 이메일을 못 찾았고 해당 단계가 켜져 있을 때만 순차 시도.
         if self._settings.enrich_headless and not _has_email(contacts):
@@ -120,6 +122,18 @@ class Enricher:
                 timeout=self._settings.http_timeout,
             )
         return self._fetcher
+
+    def _home_html(self, fetcher: SupportsFetch, home: str) -> str:
+        """기업 1건의 home HTML 을 1회만 받아 재사용한다(정적·OCR·Vision 단계 공유).
+
+        같은 기업의 ``https://{domain}`` 을 단계마다 다시 GET 하던 중복 왕복을 제거한다
+        (throttle·TCP/TLS 비용 절감). 캐시는 ``enrich()`` 진입마다 초기화되어 기업 간
+        누수가 없고, 인스턴스가 워커 스레드 전용(run.py 워커별 독립 Enricher)이라 스레드안전
+        하다. fetch 가 실패하면 캐시에 담지 않아(예외 전파) 단계별 graceful 처리는 보존된다.
+        """
+        if self._home_html_cache is None:
+            self._home_html_cache = fetcher.get_text(home)
+        return self._home_html_cache
 
     def _renderer_obj(self) -> SupportsRender:
         if self._renderer is None:
@@ -212,7 +226,7 @@ class Enricher:
         ocr = self._ocr_obj()
         home = f"https://{dc.domain}"
         try:
-            home_html = fetcher.get_text(home)
+            home_html = self._home_html(fetcher, home)
         except Exception as exc:  # 홈 fetch 실패 → 기존 결과 유지.
             log.info("enrich.ocr.home_error", domain=dc.domain, err=str(exc))
             return contacts
@@ -277,7 +291,7 @@ class Enricher:
         vision = self._vision_obj()
         home = f"https://{dc.domain}"
         try:
-            home_html = fetcher.get_text(home)
+            home_html = self._home_html(fetcher, home)
         except Exception as exc:  # 홈 fetch 실패 → 기존 결과 유지.
             log.info("enrich.vision.home_error", domain=dc.domain, err=str(exc))
             return contacts
@@ -312,7 +326,7 @@ class Enricher:
         cap = max(1, self._settings.enrich_max_pages)
         home = f"https://{dc.domain}"
         try:
-            home_html = fetcher.get_text(home)
+            home_html = self._home_html(fetcher, home)
         except Exception as exc:
             log.info("enrich.home.error", domain=dc.domain, err=str(exc))
             return []
