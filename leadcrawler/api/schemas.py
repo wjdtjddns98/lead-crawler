@@ -42,6 +42,8 @@ class ReviewItem(BaseModel):
     homepage: str | None = None
     site_alive: bool = False
     form: str | None = None  # 문의폼 URL(이메일 없을 때 폼으로 처리)
+    form_confidence: float | None = None  # 폼 신뢰도(없으면 None)
+    form_low_confidence: bool = False  # 저신뢰 폴백 폼(사람 확인 필요) — 리뷰레인 표기용
     # 선택된 후보의 검증 신호(이메일 컬럼 표시용, 없으면 None).
     email_status: str | None = None
     email_mx: bool | None = None

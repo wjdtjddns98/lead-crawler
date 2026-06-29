@@ -138,18 +138,26 @@ def _email_signals_by_value(
     return {(cid, value): (status, mx, smtp) for cid, value, status, mx, smtp in rows}
 
 
-def _forms_by_company(session: Session, company_ids: Sequence[str]) -> dict[str, str]:
-    """회사별 문의폼 URL 맵(회사당 1건). 이메일 없는 리드의 폼 처리 표시용."""
+# 폼 신뢰도 리뷰 임계 — 이 값 미만이면 '저신뢰 폼(사람 확인 필요)'으로 표기한다. enricher
+# 의 최후 폴백 문의페이지 폼만 0.3 이라 < 0.4 가 그 폴백만 정확히 잡는다(실폼은 0.45~0.7).
+FORM_REVIEW_THRESHOLD = 0.4
+
+
+def _forms_by_company(
+    session: Session, company_ids: Sequence[str]
+) -> dict[str, tuple[str, float]]:
+    """회사별 (문의폼 URL, 신뢰도) 맵(회사당 1건). 저신뢰 폴백 폼을 리뷰레인서 가르는 데 쓴다."""
     if not company_ids:
         return {}
     rows = session.execute(
-        select(ContactRow.company_id, ContactRow.value)
+        select(ContactRow.company_id, ContactRow.value, ContactRow.confidence)
         .where(ContactRow.company_id.in_(list(company_ids)))
         .where(ContactRow.type == ContactType.FORM.value)
     ).all()
-    forms: dict[str, str] = {}
-    for cid, value in rows:
-        forms.setdefault(cid, value)  # 첫 폼만(여러 개여도 대표 1개).
+    forms: dict[str, tuple[str, float]] = {}
+    for cid, value, confidence in rows:
+        # 첫 폼만(여러 개여도 대표 1개). confidence 는 NOT NULL 이나 방어적으로 None→0.0.
+        forms.setdefault(cid, (value, confidence if confidence is not None else 0.0))
     return forms
 
 
@@ -385,7 +393,7 @@ def _to_dict(
     rq: ReviewQueueRow,
     company: CompanyRow | None,
     signals: dict[tuple[str, str], _EmailSignal],
-    forms: dict[str, str] | None = None,
+    forms: dict[str, tuple[str, float]] | None = None,
 ) -> dict:
     """ORM 행 + 후보별 이메일 신호를 API DTO dict 로 평탄화한다."""
     candidates = _parse_candidates(rq)
@@ -401,6 +409,8 @@ def _to_dict(
         if selected is not None
         else (None, None, None)
     )
+    form_entry = (forms or {}).get(rq.company_id)
+    form_url, form_conf = form_entry if form_entry is not None else (None, None)
     return {
         "id": rq.id,
         "company_id": rq.company_id,
@@ -415,7 +425,11 @@ def _to_dict(
         "industry": company.industry if company else "",
         "homepage": company.homepage if company else None,
         "site_alive": company.site_alive if company else False,
-        "form": (forms or {}).get(rq.company_id),  # 문의폼 URL(없으면 None) — 폼 처리 표시.
+        # 문의폼 URL + 신뢰도(없으면 None) — 저신뢰(폴백 0.3)면 리뷰레인서 '사람 확인' 표기.
+        "form": form_url,
+        "form_confidence": form_conf,
+        "form_low_confidence": form_url is not None and form_conf is not None
+        and form_conf < FORM_REVIEW_THRESHOLD,
         "email_status": rep_status,
         "email_mx": rep_mx,
         "email_smtp": rep_smtp,
