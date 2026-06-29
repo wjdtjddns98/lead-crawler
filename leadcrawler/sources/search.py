@@ -116,8 +116,15 @@ class SearchSource:
             )
         return self._provider
 
-    def discover(self, segment: Segment) -> list[DiscoveredCompany]:
-        """세그먼트에 해당하는 후보 기업 목록을 반환한다."""
+    def discover(
+        self, segment: Segment, *, seen: set[str] | None = None
+    ) -> list[DiscoveredCompany]:
+        """세그먼트에 해당하는 후보 기업 목록을 반환한다.
+
+        ``seen`` 이 주어지면(정규화 도메인 집합 — 글로벌 dedup 시드: DB+런 누적+세그먼트 내
+        무료소스 결과) 이미 본 도메인은 산출에서 빼고, 페이지 신규 비율이 낮으면 다음 페이지를
+        더 사지 않는다(유료 검색 과금 절감, 제약 ①). None(기본)이면 기존 동작 그대로.
+        """
         if self._settings.dry_run:
             return self._dry(segment)
         provider = self._get_provider()
@@ -127,7 +134,7 @@ class SearchSource:
             else:
                 log.info("search.skip.no_key")
             return []
-        return self._live(segment, provider)
+        return self._live(segment, provider, seen)
 
     def _dry(self, segment: Segment) -> list[DiscoveredCompany]:
         """네트워크 없는 결정적 더미(도메인 기반 canonical_key)."""
@@ -142,29 +149,61 @@ class SearchSource:
             for i in range(self._count)
         ]
 
-    def _live(self, segment: Segment, provider: SearchProvider) -> list[DiscoveredCompany]:
-        """검색 공급자로 기업 도메인 후보를 수집한다(현지화 + blocklist + dedup + 캡)."""
+    def _live(
+        self,
+        segment: Segment,
+        provider: SearchProvider,
+        seen: set[str] | None = None,
+    ) -> list[DiscoveredCompany]:
+        """검색 공급자로 기업 도메인 후보를 수집한다(현지화 + blocklist + dedup + 캡).
+
+        ``seen``(글로벌 정규화 도메인 집합)에 이미 있는 후보는 산출·cap 카운트에서 제외하고,
+        한 페이지의 실후보 대비 신규 비율이 ``search_min_new_ratio`` 미만이면 다음 페이지를
+        더 사지 않고 페이징을 조기중단한다(중복에 과금 방지, 제약 ①).
+        """
         s = self._settings
         cap = min(s.discovery_max_per_source, 100)  # 검색은 쿼리당 최대 100건.
+        seen_global = seen if seen is not None else frozenset()
+        min_new_ratio = s.search_min_new_ratio
         # 세그먼트 국가에 맞춰 쿼리 언어·검색 지역(gl)·언어제한(lr)을 현지화.
         country = resolve_country(segment.country)
         gl, lr, keyword = _LOCALE.get(country.iso2, _DEFAULT_LOCALE) if country else _DEFAULT_LOCALE
         query = f"{segment.industry} {keyword}"
 
         out: list[DiscoveredCompany] = []
-        seen: set[str] = set()
+        seen_local: set[str] = set()  # 같은 쿼리 페이지들 간 도메인 중복 제거.
         start = 1
         while len(out) < cap and start <= provider.max_start:
             items = provider.fetch_page(query, gl=gl, lr=lr, start=start)
             if not items:
                 break
+            page_candidates = 0  # 이 페이지의 실후보(blocklist/로컬중복 제외).
+            page_new = 0  # 그중 글로벌 신규(seen 에 없던) 수.
             for item in items:
-                dc = self._candidate(segment, item, seen)
-                if dc is not None:
-                    out.append(dc)
-                    if len(out) >= cap:
-                        break
+                dc = self._candidate(segment, item, seen_local)
+                if dc is None:
+                    continue
+                page_candidates += 1
+                if dc.domain in seen_global:
+                    continue  # 글로벌(DB·런 누적·세그먼트 내 무료소스) 중복 — 적재 안 함.
+                page_new += 1
+                out.append(dc)
+                if len(out) >= cap:
+                    break
             start += provider.page_size
+            if len(out) >= cap:
+                break  # 캡 도달 = 정상 종료(중복 조기중단 아님 — 로그 오귀속 방지).
+            # 중복률 조기중단: 실후보가 있었는데 신규 비율이 임계 미만이면 다음 페이지 과금 중단.
+            # 주의(CSE 다페이지): 신규 도메인이 뒤페이지에 몰린 쿼리는 과소수확 가능 — 단일페이지
+            # Serper 가 주공급자라 실질 무해(CSE 는 폐기 경로). search_min_new_ratio 로 보수 조절.
+            if page_candidates > 0 and (page_new / page_candidates) < min_new_ratio:
+                log.info(
+                    "search.early_abort.dupe",
+                    segment=segment.label,
+                    page_candidates=page_candidates,
+                    page_new=page_new,
+                )
+                break
         log.info("search.live", segment=segment.label, n=len(out))
         return out
 
