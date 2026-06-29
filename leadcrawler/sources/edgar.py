@@ -26,6 +26,9 @@ _TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 # 실제 거래소 상장사만(OTC·등록만 한 기업 제외).
 _EXCHANGES = {"nasdaq", "nyse", "cboe", "otc"}
+# 업종 필터 시 cap*10 까지 넓게 스캔하되, 후보당 submissions.json 1 콜이 발생하므로(SEC
+# 무료 레이트리밋 보호) 절대 상한을 둔다 — 예산가드가 무료 등록처엔 안 걸린다.
+_SCAN_LIMIT_ABS = 2000
 
 
 class EdgarSource:
@@ -92,7 +95,7 @@ class EdgarSource:
         except Exception as exc:  # 깨진 응답이면 전체 크래시 대신 빈 결과.
             log.info("edgar.universe.error", err=str(exc))
             return []
-        scan_limit = cap if prefixes is None else cap * 10
+        scan_limit = cap if prefixes is None else min(cap * 10, _SCAN_LIMIT_ABS)
 
         out: list[DiscoveredCompany] = []
         for cik, name in universe[:scan_limit]:

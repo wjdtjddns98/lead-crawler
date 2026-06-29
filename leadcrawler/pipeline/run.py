@@ -147,6 +147,11 @@ def run_pipeline(
     더 돌지 않고 조기 종료한다("정해진 양만큼 뽑고 멈춤"). None(기본)이면 주어진 세그먼트를
     전부 깊게 소진한다(소스당 ``discovery_max_per_source`` 까지). 어느 경우든 dedup(제약①)으로
     이미 본 기업은 건너뛰므로, 같은 스코프 재크롤이 아니라 **새 기업을 계속 발견**할 때 채워진다.
+
+    조기종료는 배치(flush) 경계에서만 평가하므로 정확히 ``target_saved`` 에서 멈추지 않고
+    최대 ``batch_size``(병렬 시 ``workers*4``, 순차 시 1)만큼 오버슈트할 수 있다 — 마지막
+    배치가 통째로 처리·적재된 뒤 카운터를 확인하기 때문. 상한이 아니라 하한 보장이다
+    (``saved >= target_saved``).
     """
     settings = settings or get_settings()
     seg_list = list(segments)

@@ -42,6 +42,34 @@ def test_target_saved_stops_early(monkeypatch) -> None:
     assert len(saved) < 50  # 전부 안 돌고 조기 종료(과수확 제한)
 
 
+def test_target_saved_overshoots_by_batch_with_workers(monkeypatch) -> None:
+    """병렬(workers>1)이면 조기종료는 flush 경계 평가라 batch_size(=workers*4)만큼 오버슈트한다.
+
+    target_saved=1 이라도 첫 배치(8건)가 통째로 처리·적재된 뒤 카운터를 보므로 saved 가
+    1 이 아니라 8 까지 점프한다(상한 아닌 하한 보장). docstring 의 오버슈트 계약을 고정.
+    """
+    import leadcrawler.pipeline.run as run_mod
+
+    def _fake_discover(segment, settings, cost_ledger=None, *, sources=None):  # noqa: ARG001
+        # 단일 세그먼트에서 20건 발견 → 배치(8) 경계에서 flush.
+        return [
+            DiscoveredCompany(
+                canonical_key=f"dom:{segment.industry}{i}.com",
+                name=f"C{i}", domain=f"{segment.industry}{i}.com",
+            )
+            for i in range(20)
+        ]
+
+    monkeypatch.setattr(run_mod, "discover_segment", _fake_discover)
+    segs = [Segment(country="KR", industry="ind0")]
+    leads = run_pipeline(
+        segs, settings=Settings(dry_run=True, enrich_workers=2), target_saved=1
+    )
+    saved = [ld for ld in leads if ld.company.is_active]
+    assert len(saved) >= 1  # 하한 보장(목표 도달)
+    assert len(saved) == 8  # batch_size=workers*4 만큼 오버슈트 — 정확히 1 에서 안 멈춤.
+
+
 def test_no_target_processes_all_segments(monkeypatch) -> None:
     """target_saved=None(기본)이면 주어진 세그먼트를 전부 소진(continuous, 회귀 0)."""
     import leadcrawler.pipeline.run as run_mod

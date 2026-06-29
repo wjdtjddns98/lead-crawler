@@ -28,8 +28,9 @@ _GB = {"gb", "uk", "gbr", "united kingdom", "britain", "영국"}
 _SEARCH_URL = "https://api.company-information.service.gov.uk/advanced-search/companies"
 _PAGE = 100  # 페이지당 size(API 상한은 5000이나 레이트리밋·예산 보호로 보수적 설정).
 # 업종 필터가 전량 제외해도 페이지를 무한정 넘기지 않게 하는 절대 상한. 깊은 수집을 위해
-# 충분히 크게 두되(cap 이 실질 상한), 무한 루프만 차단(_PAGE=100 → 최대 10만 후보 스캔).
-_MAX_PAGES = 1000
+# 크게 두되(cap 이 실질 상한), 희소매칭 업종에서 레이트리밋(600 요청/5분)에 걸리지 않게
+# 보수적으로 — _PAGE=100 → 최대 2만 후보 스캔(200 요청 < 5분 윈도 한도).
+_MAX_PAGES = 200
 
 
 class CompaniesHouseSource:
