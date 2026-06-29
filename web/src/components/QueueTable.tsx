@@ -1,4 +1,4 @@
-import { memo, useCallback, useState, type MouseEvent } from "react";
+import { memo, useCallback, useRef, useState, type MouseEvent } from "react";
 import type { ReviewItem } from "../types";
 import { BTN_CONFIRM, BTN_REJECT, EMPTY, TD, TH } from "../ui";
 import { EmailBadge, StatusBadge } from "./StatusBadge";
@@ -29,8 +29,9 @@ const HEADERS = ["업체명", "국가", "구분", "이메일 후보", "메일", 
 interface Props {
   items: ReviewItem[];
   busyIds: Set<string>;
-  onConfirm: (id: string, selected?: string) => void;
-  onReject: (id: string) => void;
+  // 성공(처리 완료) 시 true 를 resolve — 팝업에서 '성공해야 다음 행 전진' 판단에 쓴다.
+  onConfirm: (id: string, selected?: string) => Promise<boolean>;
+  onReject: (id: string) => Promise<boolean>;
 }
 
 // 크롤된 신뢰불가 URL 의 스킴을 검증한다 — http(s) 만 허용(javascript:/data: 등 XSS 차단).
@@ -224,6 +225,41 @@ export function QueueTable({ items, busyIds, onConfirm, onReject }: Props) {
   const [open, setOpen] = useState<{ id: string; tab: SiteTab } | null>(null);
   const onOpen = useCallback((id: string, tab: SiteTab) => setOpen({ id, tab }), []);
 
+  // 항상 최신 items 를 가리키는 ref — 전진은 처리 await(목록 리필) 후에 일어나므로
+  // 콜백 클로저의 옛 items 가 아닌 갱신된 목록에서 다음 행을 찾아야 한다.
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  // 팝업에서 완료(확정/거부) 시 성공했을 때만 다음 행으로 전진. 처리 전 목록에서 '다음
+  // pending(홈/폼 링크 보유) 행' id 를 미리 잡아두고(처리 후엔 방금 행이 빠져 위치 기준이
+  // 무너짐), await 후 그 행이 아직 pending 이면 연다. 없으면 닫는다. 실패면 현재 항목 유지.
+  const advanceAfter = useCallback(
+    async (id: string, run: () => Promise<boolean>) => {
+      const before = itemsRef.current;
+      const idx = before.findIndex((it) => it.id === id);
+      const nextId =
+        before
+          .slice(idx + 1)
+          .find((it) => it.status === "pending" && (safeHref(it.homepage) || safeHref(it.form)))
+          ?.id ?? null;
+      if (!(await run())) return; // 실패(400/409 등) — 전진하지 않고 현재 항목·에러 유지
+      const after = itemsRef.current;
+      const target = nextId
+        ? after.find((it) => it.id === nextId && it.status === "pending")
+        : undefined;
+      setOpen(target ? { id: target.id, tab: "home" } : null);
+    },
+    [],
+  );
+  const popupConfirm = useCallback(
+    (id: string, selected?: string) => advanceAfter(id, () => onConfirm(id, selected)),
+    [advanceAfter, onConfirm],
+  );
+  const popupReject = useCallback(
+    (id: string) => advanceAfter(id, () => onReject(id)),
+    [advanceAfter, onReject],
+  );
+
   if (items.length === 0) {
     return <p className={EMPTY}>표시할 검증 항목이 없습니다.</p>;
   }
@@ -264,8 +300,8 @@ export function QueueTable({ items, busyIds, onConfirm, onReject }: Props) {
           busy={busyIds.has(openItem.id)}
           onTab={(tab) => setOpen({ id: openItem.id, tab })}
           onPick={onPick}
-          onConfirm={onConfirm}
-          onReject={onReject}
+          onConfirm={popupConfirm}
+          onReject={popupReject}
           onClose={() => setOpen(null)}
         />
       )}

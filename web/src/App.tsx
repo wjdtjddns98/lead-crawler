@@ -101,9 +101,15 @@ function Workbench({
     void load();
   }, [load]);
 
-  const act = async (id: string, kind: "confirm" | "reject", selected?: string) => {
+  // 성공(처리 완료)이면 true — 팝업의 '성공 시에만 다음 행 전진' 판단에 쓰인다.
+  const act = async (
+    id: string,
+    kind: "confirm" | "reject",
+    selected?: string,
+  ): Promise<boolean> => {
     setBusyIds((prev) => new Set(prev).add(id));
     setError(null);
+    let ok = false;
     try {
       // 담당자는 서버가 로그인 사용자로 자동 기록. 확정 시 사람이 고른 이메일을 보낸다.
       const updated =
@@ -114,6 +120,7 @@ function Workbench({
       } else {
         setItems((prev) => prev.map((it) => (it.id === id ? updated : it)));
       }
+      ok = true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -123,6 +130,7 @@ function Workbench({
         return next;
       });
     }
+    return ok;
   };
 
   const doExport = async () => {
@@ -178,8 +186,8 @@ function Workbench({
       <QueueTable
         items={items}
         busyIds={busyIds}
-        onConfirm={(id, selected) => void act(id, "confirm", selected)}
-        onReject={(id) => void act(id, "reject")}
+        onConfirm={(id, selected) => act(id, "confirm", selected)}
+        onReject={(id) => act(id, "reject")}
       />
 
       <div className="flex items-center gap-4 justify-center mt-[18px] text-muted">

@@ -27,14 +27,17 @@ export function MyWork() {
     void refill();
   }, [refill]);
 
-  const act = async (id: string, kind: "confirm" | "reject", selected?: string) => {
+  // 성공(처리 완료)이면 true — 팝업의 '성공 시에만 다음 행 전진' 판단에 쓰인다.
+  const act = async (id: string, kind: "confirm" | "reject", selected?: string): Promise<boolean> => {
     setBusyIds((p) => new Set(p).add(id));
     setError(null);
+    let ok = false;
     try {
       if (kind === "confirm") await confirmReview(id, selected);
       else await rejectReview(id);
+      ok = true;
     } catch (e) {
-      // 409(타인 점유 중) 등 — 메시지 표시 후 작업분 새로고침으로 그 항목을 비운다.
+      // 409(타인 점유 중)·400(형식 오류) 등 — 메시지 표시. ok=false 라 전진하지 않는다.
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusyIds((p) => {
@@ -44,6 +47,7 @@ export function MyWork() {
       });
       await refill(); // 처리(또는 충돌) 후 자동 리필 — 항상 배치 크기 유지.
     }
+    return ok;
   };
 
   const release = async () => {
@@ -80,8 +84,8 @@ export function MyWork() {
         <QueueTable
           items={items}
           busyIds={busyIds}
-          onConfirm={(id, selected) => void act(id, "confirm", selected)}
-          onReject={(id) => void act(id, "reject")}
+          onConfirm={(id, selected) => act(id, "confirm", selected)}
+          onReject={(id) => act(id, "reject")}
         />
       )}
     </>
