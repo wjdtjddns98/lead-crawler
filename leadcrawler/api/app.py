@@ -11,7 +11,9 @@ import os
 import tempfile
 from collections.abc import Iterator
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from typing import Literal
+
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -23,7 +25,8 @@ from ..logging import get_logger
 from ..outreach import preview as outreach_preview
 from ..outreach import send_campaign
 from ..schema import CompanyRow, ReviewQueueRow, UserRow
-from ..sources.countries import country_match_set
+from ..sources.countries import country_match_set, korean_label, supported_countries
+from ..sources.industry import supported_industries
 from ..storage.db import get_engine, get_sessionmaker
 from ..storage.export import ExcelExporter
 from ..storage.repository import load_leads, register_edited_email
@@ -42,7 +45,11 @@ from .admin import register_admin
 from .auth import make_require_admin, make_require_user, register_auth
 from .dedup import register_dedup
 from .schemas import (
+    ClaimRequest,
     ConfirmRequest,
+    CountryOption,
+    IndustryOption,
+    QueueFilterOptions,
     QueueResponse,
     ReviewItem,
     ReviewStatus,
@@ -50,6 +57,9 @@ from .schemas import (
     SendRequest,
     SendResult,
 )
+
+# 상장 필터 화이트리스트 — 쿼리/본문 검증용(빈값=전체).
+_ListedFilter = Literal["", "listed", "unlisted", "unknown"]
 
 log = get_logger("api")
 
@@ -90,28 +100,72 @@ def create_app() -> FastAPI:
         status: ReviewStatus | None = Query(default=None, description="상태 필터"),
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
+        country: str = Query(default="", description="쉼표구분 국가(ISO2/별칭), 빈값=전체"),
+        industry: str = Query(default="", description="쉼표구분 업종, 빈값=전체"),
+        listed: _ListedFilter = Query(default="", description="상장여부, 빈값=전체"),
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> QueueResponse:
-        """검증 큐 항목을 조회한다(상태 필터·페이지네이션)."""
+        """검증 큐 항목을 조회한다(상태·국가/업종/상장 작업범위 필터·페이지네이션).
+
+        ``total`` 도 동일 필터를 반영해 '이 범위 잔여건수' 표시에 쓴다.
+        """
         status_val = status.value if status is not None else None
-        items = query_reviews(db, status=status_val, limit=limit, offset=offset)
+        countries = _split_csv(country)
+        industries = _split_csv(industry)
+        listed_val = listed or None
+        items = query_reviews(
+            db, status=status_val, limit=limit, offset=offset,
+            countries=countries, industries=industries, listed=listed_val,
+        )
         return QueueResponse(
             items=[ReviewItem(**it) for it in items],
-            total=count_reviews(db, status=status_val),
+            total=count_reviews(
+                db, status=status_val,
+                countries=countries, industries=industries, listed=listed_val,
+            ),
             limit=limit,
             offset=offset,
         )
 
+    @app.get("/queue/filters", response_model=QueueFilterOptions)
+    def queue_filters(
+        user: UserRow = Depends(require_user),
+    ) -> QueueFilterOptions:
+        """작업범위 필터 옵션(직원 접근) — 국가/업종/상장 셀렉트 단일 출처.
+
+        ``/admin/*`` 과 동일 출처지만 직원(worker)도 필요하므로 admin 라우트를 오염시키지
+        않고 비관리자 경로로 노출한다(상장여부는 고정 3값).
+        """
+        return QueueFilterOptions(
+            countries=[
+                CountryOption(iso2=c.iso2, label=korean_label(c), aliases=list(c.aliases))
+                for c in supported_countries()
+            ],
+            industries=[
+                IndustryOption(value=ko, label=ko, aliases=[en])
+                for ko, en in supported_industries()
+            ],
+            listed=["listed", "unlisted", "unknown"],
+        )
+
     @app.post("/queue/claim", response_model=list[ReviewItem])
     def claim_queue(
+        payload: ClaimRequest = Body(default_factory=ClaimRequest),
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> list[ReviewItem]:
-        """내 작업분을 배치 크기까지 채워 반환한다(당겨가기 — 6명 동시 충돌 방지·자동 리필)."""
+        """내 작업분을 배치 크기까지 채워 반환한다(당겨가기 — 6명 동시 충돌 방지·자동 리필).
+
+        본문 ``ClaimRequest`` 로 국가/업종/상장 작업범위를 동반하면 그 조건의 행만 점유하고,
+        직전 호출과 범위가 달라지면 비매칭 점유를 먼저 반납한다(화면엔 현재 범위만). 본문
+        생략/빈 객체 = 전체(하위호환).
+        """
         s = get_settings()
         items = claim_work(
-            db, user.id, target=s.review_claim_batch, ttl_minutes=s.review_claim_ttl_minutes
+            db, user.id, target=s.review_claim_batch, ttl_minutes=s.review_claim_ttl_minutes,
+            countries=_split_csv(payload.country), industries=_split_csv(payload.industry),
+            listed=payload.listed or None,
         )
         return [ReviewItem(**it) for it in items]
 

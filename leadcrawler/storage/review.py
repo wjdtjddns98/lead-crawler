@@ -23,12 +23,60 @@ from ..models import ContactType
 from ..schema import (
     CompanyRow,
     ContactRow,
+    DiscoveredCompanyRow,
     EmailValidationRow,
     ReviewAuditRow,
     ReviewQueueRow,
 )
+from ..sources.countries import country_match_set
 
 log = get_logger("review")
+
+# 큐 당겨가기/조회용 작업범위 필터 화이트리스트(상장 여부). 빈 문자열/None = 전체.
+_VALID_LISTED = frozenset({"listed", "unlisted", "unknown"})
+
+
+def _apply_queue_filters(
+    stmt: object,
+    *,
+    countries: Sequence[str] | None,
+    industries: Sequence[str] | None,
+    listed: str | None,
+) -> object:
+    """CompanyRow 가 이미 조인된 select 에 국가/업종/상장 작업범위 필터를 적용한다.
+
+    국가는 별칭·대소문자 무시 매칭(:func:`country_match_set`, 'KR'↔'대한민국'), 업종은
+    대소문자 무시 매칭(엑셀 export·아웃리치 발송 선례와 동일 규약). 상장 여부는
+    ``CompanyRow.canonical_key → DiscoveredCompanyRow`` 조인 후 ``listed`` 일치로 거른다
+    (상장 컬럼은 CompanyRow 가 아니라 DiscoveredCompanyRow 에만 있음). 빈 값은 무시(전체).
+    """
+    if countries:
+        cset = country_match_set(countries)
+        if cset:  # 토큰이 전부 공백이면 빈 집합 — 그땐 필터 미적용(전체).
+            stmt = stmt.where(func.lower(CompanyRow.country).in_(cset))
+    if industries:
+        wanted = {i.strip().lower() for i in industries if i and i.strip()}
+        if wanted:
+            stmt = stmt.where(func.lower(CompanyRow.industry).in_(wanted))
+    if listed:
+        # 스토리지 계층 방어선 — API 는 Literal 로 막지만(422), 비API 직접 호출의 오타·대문자
+        # ('LISTED')가 조용히 0건이 되지 않게 fail-loud(set_review_status 의 상태검증과 동일 결).
+        if listed not in _VALID_LISTED:
+            raise ValueError(f"허용되지 않은 listed 값: {listed}")
+        stmt = stmt.join(
+            DiscoveredCompanyRow,
+            CompanyRow.canonical_key == DiscoveredCompanyRow.canonical_key,
+        ).where(DiscoveredCompanyRow.listed == listed)
+    return stmt
+
+
+def _has_queue_filters(
+    countries: Sequence[str] | None,
+    industries: Sequence[str] | None,
+    listed: str | None,
+) -> bool:
+    """국가/업종/상장 중 실제로 거를 값이 하나라도 있으면 True(빈 값=전체)."""
+    return bool(countries) or bool(industries) or bool(listed)
 
 
 class ReviewConflict(Exception):
@@ -106,11 +154,34 @@ def clear_email_review(session: Session, company_id: str) -> None:
         row.selected_by_human = False
 
 
-def count_reviews(session: Session, *, status: str | None = None) -> int:
-    """큐 항목 수(선택적 상태 필터)."""
-    stmt = select(func.count()).select_from(ReviewQueueRow)
+def count_reviews(
+    session: Session,
+    *,
+    status: str | None = None,
+    countries: Sequence[str] | None = None,
+    industries: Sequence[str] | None = None,
+    listed: str | None = None,
+) -> int:
+    """큐 항목 수(선택적 상태 + 국가/업종/상장 작업범위 필터).
+
+    필터가 있으면 CompanyRow(상장은 DiscoveredCompanyRow)를 조인해 카운트한다 —
+    조인은 모두 1:1(canonical_key/id 유일)이라 행 증식이 없어 count 가 정확하다.
+    """
+    if not _has_queue_filters(countries, industries, listed):
+        stmt = select(func.count()).select_from(ReviewQueueRow)
+        if status is not None:
+            stmt = stmt.where(ReviewQueueRow.status == status)
+        return int(session.scalar(stmt) or 0)
+    stmt = (
+        select(func.count())
+        .select_from(ReviewQueueRow)
+        .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
+    )
     if status is not None:
         stmt = stmt.where(ReviewQueueRow.status == status)
+    stmt = _apply_queue_filters(
+        stmt, countries=countries, industries=industries, listed=listed
+    )
     return int(session.scalar(stmt) or 0)
 
 
@@ -162,23 +233,35 @@ def _forms_by_company(
 
 
 def query_reviews(
-    session: Session, *, status: str | None = None, limit: int = 50, offset: int = 0
+    session: Session,
+    *,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    countries: Sequence[str] | None = None,
+    industries: Sequence[str] | None = None,
+    listed: str | None = None,
 ) -> list[dict]:
     """큐 항목을 회사 정보와 함께 DTO dict 목록으로 반환한다(큐 행과 1:1).
 
     이메일 검증 신호(status/mx/smtp)는 :func:`_email_signal_map` 로 별도 평탄화해, 회사가
     이메일을 여럿 가져도 큐 행이 복제되지 않게 한다. 정렬에 ``id`` 최종 타이브레이커를
-    더해 offset 페이지네이션이 안정적이다.
+    더해 offset 페이지네이션이 안정적이다. 국가/업종/상장 작업범위 필터는 선택적으로
+    적용한다(:func:`_apply_queue_filters`).
     """
-    stmt = (
-        select(ReviewQueueRow, CompanyRow)
-        .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
-        .order_by(ReviewQueueRow.status, CompanyRow.name, ReviewQueueRow.id)
-        .limit(limit)
-        .offset(offset)
+    stmt = select(ReviewQueueRow, CompanyRow).join(
+        CompanyRow, ReviewQueueRow.company_id == CompanyRow.id
     )
     if status is not None:
         stmt = stmt.where(ReviewQueueRow.status == status)
+    stmt = _apply_queue_filters(
+        stmt, countries=countries, industries=industries, listed=listed
+    )
+    stmt = (
+        stmt.order_by(ReviewQueueRow.status, CompanyRow.name, ReviewQueueRow.id)
+        .limit(limit)
+        .offset(offset)
+    )
     rows = session.execute(stmt).all()
     ids = [company.id for _, company in rows]
     signals = _email_signals_by_value(session, ids)
@@ -302,13 +385,22 @@ def _expiry(now: datetime, ttl_minutes: int) -> datetime:
 
 
 def _claim_more(
-    session: Session, user_id: str, *, want: int, ttl_minutes: int, now: datetime
+    session: Session,
+    user_id: str,
+    *,
+    want: int,
+    ttl_minutes: int,
+    now: datetime,
+    countries: Sequence[str] | None = None,
+    industries: Sequence[str] | None = None,
+    listed: str | None = None,
 ) -> int:
     """미점유(또는 TTL 만료) pending 항목을 최대 ``want`` 개 이 직원에게 배타 배정한다.
 
     PostgreSQL 은 ``FOR UPDATE SKIP LOCKED`` 로 6명 동시 요청에도 서로 다른 행을 받게
     한다(잠긴 행 건너뜀 — 동시 작업 큐의 표준). SQLite(테스트)는 미지원이라 평이한
-    select(단일 라이터라 무해). 배정한 행 수를 반환한다.
+    select(단일 라이터라 무해). 국가/업종/상장 작업범위 필터가 주어지면 CompanyRow
+    (상장은 DiscoveredCompanyRow)를 조인해 그 조건의 행만 배정한다. 배정한 행 수를 반환한다.
     """
     if want <= 0:
         return 0
@@ -317,11 +409,18 @@ def _claim_more(
         select(ReviewQueueRow.id)
         .where(ReviewQueueRow.status == PENDING)
         .where(or_(ReviewQueueRow.claimed_by.is_(None), ReviewQueueRow.claimed_at < expiry))
-        .order_by(ReviewQueueRow.id)
-        .limit(want)
     )
+    if _has_queue_filters(countries, industries, listed):
+        stmt = stmt.join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
+        stmt = _apply_queue_filters(
+            stmt, countries=countries, industries=industries, listed=listed
+        )
+    stmt = stmt.order_by(ReviewQueueRow.id).limit(want)
     if session.bind is not None and session.bind.dialect.name == "postgresql":
-        stmt = stmt.with_for_update(skip_locked=True)
+        # 필터로 CompanyRow/DiscoveredCompanyRow 조인이 들어가도 잠금은 review_queue 행에만
+        # 건다 — of=ReviewQueueRow 로 한정해 조인 테이블(회사 행)까지 잠그거나 건너뛰지
+        # 않게 한다(서로 다른 필터의 동시 직원이 같은 회사를 참조해도 회귀 없음).
+        stmt = stmt.with_for_update(of=ReviewQueueRow, skip_locked=True)
     # 배타성은 이 행잠금이 보장한다(시계 일치가 아님) — select 와 아래 update 가 같은
     # 요청 트랜잭션(get_db) 안이라 잠금이 update 까지 유지된다. 리팩터로 트랜잭션을
     # 쪼개면 안 된다.
@@ -337,19 +436,69 @@ def _claim_more(
 
 
 def _my_active_rows(
-    session: Session, user_id: str, *, ttl_minutes: int, now: datetime
+    session: Session,
+    user_id: str,
+    *,
+    ttl_minutes: int,
+    now: datetime,
+    countries: Sequence[str] | None = None,
+    industries: Sequence[str] | None = None,
+    listed: str | None = None,
 ) -> list[tuple[ReviewQueueRow, CompanyRow]]:
-    """이 직원이 점유 중인(아직 pending·미만료) 항목 (rq, company) 목록."""
+    """이 직원이 점유 중인(아직 pending·미만료) 항목 (rq, company) 목록(선택적 필터)."""
     expiry = _expiry(now, ttl_minutes)
-    rows = session.execute(
+    stmt = (
         select(ReviewQueueRow, CompanyRow)
         .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
         .where(ReviewQueueRow.claimed_by == user_id)
         .where(ReviewQueueRow.status == PENDING)
         .where(ReviewQueueRow.claimed_at >= expiry)
-        .order_by(CompanyRow.name, ReviewQueueRow.id)
-    ).all()
+    )
+    stmt = _apply_queue_filters(
+        stmt, countries=countries, industries=industries, listed=listed
+    )
+    stmt = stmt.order_by(CompanyRow.name, ReviewQueueRow.id)
+    rows = session.execute(stmt).all()
     return [(rq, company) for rq, company in rows]
+
+
+def release_non_matching(
+    session: Session,
+    user_id: str,
+    *,
+    countries: Sequence[str] | None = None,
+    industries: Sequence[str] | None = None,
+    listed: str | None = None,
+) -> int:
+    """내가 점유한 pending 항목 중 현재 작업범위 필터에 **안 맞는** 것을 풀로 반납한다.
+
+    직원이 작업범위(국가/업종/상장)를 바꾸면 이전 범위로 점유 중이던 비매칭 항목이
+    화면에 남지 않도록 즉시 반납한다(다른 직원이 가져갈 수 있게). 필터가 전부 비면
+    (전체) 반납하지 않는다. 반납한 행 수를 반환한다.
+    """
+    if not _has_queue_filters(countries, industries, listed):
+        return 0
+    matching_ids = set(
+        session.scalars(
+            _apply_queue_filters(
+                select(ReviewQueueRow.id).join(
+                    CompanyRow, ReviewQueueRow.company_id == CompanyRow.id
+                )
+                .where(ReviewQueueRow.claimed_by == user_id)
+                .where(ReviewQueueRow.status == PENDING),
+                countries=countries,
+                industries=industries,
+                listed=listed,
+            )
+        ).all()
+    )
+    release_stmt = update(ReviewQueueRow).where(
+        ReviewQueueRow.claimed_by == user_id, ReviewQueueRow.status == PENDING
+    )
+    if matching_ids:  # 매칭 행은 보존, 나머지만 반납(빈 집합이면 전부 반납).
+        release_stmt = release_stmt.where(ReviewQueueRow.id.notin_(matching_ids))
+    result = session.execute(release_stmt.values(claimed_by=None, claimed_at=None))
+    return int(result.rowcount or 0)
 
 
 def claim_work(
@@ -359,20 +508,37 @@ def claim_work(
     target: int,
     ttl_minutes: int,
     now: datetime | None = None,
+    countries: Sequence[str] | None = None,
+    industries: Sequence[str] | None = None,
+    listed: str | None = None,
 ) -> list[dict]:
     """내 활성 점유를 ``target`` 개까지 채우고(부족분 배타 배정) 내 작업분 DTO 를 반환한다.
 
     매 호출이 target 으로 top-up 하므로 확정/거부로 줄어든 만큼 자동 리필된다(반복 호출
     멱등 — 항상 ~target 개 유지). 6명이 동시에 불러도 SKIP LOCKED 로 작업분이 겹치지 않는다.
+    국가/업종/상장 작업범위 필터가 주어지면 그 조건의 행만 점유하고, 필터를 바꾸면 이전
+    범위의 비매칭 점유를 먼저 반납한다(화면엔 항상 현재 범위만 남는다).
     """
     now = now or datetime.now(timezone.utc)
-    current = _my_active_rows(session, user_id, ttl_minutes=ttl_minutes, now=now)
+    # 필터 전환 시 비매칭 점유 반납(전체 필터면 no-op).
+    release_non_matching(
+        session, user_id, countries=countries, industries=industries, listed=listed
+    )
+    session.flush()
+    current = _my_active_rows(
+        session, user_id, ttl_minutes=ttl_minutes, now=now,
+        countries=countries, industries=industries, listed=listed,
+    )
     if len(current) < target:
         _claim_more(
-            session, user_id, want=target - len(current), ttl_minutes=ttl_minutes, now=now
+            session, user_id, want=target - len(current), ttl_minutes=ttl_minutes, now=now,
+            countries=countries, industries=industries, listed=listed,
         )
         session.flush()
-        current = _my_active_rows(session, user_id, ttl_minutes=ttl_minutes, now=now)
+        current = _my_active_rows(
+            session, user_id, ttl_minutes=ttl_minutes, now=now,
+            countries=countries, industries=industries, listed=listed,
+        )
     ids = [c.id for _, c in current]
     signals = _email_signals_by_value(session, ids)
     forms = _forms_by_company(session, ids)

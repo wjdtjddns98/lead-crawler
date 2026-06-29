@@ -19,6 +19,7 @@ from leadcrawler.models import (  # noqa: E402
     ContactType,
     EmailRole,
     EmailValidation,
+    Listed,
     ValidationStatus,
 )
 from leadcrawler.security import create_user  # noqa: E402
@@ -187,6 +188,101 @@ def test_confirm_missing_404(client: TestClient) -> None:
 def test_invalid_status_422(client: TestClient) -> None:
     # 허용되지 않은 상태 필터는 FastAPI 가 422 로 거부(조용한 빈 결과 방지).
     assert client.get("/queue", params={"status": "bogus"}).status_code == 422
+
+
+# --- 작업범위 필터(Filtered Claim) — US-5 라우트/스키마 -------------------
+
+_ADMIN = "관리자"
+_WORKER = "직원"
+_MIXED = [
+    ("kr1.com", "KR", "건설", Listed.UNKNOWN),
+    ("us1.com", "US", "Finance", Listed.LISTED),
+    ("us2.com", "US", "Finance", Listed.UNLISTED),
+]
+
+
+def _seed_mixed(settings) -> None:
+    with session_scope(settings) as s:
+        for dom, country, industry, listed in _MIXED:
+            lead = CompanyLead(
+                company=Company(
+                    canonical_key=f"dom:{dom}", name=dom, country=country, industry=industry,
+                    domain=dom, homepage=f"https://{dom}", is_active=True, site_alive=True,
+                    listed=listed,
+                ),
+                email=Contact(type=ContactType.EMAIL, value=f"ir@{dom}", role=EmailRole.IR),
+                email_validation=EmailValidation(status=ValidationStatus.VALID, mx=True),
+            )
+            save_lead(s, lead, source="test")
+        create_user(s, _ADMIN, _PW)  # 첫 계정 = 자동 admin.
+        create_user(s, _WORKER, _PW)  # 두번째 = worker(비관리자).
+
+
+@pytest.fixture
+def worker_client(tmp_path, monkeypatch) -> TestClient:
+    """혼합 데이터 + worker(비관리자) 로그인 클라이언트."""
+    monkeypatch.setenv("LEADCRAWLER_DATABASE_URL", f"sqlite:///{tmp_path}/mixedapi.db")
+    get_settings.cache_clear()
+    settings = get_settings()
+    init_db(settings)
+    _seed_mixed(settings)
+    from leadcrawler.api.app import create_app
+
+    c = TestClient(create_app())
+    r = c.post("/auth/login", json={"username": _WORKER, "password": _PW})
+    assert r.status_code == 200
+    c.headers.update({"Authorization": f"Bearer {r.json()['token']}"})
+    return c
+
+
+def test_queue_filters_accessible_to_worker(worker_client: TestClient) -> None:
+    """직원(worker)도 /queue/filters 200 — admin 라우트는 그대로 403(오염 없음)."""
+    r = worker_client.get("/queue/filters")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["listed"] == ["listed", "unlisted", "unknown"]
+    assert len(body["countries"]) > 0 and len(body["industries"]) > 0
+    # 동일 직원은 admin 옵션 라우트엔 여전히 접근 불가(분리 확인).
+    assert worker_client.get("/admin/countries").status_code == 403
+
+
+def test_claim_with_country_filter_body(worker_client: TestClient) -> None:
+    """POST /queue/claim 본문 필터 — US 만 당겨온다."""
+    r = worker_client.post("/queue/claim", json={"country": "US"})
+    assert r.status_code == 200
+    items = r.json()
+    assert {it["country"] for it in items} == {"US"} and len(items) == 2
+
+
+def test_claim_with_listed_filter_body(worker_client: TestClient) -> None:
+    """상장 필터(조인) — listed 만 1건(us1)."""
+    r = worker_client.post("/queue/claim", json={"listed": "listed"})
+    assert r.status_code == 200
+    items = r.json()
+    assert {it["name"] for it in items} == {"us1.com"}
+
+
+def test_claim_invalid_listed_422(worker_client: TestClient) -> None:
+    """listed 화이트리스트 밖 값은 422(조용한 빈 결과 방지)."""
+    assert worker_client.post("/queue/claim", json={"listed": "bogus"}).status_code == 422
+
+
+def test_claim_empty_body_is_all(worker_client: TestClient) -> None:
+    """본문 생략 = 전체(하위호환) — 3건 전부."""
+    r = worker_client.post("/queue/claim")
+    assert r.status_code == 200 and len(r.json()) == 3
+
+
+def test_queue_total_reflects_filter(worker_client: TestClient) -> None:
+    """GET /queue total 도 필터 반영(잔여건수)."""
+    assert worker_client.get("/queue", params={"country": "US"}).json()["total"] == 2
+    assert worker_client.get("/queue", params={"listed": "listed"}).json()["total"] == 1
+    assert worker_client.get("/queue", params={"country": "미국"}).json()["total"] == 2  # 별칭.
+    assert worker_client.get("/queue").json()["total"] == 3  # 빈 필터=전체.
+
+
+def test_queue_invalid_listed_422(worker_client: TestClient) -> None:
+    assert worker_client.get("/queue", params={"listed": "bogus"}).status_code == 422
 
 
 # --- 인증 ------------------------------------------------------------
