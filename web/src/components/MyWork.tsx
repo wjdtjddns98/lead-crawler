@@ -36,8 +36,9 @@ function loadFilter(): ClaimFilter {
     if (raw) {
       const p = JSON.parse(raw) as Partial<ClaimFilter>;
       return {
-        country: p.country ?? "",
-        industry: p.industry ?? "",
+        // 손상값 방어 — string 아니면 전체(""). MultiPicker 가 value.split() 하므로 number 등은 throw.
+        country: typeof p.country === "string" ? p.country : "",
+        industry: typeof p.industry === "string" ? p.industry : "",
         listed: (LISTED_VALUES.has(String(p.listed)) ? p.listed : "") as "" | Listed,
       };
     }
@@ -59,6 +60,7 @@ export function MyWork() {
   const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
   const [remaining, setRemaining] = useState<number | null>(null);
   const reqRef = useRef(0); // 최신 refill 토큰 — 빠른 필터 변경 시 뒤늦은 응답을 폐기(경쟁 방지).
+  const chainRef = useRef<Promise<void>>(Promise.resolve()); // applyFilter 직렬화 큐.
 
   // 현재 필터로 작업분을 채우고 "이 범위 잔여 pending" 카운트를 갱신한다.
   const refill = useCallback(async (f: ClaimFilter) => {
@@ -96,15 +98,19 @@ export function MyWork() {
   }, []);
 
   // 필터 변경 — 저장 후 현재 점유분을 전부 반납하고 새 범위로 재클레임(화면엔 항상 현재 범위만).
-  const applyFilter = async (next: ClaimFilter) => {
+  // release+claim 쌍을 chainRef 로 직렬화 — 빠른 연속 변경 시 한 쌍이 끝난 뒤 다음을 실행해야
+  // claim(A) 가 release(B) 뒤에 도착해 배치 A가 화면 없이 점유되는(다른 작업자 차단) 경쟁을 막는다.
+  const applyFilter = (next: ClaimFilter) => {
     setFilter(next);
     localStorage.setItem(FILTER_KEY, JSON.stringify(next));
-    try {
-      await releaseWork();
-    } catch {
-      // 반납 실패해도 재클레임은 시도(claim 진입 시 비매칭은 어차피 안 내려옴).
-    }
-    await refill(next);
+    chainRef.current = chainRef.current.then(async () => {
+      try {
+        await releaseWork();
+      } catch {
+        // 반납 실패해도 재클레임은 시도(claim 진입 시 비매칭은 어차피 안 내려옴).
+      }
+      await refill(next);
+    });
   };
 
   // 성공(처리 완료)이면 true — 팝업의 '성공 시에만 다음 행 전진' 판단에 쓰인다.
