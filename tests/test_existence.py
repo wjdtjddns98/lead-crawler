@@ -40,6 +40,109 @@ def _verify(site: bool, dns: bool, *, reg: bool | None = None, domain: str = "ac
     return v.verify(domain, registry="edgar", registry_id="0001")
 
 
+class _CountingSite:
+    """head_ok 호출 횟수를 센다(중복 HTTP 왕복 제거 검증용)."""
+
+    def __init__(self, ok: bool) -> None:
+        self.ok = ok
+        self.calls = 0
+
+    def head_ok(self, domain: str) -> bool:
+        self.calls += 1
+        return self.ok
+
+
+# 정상 home 본문(링크·풍부한 텍스트 → looks_parked=False) / 파킹 본문(판매 표지+빈약 본문).
+_LIVE_HOME = (
+    "<html><body><a href='/ir'>Investor Relations</a>"
+    "<p>Welcome to Acme Corporation, a global leader in industrial systems.</p></body></html>"
+)
+_PARKED_HOME = "<html><body>This domain is for sale.</body></html>"
+
+
+# --- 후속 C: enrich home 신호 재사용(중복 HTTP 프로브 제거) -----------------
+
+def test_home_html_skips_head_ok_probe() -> None:
+    # enrich 가 home 을 200 GET 함(home_html 제공) → existence 는 head_ok 를 안 쏜다(중복 제거).
+    site = _CountingSite(True)
+    v = ExistenceVerifier(Settings(dry_run=False), site_probe=site, dns_probe=_Dns(True))
+    r = v.verify("acme.com", home_html=_LIVE_HOME)
+    assert site.calls == 0  # HEAD/GET 프로브 생략
+    assert r.is_active and r.site_alive and r.confidence == 0.85  # head_ok=True+dns 와 동치
+
+
+def test_no_home_html_falls_back_to_head_ok() -> None:
+    # home_html None(enrich dry/실패/도메인없음) → 기존 head_ok 경로 그대로.
+    site = _CountingSite(True)
+    v = ExistenceVerifier(Settings(dry_run=False), site_probe=site, dns_probe=_Dns(True))
+    r = v.verify("acme.com", home_html=None)
+    assert site.calls == 1  # 프로브 수행
+    assert r.is_active and r.confidence == 0.85
+
+
+def test_home_html_output_matches_head_ok_path() -> None:
+    # 정상 home_html 경로(프로브 생략)와 head_ok=True 경로의 산출이 동치(순수 중복제거).
+    reused = ExistenceVerifier(
+        Settings(dry_run=False), site_probe=_CountingSite(True), dns_probe=_Dns(True)
+    ).verify("acme.com", home_html=_LIVE_HOME)
+    probed = ExistenceVerifier(
+        Settings(dry_run=False), site_probe=_Site(True), dns_probe=_Dns(True)
+    ).verify("acme.com")
+    assert (reused.is_active, reused.site_alive, reused.confidence) == (
+        probed.is_active, probed.site_alive, probed.confidence
+    )
+
+
+def test_parked_home_html_is_not_alive() -> None:
+    # M-1: enrich 가 GET 200 받았어도 본문이 파킹이면 실존 아님(제약② — head_ok GET폴백 동치).
+    site = _CountingSite(True)
+    v = ExistenceVerifier(Settings(dry_run=False), site_probe=site, dns_probe=_Dns(True))
+    r = v.verify("parked.com", home_html=_PARKED_HOME)
+    assert site.calls == 0  # 프로브는 여전히 생략(중복 왕복 0)
+    assert not r.is_active and not r.site_alive and r.confidence == 0.0  # 파킹 → reject
+
+
+def test_home_html_ignored_when_no_domain() -> None:
+    # 도메인 없으면 home_html 이 있어도 site_alive=False(기존 계약 보존).
+    site = _CountingSite(True)
+    v = ExistenceVerifier(Settings(dry_run=False), site_probe=site, dns_probe=_Dns(True))
+    r = v.verify(None, home_html=_LIVE_HOME)
+    assert site.calls == 0 and not r.is_active and r.confidence == 0.0
+
+
+# bare SPA 셸 — 정적 본문이 JS-blank(텍스트<20·a/img 없음) → looks_parked=True(정적상 모호).
+_BLANK_SPA_HOME = "<html><body><div id='root'></div></body></html>"
+
+
+def test_blank_spa_home_html_rejected_without_headless() -> None:
+    # verify_headless OFF(기본): 정적 JS-blank 는 최종 비생존(제약② 강화, 정적으로는 확인불가).
+    v = ExistenceVerifier(
+        Settings(dry_run=False, verify_headless=False), dns_probe=_Dns(True)
+    )
+    r = v.verify("spa.com", home_html=_BLANK_SPA_HOME)
+    assert not r.is_active and not r.site_alive
+
+
+def test_blank_spa_home_html_rescued_by_headless() -> None:
+    # verify_headless ON: 정적 파킹/blank 의심분은 단정 않고 렌더로 최종판정 → 정상 SPA 구제.
+    render = _Render("<html><body><a href='/ir'>IR</a><p>Live rendered company site.</p></body></html>")
+    v = ExistenceVerifier(
+        Settings(dry_run=False, verify_headless=True), dns_probe=_Dns(True), render_probe=render
+    )
+    r = v.verify("spa.com", home_html=_BLANK_SPA_HOME)
+    assert r.is_active and r.site_alive and render.calls == 1  # 렌더가 살림
+
+
+def test_parked_home_html_with_headless_rejected_by_render() -> None:
+    # verify_headless ON 이어도 렌더 본문이 파킹이면 비생존(렌더가 최종 정정).
+    render = _Render("<html><body>this domain is parked</body></html>")
+    v = ExistenceVerifier(
+        Settings(dry_run=False, verify_headless=True), dns_probe=_Dns(True), render_probe=render
+    )
+    r = v.verify("parked.com", home_html=_PARKED_HOME)
+    assert not r.is_active and render.calls == 1
+
+
 # --- dry_run -----------------------------------------------------------
 
 def test_dry_run_active_with_domain() -> None:

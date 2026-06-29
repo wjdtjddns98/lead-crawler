@@ -90,6 +90,23 @@ def test_home_fetched_once_across_escalation_chain() -> None:
     assert fetcher.calls["https://acme.com"] == 1  # 3→1
 
 
+def test_last_home_html_is_none_in_dry_run() -> None:
+    # last_home_html(실존검증 재사용 신호)은 dry_run 에선 None(네트워크 미수행).
+    enr = Enricher(Settings(dry_run=True))
+    enr.enrich(DiscoveredCompany(canonical_key="dom:acme.com", name="Acme", domain="acme.com"))
+    assert enr.last_home_html is None
+
+
+def test_last_home_html_is_none_without_domain() -> None:
+    # 도메인 없는 기업 enrich 후에도 None(직전 기업 값 누수 0).
+    fetcher = _CountingFetcher()
+    enr = _escalating_enricher(fetcher)
+    enr.enrich(DiscoveredCompany(canonical_key="dom:a.com", name="A", domain="a.com"))
+    assert enr.last_home_html is not None  # 도메인 기업 → 채워짐
+    enr.enrich(DiscoveredCompany(canonical_key="reg:x", name="NoDomain", domain=None))
+    assert enr.last_home_html is None  # 도메인없음 → 진입 즉시 리셋, 누수 없음
+
+
 def test_home_cache_resets_between_companies() -> None:
     # IO-001: 캐시는 enrich() 진입마다 초기화 — 기업 B 의 home 은 별개로 1회 fetch(누수 0).
     fetcher = _CountingFetcher()

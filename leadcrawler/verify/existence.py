@@ -207,15 +207,36 @@ class ExistenceVerifier:
         *,
         registry: str | None = None,
         registry_id: str | None = None,
+        home_html: str | None = None,
     ) -> ExistenceResult:
-        """도메인 생존(DNS+HTTP) + 등록처 신호로 실존성을 등급화 산정한다."""
+        """도메인 생존(DNS+HTTP) + 등록처 신호로 실존성을 등급화 산정한다.
+
+        ``home_html`` 이 주어지면(enrich 가 같은 도메인 home 을 이미 200 으로 GET 한 경우)
+        그 본문으로 생존을 판정해 별도 HEAD/GET 프로브를 생략한다(기업당 중복 왕복 제거).
+        본문이 파킹/JS-blank 면 생존 아님 — head_ok 의 GET폴백 looks_parked 검사와 동치(추가
+        왕복 0). None 이면(enrich dry_run·도메인없음·fetch실패) 기존대로 head_ok 로 프로브.
+        verify_headless(opt-in) 가 켜지면 정적 파킹/blank 의심분은 단정 않고 렌더 검사로 최종
+        판정한다(bare SPA recall 보호); 꺼져 있으면 정적 본문 판정이 최종이다.
+        """
         if self.settings.dry_run:
             alive = bool(domain)
             return ExistenceResult(
                 is_active=alive, site_alive=alive, confidence=0.9 if alive else 0.0
             )
 
-        site_alive = self._site().head_ok(domain) if domain else False
+        if not domain:
+            site_alive = False
+        elif home_html is not None:
+            # enrich 의 성공 GET 본문을 재사용 — head_ok 의 GET폴백 looks_parked 검사와 동치하게
+            # 파킹/JS-blank 본문은 비생존으로 본다(제약② 강화, 추가 왕복 0). 단 verify_headless
+            # 가 켜졌는데 정적 본문이 파킹/blank 로 보이면 정적 GET 으로는 모호한 bare SPA 일 수
+            # 있으므로 단정하지 않고 아래 헤드리스 렌더 검사에 위임한다(정상 SPA recall 보호).
+            static_alive = not looks_parked(home_html)
+            site_alive = (
+                True if (not static_alive and self.settings.verify_headless) else static_alive
+            )
+        else:
+            site_alive = self._site().head_ok(domain)
         # B1 헤드리스 확인(opt-in) — HTTP 가 살아있다 해도 파킹/JS-blank 면 실접속 생존 아님.
         # site_alive 후보만 렌더(불필요한 렌더 회피). 렌더 실패(None)는 graceful 통과(기존 판정
         # 유지) — 헤드리스 미설치로 실존 기업을 떨구지 않기 위함. 파킹/blank 확인 시에만 떨군다.
