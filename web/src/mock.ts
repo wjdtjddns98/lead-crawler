@@ -6,9 +6,60 @@ import type { CandidateInfo, ClaimFilter, Listed, ReviewItem } from "./types";
 
 const BATCH = 10;
 
+// 국가 옵션 — leadcrawler/sources/countries.py supported_countries() 전량(우선순위 순).
+// iso2=필터/저장 토큰, label=한글 표시명(korean_label), aliases=검색용(영문/ISO).
+const MOCK_COUNTRIES: { iso2: string; label: string; aliases: string[] }[] = [
+  { iso2: "US", label: "미국", aliases: ["us", "usa", "united states", "america"] },
+  { iso2: "KR", label: "대한민국", aliases: ["kr", "kor", "korea", "south korea", "한국"] },
+  { iso2: "JP", label: "일본", aliases: ["jp", "jpn", "japan", "日本"] },
+  { iso2: "CN", label: "중국", aliases: ["cn", "chn", "china", "prc", "中国"] },
+  { iso2: "PH", label: "필리핀", aliases: ["ph", "phl", "philippines"] },
+  { iso2: "TH", label: "태국", aliases: ["th", "tha", "thailand"] },
+  { iso2: "ID", label: "인도네시아", aliases: ["id", "idn", "indonesia"] },
+  { iso2: "MY", label: "말레이시아", aliases: ["my", "mys", "malaysia"] },
+  { iso2: "SG", label: "싱가포르", aliases: ["sg", "sgp", "singapore"] },
+  { iso2: "VN", label: "베트남", aliases: ["vn", "vnm", "vietnam"] },
+  { iso2: "IN", label: "인도", aliases: ["in", "ind", "india", "bharat"] },
+  { iso2: "TW", label: "대만", aliases: ["tw", "twn", "taiwan"] },
+  { iso2: "HK", label: "홍콩", aliases: ["hk", "hkg", "hong kong"] },
+  { iso2: "GB", label: "영국", aliases: ["gb", "uk", "gbr", "united kingdom", "britain"] },
+  { iso2: "DE", label: "독일", aliases: ["de", "deu", "germany", "deutschland"] },
+  { iso2: "FR", label: "프랑스", aliases: ["fr", "fra", "france"] },
+  { iso2: "AU", label: "호주", aliases: ["au", "aus", "australia"] },
+  { iso2: "CA", label: "캐나다", aliases: ["ca", "can", "canada"] },
+  { iso2: "BR", label: "브라질", aliases: ["br", "bra", "brazil", "brasil"] },
+];
+
+// 업종 옵션 — leadcrawler/sources/industry.py _EN_INDUSTRY 키 전량(supported_industries()).
+// value/label=한글 업종키('it' 만 영문), aliases=영문 검색어.
+const MOCK_INDUSTRIES: { value: string; label: string; aliases: string[] }[] = [
+  { value: "건설", label: "건설", aliases: ["construction"] },
+  { value: "제조", label: "제조", aliases: ["manufacturing"] },
+  { value: "금융", label: "금융", aliases: ["finance"] },
+  { value: "it", label: "it", aliases: ["it"] },
+  { value: "소프트웨어", label: "소프트웨어", aliases: ["software"] },
+  { value: "바이오", label: "바이오", aliases: ["biotech"] },
+  { value: "제약", label: "제약", aliases: ["pharmaceutical"] },
+  { value: "유통", label: "유통", aliases: ["retail"] },
+  { value: "도소매", label: "도소매", aliases: ["retail"] },
+  { value: "운송", label: "운송", aliases: ["transport"] },
+  { value: "물류", label: "물류", aliases: ["logistics"] },
+  { value: "에너지", label: "에너지", aliases: ["energy"] },
+  { value: "부동산", label: "부동산", aliases: ["real estate"] },
+  { value: "식품", label: "식품", aliases: ["food"] },
+  { value: "화학", label: "화학", aliases: ["chemical"] },
+  { value: "자동차", label: "자동차", aliases: ["automotive"] },
+  { value: "반도체", label: "반도체", aliases: ["semiconductor"] },
+  { value: "통신", label: "통신", aliases: ["telecommunications"] },
+];
+
+const COUNTRY_CODES = MOCK_COUNTRIES.map((c) => c.iso2);
+const INDUSTRY_KEYS = MOCK_INDUSTRIES.map((i) => i.value);
+const LISTED_CYCLE: Listed[] = ["listed", "unlisted", "unknown"];
+
 // 상장여부는 큐 DTO(ReviewItem)에 없고 BE 가 DiscoveredCompanyRow 조인으로 거른다.
-// mock 에선 id→listed 사이드맵으로 그 조인을 흉내 낸다(필터 동작 시연용).
-const MOCK_LISTED: Record<string, Listed> = {
+// mock 에선 id→listed 사이드맵으로 그 조인을 흉내 낸다(필터 동작 시연용). 합성분은 seed() 가 채운다.
+const HAND_LISTED: Record<string, Listed> = {
   c1: "listed",
   c11: "listed",
   c2: "listed",
@@ -21,6 +72,7 @@ const MOCK_LISTED: Record<string, Listed> = {
   c9: "listed",
   c10: "unknown",
 };
+let MOCK_LISTED: Record<string, Listed> = { ...HAND_LISTED };
 
 function cand(
   value: string,
@@ -52,9 +104,9 @@ function mk(p: Partial<ReviewItem> & { id: string; name: string }): ReviewItem {
   };
 }
 
-// 국내 중소·중견 제조사 10개 샘플 — 홈페이지는 모두 실제 접속되는 사이트(팝업으로 열림). 이메일은
+// 국내 중소·중견 제조사 실측 샘플 — 홈페이지는 모두 실제 접속되는 사이트(팝업으로 열림). 이메일은
 // 예시(가짜)이며 실제 주소 아님. 후보 1/다수로 변형을 섞어 라디오 선택·직접입력 UI 를 함께 검증한다.
-function seed(): ReviewItem[] {
+function handSamples(): ReviewItem[] {
   return [
     mk({
       id: "c1",
@@ -172,6 +224,52 @@ function seed(): ReviewItem[] {
   ];
 }
 
+// 필터 동작 검증용 합성 샘플 — 국가·업종을 다양하게 돌려 전체 큐를 채운다. 업종·국가 값은 BE 표준
+// 키와 동일해 필터가 실제로 걸린다(홈페이지는 example.com 더미라 팝업 실접속은 안 됨 — 필터/카운트용).
+function synthSamples(count: number): ReviewItem[] {
+  const rows: ReviewItem[] = [];
+  for (let i = 0; i < count; i++) {
+    const country = COUNTRY_CODES[i % COUNTRY_CODES.length];
+    // 업종은 *5 로 국가 주기와 어긋나게 돌려 (국가×업종) 조합을 다양화(gcd(5,18)=1 → 전 업종 순회).
+    const industry = INDUSTRY_KEYS[(i * 5) % INDUSTRY_KEYS.length];
+    const id = `g${i + 1}`;
+    // 이메일 상태를 3주기로 변형 — valid / unknown / 없음(폼만) 셀을 골고루 만든다.
+    const variant = i % 3;
+    const candidates =
+      variant === 0
+        ? [cand(`ir@${id}.example.com`)]
+        : variant === 1
+          ? [cand(`contact@${id}.example.com`, "unknown", true, null)]
+          : [];
+    rows.push(
+      mk({
+        id,
+        name: `${industry} 컴퍼니 ${i + 1} (${country})`,
+        industry,
+        country,
+        homepage: variant === 2 ? null : `https://example.com/${id}`,
+        form: variant === 2 ? "https://example.com/contact" : null,
+        email_status: variant === 0 ? "valid" : variant === 1 ? "unknown" : null,
+        email_mx: variant === 2 ? null : true,
+        email_smtp: variant === 0 ? true : null,
+        candidates,
+      }),
+    );
+  }
+  return rows;
+}
+
+// 전체 큐 시드 = 실측 11건 + 합성 89건(총 100건). 합성분 상장여부는 3주기로 배정해 MOCK_LISTED 채움.
+function seed(): ReviewItem[] {
+  const hand = handSamples();
+  const synth = synthSamples(89);
+  MOCK_LISTED = { ...HAND_LISTED };
+  synth.forEach((r, i) => {
+    MOCK_LISTED[r.id] = LISTED_CYCLE[i % LISTED_CYCLE.length];
+  });
+  return [...hand, ...synth];
+}
+
 let db: ReviewItem[] = seed();
 
 function setStatus(
@@ -240,19 +338,11 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
   if (path === "/auth/logout") return jsonRes({});
   if (path === "/health") return jsonRes({ status: "ok" });
 
-  // 검증 큐 필터 옵션(국가+업종) — 시드에 등장하는 실제 업종으로 셀렉트를 채운다.
+  // 검증 큐 필터 옵션 — 국가(countries.py)·업종(industry.py) 표준 목록 전량.
   if (path === "/queue/filters" && method === "GET") {
-    const industries = [...new Set(db.map((x) => x.industry))].map((v) => ({
-      value: v,
-      label: v,
-      aliases: [],
-    }));
     return jsonRes({
-      countries: [
-        { iso2: "KR", label: "대한민국", aliases: ["korea", "한국"] },
-        { iso2: "US", label: "미국", aliases: ["usa", "united states"] },
-      ],
-      industries,
+      countries: MOCK_COUNTRIES,
+      industries: MOCK_INDUSTRIES,
       listed: ["listed", "unlisted", "unknown"],
     });
   }

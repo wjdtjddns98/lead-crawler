@@ -49,7 +49,8 @@ function loadFilter(): ClaimFilter {
 }
 
 // 내 작업 뷰(당겨가기) — 내 작업분만 보여 6명 동시 검증 충돌을 막는다. 처리하면 자동 리필.
-// 상단 작업범위 바에서 국가·업종·상장을 골라 두면 그 조건의 pending 만 당겨온다(관리자 구두지시 범위).
+// 상단 작업범위 바에서 국가·업종·상장을 골라 두고 '더 받기'를 누르면 그 조건의 pending 만 전체
+// 큐에서 당겨온다. 필터 변경 자체는 네트워크 없이 조건만 저장(실제 당겨오기는 '더 받기'가 한다).
 export function MyWork() {
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -59,8 +60,7 @@ export function MyWork() {
   const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
   const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
   const [remaining, setRemaining] = useState<number | null>(null);
-  const reqRef = useRef(0); // 최신 refill 토큰 — 빠른 필터 변경 시 뒤늦은 응답을 폐기(경쟁 방지).
-  const chainRef = useRef<Promise<void>>(Promise.resolve()); // applyFilter 직렬화 큐.
+  const reqRef = useRef(0); // 최신 refill 토큰 — 빠른 '더 받기' 연타 시 뒤늦은 응답을 폐기(경쟁 방지).
 
   // 현재 필터로 작업분을 채우고 "이 범위 잔여 pending" 카운트를 갱신한다.
   const refill = useCallback(async (f: ClaimFilter) => {
@@ -97,20 +97,12 @@ export function MyWork() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 필터 변경 — 저장 후 현재 점유분을 전부 반납하고 새 범위로 재클레임(화면엔 항상 현재 범위만).
-  // release+claim 쌍을 chainRef 로 직렬화 — 빠른 연속 변경 시 한 쌍이 끝난 뒤 다음을 실행해야
-  // claim(A) 가 release(B) 뒤에 도착해 배치 A가 화면 없이 점유되는(다른 작업자 차단) 경쟁을 막는다.
-  const applyFilter = (next: ClaimFilter) => {
+  // 작업범위 변경 — 조건만 상태·localStorage 에 저장하고 네트워크는 건드리지 않는다(claim/release 없음).
+  // 실제 당겨오기는 '더 받기' 버튼이 현재 필터로 수행. 직전 잔여 카운트는 새 조건엔 무의미하므로 숨긴다.
+  const setFilterValue = (next: ClaimFilter) => {
     setFilter(next);
     localStorage.setItem(FILTER_KEY, JSON.stringify(next));
-    chainRef.current = chainRef.current.then(async () => {
-      try {
-        await releaseWork();
-      } catch {
-        // 반납 실패해도 재클레임은 시도(claim 진입 시 비매칭은 어차피 안 내려옴).
-      }
-      await refill(next);
-    });
+    setRemaining(null);
   };
 
   // 성공(처리 완료)이면 true — 팝업의 '성공 시에만 다음 행 전진' 판단에 쓰인다.
@@ -156,7 +148,7 @@ export function MyWork() {
           <MultiPicker
             options={countryOpts}
             value={filter.country}
-            onChange={(csv) => void applyFilter({ ...filter, country: csv })}
+            onChange={(csv) => setFilterValue({ ...filter, country: csv })}
             placeholder="국가 검색 (예: 미국, US)"
             emptyHint="전체 국가"
           />
@@ -166,7 +158,7 @@ export function MyWork() {
           <MultiPicker
             options={industryOpts}
             value={filter.industry}
-            onChange={(csv) => void applyFilter({ ...filter, industry: csv })}
+            onChange={(csv) => setFilterValue({ ...filter, industry: csv })}
             placeholder="업종 검색 (예: 금융)"
             emptyHint="전체 업종"
           />
@@ -176,7 +168,7 @@ export function MyWork() {
           <select
             className={INPUT}
             value={filter.listed}
-            onChange={(e) => void applyFilter({ ...filter, listed: e.target.value as "" | Listed })}
+            onChange={(e) => setFilterValue({ ...filter, listed: e.target.value as "" | Listed })}
           >
             {LISTED_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
