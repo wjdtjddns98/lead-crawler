@@ -119,7 +119,10 @@ export function SiteExplorer({
     if (done) return;
     if ((e.target as HTMLElement).closest("input,button,a,label,select,textarea")) return;
     try {
-      const email = extractEmail(await navigator.clipboard.readText());
+      const text = await navigator.clipboard.readText();
+      // 임시(테스트용): 이메일이 아니어도 원문 그대로 붙여넣어 클릭→붙여넣기 동작을 확인한다.
+      // ponytail: 검증 끝나면 `?? text.trim()` 제거해 이메일만 채우도록 되돌릴 것.
+      const email = extractEmail(text) ?? text.trim();
       if (email) {
         onPick(item.id, email);
         emailRef.current?.focus();
