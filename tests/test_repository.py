@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from leadcrawler.config import Settings
@@ -20,6 +20,7 @@ from leadcrawler.schema import CompanyRow, ContactRow, DiscoveredCompanyRow, Ema
 from leadcrawler.sources.base import DiscoveredCompany
 from leadcrawler.storage.db import init_db, session_scope
 from leadcrawler.storage.repository import (
+    load_leads,
     load_seen_domains,
     load_seen_keys,
     save_discovered,
@@ -55,6 +56,35 @@ def _lead(domain: str = "x.com", *, with_contacts: bool = True) -> CompanyLead:
     return CompanyLead(
         company=company, email=email, phone=phone, form=form, email_validation=validation
     )
+
+
+def test_load_leads_is_batched_not_n_plus_1(session: Session) -> None:
+    """load_leads 가 회사당 N+1 이 아니라 IN 배치 — 회사 수가 늘어도 쿼리수 일정(O(1))."""
+    for i in range(12):
+        save_lead(session, _lead(f"c{i}.com"))
+    session.flush()
+
+    count = 0
+    bind = session.get_bind()
+
+    def _before(*_a, **_k) -> None:
+        nonlocal count
+        count += 1
+
+    event.listen(bind, "before_cursor_execute", _before)
+    try:
+        leads = load_leads(session)
+    finally:
+        event.remove(bind, "before_cursor_execute", _before)
+
+    # 산출 정확성: 12개 회사 전부 복원 + 이메일/폼/검증 채워짐.
+    assert len(leads) == 12
+    assert all(ld.email is not None and ld.email.value.startswith("ir@") for ld in leads)
+    assert all(ld.form is not None for ld in leads)
+    assert any(ld.email_validation.status is ValidationStatus.VALID for ld in leads)
+    # 쿼리수는 배치라 상수(회사 + disc + contacts + review_queue + email_validation ≈ 5).
+    # 회사당 ~4N(=48) 였다면 절대 통과 못 한다. 여유 8 로 단언.
+    assert count <= 8, f"load_leads 가 {count} 쿼리 — N+1 회귀 의심(배치 깨짐)"
 
 
 def test_save_discovered_is_idempotent(session: Session) -> None:

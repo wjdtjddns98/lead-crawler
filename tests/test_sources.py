@@ -18,7 +18,7 @@ from leadcrawler.sources.exchanges import (
 )
 from leadcrawler.sources.gleif import GleifSource
 from leadcrawler.sources.opencorporates import OpenCorporatesSource
-from leadcrawler.sources.registry import build_sources, discover_segment
+from leadcrawler.sources.registry import build_sources, close_sources, discover_segment
 from leadcrawler.sources.search import SearchSource
 from leadcrawler.sources.wikidata import WikidataSource
 
@@ -26,6 +26,48 @@ from leadcrawler.sources.wikidata import WikidataSource
 def _dry_settings(**over: object) -> Settings:
     """dry_run 기본 설정(필요 시 필드 override)."""
     return Settings(dry_run=True, **over)
+
+
+class _SpyFetcher:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _SpySource:
+    """발견 소스 스파이 — discover 호출수 카운트 + 닫을 수 있는 _fetcher 보유(P3 검증용)."""
+
+    def __init__(self) -> None:
+        self.name = "spy"
+        self.calls = 0
+        self.fetcher = _SpyFetcher()
+        self._fetcher = self.fetcher  # close_sources 가 찾는 비공개 속성명.
+
+    def applies_to(self, segment: Segment) -> bool:  # noqa: ARG002
+        return True
+
+    def discover(self, segment: Segment) -> list:  # noqa: ARG002
+        self.calls += 1
+        return []
+
+
+def test_discover_segment_reuses_passed_sources() -> None:
+    """sources 를 넘기면 build_sources 로 재생성하지 않고 그 인스턴스를 재사용한다(P3)."""
+    spy = _SpySource()
+    discover_segment(Segment(country="KR", industry="건설"), _dry_settings(), sources=[spy])
+    discover_segment(Segment(country="US", industry="금융"), _dry_settings(), sources=[spy])
+    # 같은 인스턴스가 두 세그먼트에 재사용됐다(재빌드면 이 spy 는 호출조차 안 됨).
+    assert spy.calls == 2
+
+
+def test_close_sources_closes_fetchers() -> None:
+    """close_sources 가 각 소스의 _fetcher.close() 를 best-effort 호출(누수 제거, P3)."""
+    spy = _SpySource()
+    close_sources([spy])
+    assert spy.fetcher.closed is True
+    close_sources([object()])  # _fetcher/close 없는 객체도 안전(no-op).
 
 
 def test_applies_to_country_routing() -> None:
