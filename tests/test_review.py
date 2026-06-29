@@ -41,6 +41,7 @@ def _lead(
     domain: str = "acme.com",
     email: str | None = "ir@acme.com",
     form: str | None = None,
+    form_confidence: float = 0.0,
 ) -> CompanyLead:
     company = Company(
         canonical_key=f"dom:{domain}",
@@ -57,7 +58,9 @@ def _lead(
         if email
         else None
     )
-    form_ct = Contact(type=ContactType.FORM, value=form) if form else None
+    form_ct = (
+        Contact(type=ContactType.FORM, value=form, confidence=form_confidence) if form else None
+    )
     return CompanyLead(
         company=company,
         email=ct,
@@ -77,6 +80,28 @@ def test_save_lead_auto_enqueues(session: Session) -> None:
     assert items[0]["name"] == "아크메"
     assert items[0]["email_status"] == "valid"
     assert items[0]["email_smtp"] is True
+
+
+def test_form_low_confidence_flag(session: Session) -> None:
+    # G: 저신뢰 폴백 폼(0.3) → form_low_confidence True; 실폼(0.6) → False. URL·신뢰도도 노출.
+    save_lead(session, _lead(domain="low.com", email=None, form="https://low.com/contact",
+                             form_confidence=0.3))
+    save_lead(session, _lead(domain="hi.com", email=None, form="https://hi.com/contact",
+                             form_confidence=0.6))
+    session.flush()
+    by_name = {it["form"]: it for it in query_reviews(session)}
+    low = by_name["https://low.com/contact"]
+    hi = by_name["https://hi.com/contact"]
+    assert low["form_confidence"] == 0.3 and low["form_low_confidence"] is True
+    assert hi["form_confidence"] == 0.6 and hi["form_low_confidence"] is False
+
+
+def test_no_form_has_no_low_confidence_flag(session: Session) -> None:
+    # 폼 없는 리드 → form None, form_low_confidence False(오탐 없음).
+    save_lead(session, _lead(domain="noform.com"))
+    session.flush()
+    item = query_reviews(session)[0]
+    assert item["form"] is None and item["form_low_confidence"] is False
 
 
 def test_no_email_still_enqueues(session: Session) -> None:
