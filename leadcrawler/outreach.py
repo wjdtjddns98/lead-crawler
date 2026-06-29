@@ -23,6 +23,7 @@ from .config import Settings
 from .logging import get_logger
 from .schema import CompanyRow, EmailSendLogRow, ReviewQueueRow
 from .sources.countries import country_match_set
+from .storage.db import session_scope
 from .storage.review import CONFIRMED, candidate_values_of, effective_selected
 
 log = get_logger("outreach")
@@ -199,17 +200,21 @@ def send_campaign(
     for i, (company_id, email) in enumerate(target):
         try:
             send_one(settings, to=email, subject=subject, body=body, from_display=from_display)
-            _log_send(session, email=email, company_id=company_id, subject=subject,
-                      status="sent", error=None, sent_by=sent_by, now=now)
+            status, error = "sent", None
             sent += 1
         except Exception as exc:  # 한 통 실패가 캠페인 전체를 막지 않게(로그 후 계속).
-            _log_send(session, email=email, company_id=company_id, subject=subject,
-                      status="failed", error=str(exc)[:500], sent_by=sent_by, now=now)
+            status, error = "failed", str(exc)[:500]
             failed += 1
             log.info("outreach.send_error", email=email, err=str(exc))
+        # 비가역 SMTP 발송 직후 **격리 트랜잭션**으로 발송기록을 즉시 영속화한다. 요청
+        # 세션(get_db)은 핸들러 종료 시 1회만 commit 하므로, 그 사이 예외/프로세스 종료가
+        # 나면 이미 나간 메일의 send_log 가 소실돼 재실행 시 중복발송된다(일일상한도 누락).
+        # 발송 1건당 별도 세션 commit 으로 그 창을 닫는다(요청 트랜잭션과 무관하게 내구).
+        with session_scope(settings) as log_session:
+            _log_send(log_session, email=email, company_id=company_id, subject=subject,
+                      status=status, error=error, sent_by=sent_by, now=now)
         if i < len(target) - 1 and settings.email_send_min_interval > 0:
             sleep(settings.email_send_min_interval)  # 레이트리밋(계정 차단 방지).
-    session.flush()
     log.info("outreach.sent", sent=sent, failed=failed, capped=len(recips) - len(target))
     return {
         "dry_run": False,
