@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     # 수집 파이프라인 inline 중복 승격(C5, opt-in) — 정확 dedup 통과한 신규 리드를 기존
     # 원장과 near_dup 대조, 최상위(auto) 티어면 재추출 없이 흡수(제약①). off 면 기존 동작.
     dedup_inline: bool = Field(default=False)
+    # 수집 시점 도메인 없는(name: 티어) 신규 기업을 기존 name: 티어와 렉시컬(이름) 대조해
+    # 유사쌍을 dedup_candidate(워크벤치 pending)로 적재(opt-in). **자동 스킵/머지 안 함** —
+    # 동명이인 리드손실 방지(제약②)라 사람 확정 위임. off 면 기존 동작(회귀 0).
+    dedup_inline_lexical: bool = Field(default=False)
 
     # 아웃리치 이메일 발송(확정큐 전체발송) — Gmail SMTP 등. 외부행위라 기본 off(dry-run):
     # email_send_enabled=true 라야 실발송, 아니면 수신 미리보기·로그만 남기고 안 보낸다.

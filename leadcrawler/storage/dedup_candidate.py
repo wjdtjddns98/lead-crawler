@@ -85,6 +85,29 @@ def populate_candidates(session: Session, report: DuplicateReport) -> dict[str, 
     return {"created": created, "updated": updated, "skipped": skipped}
 
 
+def upsert_candidate(
+    session: Session, key_a: str, key_b: str, *, tier: str, name_score: float, reason: str
+) -> bool:
+    """단일 중복 후보 쌍을 ``dedup_candidate`` 에 멱등 upsert 한다(인라인 수집 시점용).
+
+    :func:`populate_candidates` 와 동일 규칙 — 이미 결정(merged/separated)된 쌍은 보존
+    (사람 결정 부활 금지)하고, pending/신규만 최신 티어·점수로 갱신한다. 같은 쌍은
+    입력 순서 무관 같은 PK(:func:`pair_id`). 생성/갱신했으면 True, 결정쌍이라 건너뛰면 False.
+    """
+    a, b = sorted((key_a, key_b))
+    cid = pair_id(a, b)
+    row = session.get(DedupCandidateRow, cid)
+    if row is not None and row.status != PENDING:
+        return False  # 사람 결정 보존.
+    if row is None:
+        row = DedupCandidateRow(id=cid, key_a=a, key_b=b)
+        session.add(row)
+    row.tier = tier
+    row.name_score = name_score
+    row.reason = reason
+    return True
+
+
 def _company_info(session: Session, keys: list[str]) -> dict[str, dict]:
     """주어진 canonical_key 들의 표시 정보(이름·국가·도메인·머지상태)를 한 번에 적재."""
     if not keys:
