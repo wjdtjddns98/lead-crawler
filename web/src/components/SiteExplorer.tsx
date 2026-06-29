@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type MouseEvent } from "react";
 import type { ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, tabCls } from "../ui";
 import { EmailBadge } from "./StatusBadge";
@@ -18,6 +18,13 @@ function safeHref(url: string | null): string | null {
 function tri(v: boolean | null): string {
   if (v === null) return "—";
   return v ? "O" : "X";
+}
+
+// 잡텍스트에서 첫 이메일을 뽑는다(끝 구두점 제거). 없으면 null. 팝업에서 줄째 복사해도
+// 이메일만 골라 입력란에 채우기 위함.
+function extractEmail(text: string): string | null {
+  const m = text.match(/[^\s<>()[\]'"]+@[^\s<>()[\]'"]+\.[^\s<>()[\]'"]+/);
+  return m ? m[0].replace(/[.,;:]+$/, "") : null;
 }
 
 export type SiteTab = "home" | "form";
@@ -104,6 +111,24 @@ export function SiteExplorer({
   }, [activeHref]);
   useEffect(() => () => popupRef.current?.close(), []);
 
+  // 사이드바 빈 영역 클릭 → 클립보드를 읽어 이메일만 자동 채움. 클릭은 사용자 제스처라
+  // clipboard.readText() 가 허용된다(focus 이벤트는 제스처로 안 쳐줘 막혔던 부분). 입력·버튼·
+  // 후보 라디오 클릭은 본래 동작을 살리려 건너뛴다. 이메일 형태가 아니면 건드리지 않는다.
+  const emailRef = useRef<HTMLInputElement | null>(null);
+  async function pasteFromClipboard(e: MouseEvent) {
+    if (done) return;
+    if ((e.target as HTMLElement).closest("input,button,a,label,select,textarea")) return;
+    try {
+      const email = extractEmail(await navigator.clipboard.readText());
+      if (email) {
+        onPick(item.id, email);
+        emailRef.current?.focus();
+      }
+    } catch {
+      // clipboard-read 권한 거부/미지원 — 무시(사용자가 입력란 클릭 후 Ctrl+V 로 폴백).
+    }
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
@@ -169,9 +194,13 @@ export function SiteExplorer({
             )}
           </div>
 
-          <aside className="w-[340px] flex-none border-l border-line p-3 overflow-y-auto flex flex-col gap-3">
+          <aside
+            className="w-[340px] flex-none border-l border-line p-3 overflow-y-auto flex flex-col gap-3"
+            onClick={pasteFromClipboard}
+          >
             <p className="text-muted text-xs leading-relaxed">
-              사이트는 팝업 창에서 열립니다. 찾은 이메일을 아래에 입력/수정한 뒤 확정하세요.
+              사이트에서 이메일 복사(Ctrl+C) 후 이 영역 빈 곳을 클릭하면 아래 입력란에 자동
+              붙여넣어집니다. 직접 입력/수정도 가능합니다.
             </p>
 
             {/* 이메일 후보(라디오) — 여러 개면 골라 입력란을 채운다. */}
@@ -203,6 +232,7 @@ export function SiteExplorer({
             <label className="flex flex-col gap-1">
               <span className="text-muted text-xs">이메일(직접 입력/수정)</span>
               <input
+                ref={emailRef}
                 className="w-full bg-canvas border border-line text-ink font-mono text-sm py-1.5 px-2 rounded focus:outline-none focus:border-accent disabled:opacity-50"
                 type="email"
                 value={choice ?? ""}
