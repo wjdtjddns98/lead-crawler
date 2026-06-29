@@ -255,6 +255,17 @@ def test_claim_filter_switch_releases_non_matching(mixed_settings) -> None:
         assert {"k1.com", "k2.com"} <= mine
 
 
+def test_invalid_listed_raises_at_storage(mixed_settings) -> None:
+    """스토리지 계층도 잘못된 listed 값은 fail-loud(조용한 0건 방지) — 비API 직접 호출 방어."""
+    c = _uid(mixed_settings, "carol")
+    with session_scope(mixed_settings) as s:
+        with pytest.raises(ValueError):
+            claim_work(s, c, target=10, ttl_minutes=30, now=_T0, listed="LISTED")
+    with session_scope(mixed_settings) as s:
+        with pytest.raises(ValueError):
+            count_reviews(s, listed="bogus")
+
+
 def test_count_and_query_reviews_with_filter(mixed_settings) -> None:
     """count_reviews·query_reviews 도 동일 필터를 반영한다(잔여건수·목록 일관)."""
     with session_scope(mixed_settings) as s:

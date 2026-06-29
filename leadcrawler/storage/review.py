@@ -59,6 +59,10 @@ def _apply_queue_filters(
         if wanted:
             stmt = stmt.where(func.lower(CompanyRow.industry).in_(wanted))
     if listed:
+        # 스토리지 계층 방어선 — API 는 Literal 로 막지만(422), 비API 직접 호출의 오타·대문자
+        # ('LISTED')가 조용히 0건이 되지 않게 fail-loud(set_review_status 의 상태검증과 동일 결).
+        if listed not in _VALID_LISTED:
+            raise ValueError(f"허용되지 않은 listed 값: {listed}")
         stmt = stmt.join(
             DiscoveredCompanyRow,
             CompanyRow.canonical_key == DiscoveredCompanyRow.canonical_key,
