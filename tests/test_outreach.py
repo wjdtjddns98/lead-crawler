@@ -124,6 +124,36 @@ def test_failure_is_logged_and_continues(db_settings, monkeypatch) -> None:
     assert r["failed"] == 1 and r["sent"] == 2  # 한 통 실패해도 나머지 진행.
 
 
+def test_sends_persist_across_request_rollback(db_settings, monkeypatch) -> None:
+    """발송 직후 격리 커밋 — 요청 세션이 이후 롤백돼도 send_log 가 살아남는다(중복발송 방지)."""
+    from leadcrawler.schema import EmailSendLogRow
+    from leadcrawler.storage.db import get_sessionmaker
+
+    sent: list[str] = []
+    monkeypatch.setattr(
+        outreach, "send_one",
+        lambda settings, *, to, subject, body, from_display="": sent.append(to),
+    )
+    s = _settings(email_send_enabled=True)
+    # 요청 세션(get_db)을 모사: 발송 후 핸들러 예외처럼 rollback 한다.
+    session = get_sessionmaker(s)()
+    try:
+        r = outreach.send_campaign(s, session, subject="제목", body="본문", sleep=lambda _: None)
+        assert r["sent"] == 3
+        session.rollback()  # 요청 트랜잭션 실패/롤백 모사 — 격리 커밋이라 발송기록은 보존돼야.
+    finally:
+        session.close()
+
+    with session_scope(s) as v:  # 발송기록 3건이 디스크에 영속(롤백 무관).
+        rows = v.query(EmailSendLogRow).filter(EmailSendLogRow.status == "sent").all()
+    assert len(rows) == 3
+    # 재실행 시 이미 발송분은 수신목록에서 제외 → 재발송 0(내구성의 실제 효과).
+    sent.clear()
+    with session_scope(s) as v:
+        r2 = outreach.send_campaign(s, v, subject="제목", body="본문", sleep=lambda _: None)
+    assert r2["recipients"] == 0 and not sent
+
+
 def test_preview_counts_without_sending(db_settings, monkeypatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(outreach, "send_one", lambda *a, **k: calls.append(1))
