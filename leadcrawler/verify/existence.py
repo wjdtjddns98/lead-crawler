@@ -102,6 +102,10 @@ class SupportsRender(Protocol):
         """``https?://domain`` 을 헤드리스로 렌더해 최종 HTML 을 반환(실패 시 None)."""
         ...
 
+    def close(self) -> None:
+        """브라우저/리소스를 정리한다(재사용 렌더러의 종료 훅; ExistenceVerifier.close 가 호출)."""
+        ...
+
 
 class SupportsRegistryActive(Protocol):
     """등록처 active 신호 체커(주입형 placeholder — 미주입이면 미사용)."""
@@ -299,33 +303,73 @@ class ExistenceVerifier:
 
 
 class PlaywrightRender:
-    """Playwright 기반 헤드리스 렌더러 — 미설치/오류 시 None(graceful, 기존 판정 유지)."""
+    """Playwright 헤드리스 렌더러 — lazy 기동·재사용·graceful 실패(미설치/오류 시 None).
+
+    기존엔 render() 호출마다 Chromium 을 새로 띄우고 닫아 기업당 콜드스타트(수백 ms~초)를
+    물었다. enrich/headless.PlaywrightRenderer 와 동일하게 브라우저를 1회 기동해 재사용한다
+    (페이지만 매 호출 생성·정리). ExistenceVerifier.close() 가 종료 시 close() 를 호출해
+    자원을 정리한다. 인스턴스는 워커 스레드 전용(run.py)이라 브라우저 재사용은 스레드안전하다.
+    """
 
     def __init__(self, *, timeout: float = 20.0) -> None:
         self._timeout_ms = int(timeout * 1000)
+        self._pw = None
+        self._browser = None
+        self._unavailable = False  # 미설치/기동실패 시 재시도 안 함.
 
-    def render(self, domain: str) -> str | None:
+    def _ensure(self) -> bool:
+        """브라우저를 1회 기동(재사용). 미설치/실패면 False(이후 비활성)."""
+        if self._browser is not None:
+            return True
+        if self._unavailable:
+            return False
         try:
             from playwright.sync_api import sync_playwright
 
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                try:
-                    page = browser.new_page()
-                    for scheme in ("https", "http"):
-                        try:
-                            page.goto(
-                                f"{scheme}://{domain}",
-                                timeout=self._timeout_ms,
-                                wait_until="domcontentloaded",
-                            )
-                            return page.content()
-                        except Exception as exc:  # 해당 스킴 렌더 실패 → 다음 스킴.
-                            log.debug("existence.render.fail", domain=domain, scheme=scheme, err=str(exc))
-                            continue
-                    return None
-                finally:
-                    browser.close()
-        except Exception as exc:  # Playwright 미설치(ImportError)·브라우저 없음 → graceful None.
+            self._pw = sync_playwright().start()
+            self._browser = self._pw.chromium.launch(headless=True)
+            return True
+        except Exception as exc:  # 미설치(ImportError)·브라우저 미설치·기동실패 → graceful.
             log.info("existence.render.unavailable", err=str(exc))
+            self._unavailable = True
+            return False
+
+    def render(self, domain: str) -> str | None:
+        """domain 을 https→http 순으로 렌더해 최종 HTML 을 반환(전부 실패/미설치 시 None)."""
+        if not self._ensure():
             return None
+        page = None
+        try:
+            page = self._browser.new_page()
+            for scheme in ("https", "http"):
+                try:
+                    page.goto(
+                        f"{scheme}://{domain}",
+                        timeout=self._timeout_ms,
+                        wait_until="domcontentloaded",
+                    )
+                    return page.content()
+                except Exception as exc:  # 해당 스킴 렌더 실패 → 다음 스킴.
+                    log.debug("existence.render.fail", domain=domain, scheme=scheme, err=str(exc))
+                    continue
+            return None
+        except Exception as exc:  # new_page 등 예기치 못한 실패 → graceful None.
+            log.info("existence.render.error", domain=domain, err=str(exc))
+            return None
+        finally:
+            if page is not None:
+                try:
+                    page.close()
+                except Exception:  # 정리 실패는 무시(베스트에포트).
+                    pass
+
+    def close(self) -> None:
+        """브라우저·Playwright 를 정리한다(커넥션 누수 방지)."""
+        for obj, method in ((self._browser, "close"), (self._pw, "stop")):
+            if obj is not None:
+                try:
+                    getattr(obj, method)()
+                except Exception:  # 정리 실패는 무시(베스트에포트).
+                    pass
+        self._browser = None
+        self._pw = None
