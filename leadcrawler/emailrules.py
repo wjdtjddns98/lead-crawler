@@ -8,28 +8,66 @@
 
 from __future__ import annotations
 
+import re
+
 from .models import ACCEPTED_EMAIL_ROLES, Contact, ContactType, EmailRole
 
 # local-part 키워드 → role. 가장 구체적인 것부터 검사한다.
-_IR_KEYS = ("ir", "investor", "investors", "투자")
-_HR_KEYS = ("hr", "recruit", "recruiting", "career", "careers", "jobs", "인사", "채용")
-_PRESS_KEYS = ("press", "media", "pr", "news", "홍보", "보도")
-_GENERAL_KEYS = (
-    "contact", "info", "inquiry", "enquiry", "hello", "help", "support",
-    "sales", "office", "admin", "mail", "master", "webmaster", "문의",
+# 짧은 ascii 키('ir'·'hr'·'pr')는 **토큰 완전일치**로만 매칭한다(아래 _matches 참조) —
+# substring 매칭은 'shirley'·'irene'→IR, 'chris'→HR, 'express'→PRESS 처럼 사람 이름/일반
+# 단어를 오분류한다('express' 는 'press' 를 substring 으로 포함). 그래서 흔한 결합형
+# ('investorrelations'·'pressroom' 등)은 별도 토큰 키로 명시 등록한다.
+_IR_KEYS = ("ir", "investor", "investors", "investorrelations", "투자")
+_HR_KEYS = (
+    "hr", "recruit", "recruiting", "recruitment", "career", "careers", "jobs",
+    "humanresources", "인사", "채용",
 )
+_PRESS_KEYS = (
+    "press", "media", "pr", "news", "pressroom", "newsroom", "mediarelations",
+    "publicrelations", "홍보", "보도",
+)
+_GENERAL_KEYS = (
+    "contact", "contactus", "info", "inquiry", "enquiry", "hello", "help",
+    "support", "sales", "office", "admin", "mail", "master", "webmaster", "문의",
+)
+
+# local-part 를 토큰으로 쪼갠다: 구분자(. _ -)와 영문↔숫자 경계에서 분리.
+# 예: 'investor.relations'→['investor','relations'], 'ir2024'→['ir','2024'].
+_TOKEN_SPLIT = re.compile(r"[._\-]+|(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])")
+
+
+def _tokens(local: str) -> set[str]:
+    """local-part 의 토큰 집합(빈 토큰 제거)."""
+    return {t for t in _TOKEN_SPLIT.split(local) if t}
+
+
+def _matches(keys: tuple[str, ...], tokens: set[str], local: str) -> bool:
+    """키워드 매칭 — ascii 키는 토큰 완전일치(오탐 차단), 비ascii(한글)는 substring.
+
+    한글 키는 ascii 이름에 substring 으로 끼어들 수 없어 오탐이 불가능하므로 substring 으로
+    유연하게 잡는다(한글 local-part 는 토큰 경계가 모호). ascii 키는 'ir'·'pr' 같은 2글자
+    키가 사람 이름에 박혀 오분류되지 않도록 토큰 단위 완전일치만 허용한다.
+    """
+    for k in keys:
+        if k.isascii():
+            if k in tokens:
+                return True
+        elif k in local:
+            return True
+    return False
 
 
 def classify_role(email: str) -> EmailRole:
     """이메일 주소의 local-part 로 성격(role)을 분류한다."""
     local = (email or "").split("@", 1)[0].lower()
-    if any(k in local for k in _IR_KEYS):
+    tokens = _tokens(local)
+    if _matches(_IR_KEYS, tokens, local):
         return EmailRole.IR
-    if any(k in local for k in _HR_KEYS):
+    if _matches(_HR_KEYS, tokens, local):
         return EmailRole.HR
-    if any(k in local for k in _PRESS_KEYS):
+    if _matches(_PRESS_KEYS, tokens, local):
         return EmailRole.PRESS
-    if any(k in local for k in _GENERAL_KEYS):
+    if _matches(_GENERAL_KEYS, tokens, local):
         return EmailRole.GENERAL
     # 그 외(개인명 등)는 일반 연락처로 간주해 허용하되 우선순위는 낮다.
     return EmailRole.GENERAL
