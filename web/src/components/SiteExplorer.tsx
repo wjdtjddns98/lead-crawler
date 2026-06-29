@@ -1,4 +1,4 @@
-import { useEffect, useRef, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, tabCls } from "../ui";
 import { EmailBadge } from "./StatusBadge";
@@ -80,19 +80,17 @@ export function SiteExplorer({
   onReject,
   onClose,
 }: Props) {
-  // Esc 로 닫기 + 모달 동안 배경 스크롤 잠금.
+  // 모달 동안 배경 스크롤 잠금(마운트 시 1회).
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
+    const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
+      document.body.style.overflow = prev;
     };
-  }, [onClose]);
+  }, []);
+
+  // Enter 2단계 확정 — 실수 확정 방지. 1차 Enter: 확인창 표시 / 2차 Enter: 실제 확정.
+  const [confirming, setConfirming] = useState(false);
 
   const done = item.status !== "pending";
   const homeHref = safeHref(item.homepage);
@@ -110,6 +108,31 @@ export function SiteExplorer({
     if (activeHref) popupRef.current = openSitePopup(activeHref, slotRef.current);
   }, [activeHref]);
   useEffect(() => () => popupRef.current?.close(), []);
+
+  // 실제 확정 — 확인창을 닫고 선택 이메일로 확정한 뒤 모달을 닫는다(테이블이 결과 반영).
+  const doConfirm = () => {
+    setConfirming(false);
+    onConfirm(item.id, choice?.trim() ? choice.trim() : undefined);
+    onClose();
+  };
+
+  // 키보드: Enter=확정(1차 확인창 → 2차 실제 확정), Esc=확인창 닫기 또는 모달 닫기.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (confirming) setConfirming(false);
+        else onClose();
+        return;
+      }
+      if (e.key === "Enter" && !done && !busy) {
+        e.preventDefault();
+        if (confirming) doConfirm();
+        else setConfirming(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   // 사이드바 빈 영역 클릭 → 클립보드를 읽어 이메일만 자동 채움. 클릭은 사용자 제스처라
   // clipboard.readText() 가 허용된다(focus 이벤트는 제스처로 안 쳐줘 막혔던 부분). 입력·버튼·
@@ -144,6 +167,37 @@ export function SiteExplorer({
         className="relative bg-panel border border-line rounded-lg w-[92vw] h-[86vh] max-w-[1400px] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Enter 2단계 확정 — 확인 오버레이. 다시 Enter(또는 확정 버튼)로 진짜 확정. */}
+        {confirming && (
+          <div
+            className="absolute inset-0 z-20 bg-black/55 flex items-center justify-center p-4"
+            onClick={() => setConfirming(false)}
+          >
+            <div
+              className="bg-panel border border-line rounded-lg p-5 max-w-sm w-full text-center flex flex-col gap-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <p className="text-ink text-sm leading-relaxed">
+                <span className="font-semibold">{item.name}</span> 을(를) 확정하시겠습니까?
+                {choice?.trim() && (
+                  <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
+                    {choice.trim()}
+                  </span>
+                )}
+                <span className="block mt-2 text-muted text-xs">다시 Enter 를 누르면 확정됩니다.</span>
+              </p>
+              <div className="flex gap-2">
+                <button className={`${BTN_CONFIRM} flex-1`} disabled={busy} onClick={doConfirm}>
+                  확정 (Enter)
+                </button>
+                <button className={`${BTN} flex-1`} onClick={() => setConfirming(false)}>
+                  취소 (Esc)
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* 헤더 — 업체명 · 탭(홈/문의폼) · 새 탭 · 닫기 */}
         <div className="flex items-center gap-2 px-3 py-2 border-b border-line">
           <span className="font-semibold text-ink truncate" title={item.name}>
