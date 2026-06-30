@@ -8,6 +8,7 @@ import {
   releaseWork,
 } from "../api";
 import { QueueTable } from "./QueueTable";
+import { TableSkeleton } from "./TableSkeleton";
 import { MultiPicker, type PickerOption } from "./MultiPicker";
 import { BTN, EMPTY } from "../ui";
 import { ErrorBox } from "./ErrorBox";
@@ -204,7 +205,9 @@ export function MyWork() {
 
       {error && <ErrorBox>{error}</ErrorBox>}
 
-      {items.length === 0 && !loading ? (
+      {loading && items.length === 0 ? (
+        <TableSkeleton />
+      ) : items.length === 0 ? (
         <p className={EMPTY}>
           {hasFilter
             ? "이 범위에 남은 작업이 없습니다 — 필터를 넓히거나 해제해 보세요."
