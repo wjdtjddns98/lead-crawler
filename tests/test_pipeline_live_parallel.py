@@ -55,6 +55,7 @@ class _FakeEnricher:
     def __init__(self, settings, *, cost_ledger=None, **_kw) -> None:  # noqa: ANN001, ARG002
         self._led = cost_ledger
         self.last_home_html = None  # _build_lead 가 existence 로 넘기는 신호(라이브 경로).
+        self.last_home_rendered_html = None  # 헤드리스 렌더 home 재사용 신호(없음=existence 자체 렌더).
 
     def enrich(self, dc: DiscoveredCompany) -> list[Contact]:
         if self._led is not None:
@@ -75,7 +76,7 @@ class _FakeExistence:
     def __init__(self, settings, *, registry_checker=None, **_kw) -> None:  # noqa: ANN001, ARG002
         pass
 
-    def verify(self, domain, *, registry=None, registry_id=None, home_html=None):  # noqa: ANN001, ARG002
+    def verify(self, domain, *, registry=None, registry_id=None, home_html=None, rendered_html=None):  # noqa: ANN001, ARG002
         return ExistenceResult(is_active=True, site_alive=True, confidence=0.9)
 
     def close(self) -> None:

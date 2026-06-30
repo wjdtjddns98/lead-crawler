@@ -80,11 +80,13 @@ def _build_lead(
     phone = next((c for c in contacts if c.type is ContactType.PHONE), None)
     form = next((c for c in contacts if c.type is ContactType.FORM), None)
     # enrich 가 이미 받은 home 생존신호를 넘겨 실존검증의 중복 HTTP 왕복을 없앤다(architect C).
+    # 헤드리스로 렌더한 home 도 넘겨, verify_headless 가 같은 도메인을 또 렌더하지 않게 한다.
     ex = existence.verify(
         dc.domain,
         registry=dc.registry,
         registry_id=dc.registry_id,
         home_html=enricher.last_home_html,
+        rendered_html=enricher.last_home_rendered_html,
     )
     company = Company(
         canonical_key=dc.canonical_key,

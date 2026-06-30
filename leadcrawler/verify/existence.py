@@ -212,6 +212,7 @@ class ExistenceVerifier:
         registry: str | None = None,
         registry_id: str | None = None,
         home_html: str | None = None,
+        rendered_html: str | None = None,
     ) -> ExistenceResult:
         """도메인 생존(DNS+HTTP) + 등록처 신호로 실존성을 등급화 산정한다.
 
@@ -221,6 +222,10 @@ class ExistenceVerifier:
         왕복 0). None 이면(enrich dry_run·도메인없음·fetch실패) 기존대로 head_ok 로 프로브.
         verify_headless(opt-in) 가 켜지면 정적 파킹/blank 의심분은 단정 않고 렌더 검사로 최종
         판정한다(bare SPA recall 보호); 꺼져 있으면 정적 본문 판정이 최종이다.
+
+        ``rendered_html`` 이 주어지면(enrich 가 같은 도메인 home 을 이미 헤드리스로 렌더한 경우)
+        그 HTML 을 헤드리스 파킹 검사에 재사용해 별도 렌더를 생략한다(기업당 Chromium 중복 기동
+        제거). None 이면(enrich 가 헤드리스 escalate 안 함·렌더 실패) 기존대로 자체 렌더한다.
         """
         if self.settings.dry_run:
             alive = bool(domain)
@@ -245,7 +250,9 @@ class ExistenceVerifier:
         # site_alive 후보만 렌더(불필요한 렌더 회피). 렌더 실패(None)는 graceful 통과(기존 판정
         # 유지) — 헤드리스 미설치로 실존 기업을 떨구지 않기 위함. 파킹/blank 확인 시에만 떨군다.
         if site_alive and domain and self.settings.verify_headless:
-            rendered = self._render().render(domain)
+            # enrich 가 같은 도메인 home 을 이미 헤드리스로 렌더했으면 그 HTML 을 재사용해
+            # 기업당 Chromium 중복 기동을 없앤다(없거나 빈 본문이면 자체 렌더 — https→http 폴백).
+            rendered = rendered_html if rendered_html else self._render().render(domain)
             if rendered is not None and looks_parked(rendered):
                 log.info("existence.headless.parked", domain=domain)
                 site_alive = False
