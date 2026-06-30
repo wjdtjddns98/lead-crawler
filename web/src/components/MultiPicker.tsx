@@ -63,7 +63,7 @@ export function MultiPicker({
         placeholder={placeholder}
       />
       {selectedOpts.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5 items-center">
+        <div className="flex flex-wrap gap-1.5 items-center min-h-[24px]">
           {selectedOpts.map((o) => (
             <button
               key={o.value}
@@ -86,7 +86,7 @@ export function MultiPicker({
           </button>
         </div>
       ) : (
-        <p className="text-muted m-0 text-xs">{emptyHint}</p>
+        <p className="text-muted m-0 text-xs flex items-center min-h-[24px]">{emptyHint}</p>
       )}
       <ul className="list-none m-0 p-1 h-[200px] overflow-y-auto border border-line rounded-md bg-canvas">
         {filtered.map((o) => (
