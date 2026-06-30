@@ -146,7 +146,7 @@ export function MyWork() {
 
   return (
     <>
-      <div className="flex flex-wrap items-end gap-3 mb-4 p-3 border border-line rounded-md bg-[rgba(127,127,127,0.06)]">
+      <div className="flex flex-wrap items-start gap-3 mb-4 p-3 border border-line rounded-md bg-[rgba(127,127,127,0.06)]">
         <div className={FIELD}>
           <span>국가 <span className="text-muted">(선택 안 함=전체)</span></span>
           <MultiPicker
@@ -182,14 +182,14 @@ export function MyWork() {
           </select>
         </label>
         {remaining !== null && (
-          <span className="text-muted text-[13px] pb-1.5">
+          <span className="text-muted text-[13px] pb-1.5 tabular-nums">
             현재 범위 잔여 <strong className="text-ink">{remaining}</strong>건
           </span>
         )}
       </div>
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
-        <p className="text-muted my-2">
+        <p className="text-muted my-2 tabular-nums">
           내 작업 {items.length}건{loading && " · 불러오는 중…"}
         </p>
         <div className="flex gap-1">

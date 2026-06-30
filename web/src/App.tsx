@@ -202,7 +202,7 @@ function Workbench({
             <ChevronLeft size={14} aria-hidden /> 이전
           </span>
         </button>
-        <span>
+        <span className="tabular-nums">
           {page} / {pages}
         </span>
         <button

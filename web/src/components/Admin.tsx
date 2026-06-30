@@ -33,7 +33,8 @@ const FIELD = "flex flex-col gap-1 text-muted text-[13px]";
 const FIELD_INLINE = "flex flex-row items-center gap-1.5 text-muted text-[13px]";
 const INPUT = "bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md";
 const INPUT_WIDE = `${INPUT} min-w-[200px]`;
-const CRAWL_TARGET = "flex flex-wrap items-end gap-3";
+// items-start: 칩(선택 토큰) 증가로 피커가 자라도 위쪽 검색 input·라벨은 고정(아래로만 확장).
+const CRAWL_TARGET = "flex flex-wrap items-start gap-3";
 
 // 관리자 페이지 — 계정별 처리 통계·역할/활성 관리·계정 생성 + 최근 검증 감사 로그.
 export function Admin() {
