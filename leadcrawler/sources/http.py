@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -19,6 +21,58 @@ log = get_logger("sources.http")
 
 # 일시적 네트워크 오류 + 재시도 가치 있는 상태코드(429/5xx)만 재시도. 그 외 4xx 는 즉시 실패.
 _RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+class RateLimiter:
+    """호스트 단위 토큰 스로틀 — '다음 슬롯 예약' 방식으로 초당 ``rate`` 를 직렬 보장한다.
+
+    동시 호출이 와도 lock 안에서 다음 가용 슬롯(``self._next``)을 순차 예약하고, 실제 대기
+    (``sleep``)는 lock 밖에서 한다 — 대기 중 다른 스레드의 슬롯 예약이 막히지 않게(스로틀러
+    자체가 병목이 되지 않게). 이로써 동시 호출의 총 발사율이 초당 ``rate`` 를 넘지 않는다.
+    ``rate_per_sec <= 0`` 이면 no-op(무제한).
+    """
+
+    def __init__(self, rate_per_sec: float) -> None:
+        self._min_interval = 1.0 / rate_per_sec if rate_per_sec > 0 else 0.0
+        self._next = 0.0  # 다음 슬롯이 열리는 monotonic 시각.
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        """다음 슬롯을 예약하고(lock 안) 그 시각까지 대기(lock 밖)한다."""
+        if self._min_interval <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            start = max(now, self._next)  # 슬롯은 지금 또는 직전 예약 이후로만 열린다.
+            self._next = start + self._min_interval
+            wait = start - now
+        if wait > 0:
+            time.sleep(wait)
+
+
+class HostRateLimiters:
+    """호스트별 :class:`RateLimiter` 레지스트리 — 여러 페처가 같은 호스트 한도를 공유한다.
+
+    세그먼트 병렬화 시 워커별 독립 Fetcher 들이 같은 등록처 호스트(``data.sec.gov`` 등)를
+    동시에 때려도, 이 공유 레지스트리의 호스트별 limiter 로 합산 초당 요청을 ``default_rate``
+    (또는 ``per_host`` 오버라이드) 이하로 묶어 429 를 선제 방지한다. 스레드 안전(dict 캐시
+    접근을 lock 으로 보호).
+    """
+
+    def __init__(self, default_rate: float, per_host: dict[str, float] | None = None) -> None:
+        self._default_rate = default_rate
+        self._per_host = dict(per_host) if per_host else {}
+        self._limiters: dict[str, RateLimiter] = {}
+        self._lock = threading.Lock()
+
+    def for_host(self, host: str) -> RateLimiter:
+        """``host`` 의 공유 limiter 를 반환한다(없으면 rate 로 생성·캐시)."""
+        with self._lock:
+            limiter = self._limiters.get(host)
+            if limiter is None:
+                limiter = RateLimiter(self._per_host.get(host, self._default_rate))
+                self._limiters[host] = limiter
+            return limiter
 
 
 def _is_retryable(exc: BaseException) -> bool:
@@ -73,10 +127,14 @@ class Fetcher:
         user_agent: str = "",
         min_interval: float = 0.12,
         timeout: float = 15.0,
+        rate_limiters: HostRateLimiters | None = None,
     ) -> None:
         self._min_interval = min_interval
         self._timeout = timeout
         self._last = 0.0
+        # 공유 호스트별 레이트리미터(opt-in). 주입되면 요청 직전 호스트 슬롯을 예약해 여러
+        # 페처(워커별)의 합산 초당 요청을 호스트 한도 이하로 묶는다. None 이면 기존 동작(회귀 0).
+        self._rate_limiters = rate_limiters
         headers = {"User-Agent": user_agent} if user_agent else {}
         self._client = httpx.Client(timeout=timeout, headers=headers, follow_redirects=True)
 
@@ -89,6 +147,19 @@ class Fetcher:
             time.sleep(self._min_interval - elapsed)
         self._last = time.monotonic()
 
+    def _pace(self, url: str) -> None:
+        """요청 직전 페이싱 — 공유 호스트 레이트리미터(있으면) + 인스턴스 throttle 을 적용한다.
+
+        ``rate_limiters`` 가 주입되면 URL 호스트별 공유 슬롯을 먼저 예약(429 선제 방지)한
+        뒤 기존 인스턴스 단위 ``min_interval`` throttle 을 적용한다. None 이면 throttle 만 —
+        기존 동작 그대로(회귀 0).
+        """
+        if self._rate_limiters is not None:
+            host = urlparse(url).hostname
+            if host:
+                self._rate_limiters.for_host(host).acquire()
+        self._throttle()
+
     @retry(
         retry=retry_if_exception(_is_retryable),
         wait=wait_exponential(multiplier=0.5, max=8),
@@ -98,7 +169,7 @@ class Fetcher:
     def _get(
         self, url: str, params: dict[str, Any] | None, headers: dict[str, str] | None
     ) -> httpx.Response:
-        self._throttle()
+        self._pace(url)
         resp = self._client.get(url, params=params, headers=headers)
         resp.raise_for_status()
         return resp
@@ -113,7 +184,7 @@ class Fetcher:
         self, url: str, data: dict[str, Any] | None, json: Any | None,
         params: dict[str, Any] | None, headers: dict[str, str] | None,
     ) -> httpx.Response:
-        self._throttle()
+        self._pace(url)
         resp = self._client.post(url, data=data, json=json, params=params, headers=headers)
         resp.raise_for_status()
         return resp

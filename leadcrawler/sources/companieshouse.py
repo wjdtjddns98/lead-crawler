@@ -19,7 +19,7 @@ from typing import Any
 from ..config import Settings
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company, is_country
-from .http import Fetcher, SupportsFetch
+from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import matches_prefix, uk_sic_prefixes
 
 log = get_logger("sources.companies_house")
@@ -44,10 +44,12 @@ class CompaniesHouseSource:
         *,
         count: int = 2,
         fetcher: SupportsFetch | None = None,
+        rate_limiters: HostRateLimiters | None = None,
     ) -> None:
         self._settings = settings
         self._count = count
         self._fetcher = fetcher
+        self._rate_limiters = rate_limiters
 
     def applies_to(self, segment: Segment) -> bool:
         """영국 세그먼트에 적용된다."""
@@ -87,6 +89,7 @@ class CompaniesHouseSource:
                 user_agent=self._settings.discovery_user_agent,
                 min_interval=self._settings.http_request_delay,
                 timeout=self._settings.http_timeout,
+                rate_limiters=self._rate_limiters,
             )
         return self._fetcher
 

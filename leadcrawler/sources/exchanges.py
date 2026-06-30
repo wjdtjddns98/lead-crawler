@@ -28,7 +28,7 @@ from typing import Any
 from ..config import Settings
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company, is_country
-from .http import Fetcher, SupportsFetch
+from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import is_specific_industry
 
 log = get_logger("sources.exchanges")
@@ -57,10 +57,12 @@ class ExchangeSource:
         *,
         count: int = 2,
         fetcher: SupportsFetch | None = None,
+        rate_limiters: HostRateLimiters | None = None,
     ) -> None:
         self._settings = settings
         self._count = count
         self._fetcher = fetcher
+        self._rate_limiters = rate_limiters
 
     def applies_to(self, segment: Segment) -> bool:
         """해당 거래소 국가 세그먼트에 적용된다(상장여부 무관 — 산출은 항상 listed). 단 구체
@@ -102,6 +104,7 @@ class ExchangeSource:
                     user_agent=self._settings.discovery_user_agent,
                     min_interval=self._settings.http_request_delay,
                     timeout=self._settings.http_timeout,
+                    rate_limiters=self._rate_limiters,
                 )
         return self._fetcher
 

@@ -20,7 +20,7 @@ from typing import Protocol
 from ..config import Settings
 from ..cost_ledger import SupportsCostLedger
 from ..logging import get_logger
-from .http import Fetcher, SupportsFetch
+from .http import Fetcher, HostRateLimiters, SupportsFetch
 
 log = get_logger("sources.search_provider")
 
@@ -64,10 +64,12 @@ class _BaseProvider:
         *,
         fetcher: SupportsFetch | None = None,
         cost_ledger: SupportsCostLedger | None = None,
+        rate_limiters: HostRateLimiters | None = None,
     ) -> None:
         self._settings = settings
         self._fetcher_obj = fetcher
         self._cost_ledger = cost_ledger
+        self._rate_limiters = rate_limiters
 
     def _fetcher(self) -> SupportsFetch:
         # 공급자 인스턴스당 1개만 생성·재사용(호출마다 클라이언트 누수 방지).
@@ -75,6 +77,7 @@ class _BaseProvider:
             self._fetcher_obj = Fetcher(
                 min_interval=self._settings.http_request_delay,
                 timeout=self._settings.http_timeout,
+                rate_limiters=self._rate_limiters,
             )
         return self._fetcher_obj
 
@@ -157,11 +160,13 @@ def build_search_provider(
     *,
     fetcher: SupportsFetch | None = None,
     cost_ledger: SupportsCostLedger | None = None,
+    rate_limiters: HostRateLimiters | None = None,
 ) -> SearchProvider | None:
     """설정에 맞는 검색 공급자를 만든다. 사용 가능한 백엔드가 없으면 None(no-op).
 
     ``auto``(기본): serper 키 우선, 없으면 cse(키+cx). ``serper``/``cse``: 강제(키 없으면
-    None). ``none``: 비활성.
+    None). ``none``: 비활성. ``rate_limiters`` 는 ``fetcher`` 미주입 시 내부 Fetcher 가
+    쓸 공유 호스트별 레이트리미터다(세그먼트 병렬 발견의 429 방지).
     """
     choice = (settings.search_provider or "auto").strip().lower()
     if choice == "none":
@@ -169,7 +174,11 @@ def build_search_provider(
     serper_ok = bool(settings.serper_api_key)
     cse_ok = bool(settings.google_cse_key and settings.google_cse_cx)
     if (choice == "serper" or (choice == "auto" and serper_ok)) and serper_ok:
-        return SerperProvider(settings, fetcher=fetcher, cost_ledger=cost_ledger)
+        return SerperProvider(
+            settings, fetcher=fetcher, cost_ledger=cost_ledger, rate_limiters=rate_limiters
+        )
     if (choice == "cse" or (choice == "auto" and cse_ok)) and cse_ok:
-        return CseProvider(settings, fetcher=fetcher, cost_ledger=cost_ledger)
+        return CseProvider(
+            settings, fetcher=fetcher, cost_ledger=cost_ledger, rate_limiters=rate_limiters
+        )
     return None

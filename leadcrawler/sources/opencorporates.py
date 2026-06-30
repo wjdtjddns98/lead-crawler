@@ -20,7 +20,7 @@ from ..config import Settings
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company
 from .countries import resolve_country
-from .http import Fetcher, SupportsFetch
+from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import industry_search_term
 
 log = get_logger("sources.opencorporates")
@@ -42,10 +42,12 @@ class OpenCorporatesSource:
         *,
         count: int = 2,
         fetcher: SupportsFetch | None = None,
+        rate_limiters: HostRateLimiters | None = None,
     ) -> None:
         self._settings = settings
         self._count = count
         self._fetcher = fetcher
+        self._rate_limiters = rate_limiters
 
     def applies_to(self, segment: Segment) -> bool:
         """ISO2 해석 가능한 국가 세그먼트에 적용된다(집계원 — 업종 무관)."""
@@ -86,6 +88,7 @@ class OpenCorporatesSource:
                 user_agent=self._settings.discovery_user_agent,
                 min_interval=self._settings.http_request_delay,
                 timeout=self._settings.http_timeout,
+                rate_limiters=self._rate_limiters,
             )
         return self._fetcher
 

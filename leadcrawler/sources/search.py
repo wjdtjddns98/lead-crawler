@@ -18,7 +18,7 @@ from ..dedup import normalize_domain
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company
 from .countries import resolve_country
-from .http import SupportsFetch
+from .http import HostRateLimiters, SupportsFetch
 from .industry import industry_search_terms
 from .search_provider import SearchProvider, build_search_provider
 
@@ -106,11 +106,13 @@ class SearchSource:
         count: int = 2,
         fetcher: SupportsFetch | None = None,
         cost_ledger: SupportsCostLedger | None = None,
+        rate_limiters: HostRateLimiters | None = None,
     ) -> None:
         self._settings = settings
         self._count = count
         self._fetcher = fetcher
         self._cost_ledger = cost_ledger
+        self._rate_limiters = rate_limiters
         self._provider: SearchProvider | None = None
 
     def applies_to(self, segment: Segment) -> bool:  # noqa: ARG002 — 전 세그먼트 적용
@@ -121,7 +123,10 @@ class SearchSource:
         # 지연 생성(dry_run 은 안 만듦). 무키면 None.
         if self._provider is None:
             self._provider = build_search_provider(
-                self._settings, fetcher=self._fetcher, cost_ledger=self._cost_ledger
+                self._settings,
+                fetcher=self._fetcher,
+                cost_ledger=self._cost_ledger,
+                rate_limiters=self._rate_limiters,
             )
         return self._provider
 

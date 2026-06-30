@@ -12,6 +12,7 @@ from ..cost_ledger import SupportsCostLedger
 from ..logging import get_logger
 from ..dedup import normalize_domain
 from .base import DiscoveredCompany, DiscoverySource, Segment
+from .http import HostRateLimiters
 from .companieshouse import CompaniesHouseSource
 from .dart import DartSource
 from .edgar import EdgarSource
@@ -25,7 +26,9 @@ log = get_logger("sources.registry")
 
 
 def build_sources(
-    settings: Settings, cost_ledger: SupportsCostLedger | None = None
+    settings: Settings,
+    cost_ledger: SupportsCostLedger | None = None,
+    rate_limiters: HostRateLimiters | None = None,
 ) -> list[DiscoverySource]:
     """등록된 발견 소스 인스턴스 목록을 만든다(우선순위 순).
 
@@ -33,20 +36,24 @@ def build_sources(
     CompaniesHouse/PSE/SET, reg: 키) → 글로벌 집계원(GLEIF/Wikidata/OpenCorporates,
     reg: 키) → 검색(dom: 키, 가장 약함). ``cost_ledger`` 는 유료 검색(Serper) 과금
     추적용으로 SearchSource 에 주입된다.
+
+    ``rate_limiters`` 가 주어지면(세그먼트 병렬 발견 시) 각 소스의 내부 Fetcher 가 이
+    공유 호스트별 레이트리미터를 쓰게 해, 워커별 독립 소스가 같은 호스트를 동시에 때려도
+    합산 발사율을 억제한다(429 선제 방지). None(기본)이면 기존 동작 그대로(회귀 0).
     """
     return [
-        EdgarSource(settings),
-        DartSource(settings),
-        CompaniesHouseSource(settings),
-        PseSource(settings),
-        SetSource(settings),
-        SgxSource(settings),
-        IdxSource(settings),
-        BursaSource(settings),
-        GleifSource(settings),
-        WikidataSource(settings),
-        OpenCorporatesSource(settings),
-        SearchSource(settings, cost_ledger=cost_ledger),
+        EdgarSource(settings, rate_limiters=rate_limiters),
+        DartSource(settings, rate_limiters=rate_limiters),
+        CompaniesHouseSource(settings, rate_limiters=rate_limiters),
+        PseSource(settings, rate_limiters=rate_limiters),
+        SetSource(settings, rate_limiters=rate_limiters),
+        SgxSource(settings, rate_limiters=rate_limiters),
+        IdxSource(settings, rate_limiters=rate_limiters),
+        BursaSource(settings, rate_limiters=rate_limiters),
+        GleifSource(settings, rate_limiters=rate_limiters),
+        WikidataSource(settings, rate_limiters=rate_limiters),
+        OpenCorporatesSource(settings, rate_limiters=rate_limiters),
+        SearchSource(settings, cost_ledger=cost_ledger, rate_limiters=rate_limiters),
     ]
 
 
