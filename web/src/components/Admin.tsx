@@ -33,7 +33,8 @@ const FIELD = "flex flex-col gap-1 text-muted text-[13px]";
 const FIELD_INLINE = "flex flex-row items-center gap-1.5 text-muted text-[13px]";
 const INPUT = "bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md";
 const INPUT_WIDE = `${INPUT} min-w-[200px]`;
-const CRAWL_TARGET = "flex flex-wrap items-end gap-3";
+// items-start: 칩(선택 토큰) 증가로 피커가 자라도 위쪽 검색 input·라벨은 고정(아래로만 확장).
+const CRAWL_TARGET = "flex flex-wrap items-start gap-3";
 
 // 관리자 페이지 — 계정별 처리 통계·역할/활성 관리·계정 생성 + 최근 검증 감사 로그.
 export function Admin() {
@@ -249,26 +250,26 @@ function CrawlTargetSection() {
       <form className={CRAWL_TARGET} onSubmit={(e) => void save(e)}>
         <div className={FIELD}>
           <span>
-            국가 <span className="text-muted">(선택 안 함=지원 전체국)</span>
+            국가 <span className="text-muted">(선택 안 함 = 전체)</span>
           </span>
           <MultiPicker
             options={countryOpts}
             value={countries}
             onChange={setCountries}
             placeholder="국가 검색 (예: 미국, US, 일본)"
-            emptyHint="지원 전체국 대상(국가를 선택하면 좁혀집니다)"
+            emptyHint="전체 국가"
           />
         </div>
         <div className={FIELD}>
           <span>
-            업종 <span className="text-muted">(1개 이상 필수 — 표준 업종만 선택)</span>
+            업종 <span className="text-muted">(1개 이상 필수)</span>
           </span>
           <MultiPicker
             options={industryOpts}
             value={industries}
             onChange={setIndustries}
             placeholder="업종 검색 (예: 건설, construction)"
-            emptyHint="업종을 1개 이상 선택하세요(정확한 업종 필터를 위해 표준 목록에서만 선택)"
+            emptyHint="업종을 1개 이상 선택하세요"
           />
         </div>
         <label className={FIELD}>
@@ -285,17 +286,21 @@ function CrawlTargetSection() {
             ))}
           </select>
         </label>
-        <label className={FIELD_INLINE}>
-          <input
-            type="checkbox"
-            checked={persist}
-            onChange={(e) => setPersist(e.target.checked)}
-          />
-          DB 적재(검증 큐로)
-        </label>
-        <button className={BTN_CONFIRM} type="submit" disabled={saving || !industries.trim()}>
-          {saving ? "저장 중…" : "타깃 저장"}
-        </button>
+        {/* DB적재 체크박스는 '저장 시 DB에 넣을지' — 저장 동작의 옵션이라 상장여부(필터)가
+            아니라 타깃 저장 버튼과 한 그룹으로 묶는다. */}
+        <div className="flex flex-col gap-2">
+          <label className={FIELD_INLINE}>
+            <input
+              type="checkbox"
+              checked={persist}
+              onChange={(e) => setPersist(e.target.checked)}
+            />
+            DB 적재(검증 큐로)
+          </label>
+          <button className={BTN_CONFIRM} type="submit" disabled={saving || !industries.trim()}>
+            {saving ? "저장 중…" : "타깃 저장"}
+          </button>
+        </div>
       </form>
       {msg && <p className="text-muted">{msg}</p>}
       {target?.updated_by && (
@@ -409,25 +414,25 @@ function SendSection() {
         <div className={CRAWL_TARGET}>
           <div className={FIELD}>
             <span>
-              국가 <span className="text-muted">(선택 안 함=전체)</span>
+              국가 <span className="text-muted">(선택 안 함 = 전체)</span>
             </span>
             <MultiPicker
               options={countryOpts}
               value={countries}
               onChange={setCountries}
-              placeholder="국가 검색"
+              placeholder="국가 검색 (예: 미국, US, 일본)"
               emptyHint="전체 국가"
             />
           </div>
           <div className={FIELD}>
             <span>
-              업종 <span className="text-muted">(선택 안 함=전체)</span>
+              업종 <span className="text-muted">(선택 안 함 = 전체)</span>
             </span>
             <MultiPicker
               options={industryOpts}
               value={industries}
               onChange={setIndustries}
-              placeholder="업종 검색"
+              placeholder="업종 검색 (예: 건설, construction)"
               emptyHint="전체 업종"
             />
           </div>
@@ -516,37 +521,44 @@ function ExportSection() {
       <div className={CRAWL_TARGET}>
         <div className={FIELD}>
           <span>
-            국가 <span className="text-muted">(선택 안 함=전체)</span>
+            국가 <span className="text-muted">(선택 안 함 = 전체)</span>
           </span>
           <MultiPicker
             options={countryOpts}
             value={countries}
             onChange={setCountries}
-            placeholder="국가 검색 (예: 미국, US)"
-            emptyHint="전체 국가 대상(선택하면 좁혀집니다)"
+            placeholder="국가 검색 (예: 미국, US, 일본)"
+            emptyHint="전체 국가"
           />
         </div>
         <div className={FIELD}>
           <span>
-            업종 <span className="text-muted">(선택 안 함=전체)</span>
+            업종 <span className="text-muted">(선택 안 함 = 전체)</span>
           </span>
           <MultiPicker
             options={industryOpts}
             value={industries}
             onChange={setIndustries}
             placeholder="업종 검색 (예: 건설, construction)"
-            emptyHint="전체 업종 대상(선택하면 좁혀집니다)"
+            emptyHint="전체 업종"
           />
         </div>
-        <button className={BTN_EXPORT} type="button" disabled={busy} onClick={() => void download()}>
-          {busy ? (
-            "추출 중…"
-          ) : (
-            <span className="inline-flex items-center gap-1">
-              엑셀 다운로드 <Download size={14} aria-hidden />
-            </span>
-          )}
-        </button>
+        {/* 버튼을 검색 input 줄에 맞춤 — 피커 라벨과 같은 높이의 투명 스페이서로 라벨 줄을
+            비워 버튼 top 이 input top 과 같아진다(items-start 라 라벨에 붙어 뜨던 것 보정). */}
+        <div className="flex flex-col gap-1">
+          <span className="text-[13px] invisible select-none" aria-hidden>
+            맞춤
+          </span>
+          <button className={BTN_EXPORT} type="button" disabled={busy} onClick={() => void download()}>
+            {busy ? (
+              "추출 중…"
+            ) : (
+              <span className="inline-flex items-center gap-1">
+                엑셀 다운로드 <Download size={14} aria-hidden />
+              </span>
+            )}
+          </button>
+        </div>
       </div>
     </section>
   );

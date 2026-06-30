@@ -55,7 +55,7 @@ export function MultiPicker({
   const selectedOpts = options.filter(isSelected);
 
   return (
-    <div className="flex flex-col gap-1.5 min-w-[260px]">
+    <div className="flex flex-col gap-1.5 w-[340px]">
       <input
         className="bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md w-full"
         value={search}
@@ -63,7 +63,9 @@ export function MultiPicker({
         placeholder={placeholder}
       />
       {selectedOpts.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5 items-center">
+        // 너비 고정(w-[280px]) + 칩은 아래로 줄바꿈 — 가로로 안 늘어 옆 UI 안 밀림. 칩 많으면
+        // 피커만 세로로 길어진다(내부 스크롤 없음). 전체 해제는 칩 끝에 따라와 항상 보인다.
+        <div className="flex flex-wrap gap-1.5 items-center min-h-[24px]">
           {selectedOpts.map((o) => (
             <button
               key={o.value}
@@ -86,9 +88,9 @@ export function MultiPicker({
           </button>
         </div>
       ) : (
-        <p className="text-muted m-0 text-xs">{emptyHint}</p>
+        <p className="text-muted m-0 text-xs flex items-center min-h-[24px]">{emptyHint}</p>
       )}
-      <ul className="list-none m-0 p-1 max-h-[200px] overflow-y-auto border border-line rounded-md bg-canvas">
+      <ul className="list-none m-0 p-1 h-[200px] overflow-y-auto border border-line rounded-md bg-canvas">
         {filtered.map((o) => (
           <li key={o.value}>
             <label className="flex flex-row items-center gap-2 py-[5px] px-1.5 rounded cursor-pointer text-ink text-[13px] hover:bg-line">
