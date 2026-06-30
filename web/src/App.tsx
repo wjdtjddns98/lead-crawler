@@ -13,7 +13,9 @@ import { Admin } from "./components/Admin";
 import { MyWork } from "./components/MyWork";
 import { QueueTable } from "./components/QueueTable";
 import { Login } from "./components/Login";
-import { BTN, BTN_EXPORT, ERROR_BOX, tabCls } from "./ui";
+import { ChevronLeft, ChevronRight, Download } from "lucide-react";
+import { BTN, BTN_EXPORT, tabCls } from "./ui";
+import { ErrorBox } from "./components/ErrorBox";
 import type { ReviewItem, ReviewStatus, Role } from "./types";
 
 type Filter = ReviewStatus | "";
@@ -176,7 +178,7 @@ function Workbench({
         </button>
       </div>
 
-      {error && <div className={ERROR_BOX}>⚠ {error}</div>}
+      {error && <ErrorBox>{error}</ErrorBox>}
 
       <p className="text-muted my-2">
         총 {total}건 {filter && `(${FILTERS.find((f) => f.value === filter)?.label})`}
@@ -196,7 +198,9 @@ function Workbench({
           disabled={offset === 0}
           onClick={() => setOffset(Math.max(0, offset - PAGE))}
         >
-          ← 이전
+          <span className="inline-flex items-center gap-1">
+            <ChevronLeft size={14} aria-hidden /> 이전
+          </span>
         </button>
         <span>
           {page} / {pages}
@@ -206,7 +210,9 @@ function Workbench({
           disabled={offset + PAGE >= total}
           onClick={() => setOffset(offset + PAGE)}
         >
-          다음 →
+          <span className="inline-flex items-center gap-1">
+            다음 <ChevronRight size={14} aria-hidden />
+          </span>
         </button>
       </div>
     </>
@@ -236,7 +242,9 @@ function Workbench({
           </span>
           {isAdmin && (
             <button className={BTN_EXPORT} onClick={() => void doExport()}>
-              전체 확정분 엑셀 ↓
+              <span className="inline-flex items-center gap-1">
+                전체 확정분 엑셀 <Download size={14} aria-hidden />
+              </span>
             </button>
           )}
           <button className={BTN} onClick={() => void doLogout()}>
