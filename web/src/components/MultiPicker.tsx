@@ -55,7 +55,7 @@ export function MultiPicker({
   const selectedOpts = options.filter(isSelected);
 
   return (
-    <div className="flex flex-col gap-1.5 min-w-[260px]">
+    <div className="flex flex-col gap-1.5 w-[340px]">
       <input
         className="bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md w-full"
         value={search}
@@ -63,6 +63,8 @@ export function MultiPicker({
         placeholder={placeholder}
       />
       {selectedOpts.length > 0 ? (
+        // 너비 고정(w-[280px]) + 칩은 아래로 줄바꿈 — 가로로 안 늘어 옆 UI 안 밀림. 칩 많으면
+        // 피커만 세로로 길어진다(내부 스크롤 없음). 전체 해제는 칩 끝에 따라와 항상 보인다.
         <div className="flex flex-wrap gap-1.5 items-center min-h-[24px]">
           {selectedOpts.map((o) => (
             <button
