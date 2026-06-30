@@ -543,15 +543,22 @@ function ExportSection() {
             emptyHint="전체 업종 대상(선택하면 좁혀집니다)"
           />
         </div>
-        <button className={BTN_EXPORT} type="button" disabled={busy} onClick={() => void download()}>
-          {busy ? (
-            "추출 중…"
-          ) : (
-            <span className="inline-flex items-center gap-1">
-              엑셀 다운로드 <Download size={14} aria-hidden />
-            </span>
-          )}
-        </button>
+        {/* 버튼을 검색 input 줄에 맞춤 — 피커 라벨과 같은 높이의 투명 스페이서로 라벨 줄을
+            비워 버튼 top 이 input top 과 같아진다(items-start 라 라벨에 붙어 뜨던 것 보정). */}
+        <div className="flex flex-col gap-1">
+          <span className="text-[13px] invisible select-none" aria-hidden>
+            맞춤
+          </span>
+          <button className={BTN_EXPORT} type="button" disabled={busy} onClick={() => void download()}>
+            {busy ? (
+              "추출 중…"
+            ) : (
+              <span className="inline-flex items-center gap-1">
+                엑셀 다운로드 <Download size={14} aria-hidden />
+              </span>
+            )}
+          </button>
+        </div>
       </div>
     </section>
   );
