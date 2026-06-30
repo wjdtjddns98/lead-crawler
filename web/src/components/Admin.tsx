@@ -250,26 +250,26 @@ function CrawlTargetSection() {
       <form className={CRAWL_TARGET} onSubmit={(e) => void save(e)}>
         <div className={FIELD}>
           <span>
-            국가 <span className="text-muted">(선택 안 함=지원 전체국)</span>
+            국가 <span className="text-muted">(선택 안 함 = 전체)</span>
           </span>
           <MultiPicker
             options={countryOpts}
             value={countries}
             onChange={setCountries}
             placeholder="국가 검색 (예: 미국, US, 일본)"
-            emptyHint="지원 전체국 대상(국가를 선택하면 좁혀집니다)"
+            emptyHint="전체 국가"
           />
         </div>
         <div className={FIELD}>
           <span>
-            업종 <span className="text-muted">(1개 이상 필수 — 표준 업종만 선택)</span>
+            업종 <span className="text-muted">(1개 이상 필수)</span>
           </span>
           <MultiPicker
             options={industryOpts}
             value={industries}
             onChange={setIndustries}
             placeholder="업종 검색 (예: 건설, construction)"
-            emptyHint="업종을 1개 이상 선택하세요(정확한 업종 필터를 위해 표준 목록에서만 선택)"
+            emptyHint="업종을 1개 이상 선택하세요"
           />
         </div>
         <label className={FIELD}>
@@ -414,25 +414,25 @@ function SendSection() {
         <div className={CRAWL_TARGET}>
           <div className={FIELD}>
             <span>
-              국가 <span className="text-muted">(선택 안 함=전체)</span>
+              국가 <span className="text-muted">(선택 안 함 = 전체)</span>
             </span>
             <MultiPicker
               options={countryOpts}
               value={countries}
               onChange={setCountries}
-              placeholder="국가 검색"
+              placeholder="국가 검색 (예: 미국, US, 일본)"
               emptyHint="전체 국가"
             />
           </div>
           <div className={FIELD}>
             <span>
-              업종 <span className="text-muted">(선택 안 함=전체)</span>
+              업종 <span className="text-muted">(선택 안 함 = 전체)</span>
             </span>
             <MultiPicker
               options={industryOpts}
               value={industries}
               onChange={setIndustries}
-              placeholder="업종 검색"
+              placeholder="업종 검색 (예: 건설, construction)"
               emptyHint="전체 업종"
             />
           </div>
@@ -521,26 +521,26 @@ function ExportSection() {
       <div className={CRAWL_TARGET}>
         <div className={FIELD}>
           <span>
-            국가 <span className="text-muted">(선택 안 함=전체)</span>
+            국가 <span className="text-muted">(선택 안 함 = 전체)</span>
           </span>
           <MultiPicker
             options={countryOpts}
             value={countries}
             onChange={setCountries}
-            placeholder="국가 검색 (예: 미국, US)"
-            emptyHint="전체 국가 대상(선택하면 좁혀집니다)"
+            placeholder="국가 검색 (예: 미국, US, 일본)"
+            emptyHint="전체 국가"
           />
         </div>
         <div className={FIELD}>
           <span>
-            업종 <span className="text-muted">(선택 안 함=전체)</span>
+            업종 <span className="text-muted">(선택 안 함 = 전체)</span>
           </span>
           <MultiPicker
             options={industryOpts}
             value={industries}
             onChange={setIndustries}
             placeholder="업종 검색 (예: 건설, construction)"
-            emptyHint="전체 업종 대상(선택하면 좁혀집니다)"
+            emptyHint="전체 업종"
           />
         </div>
         {/* 버튼을 검색 input 줄에 맞춤 — 피커 라벨과 같은 높이의 투명 스페이서로 라벨 줄을

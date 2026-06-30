@@ -148,22 +148,22 @@ export function MyWork() {
     <>
       <div className="flex flex-wrap items-start gap-3 mb-4 p-3 border border-line rounded-md bg-[rgba(127,127,127,0.06)]">
         <div className={FIELD}>
-          <span>국가 <span className="text-muted">(선택 안 함=전체)</span></span>
+          <span>국가 <span className="text-muted">(선택 안 함 = 전체)</span></span>
           <MultiPicker
             options={countryOpts}
             value={filter.country}
             onChange={(csv) => setFilterValue({ ...filter, country: csv })}
-            placeholder="국가 검색 (예: 미국, US)"
+            placeholder="국가 검색 (예: 미국, US, 일본)"
             emptyHint="전체 국가"
           />
         </div>
         <div className={FIELD}>
-          <span>업종 <span className="text-muted">(선택 안 함=전체)</span></span>
+          <span>업종 <span className="text-muted">(선택 안 함 = 전체)</span></span>
           <MultiPicker
             options={industryOpts}
             value={filter.industry}
             onChange={(csv) => setFilterValue({ ...filter, industry: csv })}
-            placeholder="업종 검색 (예: 금융)"
+            placeholder="업종 검색 (예: 건설, construction)"
             emptyHint="전체 업종"
           />
         </div>
