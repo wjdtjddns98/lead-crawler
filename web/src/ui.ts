@@ -24,6 +24,12 @@ export function tabCls(active: boolean): string {
     : `${TAB_BASE} text-muted border-line bg-panel`;
 }
 
+// 인라인 텍스트 링크 포커스 링 — 색은 호출부가 지정(accent/muted). 표 행(panel 배경)
+// 위 링크라 offset 을 panel 에 맞춘다(버튼은 canvas 기준).
+export const LINK_FOCUS =
+  "rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " +
+  "focus-visible:ring-offset-2 focus-visible:ring-offset-panel";
+
 // 오류 박스 + 빈 상태 안내 + 표 헤더/셀.
 export const ERROR_BOX = "bg-err-bg border border-danger text-err-fg py-2.5 px-3.5 rounded-md mb-3";
 export const EMPTY =
