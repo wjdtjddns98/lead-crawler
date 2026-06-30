@@ -9,7 +9,8 @@ import {
 } from "../api";
 import { QueueTable } from "./QueueTable";
 import { MultiPicker, type PickerOption } from "./MultiPicker";
-import { BTN, EMPTY, ERROR_BOX } from "../ui";
+import { BTN, EMPTY } from "../ui";
+import { ErrorBox } from "./ErrorBox";
 import type { ClaimFilter, Listed, ReviewItem } from "../types";
 
 const FILTER_KEY = "lc_claim_filter";
@@ -201,7 +202,7 @@ export function MyWork() {
         </div>
       </div>
 
-      {error && <div className={ERROR_BOX}>⚠ {error}</div>}
+      {error && <ErrorBox>{error}</ErrorBox>}
 
       {items.length === 0 && !loading ? (
         <p className={EMPTY}>
