@@ -112,7 +112,9 @@ def test_serper_parses_localizes_and_records_cost() -> None:
     # 현지화: gl=kr + hl=ko(lang_ko 변환) + 현지어 키워드.
     assert captured["body"]["gl"] == "kr" and captured["body"]["hl"] == "ko"
     assert "IR 투자정보" in captured["body"]["q"]
-    assert led.records == ["serper"]  # 1쿼리 = 1 크레딧 과금.
+    # 건설 = 3 동의어(construction·engineering and construction·building contractor) →
+    # 동의어마다 1 쿼리 = 3 쿼리 = 3 크레딧. 결과 도메인은 합집합 dedup 으로 acme 1건.
+    assert led.records == ["serper", "serper", "serper"]
 
 
 def test_serper_budget_blocked_does_not_send() -> None:
