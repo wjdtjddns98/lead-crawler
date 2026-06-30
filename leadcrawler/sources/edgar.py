@@ -16,7 +16,7 @@ from ..config import Settings
 from ..dedup import normalize_domain
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company, is_country
-from .http import Fetcher, SupportsFetch
+from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import matches_prefix, sic_prefixes
 
 log = get_logger("sources.edgar")
@@ -42,10 +42,12 @@ class EdgarSource:
         *,
         count: int = 2,
         fetcher: SupportsFetch | None = None,
+        rate_limiters: HostRateLimiters | None = None,
     ) -> None:
         self._settings = settings
         self._count = count
         self._fetcher = fetcher
+        self._rate_limiters = rate_limiters
 
     def applies_to(self, segment: Segment) -> bool:
         """미국 세그먼트에 적용된다(상장여부는 라이브에서 거래소·SIC 로 정제)."""
@@ -81,6 +83,7 @@ class EdgarSource:
                 user_agent=self._settings.edgar_user_agent,
                 min_interval=self._settings.http_request_delay,
                 timeout=self._settings.http_timeout,
+                rate_limiters=self._rate_limiters,
             )
         return self._fetcher
 

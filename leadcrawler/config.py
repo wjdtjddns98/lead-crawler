@@ -148,6 +148,16 @@ class Settings(BaseSettings):
     search_skip_if_free_ge: int = Field(default=0)
     http_request_delay: float = Field(default=0.12)  # 요청 간 최소 간격(초)
     http_timeout: float = Field(default=15.0)
+    # 발견(discovery) 세그먼트 동시성 — 세그먼트들을 동시에 발견(네트워크 수집)한다. 1(기본)
+    # 이면 현 동작(단일 스레드 순차). 등록처(DART/EDGAR)는 세그먼트당 수천 HTTP 호출로 길게
+    # 블로킹돼 처리량 병목이라, 올리면 처리량↑. 단 같은 호스트를 동시에 때리면 429 위험이 커지므로
+    # discovery_rate_per_host 로 호스트별 합산 발사율을 억제한다(트레이드오프). dedup·적재는 항상
+    # 단일 스레드라 정확성(제약①②)은 동시성과 무관하게 보존된다.
+    discovery_workers: int = Field(default=1, ge=1, le=16)
+    # 공유 호스트별 초당 요청 상한(병렬 발견의 429 선제 방지) — 워커별 독립 페처가 같은 호스트를
+    # 동시에 때려도 합산 발사율을 이 값 이하로 묶는다. 0=무제한(레이트리미터 미적용). 병렬을 켜고
+    # (discovery_workers>1) 호스트가 429 를 던지면 이 값을 낮춰 억제한다. 단일 스레드(=1)에선 무의미.
+    discovery_rate_per_host: float = Field(default=5.0)
     # 무키 집계원(GLEIF/Wikidata) 공통 UA. Wikidata WDQS 는 WMF 로봇 정책상 연락처
     # (URL/이메일) 없는 UA 를 403 거부 — 식별 가능한 연락처 URL 필수(2026-06-19 실연동 확인).
     discovery_user_agent: str = Field(
