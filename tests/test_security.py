@@ -8,6 +8,7 @@ import pytest
 
 from leadcrawler.config import Settings
 from leadcrawler.security import (
+    LoginThrottle,
     authenticate,
     create_session,
     create_user,
@@ -129,3 +130,93 @@ def test_duplicate_username_raises(tmp_path) -> None:
         create_user(db, "dup", "pw")
     with pytest.raises(IntegrityError), session_scope(s) as db:
         create_user(db, "dup", "pw2")
+
+
+# --- 로그인 무차별대입 스로틀 ----------------------------------------
+
+class _Clock:
+    """주입형 시계 — 테스트가 시간을 결정적으로 전진시킨다."""
+
+    def __init__(self, start: datetime) -> None:
+        self.t = start
+
+    def __call__(self) -> datetime:
+        return self.t
+
+    def advance(self, seconds: float) -> None:
+        self.t += timedelta(seconds=seconds)
+
+
+def test_throttle_locks_after_max_failures() -> None:
+    clock = _Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    th = LoginThrottle(max_failures=3, window_seconds=900, now=clock)
+    assert th.retry_after("kim") == 0  # 초기 미잠금.
+    for _ in range(3):
+        assert th.retry_after("kim") == 0
+        th.record_failure("kim")
+    # 3회 실패 → 잠김(가장 오래된 실패 + 윈도우까지 대기).
+    assert th.retry_after("kim") == 900
+
+
+def test_throttle_unlocks_after_window() -> None:
+    clock = _Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    th = LoginThrottle(max_failures=3, window_seconds=900, now=clock)
+    for _ in range(3):
+        th.record_failure("kim")
+    assert th.retry_after("kim") > 0
+    clock.advance(901)  # 가장 오래된 실패가 윈도우 밖 → 임계 미만으로 복귀.
+    assert th.retry_after("kim") == 0
+
+
+def test_throttle_clear_on_success_resets() -> None:
+    clock = _Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    th = LoginThrottle(max_failures=3, window_seconds=900, now=clock)
+    th.record_failure("kim")
+    th.record_failure("kim")
+    th.clear("kim")  # 성공 → 카운트 리셋.
+    th.record_failure("kim")
+    assert th.retry_after("kim") == 0  # 리셋 후 1회뿐이라 미잠금.
+
+
+def test_throttle_is_per_username() -> None:
+    clock = _Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    th = LoginThrottle(max_failures=2, window_seconds=900, now=clock)
+    th.record_failure("kim")
+    th.record_failure("kim")
+    assert th.retry_after("kim") > 0  # kim 잠김.
+    assert th.retry_after("lee") == 0  # 다른 사용자는 영향 없음.
+
+
+def test_throttle_key_normalizes_case_and_space() -> None:
+    clock = _Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    th = LoginThrottle(max_failures=2, window_seconds=900, now=clock)
+    th.record_failure("Kim")
+    th.record_failure("  kim ")  # 대소문자·공백 무시하고 동일 키.
+    assert th.retry_after("kim") > 0
+
+
+def test_throttle_unlocks_exactly_at_window_boundary() -> None:
+    # 경계: now == 가장 오래된 실패 + window 이면 strict `>` cutoff 로 해제(off-by-one 방지).
+    clock = _Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    th = LoginThrottle(max_failures=2, window_seconds=900, now=clock)
+    th.record_failure("kim")
+    th.record_failure("kim")
+    assert th.retry_after("kim") == 900  # 막 잠김.
+    clock.advance(899)
+    assert th.retry_after("kim") == 1  # 1초 남음.
+    clock.advance(1)  # 정확히 window 경과 → 해제.
+    assert th.retry_after("kim") == 0
+
+
+def test_throttle_evicts_oldest_key_over_cap(monkeypatch) -> None:
+    # 미인증 키 폭증 방어 — _MAX_KEYS 초과 시 가장 오래된 키가 축출돼 메모리가 바운드된다.
+    clock = _Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    th = LoginThrottle(max_failures=5, window_seconds=10_000, now=clock)
+    monkeypatch.setattr(th, "_MAX_KEYS", 3)
+    for name in ("a", "b", "c"):
+        th.record_failure(name)
+        clock.advance(1)  # 각 키의 최근 실패 시각을 다르게(축출 대상 결정적).
+    th.record_failure("d")  # 4번째 → cap(3) 초과 → 가장 오래된 'a' 축출.
+    assert len(th._fails) == 3
+    assert "a" not in th._fails
+    assert {"b", "c", "d"} == set(th._fails)

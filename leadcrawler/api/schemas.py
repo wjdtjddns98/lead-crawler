@@ -78,10 +78,14 @@ class ConfirmRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    """로그인 요청 본문."""
+    """로그인 요청 본문.
 
-    username: str
-    password: str
+    길이상한만 둔다(과대 페이로드·scrypt 비용 폭증 방지). 하한은 두지 않는다 —
+    기존 계정/정책 노출·열거를 피하고 빈 값은 인증에서 자연 거부된다(생성 제약과 동일 상한).
+    """
+
+    username: str = Field(max_length=64)
+    password: str = Field(max_length=256)
 
 
 class LoginResponse(BaseModel):
