@@ -226,7 +226,7 @@ function Workbench({
   return (
     <div className="mx-auto max-w-[1200px] p-6">
       <header className="flex items-center justify-between mb-5">
-        <h1 className="text-[22px] m-0">검증 워크벤치</h1>
+        <h1 className="text-xl font-semibold tracking-tight m-0">검증 워크벤치</h1>
         <div className="flex items-center gap-2.5 text-muted">
           <nav className="flex gap-1 mr-2">
             <button className={tabCls(view === "mine")} onClick={() => setView("mine")}>
