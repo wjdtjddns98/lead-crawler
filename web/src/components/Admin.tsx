@@ -286,17 +286,21 @@ function CrawlTargetSection() {
             ))}
           </select>
         </label>
-        <label className={FIELD_INLINE}>
-          <input
-            type="checkbox"
-            checked={persist}
-            onChange={(e) => setPersist(e.target.checked)}
-          />
-          DB 적재(검증 큐로)
-        </label>
-        <button className={BTN_CONFIRM} type="submit" disabled={saving || !industries.trim()}>
-          {saving ? "저장 중…" : "타깃 저장"}
-        </button>
+        {/* DB적재 체크박스는 '저장 시 DB에 넣을지' — 저장 동작의 옵션이라 상장여부(필터)가
+            아니라 타깃 저장 버튼과 한 그룹으로 묶는다. */}
+        <div className="flex flex-col gap-2">
+          <label className={FIELD_INLINE}>
+            <input
+              type="checkbox"
+              checked={persist}
+              onChange={(e) => setPersist(e.target.checked)}
+            />
+            DB 적재(검증 큐로)
+          </label>
+          <button className={BTN_CONFIRM} type="submit" disabled={saving || !industries.trim()}>
+            {saving ? "저장 중…" : "타깃 저장"}
+          </button>
+        </div>
       </form>
       {msg && <p className="text-muted">{msg}</p>}
       {target?.updated_by && (
