@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { ExternalLink, X } from "lucide-react";
 import type { ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, tabCls } from "../ui";
 import { EmailBadge } from "./StatusBadge";
@@ -272,11 +273,13 @@ export function SiteExplorer({
           <div className="ml-auto flex items-center gap-2">
             {activeHref && (
               <a className={BTN} href={activeHref} target="_blank" rel="noreferrer">
-                새 탭 ↗
+                <span className="inline-flex items-center gap-1">
+                  새 탭 <ExternalLink size={14} aria-hidden />
+                </span>
               </a>
             )}
-            <button className={BTN} onClick={onClose} title="닫기 (Esc)">
-              ✕
+            <button className={BTN} onClick={onClose} title="닫기 (Esc)" aria-label="닫기">
+              <X size={16} aria-hidden />
             </button>
           </div>
         </div>
@@ -297,7 +300,9 @@ export function SiteExplorer({
                   className={BTN}
                   onClick={() => (popupRef.current = openSitePopup(activeHref, slotRef.current))}
                 >
-                  사이트 팝업 열기 ↗
+                  <span className="inline-flex items-center gap-1">
+                    사이트 팝업 열기 <ExternalLink size={14} aria-hidden />
+                  </span>
                 </button>
               </>
             ) : (

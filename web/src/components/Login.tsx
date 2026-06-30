@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { login } from "../api";
 import type { Role } from "../types";
-import { BTN, ERROR_BOX } from "../ui";
+import { BTN } from "../ui";
+import { ErrorBox } from "./ErrorBox";
 
 const FIELD = "flex flex-col gap-1 text-muted text-[13px]";
 const INPUT = "bg-canvas border border-line text-ink py-2 px-2.5 rounded-md";
@@ -35,7 +36,7 @@ export function Login({ onLogin }: { onLogin: (username: string, role: Role) => 
       >
         <h1 className="text-xl m-0">검증 워크벤치</h1>
         <p className="text-muted">직원 로그인</p>
-        {error && <div className={ERROR_BOX}>⚠ {error}</div>}
+        {error && <ErrorBox>{error}</ErrorBox>}
         <label className={FIELD}>
           아이디
           <input

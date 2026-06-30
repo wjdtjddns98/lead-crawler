@@ -26,8 +26,10 @@ import type {
   SendResult,
   UserStats,
 } from "../types";
+import { Download, Play, Square, TriangleAlert } from "lucide-react";
 import { MultiPicker, type PickerOption } from "./MultiPicker";
-import { BTN, BTN_CONFIRM, BTN_EXPORT, BTN_REJECT, EMPTY, ERROR_BOX, TD, TH } from "../ui";
+import { ErrorBox } from "./ErrorBox";
+import { BTN, BTN_CONFIRM, BTN_EXPORT, BTN_REJECT, EMPTY, TD, TH } from "../ui";
 
 // 폼 요소 공용 클래스 — 섹션 컨테이너·필드 라벨·입력·셀.
 const SECTION_H2 = "text-base mt-0 mb-3";
@@ -74,7 +76,7 @@ export function Admin() {
 
   return (
     <div className="flex flex-col gap-7">
-      {error && <div className={ERROR_BOX}>⚠ {error}</div>}
+      {error && <ErrorBox>{error}</ErrorBox>}
 
       <CrawlNowSection />
 
@@ -264,7 +266,7 @@ function CrawlNowSection() {
   return (
     <section>
       <h2 className={SECTION_H2}>지금 크롤 실행</h2>
-      {err && <div className={ERROR_BOX}>⚠ {err}</div>}
+      {err && <ErrorBox>{err}</ErrorBox>}
       <div className={CRAWL_TARGET}>
         <div className={FIELD}>
           <span>
@@ -315,11 +317,19 @@ function CrawlNowSection() {
             disabled={busy || running || !industries.trim()}
             onClick={() => void run()}
           >
-            {running ? "실행 중…" : "지금 크롤 실행 ▶"}
+            {running ? (
+              "실행 중…"
+            ) : (
+              <span className="inline-flex items-center gap-1">
+                지금 크롤 실행 <Play size={14} aria-hidden />
+              </span>
+            )}
           </button>
           {running && (
             <button className={BTN_REJECT} type="button" disabled={busy} onClick={() => void stop()}>
-              중지 ■
+              <span className="inline-flex items-center gap-1">
+                중지 <Square size={14} aria-hidden />
+              </span>
             </button>
           )}
         </div>
@@ -347,7 +357,7 @@ function CrawlProgress({ job }: { job: CrawlJob }) {
         세그먼트 {done}/{total} ({pct}%) · 발견 {job.discovered} · 처리 {job.enriched} · 저장(실존){" "}
         {job.saved}
       </p>
-      {job.error && <div className={ERROR_BOX}>⚠ {job.error}</div>}
+      {job.error && <ErrorBox>{job.error}</ErrorBox>}
       {job.finished_at && <p className="text-muted my-1">종료: {fmt(job.finished_at)}</p>}
     </div>
   );
@@ -422,7 +432,7 @@ function CrawlTargetSection() {
   return (
     <section>
       <h2 className={SECTION_H2}>내일 크롤 타깃</h2>
-      {err && <div className={ERROR_BOX}>⚠ {err}</div>}
+      {err && <ErrorBox>{err}</ErrorBox>}
       <form className={CRAWL_TARGET} onSubmit={(e) => void save(e)}>
         <div className={FIELD}>
           <span>
@@ -559,7 +569,7 @@ function SendSection() {
   return (
     <section>
       <h2 className={SECTION_H2}>확정큐 이메일 발송</h2>
-      {err && <div className={ERROR_BOX}>⚠ {err}</div>}
+      {err && <ErrorBox>{err}</ErrorBox>}
       <div className="flex flex-col gap-3 max-w-[780px]">
         <label className={FIELD}>
           제목
@@ -626,9 +636,14 @@ function SendSection() {
       {preview && (
         <p className="text-muted">
           수신 {preview.recipients}명 · 발신 {preview.sender || "(.env 미설정)"} ·{" "}
-          {preview.enabled
-            ? `오늘 잔여 ${preview.remaining_today}건`
-            : "⚠ 발송 비활성(dry-run) — .env LEADCRAWLER_EMAIL_SEND_ENABLED=true 필요"}
+          {preview.enabled ? (
+            `오늘 잔여 ${preview.remaining_today}건`
+          ) : (
+            <>
+              <TriangleAlert size={13} className="inline align-text-bottom" aria-hidden /> 발송
+              비활성(dry-run) — .env LEADCRAWLER_EMAIL_SEND_ENABLED=true 필요
+            </>
+          )}
           {preview.sample.length > 0 && ` · 예: ${preview.sample.slice(0, 3).join(", ")}…`}
         </p>
       )}
@@ -684,7 +699,7 @@ function ExportSection() {
   return (
     <section>
       <h2 className={SECTION_H2}>확정분 엑셀 추출</h2>
-      {err && <div className={ERROR_BOX}>⚠ {err}</div>}
+      {err && <ErrorBox>{err}</ErrorBox>}
       <div className={CRAWL_TARGET}>
         <div className={FIELD}>
           <span>
@@ -711,7 +726,13 @@ function ExportSection() {
           />
         </div>
         <button className={BTN_EXPORT} type="button" disabled={busy} onClick={() => void download()}>
-          {busy ? "추출 중…" : "엑셀 다운로드 ↓"}
+          {busy ? (
+            "추출 중…"
+          ) : (
+            <span className="inline-flex items-center gap-1">
+              엑셀 다운로드 <Download size={14} aria-hidden />
+            </span>
+          )}
         </button>
       </div>
     </section>
