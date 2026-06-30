@@ -56,12 +56,14 @@ class Enricher:
         self._cost_ledger = cost_ledger
         self._contact_page: str | None = None  # 현재 기업의 문의페이지 힌트(폴백용).
         self._home_html_cache: str | None = None  # 현재 기업의 home HTML(에스컬레이션 단계 간 재사용).
+        self._home_rendered_cache: str | None = None  # 현재 기업의 headless 렌더 home HTML(실존검증 재사용).
 
     def enrich(self, dc: DiscoveredCompany) -> list[Contact]:
         """발견 기업의 연락처 후보(이메일·전화·폼) 목록을 반환한다."""
         # 기업별 상태는 진입 즉시 초기화 — 조기 반환(dry_run·도메인없음) 경로에서도 직전
         # 기업 값이 새지 않게 한다(last_home_html 은 실존검증 재사용 신호로 외부 노출됨).
         self._home_html_cache = None
+        self._home_rendered_cache = None
         self._contact_page = None
         if self._settings.dry_run:
             return _dry_contacts(dc)
@@ -136,6 +138,17 @@ class Enricher:
         """
         return self._home_html_cache
 
+    @property
+    def last_home_rendered_html(self) -> str | None:
+        """직전 enrich() 가 headless 로 렌더한 home HTML(에스컬레이션 시) 또는 None.
+
+        ExistenceVerifier(verify_headless)가 같은 도메인을 다시 헤드리스 렌더하지 않도록
+        재사용하는 read-only seam — 둘 다 켜진 경우의 기업당 Chromium 중복 기동을 없앤다.
+        enrich 가 헤드리스로 escalate 하지 않았거나 렌더 실패면 None(이때 실존검증이 자체 렌더).
+        enrich() 진입마다 초기화된다.
+        """
+        return self._home_rendered_cache
+
     def _home_html(self, fetcher: SupportsFetch, home: str) -> str:
         """기업 1건의 home HTML 을 1회만 받아 재사용한다(정적·OCR·Vision 단계 공유).
 
@@ -198,6 +211,9 @@ class Enricher:
         cap = max(1, self._settings.headless_max_pages)
         home = f"https://{dc.domain}"
         home_html = renderer.render(home)
+        # 렌더한 home 을 실존검증에 재사용하도록 노출(verify_headless 가 같은 도메인을 또
+        # 렌더하지 않게 — 기업당 Chromium 중복 기동 제거). 실패(None)면 노출도 None.
+        self._home_rendered_cache = home_html
         if home_html is None:  # 렌더 불가(미설치·실패) → 정적 결과 유지.
             return static_contacts
 
