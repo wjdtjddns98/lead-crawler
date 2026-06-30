@@ -99,10 +99,56 @@ _EN_INDUSTRY: dict[str, str] = {
 }
 
 
+# 업종명(소문자) → 검색용 영어 동의어 목록(다중 쿼리). SERP(Serper)는 쿼리당 ~10건만
+# 주므로 단일어 1쿼리로는 커버리지가 빈약하다 → 동의어 여러 개로 각각 쿼리해 합집합을
+# 모은다(예: 바이오 → biotech·biotechnology·pharmaceutical·life sciences). 각 항목은 IR
+# 키워드("company official website …")와 결합되므로 'company' 접미 없는 업종 명사로 둔다.
+_EN_INDUSTRY_TERMS: dict[str, tuple[str, ...]] = {
+    "건설": ("construction", "engineering and construction", "building contractor"),
+    "제조": ("manufacturing", "manufacturer", "industrial"),
+    "금융": ("financial services", "bank", "investment management"),
+    "it": ("software", "information technology", "technology"),
+    "소프트웨어": ("software", "SaaS", "software development"),
+    "바이오": (
+        "biotech", "biotechnology", "pharmaceutical", "biopharmaceutical",
+        "life sciences", "drug manufacturer", "medical devices", "diagnostics",
+    ),
+    "제약": (
+        "pharmaceutical", "biopharmaceutical", "drug manufacturer",
+        "generic drugs", "vaccine manufacturer",
+    ),
+    "유통": ("retail", "wholesale distribution"),
+    "도소매": ("retail", "wholesale"),
+    "운송": ("transportation", "shipping", "freight"),
+    "물류": ("logistics", "supply chain"),
+    "에너지": ("energy", "oil and gas", "renewable energy"),
+    "부동산": ("real estate", "property development"),
+    "식품": ("food", "food and beverage"),
+    "화학": ("chemicals", "specialty chemicals"),
+    "자동차": ("automotive", "auto parts"),
+    "반도체": ("semiconductor", "semiconductors"),
+    "통신": ("telecommunications", "telecom"),
+}
+
+
 def industry_search_term(industry: str) -> str:
     """업종명을 영어 검색어로 옮긴다(매핑 없으면 원문 그대로 — 베스트에포트)."""
     key = industry.strip().lower()
     return _EN_INDUSTRY.get(key, industry.strip())
+
+
+def industry_search_terms(industry: str) -> tuple[str, ...]:
+    """업종명 → 검색용 영어 동의어 목록(다중 쿼리용). 매핑 없으면 단일 영어어(없으면 원문).
+
+    검색 발견(SearchSource)이 세그먼트당 이 목록만큼 쿼리를 던져 합집합을 모은다 — 한글
+    업종어를 영어권 색인에 그대로 넣어 헛방 나던 문제를 고치고(번역), 동의어로 커버리지를
+    넓힌다(SERP 쿼리당 ~10건 한계 보완).
+    """
+    key = industry.strip().lower()
+    terms = _EN_INDUSTRY_TERMS.get(key)
+    if terms:
+        return terms
+    return (industry_search_term(industry),)
 
 
 def supported_industries() -> tuple[tuple[str, str], ...]:

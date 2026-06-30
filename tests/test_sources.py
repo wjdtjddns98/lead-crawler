@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from leadcrawler.config import Settings
@@ -348,9 +350,11 @@ class _FakeProvider:
     def __init__(self, pages: list[list[dict]]) -> None:
         self.pages = pages
         self.calls = 0
+        self._lock = threading.Lock()  # 병렬 쿼리에서 calls 증가가 경쟁하지 않게.
 
     def fetch_page(self, query: str, *, gl: str, lr: str, start: int) -> list[dict]:  # noqa: ARG002
-        self.calls += 1
+        with self._lock:
+            self.calls += 1
         idx = (start - 1) // self.page_size
         return self.pages[idx] if idx < len(self.pages) else []
 
@@ -377,7 +381,8 @@ def test_search_live_early_aborts_on_low_new_ratio() -> None:
     p2 = _page(*[f"e{i}" for i in range(10)])
     provider = _FakeProvider([p1, p2])
     src = SearchSource(Settings(dry_run=False))
-    seg = Segment(country="KR", industry="건설")
+    # 단일 동의어(미매핑 업종)로 한 쿼리의 페이징 조기중단만 격리(다중쿼리는 별도 테스트).
+    seg = Segment(country="KR", industry="조선")
     seen = {f"d{i}.com" for i in range(9)}  # d0..d8 기지, d9 만 신규.
     rows = src._live(seg, provider, seen=seen)
     assert provider.calls == 1  # 조기중단 — page2 과금 안 함.
@@ -390,10 +395,27 @@ def test_search_live_no_seen_is_backward_compatible() -> None:
     p2 = _page(*[f"e{i}" for i in range(10)])
     provider = _FakeProvider([p1, p2])
     src = SearchSource(Settings(dry_run=False))
-    seg = Segment(country="KR", industry="건설")
+    # 단일 동의어(미매핑 업종)로 한 쿼리의 전량 페이징(회귀 0)만 격리.
+    seg = Segment(country="KR", industry="조선")
     rows = src._live(seg, provider, seen=None)
     assert provider.calls == 3  # page1·page2·빈page(종료) — 끝까지 페이징.
     assert len(rows) == 20  # 전부 신규로 적재.
+
+
+def test_search_live_multi_query_per_industry_synonym() -> None:
+    """업종 동의어마다 별도 쿼리를 던져 합집합을 모은다(한글 업종어 헛방 수정 + 커버리지).
+
+    건설 = 3 동의어. 각 동의어가 _FakeProvider 페이징(page1·page2·빈)을 독립 수행하므로
+    호출은 3×3=9. 첫 동의어가 d*·e* 20건을 모두 모으고 이후 동의어는 전부 중복 → 합집합 20.
+    """
+    p1 = _page(*[f"d{i}" for i in range(10)])
+    p2 = _page(*[f"e{i}" for i in range(10)])
+    provider = _FakeProvider([p1, p2])
+    src = SearchSource(Settings(dry_run=False))
+    seg = Segment(country="KR", industry="건설")  # 3 동의어
+    rows = src._live(seg, provider, seen=None)
+    assert provider.calls == 9  # 3 동의어 × (page1·page2·빈page).
+    assert len(rows) == 20  # 동의어 간 중복 제거 → 합집합 20.
 
 
 def test_search_uses_own_cap_independent_of_free_cap() -> None:
@@ -408,7 +430,8 @@ def test_search_uses_own_cap_independent_of_free_cap() -> None:
     src = SearchSource(
         Settings(dry_run=False, discovery_max_per_source=9999, discovery_search_max_per_segment=5)
     )
-    seg = Segment(country="KR", industry="건설")
+    # 단일 동의어(미매핑 업종)로 한 쿼리의 cap 정지(추가 페이지 비과금)만 격리.
+    seg = Segment(country="KR", industry="조선")
     rows = src._live(seg, provider, seen=None)
     assert len(rows) == 5  # 유료 캡 5 에서 정지(무료 9999 무관).
     assert provider.calls == 1  # 첫 페이지에서 cap 채움 → 추가 페이지 비과금.

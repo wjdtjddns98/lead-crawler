@@ -206,7 +206,9 @@ class Settings(BaseSettings):
     # 트레이드오프: username 키잉이라 알려진 아이디(admin 등)를 스팸하면 정상 사용자를
     # window 만큼 잠글 수 있다(self-healing). 소수 운영자 내부툴엔 수용 — 무방비보다 낫다.
     login_max_failures: int = Field(default=10, ge=1)
-    login_failure_window_minutes: int = Field(default=15, ge=1)
+    # 실패 카운트 윈도우 = 락아웃(재시도 가능까지) 시간(초). 초 단위라 1분 미만(예: 10초)도
+    # 지정 가능. 짧을수록 락아웃이 약해진다(브루트포스 완화 ↓) — 운영자 편의와 트레이드오프.
+    login_failure_window_seconds: int = Field(default=900, ge=1)
 
     # 24/7 스케줄러(opt-in) — 매일 크롤 1회전 + Notion 자동 리포팅(일일보고·스크럼·현황).
     # APScheduler(선택적 extra ``schedule``) 미설치면 ``serve`` 가 안내 후 종료. 기본 off.

@@ -43,7 +43,7 @@ def register_auth(
     # 무차별대입 완화 — 라우트 등록 시 1회 생성해 요청 간 실패 카운트를 공유(프로세스-로컬).
     throttle = LoginThrottle(
         max_failures=settings.login_max_failures,
-        window_seconds=settings.login_failure_window_minutes * 60,
+        window_seconds=settings.login_failure_window_seconds,
     )
 
     @app.post("/auth/login", response_model=LoginResponse)

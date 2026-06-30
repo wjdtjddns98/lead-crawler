@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { X } from "lucide-react";
 
 // 검색 + 체크리스트 멀티셀렉트(국가·업종 공용). 선택값은 쉼표구분 토큰 문자열로
 // 직렬화한다(백엔드 계약 유지). 선택 0개면 빈 문자열.
@@ -71,7 +72,9 @@ export function MultiPicker({
               onClick={() => toggle(o)}
               title="제거"
             >
-              {o.label} <span className="text-muted ml-0.5">×</span>
+              <span className="inline-flex items-center gap-1">
+                {o.label} <X size={12} className="text-muted flex-none" aria-hidden />
+              </span>
             </button>
           ))}
           <button
