@@ -6,14 +6,18 @@
 // 바꾸지 않고 각 버튼 의미색으로 배경을 옅게(15%) 채운다(transition-colors 로 부드럽게).
 const BTN_BASE =
   "inline-block bg-panel border py-1.5 px-3 rounded-md cursor-pointer no-underline transition-colors " +
-  "disabled:opacity-45 disabled:cursor-not-allowed";
+  "disabled:opacity-45 disabled:cursor-not-allowed " +
+  // 키보드 포커스 가시화 — Tab 이동 시 현재 위치를 또렷이(다크 배경엔 offset 로 분리).
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas";
 export const BTN = `${BTN_BASE} text-ink border-line hover:enabled:bg-line`;
 export const BTN_CONFIRM = `${BTN_BASE} border-ok text-ok-fg hover:enabled:bg-ok/15`;
 export const BTN_REJECT = `${BTN_BASE} border-danger text-danger-fg hover:enabled:bg-danger/15`;
 export const BTN_EXPORT = `${BTN_BASE} border-accent text-accent-fg hover:enabled:bg-accent/15`;
 
 // 탭 — 활성/비활성에서 글자·테두리·배경이 모두 바뀌므로 상태별로 통째 구성(유틸 충돌 방지).
-const TAB_BASE = "border py-1.5 px-3.5 rounded-md cursor-pointer";
+const TAB_BASE =
+  "border py-1.5 px-3.5 rounded-md cursor-pointer " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas";
 export function tabCls(active: boolean): string {
   return active
     ? `${TAB_BASE} text-white border-accent bg-tab-active`
