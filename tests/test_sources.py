@@ -396,6 +396,35 @@ def test_search_live_no_seen_is_backward_compatible() -> None:
     assert len(rows) == 20  # 전부 신규로 적재.
 
 
+def test_search_uses_own_cap_independent_of_free_cap() -> None:
+    """유료 검색은 discovery_search_max_per_segment 로 캡 — 무료 캡과 분리.
+
+    무료(discovery_max_per_source)를 매우 깊게 올려도 유료 검색은 자기 캡(여기선 5)에서
+    멈춘다(끌려가지 않음). 페이지에 결과가 충분해도 cap 도달 시 다음 페이지를 사지 않는다.
+    """
+    p1 = _page(*[f"d{i}" for i in range(10)])
+    p2 = _page(*[f"e{i}" for i in range(10)])
+    provider = _FakeProvider([p1, p2])
+    src = SearchSource(
+        Settings(dry_run=False, discovery_max_per_source=9999, discovery_search_max_per_segment=5)
+    )
+    seg = Segment(country="KR", industry="건설")
+    rows = src._live(seg, provider, seen=None)
+    assert len(rows) == 5  # 유료 캡 5 에서 정지(무료 9999 무관).
+    assert provider.calls == 1  # 첫 페이지에서 cap 채움 → 추가 페이지 비과금.
+
+
+def test_search_cap_clamped_to_provider_page_max() -> None:
+    """유료 캡을 100 초과로 줘도 Serper page-max(100)로 클램프된다(min 가드 회귀 방지)."""
+    # 120건(페이지 12개 분량) 결과를 줘도 cap 은 100 에서 멈춰야 한다.
+    pages = [_page(*[f"d{p}_{i}" for i in range(10)]) for p in range(12)]
+    provider = _FakeProvider(pages)
+    src = SearchSource(Settings(dry_run=False, discovery_search_max_per_segment=999))
+    seg = Segment(country="KR", industry="건설")
+    rows = src._live(seg, provider, seen=None)
+    assert len(rows) == 100  # min(999, 100) = 100 클램프.
+
+
 # ── ② 글로벌 seen 주입 + 무료-우선 유료검색 스킵 ─────────────────────────────
 
 

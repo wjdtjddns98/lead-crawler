@@ -124,10 +124,18 @@ class Settings(BaseSettings):
     notion_status_db: str = Field(default="dd74e2f7c25f425cbf030117031c9f92")
 
     # 라이브 발견 제어(예산·레이트리밋)
-    # 소스·세그먼트당 후보 상한 — 이 프로그램의 핵심 가치는 "계속 데이터를 추출"하는 것이라
-    # 보수적 50 에서 크게 올린다(등록처 유니버스까지 깊게 긁음). 과도한 호출은 target_count
-    # 조기종료 + cost_ledger 예산 가드 + 취소로 막는다(무한 캡 대신 '깊은 캡 + N 에서 정지').
+    # 무료/등록처 소스(EDGAR·DART·CompaniesHouse·거래소·GLEIF·Wikidata·OpenCorporates)의
+    # 소스·세그먼트당 후보 상한 — 후보당 무료 API 1콜이라 깊게 긁어도 무비용. 이 프로그램의
+    # 핵심 가치는 "계속 데이터를 추출"하는 것이라 보수적 50 에서 크게 올린다(등록처 유니버스까지
+    # 깊게). 과도한 호출은 target_count 조기종료 + cost_ledger 예산 가드 + 취소로 막는다.
+    # 유료 검색(Serper)은 이 캡을 쓰지 않는다 → discovery_search_max_per_segment 로 분리.
     discovery_max_per_source: int = Field(default=500)
+    # 유료 검색(SearchSource/Serper)의 세그먼트당 결과 상한 — 무료 캡과 독립(무료를 수천까지
+    # 올려도 유료가 끌려가지 않게). Serper 는 page_size=100·1페이지/세그먼트라 ≤100 이면 1콜로
+    # 끝난다 → 이 값을 100 밑으로 낮춰도 과금(1콜)은 그대로고 무료 결과만 버리므로 비용 절감엔
+    # 무의미. 유료 실절감은 search_skip_if_free_ge·글로벌 seen 주입이 담당한다. 기본 100 은
+    # 기존 동작(min(discovery_max_per_source, 100))을 보존한다.
+    discovery_search_max_per_segment: int = Field(default=100, ge=1)
     # 유료 검색(Serper/CSE) 비용 가드 — 글로벌 seen(DB시드+런 누적)을 검색에 주입해 중복에
     # 돈을 쓰지 않게 한다. ① 한 페이지의 실후보 대비 신규 비율이 이 값 미만이면 다음 페이지를
     # 더 사지 않고 페이징 중단(CSE 다페이지 절감). 0.0 이면 항상 끝까지 페이징(기존 동작).

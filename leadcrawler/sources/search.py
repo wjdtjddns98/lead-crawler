@@ -162,7 +162,7 @@ class SearchSource:
         더 사지 않고 페이징을 조기중단한다(중복에 과금 방지, 제약 ①).
         """
         s = self._settings
-        cap = min(s.discovery_max_per_source, 100)  # 검색은 쿼리당 최대 100건.
+        cap = min(s.discovery_search_max_per_segment, 100)  # 유료 검색 전용 캡(무료와 분리), 최대 100.
         seen_global = seen if seen is not None else frozenset()
         min_new_ratio = s.search_min_new_ratio
         # 세그먼트 국가에 맞춰 쿼리 언어·검색 지역(gl)·언어제한(lr)을 현지화.
