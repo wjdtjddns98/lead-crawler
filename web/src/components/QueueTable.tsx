@@ -1,6 +1,6 @@
 import { memo, useCallback, useRef, useState, type MouseEvent } from "react";
 import type { ReviewItem } from "../types";
-import { BTN_CONFIRM, BTN_REJECT, EMPTY, TD, TH } from "../ui";
+import { BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
 import { EmailBadge, StatusBadge } from "./StatusBadge";
 import { SiteExplorer, type SiteTab } from "./SiteExplorer";
 
@@ -152,7 +152,7 @@ const QueueRow = memo(
               href={href}
               target="_blank"
               rel="noreferrer"
-              className={item.site_alive ? "text-accent" : "text-muted line-through"}
+              className={`${LINK_FOCUS} ${item.site_alive ? "text-accent" : "text-muted line-through"}`}
               title={item.site_alive ? "클릭: 미리보기 창 (Ctrl+클릭: 새 탭)" : "사이트 미응답"}
               onClick={(e) => openOrTab(e, () => onOpen(item.id, "home"))}
             >
@@ -167,7 +167,7 @@ const QueueRow = memo(
                 href={formHref}
                 target="_blank"
                 rel="noreferrer"
-                className="text-accent"
+                className={`${LINK_FOCUS} text-accent`}
                 title="클릭: 미리보기 창 (Ctrl+클릭: 새 탭)"
                 onClick={(e) => openOrTab(e, () => onOpen(item.id, "form"))}
               >
