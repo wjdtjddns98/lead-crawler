@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { login } from "../api";
 import type { Role } from "../types";
 import { BTN } from "../ui";
@@ -13,6 +13,14 @@ export function Login({ onLogin }: { onLogin: (username: string, role: Role) => 
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [lockSeconds, setLockSeconds] = useState(0); // 429 잠금 잔여 초(>0 이면 버튼 잠금).
+
+  // 잠금 중 매초 카운트다운 — 0 이 되면 다시 시도 가능.
+  useEffect(() => {
+    if (lockSeconds <= 0) return;
+    const id = setInterval(() => setLockSeconds((s) => s - 1), 1000);
+    return () => clearInterval(id);
+  }, [lockSeconds]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,6 +31,8 @@ export function Login({ onLogin }: { onLogin: (username: string, role: Role) => 
       onLogin(who, role);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      const retry = (err as { retryAfter?: number }).retryAfter;
+      if (retry && retry > 0) setLockSeconds(retry);
     } finally {
       setBusy(false);
     }
@@ -57,8 +67,12 @@ export function Login({ onLogin }: { onLogin: (username: string, role: Role) => 
             autoComplete="current-password"
           />
         </label>
-        <button className={`${BTN} mt-1.5 text-center`} type="submit" disabled={busy || !username || !password}>
-          {busy ? "로그인 중…" : "로그인"}
+        <button
+          className={`${BTN} mt-1.5 text-center`}
+          type="submit"
+          disabled={busy || !username || !password || lockSeconds > 0}
+        >
+          {busy ? "로그인 중…" : lockSeconds > 0 ? `${lockSeconds}초 후 재시도` : "로그인"}
         </button>
       </form>
     </div>

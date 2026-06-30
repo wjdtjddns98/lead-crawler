@@ -332,9 +332,22 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
   const path = u.pathname;
   const pending = () => db.filter((x) => x.status === "pending");
 
-  // 인증 — mock 은 무조건 admin.
-  if (path === "/auth/login" && method === "POST")
+  // 인증 — mock 은 무조건 admin. 단, username "locked" 면 429(스로틀 카운트다운 시연용).
+  if (path === "/auth/login" && method === "POST") {
+    let body: { username?: string } = {};
+    try {
+      body = JSON.parse(String(init?.body ?? "{}"));
+    } catch {
+      // 본문 없음/비JSON.
+    }
+    if (body.username?.trim().toLowerCase() === "locked") {
+      return new Response(
+        JSON.stringify({ detail: "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요." }),
+        { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "10" } },
+      );
+    }
     return jsonRes({ token: "mock-token", username: "mock-admin", role: "admin" });
+  }
   if (path === "/auth/logout") return jsonRes({});
   if (path === "/health") return jsonRes({ status: "ok" });
 
