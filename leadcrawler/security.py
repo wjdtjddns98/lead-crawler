@@ -13,7 +13,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import math
 import secrets
+import threading
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -203,3 +206,94 @@ def delete_expired_sessions(session: Session, *, now: datetime | None = None) ->
     now = now or _utcnow()
     result = session.execute(delete(AuthSessionRow).where(AuthSessionRow.expires_at <= now))
     return int(result.rowcount or 0)
+
+
+class LoginThrottle:
+    """로그인 무차별대입 완화 — username 별 트레일링 윈도우 실패횟수 기반 in-memory 스로틀.
+
+    같은 username 에 ``window_seconds`` 안에서 실패가 ``max_failures`` 회 쌓이면, 가장
+    오래된 실패가 윈도우 밖으로 나갈 때까지 추가 시도를 막는다(호출부가 429 로 매핑).
+    성공하면 해당 키를 비운다. 표준 라이브러리만 쓰고(새 의존성 0), 시간 주입(``now``)으로
+    테스트가 결정적이다. 잠금 판정은 인증(scrypt) 전에 하므로 잠긴 키는 CPU 도 안 쓴다.
+
+    범위: **프로세스-로컬**(uvicorn 기본 1워커 기준). 다중 워커 배포면 카운트가 워커당
+    분리돼 완화가 약해진다 — 그 경우 공유 저장소(DB/redis) 기반으로 승격이 필요하다.
+    스레드 안전(lock) — FastAPI 스레드풀 동시 요청 대비. ``/auth/login`` 은 미인증 공개
+    엔드포인트라, 매 요청 다른 username 으로 키를 무한 생성하는 공격에 대비해 추적 키 수를
+    ``_MAX_KEYS`` 로 상한하고 초과 시 가장 오래된 키를 축출한다(메모리 바운드). 단, 이는
+    메모리만 막고 요청당 비용(타이밍 평탄화 scrypt)은 못 막으므로, 분산 무차별대입의 완전
+    차단엔 별도 per-IP/글로벌 레이트리밋이 필요하다(이 클래스 범위 밖).
+    """
+
+    _MAX_KEYS = 50_000  # 추적 username 키 상한(미인증 키 폭증 → 메모리 OOM 방지).
+
+    def __init__(
+        self,
+        *,
+        max_failures: int,
+        window_seconds: int,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._max = max(1, max_failures)
+        self._window = timedelta(seconds=max(1, window_seconds))
+        self._now = now or _utcnow
+        self._fails: dict[str, list[datetime]] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(username: str) -> str:
+        """스로틀 키 정규화(공백 제거 + 소문자).
+
+        주의: 인증(:func:`authenticate`)은 username 을 **대소문자·공백 그대로** 비교한다.
+        스로틀은 의도적으로 더 느슨하게(대소문자 무시) 키잉해, ``Admin``/``ADMIN`` 류 변형으로
+        실패 예산을 늘려 카운팅을 회피하는 우회를 막는다. 부작용으로 대소문자만 다른 두 실계정이
+        공존하면 한쪽 실패가 다른 쪽도 잠글 수 있으나(드문 구성), 윈도우 내 자동 해제 + 항상
+        더-잠그는(fail-safe) 방향이라 안전하다.
+        """
+        return username.strip().lower()
+
+    def _prune(self, key: str, now: datetime) -> list[datetime]:
+        """윈도우를 벗어난 실패를 제거하고 남은 목록을 반환(없으면 키 삭제). 락 안에서 호출."""
+        cutoff = now - self._window
+        stamps = [t for t in self._fails.get(key, ()) if t > cutoff]
+        if stamps:
+            self._fails[key] = stamps
+        else:
+            self._fails.pop(key, None)
+        return stamps
+
+    def retry_after(self, username: str) -> int:
+        """현재 잠겨 있으면 남은 대기 초(>0), 아니면 0. 조회만(실패 기록 안 함)."""
+        now = self._now()
+        key = self._key(username)
+        with self._lock:
+            stamps = self._prune(key, now)
+            if len(stamps) < self._max:
+                return 0
+            # 임계 도달 — 가장 오래된 실패가 윈도우를 벗어나면 다시 시도 가능.
+            unlock = stamps[0] + self._window
+            return max(1, math.ceil((unlock - now).total_seconds()))
+
+    def record_failure(self, username: str) -> None:
+        """로그인 실패 1건 기록.
+
+        호출부는 잠금 해제(retry_after==0) 상태에서만 호출하므로 단일 스레드에선 키당
+        실패가 max 를 넘지 않는다. 동시 요청에선 check↔record 사이 경합으로 잠깐 초과할 수
+        있으나(best-effort), 잠금 판정은 매번 ``stamps[0]+window`` 를 재계산해 자가보정하며
+        항상 더-잠그는 fail-safe 방향이라 안전하다. 추적 키가 ``_MAX_KEYS`` 를 넘으면 가장
+        오래된(최근 실패가 가장 옛날인) 키를 축출해 메모리를 바운드한다.
+        """
+        now = self._now()
+        key = self._key(username)
+        with self._lock:
+            stamps = self._prune(key, now)
+            stamps.append(now)
+            self._fails[key] = stamps
+            if len(self._fails) > self._MAX_KEYS:
+                victim = min(self._fails, key=lambda k: self._fails[k][-1])
+                self._fails.pop(victim, None)
+
+    def clear(self, username: str) -> None:
+        """로그인 성공 — 해당 username 의 실패 기록을 제거한다."""
+        with self._lock:
+            self._fails.pop(self._key(username), None)

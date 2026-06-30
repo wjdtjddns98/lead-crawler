@@ -15,6 +15,7 @@ from ..config import get_settings
 from ..schema import UserRow
 from ..security import (
     ROLE_ADMIN,
+    LoginThrottle,
     authenticate,
     create_session,
     delete_expired_sessions,
@@ -38,15 +39,31 @@ def register_auth(
     require_user: Callable[..., UserRow],
 ) -> None:
     """인증 라우트를 등록한다(로그인·로그아웃·내정보)."""
+    settings = get_settings()
+    # 무차별대입 완화 — 라우트 등록 시 1회 생성해 요청 간 실패 카운트를 공유(프로세스-로컬).
+    throttle = LoginThrottle(
+        max_failures=settings.login_max_failures,
+        window_seconds=settings.login_failure_window_minutes * 60,
+    )
 
     @app.post("/auth/login", response_model=LoginResponse)
     def login(body: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse:
+        retry_after = throttle.retry_after(body.username)
+        if retry_after > 0:
+            # 인증(scrypt) 전에 차단 — 잠긴 키엔 CPU 도 안 쓴다. Retry-After 헤더로 안내.
+            raise HTTPException(
+                status_code=429,
+                detail="로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.",
+                headers={"Retry-After": str(retry_after)},
+            )
         user = authenticate(db, body.username, body.password)
         if user is None:
+            throttle.record_failure(body.username)
             # username/비밀번호 구분 없이 동일 메시지(사용자 열거 방지).
             raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다")
+        throttle.clear(body.username)  # 성공 → 실패 카운트 리셋(정상 사용자 락아웃 방지).
         delete_expired_sessions(db)  # lazy GC — 만료 세션 정리(테이블 비대화 방지).
-        token = create_session(db, user.id, ttl_hours=get_settings().web_session_ttl_hours)
+        token = create_session(db, user.id, ttl_hours=settings.web_session_ttl_hours)
         return LoginResponse(token=token, username=user.username, role=user.role)
 
     @app.post("/auth/logout")
