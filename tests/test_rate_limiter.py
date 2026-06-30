@@ -128,3 +128,13 @@ def test_fetcher_without_limiters_is_unpaced() -> None:
     fetcher._client = httpx.Client(transport=httpx.MockTransport(handler))
     fetcher.get_json("https://example.com/x")
     assert events == [("request", "example.com")]  # acquire 없음.
+
+
+def test_rate_limiter_negative_is_noop() -> None:
+    """rate<0 도 무제한(no-op) — _min_interval 가 0 으로 클램프(0=무제한 계약과 일치)."""
+    rl = RateLimiter(rate_per_sec=-5.0)
+    assert rl._min_interval == 0.0
+    start = time.monotonic()
+    for _ in range(200):
+        rl.acquire()
+    assert time.monotonic() - start < 0.05

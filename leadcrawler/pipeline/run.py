@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -278,7 +278,7 @@ def run_pipeline(
         )
         _emit()  # 초기 상태(세그먼트 총수) 통지 — 시작 즉시 진행바가 보이도록.
 
-        def _consume(segment: Segment, discovered: Iterable[DiscoveredCompany]) -> None:
+        def _consume(discovered: Iterable[DiscoveredCompany]) -> None:
             """발견된 후보들을 **단일 스레드**에서 dedup→배치→_flush(enrich pool)→persist 한다.
 
             seen/seen_domains 변형·DB 세션·진행카운터는 전부 이 메인 스레드가 전담하므로
@@ -345,14 +345,13 @@ def run_pipeline(
                     cancelled = True
                     break
                 _consume(
-                    segment,
                     discover_segment(
                         segment,
                         settings,
                         cost_ledger=cost_ledger,
                         sources=disco_sources,
                         seen_domains=seen_domains,  # 글로벌 dedup 시드 주입(제약①·②).
-                    ),
+                    )
                 )
                 if cancelled or _target_hit():
                     break  # 취소 또는 목표 도달 → 남은 세그먼트는 돌지 않고 종료.
@@ -362,42 +361,74 @@ def run_pipeline(
             # 병렬 발견(opt-in): 세그먼트 발견(네트워크 수집)만 동시화하고 dedup/적재는 위
             # _consume(단일 스레드)이 전담한다 — 공유 가변상태는 cost_ledger(내부 락) +
             # rate_limiters(내부 락)뿐이라 정확성(제약①② dedup·DB)이 보존된다. 워커는 각자
-            # 독립 sources(공유 호스트 레이트리미터)로 순수 발견만 한다.
+            # (스레드별) 독립 sources(공유 호스트 레이트리미터)로 순수 발견만 한다.
             #
-            # 한계(best-effort): ① seen_domains 는 발견 시작 스냅샷(읽기전용)을 전 워커에
-            # 주입하므로, 라이브에서 뒤 세그먼트가 앞 세그먼트의 발견 도메인을 검색 비용가드에
-            # 반영하지 못한다(중복 도메인은 _consume dedup 이 어차피 걸러 정확성엔 무해, 유료
-            # 검색비만 약간 손해 가능). ② 모든 세그먼트를 선발견하므로 target_saved 조기종료가
-            # 발견 호출까지는 줄이지 못한다(처리 루프에서만 멈춤). dry_run 은 발견이 seen 과
-            # 무관·결정적이라 순차와 산출이 완전히 동일하다.
+            # 한계(best-effort, opt-in): ① seen_domains 는 발견 시작 스냅샷(읽기전용)을 전
+            # 워커에 주입하므로, 라이브에서 뒤 세그먼트가 앞 세그먼트의 발견 도메인을 검색
+            # 비용가드에 반영하지 못한다(중복은 _consume dedup 이 어차피 걸러 정확성엔 무해,
+            # 유료 검색비만 약간 손해 가능). ② 모든 세그먼트를 선발견해 메모리에 모으므로(처리
+            # 전) 총 발견량에 비례한 메모리 스파이크 + target_saved 조기종료가 발견 호출까지는
+            # 줄이지 못한다(처리 루프에서만 멈춤). ③ 취소는 아직 시작 안 한 세그먼트만 즉시
+            # 멈춘다 — 진행 중 발견은 중단점이 없어 완료까지 가며, 이미 완료분은 순서대로
+            # 보존·적재된다. dry_run 은 발견이 seen 과 무관·결정적이라 순차와 산출이 완전히 동일.
             shared_limiters = HostRateLimiters(default_rate=settings.discovery_rate_per_host)
             seen_domains_snapshot = set(seen_domains)  # 읽기전용 — 워커는 변형하지 않는다.
+            # 워커 스레드별 독립 sources — 워커당 1회만 빌드해 그 워커의 모든 세그먼트에 재사용
+            # (keep-alive 보존, 세그먼트마다 재빌드하던 httpx churn 제거), 풀 종료 후 일괄 close.
+            disco_tl = threading.local()
+            disco_created: list[list] = []
+            disco_created_lock = threading.Lock()
 
             def _discover_one(segment: Segment) -> list[DiscoveredCompany]:
-                worker_sources = build_sources(
-                    settings, cost_ledger, rate_limiters=shared_limiters
-                )
+                ws = getattr(disco_tl, "sources", None)
+                if ws is None:
+                    ws = build_sources(settings, cost_ledger, rate_limiters=shared_limiters)
+                    disco_tl.sources = ws
+                    with disco_created_lock:
+                        disco_created.append(ws)
                 try:
                     return list(
                         discover_segment(
                             segment,
                             settings,
                             cost_ledger=cost_ledger,
-                            sources=worker_sources,
+                            sources=ws,
                             seen_domains=seen_domains_snapshot,
                         )
                     )
-                finally:
-                    close_sources(worker_sources)  # 워커 sources httpx 정리(누수 방지).
+                except Exception as exc:  # 한 세그먼트 발견 실패 → 그 세그먼트만 빈 결과로 격리
+                    # (전체 런 중단·기적재 유실 방지 — 순차의 건별 보존과 동등한 blast-radius).
+                    log.warning("pipeline.discover.error", segment=segment.label, err=str(exc))
+                    return []
 
-            # ex.map 은 입력 순서로 결과를 돌려주므로 seg_list 순서가 보존된다(순차와 동일 처리순).
-            with ThreadPoolExecutor(max_workers=settings.discovery_workers) as disco_pool:
-                discovered_by_segment = list(disco_pool.map(_discover_one, seg_list))
-            for segment, discovered in zip(seg_list, discovered_by_segment):
+            # 세그먼트별 발견을 동시 제출하고 완료되는 대로 수집하되, 취소를 주기적으로 확인한다
+            # (취소 시 미시작 세그먼트는 즉시 cancel). 수집 후 **입력 순서대로** _consume 하므로
+            # dedup 순서가 순차와 같아 결정성이 보존된다.
+            results: list[list[DiscoveredCompany] | None] = [None] * len(seg_list)
+            try:
+                with ThreadPoolExecutor(max_workers=settings.discovery_workers) as disco_pool:
+                    fut_to_idx = {
+                        disco_pool.submit(_discover_one, seg): i
+                        for i, seg in enumerate(seg_list)
+                    }
+                    for fut in as_completed(fut_to_idx):
+                        if should_cancel is not None and should_cancel():
+                            cancelled = True
+                            for f in fut_to_idx:
+                                f.cancel()  # 미시작 세그먼트만 취소(진행 중은 완료까지).
+                            break
+                        results[fut_to_idx[fut]] = fut.result()  # _discover_one 이 예외 격리 → 항상 list.
+            finally:
+                for ws in disco_created:
+                    close_sources(ws)  # 워커별 sources httpx 정리(누수 방지).
+
+            for segment, discovered in zip(seg_list, results):
+                if discovered is None:
+                    continue  # 취소로 발견 못 했거나 미완 — 건너뜀(이미 완료분만 적재).
                 if should_cancel is not None and should_cancel():
                     cancelled = True
                     break
-                _consume(segment, discovered)
+                _consume(discovered)
                 if cancelled or _target_hit():
                     break
                 progress["segments_done"] += 1

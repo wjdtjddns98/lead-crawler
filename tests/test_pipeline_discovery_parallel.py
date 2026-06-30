@@ -87,3 +87,26 @@ def test_build_sources_default_rate_limiters_is_none() -> None:
     """기존 호출부(rate_limiters 미지정)는 None — 회귀 0."""
     sources = build_sources(Settings(dry_run=True))
     assert all(getattr(s, "_rate_limiters", None) is None for s in sources)
+
+
+def test_parallel_discovery_isolates_segment_failure(monkeypatch) -> None:
+    """한 세그먼트 발견이 예외를 던져도 그 세그먼트만 빈 결과로 격리되고 런은 완료된다.
+
+    전체 크래시·기적재 유실 방지(순차의 건별 보존과 동등한 blast-radius). 나머지 세그먼트는
+    정상 발견·적재되어야 한다.
+    """
+    from leadcrawler.pipeline import run as run_mod
+
+    real = run_mod.discover_segment
+
+    def flaky(segment, settings, **kw):
+        if segment.country == "US":  # US 세그먼트만 발견 실패 시뮬레이션(재시도 소진 등).
+            raise RuntimeError("boom")
+        return real(segment, settings, **kw)
+
+    monkeypatch.setattr(run_mod, "discover_segment", flaky)
+    leads = run_pipeline(_SEGMENTS, settings=Settings(dry_run=True, discovery_workers=4))
+    assert leads  # 크래시 없이 완료 + 비어있지 않음.
+    countries = {ld.company.country for ld in leads}
+    assert "US" not in countries  # 실패한 US 세그먼트는 격리(빈 결과) → 적재 0.
+    assert "KR" in countries  # 다른 세그먼트는 정상 적재.
