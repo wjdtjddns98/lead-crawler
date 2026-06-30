@@ -88,7 +88,7 @@ export function MultiPicker({
       ) : (
         <p className="text-muted m-0 text-xs">{emptyHint}</p>
       )}
-      <ul className="list-none m-0 p-1 max-h-[200px] overflow-y-auto border border-line rounded-md bg-canvas">
+      <ul className="list-none m-0 p-1 h-[200px] overflow-y-auto border border-line rounded-md bg-canvas">
         {filtered.map((o) => (
           <li key={o.value}>
             <label className="flex flex-row items-center gap-2 py-[5px] px-1.5 rounded cursor-pointer text-ink text-[13px] hover:bg-line">
