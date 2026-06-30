@@ -90,6 +90,18 @@ export async function login(username: string, password: string): Promise<LoginRe
     body: JSON.stringify({ username, password }),
   });
   if (res.status === 401) throw new Error("아이디 또는 비밀번호가 올바르지 않습니다");
+  if (res.status === 429) {
+    // 무차별대입 스로틀 — 백엔드 detail(잠금 안내) + Retry-After(잠금 잔여 초)를 전달한다.
+    let detail = "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.";
+    try {
+      detail = (await res.json()).detail ?? detail;
+    } catch {
+      // 본문이 JSON 이 아니면 기본 안내 문구.
+    }
+    const err = new Error(detail) as Error & { retryAfter?: number };
+    err.retryAfter = Number(res.headers.get("Retry-After")) || 0;
+    throw err;
+  }
   if (!res.ok) throw new Error(`로그인 실패: ${res.status}`);
   const data = (await res.json()) as LoginResponse;
   setSession(data.token, data.username, data.role);

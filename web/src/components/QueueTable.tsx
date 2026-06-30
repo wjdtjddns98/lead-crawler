@@ -1,4 +1,5 @@
 import { memo, useCallback, useRef, useState, type MouseEvent } from "react";
+import { ExternalLink, FileText } from "lucide-react";
 import type { ReviewItem } from "../types";
 import { BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
 import { EmailBadge, StatusBadge } from "./StatusBadge";
@@ -156,7 +157,9 @@ const QueueRow = memo(
               title={item.site_alive ? "클릭: 미리보기 창 (Ctrl+클릭: 새 탭)" : "사이트 미응답"}
               onClick={(e) => openOrTab(e, () => onOpen(item.id, "home"))}
             >
-              ↗ {hostOf(href)}
+              <span className="inline-flex items-center gap-1">
+                <ExternalLink size={13} className="flex-none" aria-hidden /> {hostOf(href)}
+              </span>
             </a>
           ) : (
             <span className="text-muted">—</span>
@@ -171,7 +174,9 @@ const QueueRow = memo(
                 title="클릭: 미리보기 창 (Ctrl+클릭: 새 탭)"
                 onClick={(e) => openOrTab(e, () => onOpen(item.id, "form"))}
               >
-                📝 문의폼
+                <span className="inline-flex items-center gap-1">
+                  <FileText size={13} className="flex-none" aria-hidden /> 문의폼
+                </span>
               </a>
             </div>
           )}
