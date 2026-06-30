@@ -89,6 +89,49 @@ export function SiteExplorer({
     };
   }, []);
 
+  // 포커스 관리 — 열릴 때 다이얼로그 첫 포커스 가능 요소로 이동하고 Tab/Shift+Tab 을 모달
+  // 내부에 가둔다(배경으로 이탈 방지). 닫히면 트리거로 포커스를 되돌린다(키보드 흐름 유지).
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = dialogRef.current;
+    if (!node) return;
+    const prevFocus = document.activeElement as HTMLElement | null;
+    const focusables = () =>
+      Array.from(
+        node.querySelectorAll<HTMLElement>(
+          'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
+        ),
+      );
+    (focusables()[0] ?? node).focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const els = focusables();
+      if (els.length === 0) {
+        e.preventDefault();
+        node.focus();
+        return;
+      }
+      const first = els[0];
+      const last = els[els.length - 1];
+      const active = document.activeElement;
+      if (!node.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      } else if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    node.addEventListener("keydown", onKey);
+    return () => {
+      node.removeEventListener("keydown", onKey);
+      prevFocus?.focus?.();
+    };
+  }, []);
+
   // Enter 2단계 확정 — 실수 확정 방지. 1차 Enter: 확인창 표시 / 2차 Enter: 실제 확정.
   const [confirming, setConfirming] = useState(false);
 
@@ -170,10 +213,12 @@ export function SiteExplorer({
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={`${item.name} 사이트 미리보기`}
-        className="relative bg-panel border border-line rounded-lg w-[92vw] h-[86vh] max-w-[1400px] flex flex-col overflow-hidden"
+        tabIndex={-1}
+        className="relative bg-panel border border-line rounded-lg w-[92vw] h-[86vh] max-w-[1400px] flex flex-col overflow-hidden focus:outline-none"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Enter 2단계 확정 — 확인 오버레이. 다시 Enter(또는 확정 버튼)로 진짜 확정. */}
