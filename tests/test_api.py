@@ -308,6 +308,36 @@ def test_login_unknown_user_401(anon: TestClient) -> None:
     assert r.status_code == 401
 
 
+def test_login_throttle_429_after_repeated_failures(tmp_path, monkeypatch) -> None:
+    """무차별대입: 임계(3) 실패 후 429 + 잠금 중엔 올바른 비밀번호도 429(인증 전 차단)."""
+    monkeypatch.setenv("LEADCRAWLER_DATABASE_URL", f"sqlite:///{tmp_path}/throttle.db")
+    monkeypatch.setenv("LEADCRAWLER_LOGIN_MAX_FAILURES", "3")
+    get_settings.cache_clear()
+    settings = get_settings()
+    init_db(settings)
+    _seed(settings)
+    from leadcrawler.api.app import create_app
+
+    c = TestClient(create_app())
+    for _ in range(3):  # 3회 실패 → 401(아직 미잠금에서 시도).
+        assert c.post("/auth/login", json={"username": _USER, "password": "wrong"}).status_code == 401
+    locked = c.post("/auth/login", json={"username": _USER, "password": "wrong"})
+    assert locked.status_code == 429
+    assert "Retry-After" in locked.headers
+    # 잠긴 동안엔 올바른 비밀번호도 429(scrypt 전에 차단).
+    assert c.post("/auth/login", json={"username": _USER, "password": _PW}).status_code == 429
+
+
+def test_login_request_length_cap_422(anon: TestClient) -> None:
+    """과대 페이로드 차단 — username>64·password>256 은 422(scrypt 비용 폭증 방지)."""
+    assert anon.post(
+        "/auth/login", json={"username": "x" * 65, "password": "y"}
+    ).status_code == 422
+    assert anon.post(
+        "/auth/login", json={"username": "ok", "password": "z" * 257}
+    ).status_code == 422
+
+
 def test_bad_token_401(anon: TestClient) -> None:
     anon.headers.update({"Authorization": "Bearer not-a-real-token"})
     assert anon.get("/queue").status_code == 401

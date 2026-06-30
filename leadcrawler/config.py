@@ -191,6 +191,12 @@ class Settings(BaseSettings):
 
     # 검증 웹앱 로그인 세션 유효시간(시간). 만료 시 재로그인 필요.
     web_session_ttl_hours: int = Field(default=12)
+    # 로그인 무차별대입 완화 — 같은 username 에 window 안에서 실패가 max 회 쌓이면 429
+    # (가장 오래된 실패가 윈도우 밖으로 나갈 때까지). in-memory·프로세스-로컬(기본 1워커).
+    # 트레이드오프: username 키잉이라 알려진 아이디(admin 등)를 스팸하면 정상 사용자를
+    # window 만큼 잠글 수 있다(self-healing). 소수 운영자 내부툴엔 수용 — 무방비보다 낫다.
+    login_max_failures: int = Field(default=10, ge=1)
+    login_failure_window_minutes: int = Field(default=15, ge=1)
 
     # 24/7 스케줄러(opt-in) — 매일 크롤 1회전 + Notion 자동 리포팅(일일보고·스크럼·현황).
     # APScheduler(선택적 extra ``schedule``) 미설치면 ``serve`` 가 안내 후 종료. 기본 off.
