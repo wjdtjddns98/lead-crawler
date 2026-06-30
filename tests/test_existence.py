@@ -391,6 +391,29 @@ def test_headless_off_skips_render() -> None:
     assert res.is_active is True and render.calls == 0
 
 
+def test_headless_reuses_enrich_rendered_html_no_own_render() -> None:
+    # enrich 가 넘긴 렌더 HTML(파킹)로 판정 → 자체 render 호출 0(기업당 Chromium 중복 제거).
+    render = _Render("<html><body><p>자체 렌더는 호출되면 안 됨 — 살아있는 본문 IR 공시.</p></body></html>")
+    v = ExistenceVerifier(
+        Settings(dry_run=False, verify_headless=True),
+        site_probe=_Site(True), dns_probe=_Dns(True), render_probe=render,
+    )
+    res = v.verify("acme.com", rendered_html="<html><body>buy this domain</body></html>")
+    assert res.is_active is False  # 재사용한 렌더 HTML 이 파킹 → 비생존.
+    assert render.calls == 0  # 자체 렌더 생략.
+
+
+def test_headless_renders_when_no_rendered_html_provided() -> None:
+    # rendered_html=None(enrich 미렌더) → 기존대로 자체 렌더(회귀 0).
+    render = _Render("<html><body>buy this domain</body></html>")
+    v = ExistenceVerifier(
+        Settings(dry_run=False, verify_headless=True),
+        site_probe=_Site(True), dns_probe=_Dns(True), render_probe=render,
+    )
+    res = v.verify("acme.com", rendered_html=None)
+    assert render.calls == 1 and res.is_active is False
+
+
 def test_headless_dry_run_skips_render() -> None:
     render = _Render("buy this domain")
     v = ExistenceVerifier(Settings(dry_run=True, verify_headless=True), render_probe=render)
