@@ -46,6 +46,11 @@ _running = False
 # 카운터는 파이프라인 종료 후 한 번 강제로 확정 기록한다(정확성 보장).
 _PROGRESS_THROTTLE_SEC = 1.5
 
+# 취소 플래그 DB 폴링 최소 간격(초) — run_pipeline 이 세그먼트·기업마다 should_cancel() 을
+# 부르는데(2만건이면 2만 세션), 취소는 드문 사용자 액션이라 매번 DB 를 칠 필요가 없다. 이
+# 간격마다 1회만 읽고 그 사이엔 마지막 값을 돌려준다(세션 churn 제거, 취소 반영은 최대 이만큼 지연).
+_CANCEL_POLL_THROTTLE_SEC = 2.0
+
 # 테스트가 동기 실행을 주입할 수 있게 하는 러너 시그니처(기본은 데몬 스레드 spawn).
 # (settings, job_id, segments, persist, target_count)
 JobRunner = Callable[[Settings, str, list[Segment], bool, int], None]
@@ -176,7 +181,7 @@ def run_crawl_job(
             settings=settings,
             persist=persist,
             on_progress=_on_progress,
-            should_cancel=lambda: _read_cancel(sm, job_id),
+            should_cancel=_make_cancel_poller(sm, job_id),
             target_saved=target_count or None,  # 0 → None(세그먼트 전부 소진).
         )
         if state["counts"] is not None:  # throttle 로 누락된 최종 카운터를 확정 기록.
@@ -219,6 +224,35 @@ def _read_cancel(sm: sessionmaker, job_id: str) -> bool:
         return is_cancel_requested(session, job_id)
     finally:
         session.close()
+
+
+def _make_cancel_poller(
+    sm: sessionmaker, job_id: str, *, throttle_sec: float = _CANCEL_POLL_THROTTLE_SEC
+) -> Callable[[], bool]:
+    """취소 폴링을 throttle 한 should_cancel 콜백을 만든다 — 기업마다 DB 세션 여는 churn 제거.
+
+    ``throttle_sec`` 마다 1회만 DB 를 읽고 사이엔 마지막 값을 돌려준다. 첫 호출은 즉시
+    조회한다(시작 전 취소 즉시 반영). 한 번 취소가 관측되면 계속 True(래치) — 취소는 되돌릴
+    수 없고 즉시 종료로 가야 하므로 이후 DB 조회도 생략한다. run_pipeline 메인 루프 단일
+    스레드만 호출하므로 경합이 없다(워커 스레드는 호출 안 함).
+    """
+    last_check = float("-inf")  # 첫 호출은 항상 조회(monotonic 기준점 가정 제거 — 시작 전 취소 즉시 반영).
+    cancelled = False
+
+    def _poll() -> bool:
+        nonlocal last_check, cancelled
+        if cancelled:
+            return True
+        now = time.monotonic()
+        if now - last_check < throttle_sec:
+            return False
+        last_check = now
+        if _read_cancel(sm, job_id):
+            cancelled = True
+            return True
+        return False
+
+    return _poll
 
 
 def _finalize(

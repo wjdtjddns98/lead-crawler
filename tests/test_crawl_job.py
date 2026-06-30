@@ -133,6 +133,30 @@ def test_run_crawl_job_cancelled(settings) -> None:
         assert get_crawl_job(db, jid).status == "cancelled"
 
 
+def test_cancel_poller_throttles_and_latches(monkeypatch) -> None:
+    # 취소 폴링 throttle + 래치 — 매 호출 DB 안 침(세션 churn 제거), 첫 호출은 즉시 조회.
+    calls = {"n": 0}
+    flag = {"v": False}
+
+    def _fake_read(sm, jid):  # noqa: ANN001, ARG001
+        calls["n"] += 1
+        return flag["v"]
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(bg, "_read_cancel", _fake_read)
+    monkeypatch.setattr(bg.time, "monotonic", lambda: clock["t"])
+
+    poll = bg._make_cancel_poller(None, "job", throttle_sec=2.0)
+    assert poll() is False and calls["n"] == 1  # 첫 호출 즉시 조회.
+    assert poll() is False and calls["n"] == 1  # throttle 내 재호출 — DB 안 침.
+    clock["t"] += 2.0
+    assert poll() is False and calls["n"] == 2  # 간격 경과 → 재조회.
+    flag["v"] = True
+    clock["t"] += 2.0
+    assert poll() is True and calls["n"] == 3  # 취소 관측.
+    assert poll() is True and calls["n"] == 3  # 래치 — 이후 DB 조회 없이 계속 True.
+
+
 def test_fail_running_jobs_bulk(settings) -> None:
     # 남은 running 행을 전부 failed 로 일괄 정리(다중 잔재 누적 방지).
     with session_scope(settings) as db:
