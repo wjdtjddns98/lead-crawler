@@ -25,6 +25,7 @@ import type {
 import { Download, TriangleAlert } from "lucide-react";
 import { MultiPicker, type PickerOption } from "./MultiPicker";
 import { ErrorBox } from "./ErrorBox";
+import { TableSkeleton } from "./TableSkeleton";
 import { BTN, BTN_CONFIRM, BTN_EXPORT, BTN_REJECT, EMPTY, TD, TH } from "../ui";
 
 // 폼 요소 공용 클래스 — 섹션 컨테이너·필드 라벨·입력·셀.
@@ -86,6 +87,9 @@ export function Admin() {
           계정 {loading && <span className="text-muted">· 불러오는 중…</span>}
         </h2>
         <CreateUserForm onCreate={(u, p, r) => act(() => createUser(u, p, r))} />
+        {loading && users.length === 0 ? (
+          <TableSkeleton rows={4} />
+        ) : (
         <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
           <thead>
             <tr>
@@ -133,11 +137,14 @@ export function Admin() {
             ))}
           </tbody>
         </table>
+        )}
       </section>
 
       <section>
         <h2 className={SECTION_H2}>최근 검증 이력</h2>
-        {audit.length === 0 ? (
+        {loading && audit.length === 0 ? (
+          <TableSkeleton rows={5} />
+        ) : audit.length === 0 ? (
           <p className={EMPTY}>기록된 처리 이력이 없습니다.</p>
         ) : (
           <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">

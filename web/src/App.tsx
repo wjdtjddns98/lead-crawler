@@ -12,6 +12,7 @@ import {
 import { Admin } from "./components/Admin";
 import { MyWork } from "./components/MyWork";
 import { QueueTable } from "./components/QueueTable";
+import { TableSkeleton } from "./components/TableSkeleton";
 import { Login } from "./components/Login";
 import { ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { BTN, BTN_EXPORT, tabCls } from "./ui";
@@ -185,12 +186,16 @@ function Workbench({
         {loading && " · 불러오는 중…"}
       </p>
 
-      <QueueTable
-        items={items}
-        busyIds={busyIds}
-        onConfirm={(id, selected) => act(id, "confirm", selected)}
-        onReject={(id) => act(id, "reject")}
-      />
+      {loading && items.length === 0 ? (
+        <TableSkeleton />
+      ) : (
+        <QueueTable
+          items={items}
+          busyIds={busyIds}
+          onConfirm={(id, selected) => act(id, "confirm", selected)}
+          onReject={(id) => act(id, "reject")}
+        />
+      )}
 
       <div className="flex items-center gap-4 justify-center mt-[18px] text-muted">
         <button
