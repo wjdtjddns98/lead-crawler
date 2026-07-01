@@ -67,7 +67,17 @@ function Workbench({
   onLogout: () => void;
 }) {
   const isAdmin = role === "admin";
-  const [view, setView] = useState<View>("mine");
+  // 새로고침(F5) 시 탭이 유지되도록 localStorage 에 저장. 관리자 아니면 admin 탭 무시.
+  const [view, setViewState] = useState<View>(() => {
+    const saved = localStorage.getItem("wb.view") as View | null;
+    if (saved === "browse") return "browse";
+    if (saved === "admin" && isAdmin) return "admin";
+    return "mine";
+  });
+  const setView = (v: View) => {
+    localStorage.setItem("wb.view", v);
+    setViewState(v);
+  };
   const [filter, setFilter] = useState<Filter>("pending");
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState<ReviewItem[]>([]);
