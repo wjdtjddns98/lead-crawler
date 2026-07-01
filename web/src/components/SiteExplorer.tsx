@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import { ExternalLink, X } from "lucide-react";
+import { AlertTriangle, ExternalLink, X } from "lucide-react";
 import type { ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, tabCls } from "../ui";
 import { EmailBadge } from "./StatusBadge";
@@ -152,6 +152,18 @@ export function SiteExplorer({
   // 모달이 닫히면(언마운트) 팝업도 같이 닫는다.
   const popupRef = useRef<Window | null>(null);
   const slotRef = useRef<HTMLDivElement | null>(null);
+  // 팝업/클립보드 차단 등 조용히 실패하던 동작을 사용자에게 명시로 알린다(사이드바 상단 배너).
+  const [notice, setNotice] = useState<string | null>(null);
+  // 팝업을 열고 차단(null 반환) 시 안내를 띄운다. 성공하면 이전 안내를 지운다.
+  function openPopup(href: string): Window | null {
+    const win = openSitePopup(href, slotRef.current);
+    if (win) setNotice(null);
+    else
+      setNotice(
+        "팝업이 차단되었습니다. 주소창의 팝업 차단 아이콘에서 이 사이트의 팝업을 허용한 뒤 아래 ‘사이트 팝업 열기’ 버튼으로 다시 여세요.",
+      );
+    return win;
+  }
   useEffect(() => {
     if (!activeHref) return;
     // 이미 열린 팝업이 있으면 재사용 — window.open(name) 재호출은 features 가 있으면 기존
@@ -162,7 +174,7 @@ export function SiteExplorer({
       win.location.href = activeHref;
       win.focus(); // 자동 전진 시 뒤에 가려진 팝업을 다시 최상단으로.
     } else {
-      popupRef.current = openSitePopup(activeHref, slotRef.current);
+      popupRef.current = openPopup(activeHref);
     }
   }, [activeHref]);
   useEffect(() => () => popupRef.current?.close(), []);
@@ -206,9 +218,13 @@ export function SiteExplorer({
       if (email) {
         onPick(item.id, email);
         emailRef.current?.focus();
+        setNotice(null);
       }
     } catch {
-      // clipboard-read 권한 거부/미지원 — 무시(사용자가 입력란 클릭 후 Ctrl+V 로 폴백).
+      // clipboard-read 권한 거부/미지원 — 조용히 넘기지 않고 명시 안내 + Ctrl+V 폴백 유도.
+      setNotice(
+        "클립보드 읽기가 차단되었습니다. 브라우저에서 클립보드 권한을 허용하거나, 아래 입력란을 클릭한 뒤 Ctrl+V 로 붙여넣으세요.",
+      );
     }
   }
 
@@ -302,7 +318,7 @@ export function SiteExplorer({
                 </p>
                 <button
                   className={BTN}
-                  onClick={() => (popupRef.current = openSitePopup(activeHref, slotRef.current))}
+                  onClick={() => (popupRef.current = openPopup(activeHref))}
                 >
                   <span className="inline-flex items-center gap-1">
                     사이트 팝업 열기 <ExternalLink size={14} aria-hidden />
@@ -322,6 +338,26 @@ export function SiteExplorer({
               사이트에서 이메일 복사(Ctrl+C) 후 이 영역 빈 곳을 클릭하면 아래 입력란에 자동
               붙여넣어집니다. 직접 입력/수정도 가능합니다.
             </p>
+
+            {/* 팝업/클립보드 차단 명시 안내 — role=status+aria-live=polite 로 포커스는 뺏지 않고
+                스크린리더에 읽힌다(원인+복구 경로 포함). X 로 닫는다. */}
+            {notice && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex items-start gap-2 rounded-md border border-warn/50 bg-warn/10 py-2 px-2.5 text-xs leading-relaxed text-ink"
+              >
+                <AlertTriangle size={14} className="mt-0.5 flex-none text-warn" aria-hidden />
+                <span className="flex-1">{notice}</span>
+                <button
+                  className="flex-none text-muted hover:text-ink"
+                  onClick={() => setNotice(null)}
+                  aria-label="안내 닫기"
+                >
+                  <X size={14} aria-hidden />
+                </button>
+              </div>
+            )}
 
             {/* 이메일 후보(라디오) — 여러 개면 골라 입력란을 채운다. */}
             {item.candidates.length > 0 && (
