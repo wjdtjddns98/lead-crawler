@@ -1,8 +1,9 @@
 """산업 분류(구분 컬럼 실질화) — 닫힌 대분류 택소노미로의 LLM 배치.
 
 등록처 코드(:mod:`sources.industry` 역매핑)로 대분류가 **명확히** 안 잡히거나 모호/미분류인
-회사만 Claude(Sonnet)가 회사 신호(이름·도메인·홈페이지 텍스트)를 보고 :data:`INDUSTRY_TAXONOMY`
-중 **정확히 하나**로 배치한다. 목록에 맞는 게 없으면 '미분류'로 위임(abstain).
+회사만 Claude(기본 Haiku — 구독 OAuth 가 Sonnet 은 429 스로틀, config 로 교체 가능)가 회사
+신호(이름·도메인·홈페이지 텍스트)를 보고 :data:`INDUSTRY_TAXONOMY` 중 **정확히 하나**로
+배치한다. 목록에 맞는 게 없으면 '미분류'로 위임(abstain).
 
 **언어 무관**: 입력(회사명·홈페이지)은 영어·일어 등 어떤 언어든 될 수 있고, 출력은 항상 고정된
 한국어 대분류 라벨이다(LLM 이 곧 번역·정규화기). 별도 언어별 번역표가 필요 없다.
@@ -192,13 +193,15 @@ class ClaudeClassifier:
         if not self._reserve():
             log.info("industry.classify.capped", model=self.model, calls=self._calls)
             return IndustryVerdict(label=None, model=self.model, billed=False)
-        prompt = _PROMPT.format(
-            labels=_LABELS_BLOCK,
-            name=name or "(미상)",
-            domain=domain or "(없음)",
-            text=_text_from_html(text) or "(없음)",
-        )
         try:
+            # 프롬프트 구성(HTML 전처리 포함)도 try 안에 둬 graceful 보장을 완결한다 —
+            # 여기서 예외가 나도 리드 유실 없이 abstain 으로 흡수(제약②).
+            prompt = _PROMPT.format(
+                labels=_LABELS_BLOCK,
+                name=name or "(미상)",
+                domain=domain or "(없음)",
+                text=_text_from_html(text) or "(없음)",
+            )
             import anthropic
 
             # auth_token 이면 Authorization: Bearer(구독 auth), 아니면 x-api-key(종량 API).

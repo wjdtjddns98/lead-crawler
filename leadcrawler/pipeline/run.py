@@ -99,9 +99,14 @@ def _build_lead(
     # 엔티티 등)은 company 테이블에 안 실리므로 분류해도 버려져 LLM 비용만 낭비된다.
     industry = dc.industry
     if ex.is_active and industry in AMBIGUOUS_LABELS:
-        verdict = classifier.classify(dc.name, dc.domain, enricher.last_home_html)
-        if verdict.label:
-            industry = verdict.label
+        # 방어: 분류기는 계약상 예외를 안 던지지만(abstain), 만일 던져도 실존 리드를 잃지
+        # 않도록 흡수한다(제약② — 배치 catch 로 리드가 통째 드롭되는 것 방지).
+        try:
+            verdict = classifier.classify(dc.name, dc.domain, enricher.last_home_html)
+            if verdict.label:
+                industry = verdict.label
+        except Exception as exc:
+            log.info("pipeline.classify.error", key=dc.canonical_key, err=str(exc))
     company = Company(
         canonical_key=dc.canonical_key,
         name=dc.name,

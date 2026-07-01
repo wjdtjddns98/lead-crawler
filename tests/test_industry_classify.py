@@ -60,6 +60,11 @@ def test_reverse_ambiguous_and_unmapped_return_none():
 def test_reverse_sic_and_uk():
     assert I.industry_from_sic("3674") == "반도체·디스플레이"
     assert I.industry_from_sic("2834") == "제약·바이오"
+    # 정밀 에너지 코드는 유지(석유정제 29·석탄 13).
+    assert I.industry_from_sic("2911") == "에너지·전력"
+    # 저정밀 접두는 역매핑에서 제외 → None → LLM: SIC 49(위생 포함)·8731(일반연구).
+    assert I.industry_from_sic("4953") is None  # 폐기물수거(구 오라벨 '에너지·전력')
+    assert I.industry_from_sic("8731") is None  # 일반 물리·생물연구(구 오라벨 '제약·바이오')
     # 모든 역매핑 라벨은 반드시 닫힌 택소노미 소속.
     for tbl in (I._KSIC_TAXO, I._SIC_TAXO, I._UK_SIC_TAXO):
         assert all(is_taxonomy_label(lbl) for lbl in tbl)

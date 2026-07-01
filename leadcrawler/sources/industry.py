@@ -241,19 +241,27 @@ _OLD_TO_TAXO: dict[str, str] = {
 }
 
 
+# 역매핑에서 제외할 저정밀 접두 — 한 코드군이 여러 대분류에 걸쳐 '확신 단일매치'로 오라벨을
+# 만들어 LLM 교정을 우회하는 것을 막는다: SIC 49=전기·가스·'위생'(수도·폐기물 포함),
+# SIC 8731=일반 물리·생물 '연구'. 역매핑에서 빼면 해당 코드는 None→LLM 배치로 흘러가 정확히
+# 분류된다. forward 필터표(_SIC 등, 구체 업종 검색 필터)는 그대로 둔다.
+_REVERSE_PREFIX_DENY: frozenset[str] = frozenset({"49", "8731"})
+
+
 def _invert_to_taxo(forward: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
     """forward 접두표(업종명→접두)를 대분류 역매핑표(대분류→접두집합)로 뒤집는다.
 
     ``_OLD_TO_TAXO`` 에 있는(=모호하지 않은) 업종만 채택하고, 같은 대분류로 매핑되는 여러
-    업종의 접두를 합친다(예: '바이오'·'제약' 둘 다 '제약·바이오').
+    업종의 접두를 합친다(예: '바이오'·'제약' 둘 다 '제약·바이오'). 저정밀 접두
+    (:data:`_REVERSE_PREFIX_DENY`)는 제외해 확신-오라벨을 방지한다.
     """
     out: dict[str, set[str]] = {}
     for old, prefixes in forward.items():
         taxo = _OLD_TO_TAXO.get(old.strip().lower())
         if taxo is None:
             continue
-        out.setdefault(taxo, set()).update(prefixes)
-    return {label: tuple(sorted(prefixes)) for label, prefixes in out.items()}
+        out.setdefault(taxo, set()).update(p for p in prefixes if p not in _REVERSE_PREFIX_DENY)
+    return {label: tuple(sorted(prefixes)) for label, prefixes in out.items() if prefixes}
 
 
 # 대분류 라벨 → 등록처 코드 접두집합(역매핑용). forward 표에서 파생.
