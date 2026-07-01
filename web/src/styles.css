@@ -31,4 +31,17 @@
     color: var(--color-ink);
     font-size: 14px;
   }
+
+  /* 접근성 — OS '동작 줄이기' 설정 존중. animate-pulse(스켈레톤)·진행률 바 width
+     트랜지션·hover 색 전환을 한 번에 무력화한다(전정 장애 사용자 어지럼 방지). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
