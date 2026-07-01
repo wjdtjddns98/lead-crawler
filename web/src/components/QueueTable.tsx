@@ -1,5 +1,5 @@
-import { memo, useCallback, useRef, useState, type MouseEvent } from "react";
-import { ExternalLink, FileText } from "lucide-react";
+import { memo, useCallback, useMemo, useRef, useState, type MouseEvent } from "react";
+import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, FileText } from "lucide-react";
 import type { ReviewItem } from "../types";
 import { BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
 import { EmailBadge, StatusBadge } from "./StatusBadge";
@@ -26,6 +26,24 @@ const COL_W = [
   "min-w-[120px]", // 액션(버튼 2개 가로 유지)
 ];
 const HEADERS = ["업체명", "국가", "구분", "이메일 후보", "메일", "사이트", "상태", "액션"];
+
+// 상태 정렬 순서(pending 먼저 = 처리해야 할 것 위로). 알파벳순보다 업무 흐름에 맞다.
+const STATUS_RANK: Record<ReviewItem["status"], number> = {
+  pending: 0,
+  confirmed: 1,
+  rejected: 2,
+};
+
+// 컬럼별 정렬 키. 없는 인덱스(이메일 후보·메일·사이트·액션)는 정렬 불가
+// — 메일/사이트는 뱃지·링크라 자연스러운 대소 순서가 없어 제외.
+const SORT_KEY: Record<number, (it: ReviewItem) => string | number> = {
+  0: (it) => it.name,
+  1: (it) => it.country,
+  2: (it) => it.industry,
+  6: (it) => STATUS_RANK[it.status],
+};
+
+type Sort = { col: number; dir: "asc" | "desc" };
 
 interface Props {
   items: ReviewItem[];
@@ -228,14 +246,39 @@ export function QueueTable({ items, busyIds, doneCount, remaining, onConfirm, on
     setPicked((p) => ({ ...p, [id]: value }));
   }, []);
 
+  // 컬럼 정렬 — 같은 컬럼 재클릭 시 asc↔desc 토글, 3번째 클릭이면 해제(원본 순서 복귀).
+  const [sort, setSort] = useState<Sort | null>(null);
+  const onSort = useCallback((col: number) => {
+    setSort((s) => {
+      if (s?.col !== col) return { col, dir: "asc" };
+      if (s.dir === "asc") return { col, dir: "desc" };
+      return null;
+    });
+  }, []);
+  const sorted = useMemo(() => {
+    if (!sort) return items;
+    const key = SORT_KEY[sort.col];
+    const sign = sort.dir === "asc" ? 1 : -1;
+    return [...items].sort((a, b) => {
+      const va = key(a);
+      const vb = key(b);
+      const c =
+        typeof va === "number" && typeof vb === "number"
+          ? va - vb
+          : String(va).localeCompare(String(vb), "ko");
+      return c * sign;
+    });
+  }, [items, sort]);
+
   // 사이트 미리보기 창 — 열린 행 id 와 초기 탭(홈/문의폼). 닫히면 null.
   const [open, setOpen] = useState<{ id: string; tab: SiteTab } | null>(null);
   const onOpen = useCallback((id: string, tab: SiteTab) => setOpen({ id, tab }), []);
 
   // 항상 최신 items 를 가리키는 ref — 전진은 처리 await(목록 리필) 후에 일어나므로
   // 콜백 클로저의 옛 items 가 아닌 갱신된 목록에서 다음 행을 찾아야 한다.
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
+  // 표시 순서(sorted)를 가리킨다 — 팝업 '다음 행 전진'이 화면에 보이는 순서를 따르도록.
+  const itemsRef = useRef(sorted);
+  itemsRef.current = sorted;
 
   // 팝업에서 완료(확정/거부) 시 성공했을 때만 다음 행으로 전진. 처리 전 목록에서 '다음
   // pending(홈/폼 링크 보유) 행' id 를 미리 잡아두고(처리 후엔 방금 행이 빠져 위치 기준이
@@ -277,15 +320,43 @@ export function QueueTable({ items, busyIds, doneCount, remaining, onConfirm, on
       <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
         <thead>
           <tr>
-            {HEADERS.map((h, i) => (
-              <th key={h} className={`${TH} ${COL_W[i]}`}>
-                {h}
-              </th>
-            ))}
+            {HEADERS.map((h, i) => {
+              const sortable = i in SORT_KEY;
+              const active = sort?.col === i;
+              return (
+                <th
+                  key={h}
+                  className={`${TH} ${COL_W[i]}`}
+                  aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+                >
+                  {sortable ? (
+                    <button
+                      type="button"
+                      className={`${LINK_FOCUS} inline-flex items-center gap-1 uppercase tracking-[0.04em] ${active ? "text-ink" : "hover:text-ink"}`}
+                      onClick={() => onSort(i)}
+                      title="클릭하여 정렬 (오름차순 → 내림차순 → 해제)"
+                    >
+                      {h}
+                      {active ? (
+                        sort.dir === "asc" ? (
+                          <ArrowUp size={12} className="flex-none" aria-hidden />
+                        ) : (
+                          <ArrowDown size={12} className="flex-none" aria-hidden />
+                        )
+                      ) : (
+                        <ChevronsUpDown size={12} className="flex-none opacity-40" aria-hidden />
+                      )}
+                    </button>
+                  ) : (
+                    h
+                  )}
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
-          {items.map((it) => (
+          {sorted.map((it) => (
             <QueueRow
               key={it.id}
               item={it}
