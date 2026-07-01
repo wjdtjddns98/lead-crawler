@@ -59,6 +59,10 @@ export function MyWork() {
   const [error, setError] = useState<string | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<ClaimFilter>(loadFilter);
+  // 적용된(실제 당겨온) 범위 — 픽커의 pending filter 와 분리한다. 국가·업종·상장을 선택/해제하는
+  // 동안엔 filter 만 바뀌고 applied 는 그대로라, 아래 '내 작업' 목록·자동리필이 영향받지 않는다.
+  // '더 받기'를 눌러야 filter → applied 로 커밋되고 그 범위로 당겨온다.
+  const [applied, setApplied] = useState<ClaimFilter>(filter);
   const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
   const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
   const [remaining, setRemaining] = useState<number | null>(null);
@@ -95,19 +99,16 @@ export function MyWork() {
       .catch(() => {
         // 옵션 로드 실패해도 작업 자체는 가능 — 무시(셀렉트만 빈 채로).
       });
-    void refill(filter);
+    void refill(applied);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 작업범위 변경 — 조건만 상태·localStorage 에 저장하고 네트워크는 건드리지 않는다(claim/release 없음).
-  // 실제 당겨오기는 '더 받기' 버튼이 현재 필터로 수행. 직전 잔여 카운트는 새 조건엔 무의미하므로 숨긴다.
-  // 화면의 옛 조건 행도 비운다 — 안 비우면 그 행을 처리할 때 act() 자동리필이 '더 받기' 없이 새 조건으로
-  // 화면을 통째 바꿔버려(명시적 당겨오기 모델 위반). 비워서 다음 '더 받기'를 강제한다.
+  // 작업범위(픽커) 변경 — pending 조건만 상태·localStorage 에 저장한다. 네트워크도, 아래 '내 작업'
+  // 목록도 건드리지 않는다: 실제 당겨오기·필터 적용은 '더 받기'가 applied 로 커밋할 때만 일어난다.
+  // (자동리필은 applied 를 쓰므로 선택 도중 행을 처리해도 화면이 새 조건으로 바뀌지 않는다.)
   const setFilterValue = (next: ClaimFilter) => {
     setFilter(next);
     localStorage.setItem(FILTER_KEY, JSON.stringify(next));
-    setRemaining(null);
-    setItems([]);
   };
 
   // 성공(처리 완료)이면 true — 팝업의 '성공 시에만 다음 행 전진' 판단에 쓰인다.
@@ -128,7 +129,7 @@ export function MyWork() {
         n.delete(id);
         return n;
       });
-      await refill(filter); // 처리(또는 충돌) 후 자동 리필 — 항상 배치 크기 유지.
+      await refill(applied); // 처리(또는 충돌) 후 자동 리필 — 적용된(applied) 범위로만 채운다.
     }
     return ok;
   };
@@ -143,7 +144,7 @@ export function MyWork() {
     }
   };
 
-  const hasFilter = Boolean(filter.country || filter.industry || filter.listed);
+  const hasFilter = Boolean(applied.country || applied.industry || applied.listed);
 
   return (
     <>
@@ -194,7 +195,14 @@ export function MyWork() {
           내 작업 {items.length}건{loading && " · 불러오는 중…"}
         </p>
         <div className="flex gap-1">
-          <button className={BTN} onClick={() => void refill(filter)} disabled={loading}>
+          <button
+            className={BTN}
+            onClick={() => {
+              setApplied(filter); // pending 픽커 조건을 적용 범위로 커밋.
+              void refill(filter);
+            }}
+            disabled={loading}
+          >
             더 받기 / 새로고침
           </button>
           <button className={BTN} onClick={() => void release()} disabled={items.length === 0}>
