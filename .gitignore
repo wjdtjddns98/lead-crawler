@@ -8,6 +8,9 @@ dist/
 .venv/
 venv/
 
+# 에디터(개인 환경)
+.vscode/
+
 # 환경/시크릿
 .env
 .env.*
