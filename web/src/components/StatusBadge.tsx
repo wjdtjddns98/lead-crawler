@@ -29,10 +29,12 @@ const EMAIL_CLS: Record<string, string> = {
 };
 
 // 영문 상태값을 한눈에 인지되는 한글 라벨로 — 알 수 없는 값은 원문 그대로 노출(방어).
+// 정상/불가는 형태가 확연히 달라(유효/무효처럼 1글자 차이 아님) 색 없이도 구분되고,
+// 확정 판단(쓴다/조심/안 씀/모름)에 바로 대응된다.
 const EMAIL_LABEL: Record<string, string> = {
-  valid: "유효",
+  valid: "정상",
   risky: "주의",
-  invalid: "무효",
+  invalid: "불가",
   unknown: "미확인",
 };
 
