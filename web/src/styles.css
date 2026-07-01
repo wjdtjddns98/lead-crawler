@@ -26,6 +26,12 @@
 }
 
 @layer base {
+  /* 스크롤바 거터를 항상 예약 — 세로 스크롤바 유무로 뷰포트 폭이 바뀌어
+     가운데 정렬(mx-auto) 콘텐츠가 좌우로 튀는 레이아웃 시프트 방지. */
+  html {
+    scrollbar-gutter: stable;
+  }
+
   body {
     background: var(--color-canvas);
     color: var(--color-ink);
