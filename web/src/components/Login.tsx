@@ -5,7 +5,10 @@ import { BTN } from "../ui";
 import { ErrorBox } from "./ErrorBox";
 
 const FIELD = "flex flex-col gap-1 text-muted text-[13px]";
-const INPUT = "bg-canvas border border-line text-ink py-2 px-2.5 rounded-md";
+const INPUT =
+  "bg-canvas border border-line text-ink py-2 px-2.5 rounded-md " +
+  // 포커스 표시를 버튼·탭·링크(ui.ts)와 통일 — 다크 배경에서 약한 기본 아웃라인 대신 accent 링.
+  "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent";
 
 // 로그인 화면 — 성공 시 토큰을 저장하고 상위에 사용자명·권한을 통지한다.
 export function Login({ onLogin }: { onLogin: (username: string, role: Role) => void }) {
@@ -41,11 +44,14 @@ export function Login({ onLogin }: { onLogin: (username: string, role: Role) => 
   return (
     <div className="min-h-screen flex items-center justify-center p-6">
       <form
-        className="w-[320px] bg-panel border border-line rounded-[10px] py-7 px-6 flex flex-col gap-3"
+        className="w-full max-w-[320px] bg-panel border border-line rounded-[10px] py-7 px-6 flex flex-col gap-3"
         onSubmit={(e) => void submit(e)}
       >
-        <h1 className="text-xl m-0">검증 워크벤치</h1>
-        <p className="text-muted">직원 로그인</p>
+        {/* 제목은 카드 안 — 내부 툴은 자기완결적 카드 하나가 정답(뺄 브랜드 없음). 라벨과 좌측 축 정렬. */}
+        <div className="mb-1">
+          <h1 className="text-2xl font-semibold m-0">검증 워크벤치</h1>
+          <p className="text-muted mt-0.5">직원 로그인</p>
+        </div>
         {error && <ErrorBox>{error}</ErrorBox>}
         <label className={FIELD}>
           아이디
