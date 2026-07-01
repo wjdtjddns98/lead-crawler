@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from .taxonomy import UNCLASSIFIED
+
 # 업종명(소문자) → KSIC 소분류 접두(3자리) 집합. induty_code.startswith 로 매칭.
 _KSIC: dict[str, tuple[str, ...]] = {
     "건설": ("41", "42"),
@@ -200,3 +202,122 @@ def matches_prefix(code: object, prefixes: tuple[str, ...] | None) -> bool:
         return False
     code_str = str(code)
     return any(code_str.startswith(p) for p in prefixes)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 구분(엑셀 I열) 라벨 결정 — broad 판정 · 등록처 코드 역매핑(→ 닫힌 대분류 택소노미)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# broad(광범위) 업종 토큰 — 구분에 그대로 두면 필터 무가치라, 등록처 코드에서 대분류를
+# 복원하거나(불가하면) '미분류'로 대체하는 대상. lower() 비교(영문 'all' 대비).
+_BROAD_INDUSTRY: frozenset[str] = frozenset({"", "전체", "all", "기타", UNCLASSIFIED})
+
+# 기존 업종명(_KSIC/_SIC/_UK_SIC 키) → 닫힌 대분류 택소노미 라벨. 등록처 코드를 대분류로
+# 복원할 때, 프로젝트가 이미 벤팅한 forward 접두표를 그대로 재사용하되 대분류 라벨로 옮긴다.
+# **모호한 광범위 업종('제조'·'금융'·'manufacturing'·'finance')은 의도적으로 제외** — 한
+# 코드가 여러 대분류(은행/증권/보험 등)에 걸쳐 단일 확정이 불가하므로 LLM 배치로 넘긴다.
+_OLD_TO_TAXO: dict[str, str] = {
+    "건설": "건설·엔지니어링",
+    "construction": "건설·엔지니어링",
+    "바이오": "제약·바이오",
+    "제약": "제약·바이오",
+    "pharma": "제약·바이오",
+    "소프트웨어": "IT·소프트웨어",
+    "software": "IT·소프트웨어",
+    "it": "IT·소프트웨어",
+    "유통": "유통·도소매",
+    "도소매": "유통·도소매",
+    "운송": "물류·운송",
+    "물류": "물류·운송",
+    "에너지": "에너지·전력",
+    "energy": "에너지·전력",
+    "부동산": "부동산·개발",
+    "식품": "식품·음료",
+    "화학": "화학·석유화학",
+    "자동차": "자동차·모빌리티",
+    "반도체": "반도체·디스플레이",
+    "semiconductor": "반도체·디스플레이",
+    "통신": "통신·네트워크",
+}
+
+
+def _invert_to_taxo(forward: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
+    """forward 접두표(업종명→접두)를 대분류 역매핑표(대분류→접두집합)로 뒤집는다.
+
+    ``_OLD_TO_TAXO`` 에 있는(=모호하지 않은) 업종만 채택하고, 같은 대분류로 매핑되는 여러
+    업종의 접두를 합친다(예: '바이오'·'제약' 둘 다 '제약·바이오').
+    """
+    out: dict[str, set[str]] = {}
+    for old, prefixes in forward.items():
+        taxo = _OLD_TO_TAXO.get(old.strip().lower())
+        if taxo is None:
+            continue
+        out.setdefault(taxo, set()).update(prefixes)
+    return {label: tuple(sorted(prefixes)) for label, prefixes in out.items()}
+
+
+# 대분류 라벨 → 등록처 코드 접두집합(역매핑용). forward 표에서 파생.
+_KSIC_TAXO: dict[str, tuple[str, ...]] = _invert_to_taxo(_KSIC)
+_SIC_TAXO: dict[str, tuple[str, ...]] = _invert_to_taxo(_SIC)
+_UK_SIC_TAXO: dict[str, tuple[str, ...]] = _invert_to_taxo(_UK_SIC)
+
+
+def _reverse_lookup(code: object, table: dict[str, tuple[str, ...]]) -> str | None:
+    """등록처 코드 → 대분류 라벨. **명확한 단일 최장접두 매치만** 확정한다.
+
+    코드를 감싸는 접두 중 가장 긴 것을 고르되, 같은 최장 길이로 **둘 이상의 대분류**가
+    걸리면(모호) ``None`` 을 반환한다. 미매핑도 ``None``. → 호출부(파이프라인)가 모호/미매핑을
+    LLM 배치로 넘긴다("미분류·애매한 분류는 무조건 LLM"). 결정론적(입력만의 함수).
+    """
+    if code is None or code == "":
+        return None
+    code_str = str(code)
+    best_len = -1
+    best_labels: set[str] = set()
+    for label, prefixes in table.items():
+        matched = max((len(p) for p in prefixes if code_str.startswith(p)), default=-1)
+        if matched < 0:
+            continue
+        if matched > best_len:
+            best_len, best_labels = matched, {label}
+        elif matched == best_len:
+            best_labels.add(label)
+    if best_len < 0 or len(best_labels) != 1:
+        return None  # 미매핑 또는 동률(모호) → LLM 배치로 위임.
+    return next(iter(best_labels))
+
+
+def industry_from_ksic(code: object) -> str | None:
+    """KSIC 코드(DART induty_code) → 대분류 라벨(명확 단일매치만, 없으면 None)."""
+    return _reverse_lookup(code, _KSIC_TAXO)
+
+
+def industry_from_sic(code: object) -> str | None:
+    """SIC 코드(EDGAR sic) → 대분류 라벨(명확 단일매치만, 없으면 None)."""
+    return _reverse_lookup(code, _SIC_TAXO)
+
+
+def industry_from_uk_sic(code: object) -> str | None:
+    """UK SIC 2007 코드(Companies House sic_codes) → 대분류 라벨(명확 단일매치만, 없으면 None)."""
+    return _reverse_lookup(code, _UK_SIC_TAXO)
+
+
+def is_broad_industry(industry: str | None) -> bool:
+    """업종이 광범위 토큰('전체'·'기타'·빈값·'미분류' 등)인지 — 구분 복원 대상 판정.
+
+    구체 업종(사용자가 명시적으로 고른 업종)·자유텍스트는 False → 그대로 보존(오라벨 방지).
+    """
+    return (industry or "").strip().lower() in _BROAD_INDUSTRY
+
+
+def resolve_industry_label(segment_industry: str, *, code_label: str | None = None) -> str:
+    """구분(엑셀 I열)에 기입할 라벨을 정한다.
+
+    - **비-broad**(구체 업종 검색·자유텍스트): 그대로 보존한다(이미 그 업종으로 필터돼 있어
+      코드 복원이 불필요하고, 코드 복원이 오히려 오라벨을 부를 수 있다).
+    - **broad**('전체'·'기타'·빈값): 등록처 코드에서 복원한 ``code_label``(명확 단일매치),
+      없으면 :data:`UNCLASSIFIED`. 후자는 파이프라인이 이후 LLM 배치를 시도한다.
+    """
+    if not is_broad_industry(segment_industry):
+        return segment_industry
+    return code_label or UNCLASSIFIED

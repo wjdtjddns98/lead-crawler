@@ -20,7 +20,7 @@ from ..config import Settings
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company, is_country
 from .http import Fetcher, HostRateLimiters, SupportsFetch
-from .industry import matches_prefix, uk_sic_prefixes
+from .industry import industry_from_uk_sic, matches_prefix, uk_sic_prefixes
 
 log = get_logger("sources.companies_house")
 
@@ -150,6 +150,10 @@ class CompaniesHouseSource:
         sic_codes = item.get("sic_codes") or []
         if prefixes is not None and not any(matches_prefix(c, prefixes) for c in sic_codes):
             return None
+        # broad 검색 시 구분을 대분류로 복원: SIC 목록 중 명확 단일매치가 나오는 첫 코드.
+        code_label = next(
+            (lbl for c in sic_codes if (lbl := industry_from_uk_sic(c)) is not None), None
+        )
         return build_company(
             source=self.name,
             segment=segment,
@@ -157,4 +161,5 @@ class CompaniesHouseSource:
             domain=None,  # 등록처 레코드엔 웹사이트 없음 → enrich 단계에서 보강.
             registry="companies_house",
             registry_id=str(number),
+            industry_code_label=code_label,
         )

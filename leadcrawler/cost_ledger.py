@@ -43,6 +43,7 @@ DEFAULT_PRICING_KRW: dict[str, int] = {
     "neverbounce": 10,  # NeverBounce 이메일 1건 검증
     "vision": 30,  # Claude Vision 이미지 1장(저가 모델)
     "dedup_llm": 5,  # Claude 중복판정 1쌍(Haiku·짧은 텍스트, 보수적)
+    "industry_llm": 5,  # Claude 산업분류 1건(Haiku·짧은 텍스트, 보수적)
     "serper": 2,  # Serper.dev 검색 1쿼리(~$1/1K, 보수적)
 }
 

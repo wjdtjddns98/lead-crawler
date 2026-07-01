@@ -19,7 +19,7 @@ from ..dedup import normalize_domain
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company, is_country
 from .http import Fetcher, HostRateLimiters, SupportsFetch
-from .industry import ksic_prefixes, matches_prefix
+from .industry import industry_from_ksic, ksic_prefixes, matches_prefix
 
 log = get_logger("sources.dart")
 
@@ -130,6 +130,9 @@ class DartSource:
                     domain=normalize_domain(info.get("hm_url")),
                     registry="dart",
                     registry_id=corp_code,
+                    # broad 검색 시 구분을 대분류로 복원(KSIC induty_code). 구체 검색이면
+                    # resolve 가 세그먼트 업종을 그대로 써 이 값은 무시된다.
+                    industry_code_label=industry_from_ksic(info.get("induty_code")),
                 )
             )
             if len(out) >= cap:
