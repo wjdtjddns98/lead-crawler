@@ -30,6 +30,8 @@ const HEADERS = ["업체명", "국가", "구분", "이메일 후보", "메일", 
 interface Props {
   items: ReviewItem[];
   busyIds: Set<string>;
+  doneCount: number; // 이번 세션 처리 건수(진행률 바 분자)
+  remaining: number; // 남은 대기 건수(필터 반영 total) — 분모 = doneCount + remaining
   // 성공(처리 완료) 시 true 를 resolve — 팝업에서 '성공해야 다음 행 전진' 판단에 쓴다.
   onConfirm: (id: string, selected?: string) => Promise<boolean>;
   onReject: (id: string) => Promise<boolean>;
@@ -219,7 +221,7 @@ const QueueRow = memo(
 );
 
 // 검증 큐 표 — 회사/이메일 후보(다중 선택)/메일 검증 신호/상태/액션.
-export function QueueTable({ items, busyIds, onConfirm, onReject }: Props) {
+export function QueueTable({ items, busyIds, doneCount, remaining, onConfirm, onReject }: Props) {
   // 행별 선택(라디오) — 서버 selected 를 기본값으로, 사용자가 바꾸면 덮어쓴다.
   const [picked, setPicked] = useState<Record<string, string>>({});
   const onPick = useCallback((id: string, value: string) => {
@@ -300,6 +302,8 @@ export function QueueTable({ items, busyIds, onConfirm, onReject }: Props) {
       {open && openItem && (
         <SiteExplorer
           item={openItem}
+          doneCount={doneCount}
+          remaining={remaining}
           tab={open.tab}
           choice={picked[openItem.id] ?? openItem.selected ?? openItem.candidates[0]?.value}
           busy={busyIds.has(openItem.id)}

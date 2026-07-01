@@ -66,6 +66,9 @@ export function MyWork() {
   const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
   const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
   const [remaining, setRemaining] = useState<number | null>(null);
+  // 이번 세션 처리(확정+거부) 건수 — 모달 하단 진행률 바의 분자. '더 받기'로 범위를 다시
+  // 커밋하면 0 으로 리셋.
+  const [sessionDone, setSessionDone] = useState(0);
   const reqRef = useRef(0); // 최신 refill 토큰 — 빠른 '더 받기' 연타 시 뒤늦은 응답을 폐기(경쟁 방지).
 
   // 현재 필터로 작업분을 채우고 "이 범위 잔여 pending" 카운트를 갱신한다.
@@ -119,6 +122,7 @@ export function MyWork() {
     try {
       if (kind === "confirm") await confirmReview(id, selected);
       else await rejectReview(id);
+      setSessionDone((n) => n + 1);
       ok = true;
     } catch (e) {
       // 409(타인 점유 중)·400(형식 오류) 등 — 메시지 표시. ok=false 라 전진하지 않는다.
@@ -199,6 +203,7 @@ export function MyWork() {
             className={BTN}
             onClick={() => {
               setApplied(filter); // pending 픽커 조건을 적용 범위로 커밋.
+              setSessionDone(0); // 새 작업 범위 — 진행률 세션 리셋.
               void refill(filter);
             }}
             disabled={loading}
@@ -225,6 +230,8 @@ export function MyWork() {
         <QueueTable
           items={items}
           busyIds={busyIds}
+          doneCount={sessionDone}
+          remaining={remaining ?? 0}
           onConfirm={(id, selected) => act(id, "confirm", selected)}
           onReject={(id) => act(id, "reject")}
         />
