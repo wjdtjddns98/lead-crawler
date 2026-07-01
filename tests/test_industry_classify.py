@@ -257,8 +257,11 @@ class _FakeEnricher:
 
 
 class _FakeExistence:
+    def __init__(self, active=True):
+        self._active = active
+
     def verify(self, domain, **_k):
-        return ExistenceResult(is_active=True, site_alive=True, confidence=0.9)
+        return ExistenceResult(is_active=self._active, site_alive=self._active, confidence=0.9)
 
 
 class _FakeValidator:
@@ -335,6 +338,20 @@ def test_build_lead_abstain_keeps_unclassified():
     )
     assert lead.company.industry == UNCLASSIFIED  # abstain → 미분류 유지(리드 보존)
     assert clf.calls == 1
+
+
+def test_build_lead_skips_inactive_company():
+    from leadcrawler.pipeline.run import _build_lead
+
+    # 비활성(적재 안 될) 회사는 분류 안 함 — LLM 비용 낭비 방지.
+    clf = _RecordingClassifier("게임")
+    lead = _build_lead(
+        _dc(UNCLASSIFIED), enricher=_FakeEnricher(), existence=_FakeExistence(active=False),
+        email_validator=_FakeValidator(), classifier=clf,
+    )
+    assert lead.company.is_active is False
+    assert lead.company.industry == UNCLASSIFIED  # 분류 안 돼 미분류 유지
+    assert clf.calls == 0  # 비활성 → LLM 호출 안 함
 
 
 if __name__ == "__main__":

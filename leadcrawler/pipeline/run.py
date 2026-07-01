@@ -95,8 +95,10 @@ def _build_lead(
     # 구분(업종) 실질화: 등록처 코드로 대분류가 안 잡혀 미분류이거나 catch-all(모호)이면
     # 무조건 LLM 한번 거쳐 닫힌 대분류에 배치한다. 확신 라벨은 스킵(비용). abstain 이면
     # 원래값(미분류/기타) 유지 — 리드는 그대로 보존(제약②). dry_run/키없음이면 스텁이라 무과금.
+    # **is_active 게이트**: 실존 확인(적재 대상) 회사만 분류한다 — 비활성(도메인 없는 GLEIF
+    # 엔티티 등)은 company 테이블에 안 실리므로 분류해도 버려져 LLM 비용만 낭비된다.
     industry = dc.industry
-    if industry in AMBIGUOUS_LABELS:
+    if ex.is_active and industry in AMBIGUOUS_LABELS:
         verdict = classifier.classify(dc.name, dc.domain, enricher.last_home_html)
         if verdict.label:
             industry = verdict.label
