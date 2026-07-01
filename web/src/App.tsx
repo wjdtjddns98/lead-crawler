@@ -75,6 +75,9 @@ function Workbench({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  // 이번 세션 처리(확정+거부) 건수 — 모달 하단 진행률 바의 분자. 필터 바꾸면(작업 대상이
+  // 바뀌면) 0 으로 리셋. 페이지 이동은 같은 세션이라 유지.
+  const [sessionDone, setSessionDone] = useState(0);
   // 요청 시퀀스 — 늦게 도착한 옛 응답이 현재 화면을 덮어쓰지 않게 한다(필터 연타 레이스).
   const reqRef = useRef(0);
 
@@ -123,6 +126,7 @@ function Workbench({
       } else {
         setItems((prev) => prev.map((it) => (it.id === id ? updated : it)));
       }
+      setSessionDone((n) => n + 1);
       ok = true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -153,6 +157,7 @@ function Workbench({
   const changeFilter = (f: Filter) => {
     setFilter(f);
     setOffset(0);
+    setSessionDone(0);
   };
 
   const page = Math.floor(offset / PAGE) + 1;
@@ -192,6 +197,8 @@ function Workbench({
         <QueueTable
           items={items}
           busyIds={busyIds}
+          doneCount={sessionDone}
+          remaining={total}
           onConfirm={(id, selected) => act(id, "confirm", selected)}
           onReject={(id) => act(id, "reject")}
         />

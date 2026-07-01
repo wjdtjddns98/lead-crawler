@@ -57,6 +57,8 @@ function openSitePopup(url: string, slot: HTMLElement | null): Window | null {
 
 interface Props {
   item: ReviewItem;
+  doneCount: number; // 이번 세션 처리 건수(진행률 바 분자) — 지역변수 done(pending 여부)과 구분
+  remaining: number; // 남은 대기 건수 — 분모 = doneCount + remaining
   tab: SiteTab;
   choice: string | undefined;
   busy: boolean;
@@ -72,6 +74,8 @@ interface Props {
 // 많아(X-Frame-Options/CSP) 별도 팝업 창으로 띄운다(크롬 최소화).
 export function SiteExplorer({
   item,
+  doneCount,
+  remaining,
   tab,
   choice,
   busy,
@@ -365,23 +369,53 @@ export function SiteExplorer({
               <span className="text-muted whitespace-nowrap">SMTP {tri(item.email_smtp)}</span>
             </div>
 
-            {/* 확정 / 거부 — 모달 닫기/다음 행 전진은 부모가 처리 성공 시에만 수행한다
-                (성공만 전진, 실패는 현재 항목·에러 유지). 여기선 처리 요청만 보낸다. */}
-            <div className="flex gap-2 mt-auto">
-              <button
-                className={`${BTN_CONFIRM} flex-1`}
-                disabled={busy || item.status === "confirmed"}
-                onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
-              >
-                확정
-              </button>
-              <button
-                className={`${BTN_REJECT} flex-1`}
-                disabled={busy || item.status === "rejected"}
-                onClick={() => onReject(item.id)}
-              >
-                거부
-              </button>
+            {/* 하단 클러스터 — 세션 진행률 바 + 확정/거부. mt-auto 로 사이드바 바닥에 고정,
+                버튼과 한 묶음이라 후보가 적어 생기던 죽은 공간을 진행률이 채운다. */}
+            <div className="mt-auto flex flex-col gap-3">
+              {/* 이번 세션 처리(확정+거부) / (처리 + 남은 대기). pending 필터에선 처리할 때마다
+                  remaining 이 함께 줄어 분모가 유지되며 바가 매끄럽게 찬다. done+remaining=0 이면 숨김. */}
+              {doneCount + remaining > 0 && (
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between text-xs text-muted">
+                    <span>이번 세션</span>
+                    <span className="tabular-nums">
+                      {doneCount} / {doneCount + remaining}
+                    </span>
+                  </div>
+                  <div
+                    className="h-1.5 w-full overflow-hidden rounded-full bg-canvas"
+                    role="progressbar"
+                    aria-label="이번 세션 검토 진행률"
+                    aria-valuemin={0}
+                    aria-valuemax={doneCount + remaining}
+                    aria-valuenow={doneCount}
+                  >
+                    <div
+                      className="h-full rounded-full bg-[var(--color-ok)] transition-[width] duration-300"
+                      style={{ width: `${Math.round((doneCount / (doneCount + remaining)) * 100)}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* 확정 / 거부 — 모달 닫기/다음 행 전진은 부모가 처리 성공 시에만 수행한다
+                  (성공만 전진, 실패는 현재 항목·에러 유지). 여기선 처리 요청만 보낸다. */}
+              <div className="flex gap-2">
+                <button
+                  className={`${BTN_CONFIRM} flex-1`}
+                  disabled={busy || item.status === "confirmed"}
+                  onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
+                >
+                  확정
+                </button>
+                <button
+                  className={`${BTN_REJECT} flex-1`}
+                  disabled={busy || item.status === "rejected"}
+                  onClick={() => onReject(item.id)}
+                >
+                  거부
+                </button>
+              </div>
             </div>
           </aside>
         </div>
