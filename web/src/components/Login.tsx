@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import { login } from "../api";
 import type { Role } from "../types";
 import { BTN } from "../ui";
@@ -16,6 +17,7 @@ export function Login({ onLogin }: { onLogin: (username: string, role: Role) => 
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showPw, setShowPw] = useState(false); // 비밀번호 표시 토글(기본 숨김).
   const [lockSeconds, setLockSeconds] = useState(0); // 429 잠금 잔여 초(>0 이면 버튼 잠금).
 
   // 잠금 중 매초 카운트다운 — 0 이 되면 다시 시도 가능.
@@ -65,13 +67,26 @@ export function Login({ onLogin }: { onLogin: (username: string, role: Role) => 
         </label>
         <label className={FIELD}>
           비밀번호
-          <input
-            className={INPUT}
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-          />
+          {/* 표시 토글은 옵트인 — 기본 숨김, 오타 확인 시에만 눌러 평문 확인(평소 흐름 마찰 0).
+              pr-9 로 아이콘 자리 확보(Tailwind 는 px-2.5 뒤에 pr 을 emit 해 우측만 덮음). */}
+          <div className="relative">
+            <input
+              className={`${INPUT} w-full pr-9`}
+              type={showPw ? "text" : "password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPw((s) => !s)}
+              aria-label={showPw ? "비밀번호 숨기기" : "비밀번호 표시"}
+              aria-pressed={showPw}
+              className="absolute inset-y-0 right-0 flex items-center px-2.5 text-muted hover:text-ink rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-panel"
+            >
+              {showPw ? <EyeOff size={16} aria-hidden /> : <Eye size={16} aria-hidden />}
+            </button>
+          </div>
         </label>
         <button
           className={`${BTN} mt-1.5 text-center`}
