@@ -209,6 +209,25 @@ class ReviewAuditRow(Base):
     )
 
 
+class DiscoveryCursorRow(Base):
+    """등록처 발견 커서 — (source, cursor_key)별 다음 스캔 위치를 런 간 영속한다.
+
+    broad 크롤이 매 런 같은 상위 목록만 재방문(dedup.skip 도배)하지 않도록, 등록처
+    소스(DART/EDGAR/CompaniesHouse)가 지난 런이 멈춘 위치(offset/start_index)부터
+    이어 스캔하게 한다. cursor_key = 세그먼트 라벨(country/industry/listed).
+    모집단 끝에 도달하면 0 으로 리셋된다(주기 재검증 재개).
+    """
+
+    __tablename__ = "discovery_cursor"
+
+    source: Mapped[str] = mapped_column(String(32), primary_key=True)
+    cursor_key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+
+
 class CrawlTargetRow(Base):
     """다음 크롤 타깃 — 웹앱 관리자가 클릭으로 설정, 스케줄러가 매일 읽는다.
 
