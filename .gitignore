@@ -45,3 +45,6 @@ Thumbs.db
 .omc/
 web/.vite/
 .understand-anything/
+
+# 내부망 HTTPS 자체서명 인증서(키 포함 — 커밋 금지)
+certs/

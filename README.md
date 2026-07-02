@@ -60,7 +60,15 @@ leadcrawler report 2026-06-18 --done "..." --next "..."   # Notion 자동 리포
 
 ## 내부망 배포 (HTTPS)
 
-자체서명 인증서를 만들고(호스트명·로컬 IP 가 SAN 에 자동 포함) uvicorn 에 물린다:
+**원커맨드**: 리포 루트의 `serve-https.bat` 더블클릭(또는 터미널에서 실행). 첫 실행 때
+자체서명 인증서를 자동 생성(호스트명·로컬 IP 가 SAN 에 자동 포함)하고 `0.0.0.0:8000` 에
+HTTPS 로 띄운다. 이후 실행은 기존 인증서 재사용.
+
+```powershell
+serve-https.bat            # 포트 변경: serve-https.bat -Port 8443
+```
+
+수동으로 하려면(동일 동작을 단계별로):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\gen-ssl-cert.ps1
