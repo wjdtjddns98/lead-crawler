@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Iterator
+from pathlib import Path
 
 from typing import Literal
 
@@ -63,6 +64,9 @@ from .schemas import (
 _ListedFilter = Literal["", "listed", "unlisted", "unknown"]
 
 log = get_logger("api")
+
+# 프론트 빌드 산출물(web/dist) 위치 — editable install(리포 루트) 기준. 테스트에서 monkeypatch.
+_WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 
 
 def get_db() -> Iterator[Session]:
@@ -303,6 +307,14 @@ def create_app() -> FastAPI:
             sent_by=admin.username,
         )
         return SendResult(**result)
+
+    # 프론트 빌드(web/dist) 정적 서빙 — 내부망 단일 프로세스 배포용(같은 출처라 CORS·
+    # VITE_API_BASE 불필요). API 라우트가 먼저 등록돼 있어 마운트가 API 를 가리지 않고,
+    # 빌드가 없으면 생략(개발은 vite 프록시 그대로).
+    if (_WEB_DIST / "index.html").is_file():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")
 
     return app
 

@@ -34,6 +34,10 @@ foreach ($v in @(".venv", "venv")) {
 }
 if (-not $python) { Write-Error "venv not found ($root\.venv) - run: python -m venv .venv; pip install -e .[api,db]" }
 
+if (-not (Test-Path (Join-Path $root "web\dist\index.html"))) {
+    Write-Host "note: web\dist not found - UI will 404 at / (build once: cd web; npm install; npm run build)"
+}
+
 Write-Host "serving https://$($env:COMPUTERNAME.ToLower()):$Port (Ctrl+C to stop)"
 & $python -m leadcrawler.cli web --host $BindHost --port $Port `
     --ssl-certfile $cert --ssl-keyfile $key
