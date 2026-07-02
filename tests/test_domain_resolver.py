@@ -155,3 +155,24 @@ def test_name_matches_boundary() -> None:
     assert _name_matches("sony", "unisonybank.com") is False  # 중간 substring 차단.
     assert _name_matches("abc", "abcnews.com") is False  # 짧은 슬러그 차단.
     assert _name_matches("hynix", "samsung.com") is False
+
+
+def test_korean_name_falls_back_to_name_eng() -> None:
+    """한글 명칭(비라틴 → 슬러그 불가)은 등록처 영문명으로 폴백해 해석한다."""
+    f = FakeFetcher(_items("https://skhynix.com/ko/main"))
+    r = DomainResolver(_settings(), fetcher=f)
+    dc = DiscoveredCompany(
+        canonical_key="reg:dart:1", name="에스케이하이닉스", country="KR",
+        name_eng="SK hynix Inc.",
+    )
+    assert r.resolve(dc) == "skhynix.com"
+    assert f.calls == 1
+
+
+def test_korean_name_without_name_eng_still_skipped() -> None:
+    """영문명도 없으면 기존대로 스킵(quota 절약) — 폴백이 무근거 검색을 만들지 않는다."""
+    f = FakeFetcher(_items("https://skhynix.com"))
+    r = DomainResolver(_settings(), fetcher=f)
+    dc = DiscoveredCompany(canonical_key="reg:dart:2", name="에스케이하이닉스", country="KR")
+    assert r.resolve(dc) is None
+    assert f.calls == 0
