@@ -257,6 +257,14 @@ export const UNCLASSIFIED_INDUSTRY_OPTION: IndustryOption = {
   aliases: ["unclassified"],
 };
 
+// '미분류' 옵션을 목록 끝에 보장 — BE 가 이미 내려주면(#115 이후 /queue/filters) 그대로 두어
+// 중복 옵션을 막고, 안 주는 목록(/admin/industries)엔 덧붙인다.
+export function withUnclassified(industries: IndustryOption[]): IndustryOption[] {
+  return industries.some((i) => i.value === UNCLASSIFIED_INDUSTRY_OPTION.value)
+    ? industries
+    : [...industries, UNCLASSIFIED_INDUSTRY_OPTION];
+}
+
 export async function fetchSendPreview(country = "", industry = ""): Promise<SendPreview> {
   const q = new URLSearchParams();
   if (country) q.set("country", country);
