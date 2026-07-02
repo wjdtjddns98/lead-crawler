@@ -11,12 +11,20 @@ from ..config import Settings, get_settings
 from ..cost_ledger import SupportsCostLedger
 from ..logging import get_logger
 from ..dedup import normalize_domain
-from .base import DiscoveredCompany, DiscoverySource, Segment
+from .base import DiscoveredCompany, DiscoverySource, Segment, SupportsCursorStore
 from .http import HostRateLimiters
 from .companieshouse import CompaniesHouseSource
 from .dart import DartSource
 from .edgar import EdgarSource
-from .exchanges import BursaSource, IdxSource, PseSource, SetSource, SgxSource
+from .exchanges import (
+    BursaSource,
+    HnxSource,
+    HoseSource,
+    IdxSource,
+    PseSource,
+    SetSource,
+    SgxSource,
+)
 from .gleif import GleifSource
 from .opencorporates import OpenCorporatesSource
 from .search import SearchSource
@@ -29,28 +37,34 @@ def build_sources(
     settings: Settings,
     cost_ledger: SupportsCostLedger | None = None,
     rate_limiters: HostRateLimiters | None = None,
+    cursor_store: SupportsCursorStore | None = None,
 ) -> list[DiscoverySource]:
     """등록된 발견 소스 인스턴스 목록을 만든다(우선순위 순).
 
     순서 = canonical_key '첫 등장 우선' 신뢰도 순서: 등록처·거래소(EDGAR/DART/
-    CompaniesHouse/PSE/SET, reg: 키) → 글로벌 집계원(GLEIF/Wikidata/OpenCorporates,
+    CompaniesHouse/PSE/SET/SGX/IDX/Bursa/HOSE/HNX, reg: 키) → 글로벌 집계원(GLEIF/Wikidata/OpenCorporates,
     reg: 키) → 검색(dom: 키, 가장 약함). ``cost_ledger`` 는 유료 검색(Serper) 과금
     추적용으로 SearchSource 에 주입된다.
 
     ``rate_limiters`` 가 주어지면(세그먼트 병렬 발견 시) 각 소스의 내부 Fetcher 가 이
     공유 호스트별 레이트리미터를 쓰게 해, 워커별 독립 소스가 같은 호스트를 동시에 때려도
     합산 발사율을 억제한다(429 선제 방지). None(기본)이면 기존 동작 그대로(회귀 0).
+
+    ``cursor_store`` 가 주어지면(persist 런) 등록처·집계원 소스(EDGAR/DART/CH/GLEIF)가
+    런 간 스캔 위치를 영속해 다음 런이 다음 페이지부터 이어받는다(딥백필). None 이면 기존 동작.
     """
     return [
-        EdgarSource(settings, rate_limiters=rate_limiters),
-        DartSource(settings, rate_limiters=rate_limiters),
-        CompaniesHouseSource(settings, rate_limiters=rate_limiters),
+        EdgarSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        DartSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        CompaniesHouseSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         PseSource(settings, rate_limiters=rate_limiters),
         SetSource(settings, rate_limiters=rate_limiters),
         SgxSource(settings, rate_limiters=rate_limiters),
         IdxSource(settings, rate_limiters=rate_limiters),
         BursaSource(settings, rate_limiters=rate_limiters),
-        GleifSource(settings, rate_limiters=rate_limiters),
+        HoseSource(settings, rate_limiters=rate_limiters),
+        HnxSource(settings, rate_limiters=rate_limiters),
+        GleifSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         WikidataSource(settings, rate_limiters=rate_limiters),
         OpenCorporatesSource(settings, rate_limiters=rate_limiters),
         SearchSource(settings, cost_ledger=cost_ledger, rate_limiters=rate_limiters),

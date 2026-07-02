@@ -12,7 +12,10 @@ from typing import Protocol
 from pydantic import BaseModel, Field
 
 from ..dedup import canonical_key
+from ..logging import get_logger
 from .industry import resolve_industry_label
+
+log = get_logger("sources.cursor")
 
 
 class Segment(BaseModel):
@@ -54,6 +57,51 @@ class DiscoverySource(Protocol):
     def discover(self, segment: Segment) -> list[DiscoveredCompany]:
         """세그먼트에 해당하는 기업 목록을 반환한다."""
         ...
+
+
+class SupportsCursorStore(Protocol):
+    """등록처 발견 커서 저장소 — 런 간 스캔 위치 영속(구현: storage.discovery_cursor).
+
+    커서는 최적화일 뿐 정확성 불변: 잃어도 다음 런이 같은 구간을 재스캔하고
+    dedup(제약 ①)이 걸러낸다. 구현은 실패를 삼키고 get 은 0 폴백해야 한다.
+    """
+
+    def get(self, source: str, key: str) -> int:
+        """마지막으로 영속된 다음 스캔 위치(없으면 0)."""
+        ...
+
+    def advance(self, source: str, key: str, position: int) -> None:
+        """다음 런이 시작할 위치를 영속한다."""
+        ...
+
+
+def cursor_offset(
+    store: SupportsCursorStore | None, source: str, segment: Segment, total: int
+) -> int:
+    """영속 커서에서 이번 런의 시작 offset 을 읽는다(store 없음·범위 밖이면 0).
+
+    모집단 목록이 런 사이에 줄어 offset 이 끝을 넘으면 0 으로 되감는다(재검증 재개).
+    """
+    if store is None or total <= 0:
+        return 0
+    offset = store.get(source, segment.label)
+    return offset if 0 <= offset < total else 0
+
+
+def advance_cursor(
+    store: SupportsCursorStore | None,
+    source: str,
+    segment: Segment,
+    position: int,
+    total: int,
+) -> None:
+    """다음 런 시작 위치를 영속한다. 모집단 끝 도달 시 0 리셋 + exhausted 로그."""
+    if store is None or total <= 0:
+        return
+    if position >= total:
+        log.info("cursor.exhausted", source=source, segment=segment.label, total=total)
+        position = 0
+    store.advance(source, segment.label, position)
 
 
 def is_country(segment: Segment, names: AbstractSet[str]) -> bool:

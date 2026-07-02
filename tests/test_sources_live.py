@@ -13,6 +13,8 @@ from leadcrawler.sources.dart import DartSource
 from leadcrawler.sources.edgar import EdgarSource
 from leadcrawler.sources.exchanges import (
     BursaSource,
+    HnxSource,
+    HoseSource,
     IdxSource,
     PseSource,
     SetSource,
@@ -366,21 +368,40 @@ def test_pse_live_empty_html_returns_empty() -> None:
 
 
 def test_sgx_live_parses_securities() -> None:
+    # 실측 축약 샘플(2026-07-02): stocks 외 워런트/ETF 등 비회사 상품이 섞여온다.
     settings = Settings(dry_run=False, discovery_max_per_source=10)
     payload = {"data": {"prices": [
-        {"nc": "D05", "n": "DBS Group Holdings"},
-        {"nc": "O39", "n": "OCBC Bank"},
-        {"nc": "D05", "n": "중복 코드"},  # 코드 중복 → 스킵.
-        {"nc": "", "n": "코드 없음"},  # 코드 없음 → 스킵.
+        {"nc": "D05", "n": "DBS Group Holdings", "type": "stocks"},
+        {"nc": "O39", "n": "OCBC Bank", "type": "stocks"},
+        {"nc": "D05", "n": "중복 코드", "type": "stocks"},  # 코드 중복 → 스킵.
+        {"nc": "", "n": "코드 없음", "type": "stocks"},  # 코드 없음 → 스킵.
+        {"nc": "VT2W", "n": "17LIVE W281207", "type": "companywarrants"},  # 비주식 → 스킵.
+        {"nc": "SBO", "n": "A Lion Short Bond S$", "type": "etfs"},  # 비주식 → 스킵.
     ]}}
     out = SgxSource(settings, fetcher=FakeFetcher(json=lambda u, p: payload)).discover(
         Segment(country="싱가포르", industry="금융")
     )
-    assert [d.registry_id for d in out] == ["D05", "O39"]
+    assert [d.registry_id for d in out] == ["D05", "O39"]  # 워런트/ETF 는 걸러진다.
     dc = out[0]
     assert dc.registry == "sgx" and dc.listed == "listed"
     assert dc.name == "DBS Group Holdings" and dc.domain is None
     assert dc.canonical_key == "reg:sgx:d05"
+
+
+def test_sgx_live_filters_non_stock_types() -> None:
+    # type 이 없거나 허용 유형 밖(순수 금융상품)이면 제외. 리츠·비즈니스트러스트는 IR 을
+    # 갖춘 실존 상장 운영체라 포함(리뷰 반영, 2026-07-02).
+    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    payload = {"data": {"prices": [
+        {"nc": "XB4W", "n": "Alibaba MB eCW260703", "type": "structuredwarrants"},
+        {"nc": "O5RU", "n": "AIMS APAC Reit", "type": "reits"},
+        {"nc": "C38U", "n": "CapitaLand Integrated Commercial Trust", "type": "businesstrusts"},
+        {"nc": "NOTYPE", "n": "타입 누락"},
+    ]}}
+    out = SgxSource(settings, fetcher=FakeFetcher(json=lambda u, p: payload)).discover(
+        Segment(country="SG", industry="금융")
+    )
+    assert [d.registry_id for d in out] == ["O5RU", "C38U"]  # 워런트·타입누락만 제외.
 
 
 def test_sgx_live_error_returns_empty() -> None:
@@ -517,6 +538,52 @@ def test_set_bypass_respects_cap() -> None:
         Segment(country="태국", industry="에너지")
     )
     assert len(out) == 1  # 캡 적용
+
+
+# --- HOSE/HNX(베트남) — 라이브는 SPA/JS 렌더링으로 검증대기(2026-07-02 실측) ------
+
+def test_hose_live_is_disabled_unverified() -> None:
+    # HOSE 라이브는 React SPA + F5 WAF 로 정적 수집 불가 — 네트워크 호출 없이 빈 결과.
+    settings = Settings(dry_run=False)
+
+    def _boom(*a, **k):
+        raise AssertionError("HOSE 라이브는 네트워크를 호출하면 안 된다(WAF 비활성)")
+
+    out = HoseSource(settings, fetcher=FakeFetcher(json=_boom, post=_boom, text=_boom)).discover(
+        Segment(country="베트남", industry="금융")
+    )
+    assert out == []
+
+
+def test_hnx_live_is_disabled_unverified() -> None:
+    # HNX 라이브는 JS 렌더링 필요·안정 API 미발견으로 검증대기 — 네트워크 호출 없이 빈 결과.
+    settings = Settings(dry_run=False)
+
+    def _boom(*a, **k):
+        raise AssertionError("HNX 라이브는 네트워크를 호출하면 안 된다(검증대기 no-op)")
+
+    out = HnxSource(settings, fetcher=FakeFetcher(json=_boom, post=_boom, text=_boom)).discover(
+        Segment(country="VN", industry="금융")
+    )
+    assert out == []
+
+
+def test_hose_bypass_parses_listing() -> None:
+    # enable_bypass + 우회 페처가 목록 HTML 을 주면 (심볼,회사명) 파싱(SET/Bursa 와 동일 로직).
+    settings = Settings(dry_run=False, enable_bypass=True, discovery_max_per_source=10)
+    src = HoseSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML))
+    out = src.discover(Segment(country="베트남", industry="에너지"))
+    assert len(out) == 2
+    assert out[0].registry == "hose" and out[0].registry_id == "PTT"
+    assert out[0].canonical_key == "reg:hose:ptt" and out[0].listed == "listed"
+
+
+def test_hnx_bypass_parses_listing() -> None:
+    settings = Settings(dry_run=False, enable_bypass=True, discovery_max_per_source=10)
+    src = HnxSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML))
+    out = src.discover(Segment(country="VN", industry="금융"))
+    assert {c.registry_id for c in out} == {"PTT", "AOT"}
+    assert all(c.registry == "hnx" and c.canonical_key.startswith("reg:hnx:") for c in out)
 
 
 # --- 검색 현지화(Tier C) ------------------------------------------------

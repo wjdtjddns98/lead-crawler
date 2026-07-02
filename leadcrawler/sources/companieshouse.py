@@ -18,7 +18,13 @@ from typing import Any
 
 from ..config import Settings
 from ..logging import get_logger
-from .base import DiscoveredCompany, Segment, build_company, is_country
+from .base import (
+    DiscoveredCompany,
+    Segment,
+    SupportsCursorStore,
+    build_company,
+    is_country,
+)
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import industry_from_uk_sic, matches_prefix, uk_sic_prefixes
 
@@ -45,11 +51,13 @@ class CompaniesHouseSource:
         count: int = 2,
         fetcher: SupportsFetch | None = None,
         rate_limiters: HostRateLimiters | None = None,
+        cursor_store: SupportsCursorStore | None = None,
     ) -> None:
         self._settings = settings
         self._count = count
         self._fetcher = fetcher
         self._rate_limiters = rate_limiters
+        self._cursor_store = cursor_store
 
     def applies_to(self, segment: Segment) -> bool:
         """영국 세그먼트에 적용된다."""
@@ -106,7 +114,13 @@ class CompaniesHouseSource:
         prefixes = uk_sic_prefixes(segment.industry)
 
         out: list[DiscoveredCompany] = []
+        # 런 간 커서(딥백필): 지난 런이 멈춘 start_index 부터 이어 페이징한다. _MAX_PAGES
+        # 캡(레이트리밋 600요청/5분 보호)은 유지 — 커서 영속으로 다음 런이 이어받으므로
+        # 캡을 키울 필요 없이 런을 거듭하며 모집단을 소진한다.
         start = 0
+        if self._cursor_store is not None:
+            start = max(0, self._cursor_store.get(self.name, segment.label))
+        exhausted = False
         page = 0
         while len(out) < cap and page < _MAX_PAGES:
             params = {
@@ -121,6 +135,7 @@ class CompaniesHouseSource:
                 break
             items = payload.get("items") if isinstance(payload, dict) else None
             if not items:
+                exhausted = True  # 빈 페이지 = 모집단 끝 → 커서 0 리셋(재검증 재개).
                 break
             for item in items:
                 dc = self._candidate(segment, item, prefixes)
@@ -128,9 +143,15 @@ class CompaniesHouseSource:
                     out.append(dc)
                     if len(out) >= cap:
                         break
+            # ponytail: cap 도달로 페이지 중간에서 끊겨도 start 는 페이지 단위로 전진 —
+            # 남은 항목(≤1페이지)은 다음 소진 사이클에 재스캔된다(dedup 이 걸러냄).
             start += len(items)
             page += 1
-        log.info("companies_house.live", segment=segment.label, n=len(out))
+        if self._cursor_store is not None:
+            if exhausted:
+                log.info("companies_house.cursor.exhausted", segment=segment.label, start=start)
+            self._cursor_store.advance(self.name, segment.label, 0 if exhausted else start)
+        log.info("companies_house.live", segment=segment.label, n=len(out), start=start)
         return out
 
     def _candidate(

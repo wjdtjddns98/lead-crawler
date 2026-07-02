@@ -15,7 +15,15 @@ from typing import Any
 from ..config import Settings
 from ..dedup import normalize_domain
 from ..logging import get_logger
-from .base import DiscoveredCompany, Segment, build_company, is_country
+from .base import (
+    DiscoveredCompany,
+    Segment,
+    SupportsCursorStore,
+    advance_cursor,
+    build_company,
+    cursor_offset,
+    is_country,
+)
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import industry_from_sic, matches_prefix, sic_prefixes
 
@@ -43,11 +51,13 @@ class EdgarSource:
         count: int = 2,
         fetcher: SupportsFetch | None = None,
         rate_limiters: HostRateLimiters | None = None,
+        cursor_store: SupportsCursorStore | None = None,
     ) -> None:
         self._settings = settings
         self._count = count
         self._fetcher = fetcher
         self._rate_limiters = rate_limiters
+        self._cursor_store = cursor_store
 
     def applies_to(self, segment: Segment) -> bool:
         """미국 세그먼트에 적용된다(상장여부는 라이브에서 거래소·SIC 로 정제)."""
@@ -99,9 +109,15 @@ class EdgarSource:
             log.info("edgar.universe.error", err=str(exc))
             return []
         scan_limit = cap if prefixes is None else min(cap * 10, _SCAN_LIMIT_ABS)
+        # 런 간 커서(딥백필): 지난 런이 멈춘 위치부터 이어 스캔한다(매 런 같은 머리 재방문 방지).
+        # 상류 목록(company_tickers_exchange) 순서가 런 간 대체로 안정하다고 가정 — 흔들려도
+        # 오염은 없고(제약① dedup) 일부 항목이 다음 소진 사이클까지 늦어질 뿐(self-heal).
+        offset = cursor_offset(self._cursor_store, self.name, segment, len(universe))
+        scanned = 0
 
         out: list[DiscoveredCompany] = []
-        for cik, name in universe[:scan_limit]:
+        for cik, name in universe[offset : offset + scan_limit]:
+            scanned += 1
             try:
                 sub = fetcher.get_json(_SUBMISSIONS_URL.format(cik=f"{cik:010d}"))
             except Exception as exc:  # 개별 실패는 건너뛴다.
@@ -126,7 +142,8 @@ class EdgarSource:
             )
             if len(out) >= cap:
                 break
-        log.info("edgar.live", segment=segment.label, n=len(out))
+        advance_cursor(self._cursor_store, self.name, segment, offset + scanned, len(universe))
+        log.info("edgar.live", segment=segment.label, n=len(out), offset=offset, scanned=scanned)
         return out
 
 
