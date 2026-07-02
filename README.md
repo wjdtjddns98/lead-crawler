@@ -75,7 +75,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\gen-ssl-cert
 leadcrawler web --host 0.0.0.0 --ssl-certfile certs\cert.pem --ssl-keyfile certs\key.pem
 ```
 
+**UI 포함 원스톱**: 프론트를 한 번 빌드해 두면(`cd web && npm install && npm run build`)
+백엔드가 `web/dist` 를 루트(`/`)에 같이 서빙한다 — 같은 출처라 CORS·`VITE_API_BASE`
+설정이 필요 없다. 빌드가 없으면 `/` 는 404 이고 API(`/docs` 등)만 동작한다.
+
 접속: `https://<서버IP>:8000`. 자체서명이라 브라우저 최초 접속 시 경고 1회 — 내부망 용도로는
 "고급 → 계속"으로 충분하고, 경고 없이 쓰려면 `certs\cert.pem` 을 각 클라이언트의
-"신뢰할 수 있는 루트 인증 기관"에 설치한다. 프론트(web/) 빌드는 `VITE_API_BASE` 에
-`https://<서버IP>:8000` 을 주입해 같은 인증서 기반으로 호출한다.
+"신뢰할 수 있는 루트 인증 기관"에 설치한다.
