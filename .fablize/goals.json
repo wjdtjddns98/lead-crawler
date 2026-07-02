@@ -20,8 +20,8 @@
    "id": "G003",
    "title": "dedup 확정키",
    "objective": "등록번호·LEI·CIK 완전일치를 최상위 확정 티어로 삽입",
-   "status": "pending",
-   "evidence": null
+   "status": "complete",
+   "evidence": "reg_no 확정 티어(near_dup 최상위)+역방향 계열사 보호(번호 상이=keep_both)+CONFIRMED_TIERS 로 cli 머지·리포트 일원화+CH/OC reg_no 채움"
   },
   {
    "id": "G004",

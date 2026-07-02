@@ -198,4 +198,7 @@ class CompaniesHouseSource:
             industry_code_label=code_label,
             address=address,
             region=region,
+            # 등록번호를 reg_no 에도 채운다 — GLEIF(registeredAs)·OpenCorporates 로 들어온
+            # 같은 영국 법인과 dedup 확정 티어에서 교차 매칭되도록(registry_id 는 소스별 상이).
+            reg_no=str(number),
         )
