@@ -3,6 +3,7 @@ import {
   confirmReview,
   exportConfirmed,
   fetchQueue,
+  fetchQueueFilters,
   getRole,
   getUser,
   logout,
@@ -11,17 +12,26 @@ import {
 } from "./api";
 import { Admin } from "./components/Admin";
 import { MyWork } from "./components/MyWork";
+import { MultiPicker, type PickerOption } from "./components/MultiPicker";
 import { QueueTable } from "./components/QueueTable";
 import { TableSkeleton } from "./components/TableSkeleton";
 import { Login } from "./components/Login";
 import { ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { BTN, BTN_EXPORT, tabCls } from "./ui";
 import { ErrorBox } from "./components/ErrorBox";
-import type { ReviewItem, ReviewStatus, Role } from "./types";
+import type { Listed, ReviewItem, ReviewStatus, Role } from "./types";
 
 type Filter = ReviewStatus | "";
 type View = "mine" | "browse" | "admin";
 const PAGE = 50;
+
+// 상장여부 필터 — 빈값=전체 + Listed 3값(MyWork 와 동일).
+const LISTED_OPTIONS: { value: "" | Listed; label: string }[] = [
+  { value: "", label: "전체" },
+  { value: "listed", label: "상장" },
+  { value: "unlisted", label: "비상장" },
+  { value: "unknown", label: "미상" },
+];
 
 const FILTERS: { value: Filter; label: string }[] = [
   { value: "", label: "전체" },
@@ -79,6 +89,12 @@ function Workbench({
     setViewState(v);
   };
   const [filter, setFilter] = useState<Filter>("pending");
+  // 전체 큐 국가·업종 필터 — total 이 이 조건 반영분으로 내려와 '해당 건수'를 그대로 보여준다.
+  const [country, setCountry] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [listed, setListed] = useState<"" | Listed>("");
+  const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
+  const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -96,7 +112,12 @@ function Workbench({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchQueue({ status: filter, limit: PAGE, offset });
+      const res = await fetchQueue({
+        status: filter,
+        limit: PAGE,
+        offset,
+        filter: { country, industry, listed },
+      });
       if (myReq !== reqRef.current) return; // 더 새 요청이 진행 중 — 결과 폐기
       // 마지막 페이지의 마지막 항목을 처리해 페이지가 비면 한 페이지 앞으로 보정.
       if (res.items.length === 0 && offset > 0) {
@@ -111,11 +132,25 @@ function Workbench({
     } finally {
       if (myReq === reqRef.current) setLoading(false);
     }
-  }, [filter, offset]);
+  }, [filter, offset, country, industry, listed]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 전체 큐 국가·업종 셀렉트 옵션 — worker 접근 가능한 경로로 한 번 로드.
+  useEffect(() => {
+    fetchQueueFilters()
+      .then((f) => {
+        setCountryOpts(
+          f.countries.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
+        );
+        setIndustryOpts(f.industries.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })));
+      })
+      .catch(() => {
+        // 옵션 로드 실패해도 큐 조회는 가능 — 픽커만 빈 채로 둔다.
+      });
+  }, []);
 
   // 성공(처리 완료)이면 true — 팝업의 '성공 시에만 다음 행 전진' 판단에 쓰인다.
   const act = async (
@@ -192,6 +227,53 @@ function Workbench({
         <button className={BTN} onClick={() => void load()} disabled={loading}>
           새로고침
         </button>
+      </div>
+
+      {/* 국가·업종 필터 — 선택 시 total(총 N건)이 해당 조건 건수로 바뀐다. */}
+      <div className="flex flex-wrap items-start gap-3 mb-4 p-3 border border-line rounded-md bg-[rgba(127,127,127,0.06)]">
+        <div className="flex flex-col gap-1 text-muted text-[13px]">
+          <span>국가 <span className="text-muted">(선택 안 함 = 전체)</span></span>
+          <MultiPicker
+            options={countryOpts}
+            value={country}
+            onChange={(csv) => {
+              setCountry(csv);
+              setOffset(0);
+            }}
+            placeholder="국가 검색 (예: 미국, US, 일본)"
+            emptyHint="전체 국가"
+          />
+        </div>
+        <div className="flex flex-col gap-1 text-muted text-[13px]">
+          <span>업종 <span className="text-muted">(선택 안 함 = 전체)</span></span>
+          <MultiPicker
+            options={industryOpts}
+            value={industry}
+            onChange={(csv) => {
+              setIndustry(csv);
+              setOffset(0);
+            }}
+            placeholder="업종 검색 (예: 건설, construction)"
+            emptyHint="전체 업종"
+          />
+        </div>
+        <label className="flex flex-col gap-1 text-muted text-[13px]">
+          상장여부
+          <select
+            className="bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md min-w-[120px]"
+            value={listed}
+            onChange={(e) => {
+              setListed(e.target.value as "" | Listed);
+              setOffset(0);
+            }}
+          >
+            {LISTED_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {error && <ErrorBox>{error}</ErrorBox>}
