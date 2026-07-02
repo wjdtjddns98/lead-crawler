@@ -26,6 +26,7 @@ import type {
   UserStats,
 } from "../types";
 import { Download, TriangleAlert } from "lucide-react";
+import { toast } from "sonner";
 import { MultiPicker, type PickerOption } from "./MultiPicker";
 import { ErrorBox } from "./ErrorBox";
 import { TableSkeleton } from "./TableSkeleton";
@@ -226,7 +227,7 @@ const LISTED_OPTIONS: { value: Listed; label: string }[] = [
 // '지금 크롤 실행' UI 는 제거됨(2026-06-30). 백엔드 기능(startCrawl/cancelCrawl/
 // fetchCrawlStatus API·엔드포인트)은 그대로 유지 — 재노출하려면 git 이력에서 복원.
 
-// 내일(다음) 크롤 타깃 설정 — 국가·업종·상장여부·DB적재. 스케줄러가 매일 이 값을 읽는다.
+// 크롤 실행 — 국가·업종·상장여부·DB적재 타깃을 지정해 크롤을 바로 실행한다.
 function CrawlTargetSection() {
   const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
   const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
@@ -280,6 +281,8 @@ function CrawlTargetSection() {
         persist,
       });
       apply(saved);
+      // 실행 접수 피드백 — 휘발성 정보라 인라인 문구 대신 토스트(자동 소멸).
+      toast.success("크롤 실행 요청 완료");
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2));
     } finally {
@@ -289,7 +292,7 @@ function CrawlTargetSection() {
 
   return (
     <section>
-      <h2 className={SECTION_H2}>내일 크롤 타깃</h2>
+      <h2 className={SECTION_H2}>크롤 실행</h2>
       {err && <ErrorBox>{err}</ErrorBox>}
       <form className={CRAWL_TARGET} onSubmit={(e) => void save(e)}>
         <div className={FIELD}>
@@ -342,7 +345,7 @@ function CrawlTargetSection() {
             DB 적재(검증 큐로)
           </label>
           <button className={BTN_CONFIRM} type="submit" disabled={saving || !industries.trim()}>
-            {saving ? "저장 중…" : "크롤 실행"}
+            {saving ? "실행 중…" : "크롤 실행"}
           </button>
         </div>
       </form>

@@ -18,6 +18,7 @@ import { TableSkeleton } from "./components/TableSkeleton";
 import { Login } from "./components/Login";
 import { ChevronLeft, ChevronRight, Settings } from "lucide-react";
 import { BTN, tabCls } from "./ui";
+import { Toaster } from "sonner";
 import { ErrorBox } from "./components/ErrorBox";
 import type { Listed, ReviewItem, ReviewStatus, Role } from "./types";
 
@@ -63,8 +64,26 @@ export default function App() {
     setRole(null);
   };
 
-  if (!user) return <Login onLogin={onLogin} />;
-  return <Workbench user={user} role={role ?? "worker"} onLogout={onLogout} />;
+  return (
+    <>
+      {/* 전역 토스트 — 앱 다크 토큰(panel/line/ink)에 맞춰 기본 스타일 오버라이드. */}
+      <Toaster
+        theme="dark"
+        toastOptions={{
+          style: {
+            background: "var(--color-panel)",
+            border: "1px solid var(--color-line)",
+            color: "var(--color-ink)",
+          },
+        }}
+      />
+      {user ? (
+        <Workbench user={user} role={role ?? "worker"} onLogout={onLogout} />
+      ) : (
+        <Login onLogin={onLogin} />
+      )}
+    </>
+  );
 }
 
 function Workbench({
