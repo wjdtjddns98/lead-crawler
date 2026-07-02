@@ -158,16 +158,26 @@ const QueueRow = memo(
             </div>
           )}
           {/* 확정 전 이메일 직접 수정/입력 — 후보 선택값을 채우되 사람이 덮어쓸 수 있다.
-              폼만 있던(후보 0) 행엔 새 이메일 추가도 가능. */}
-          <input
-            className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
-            type="email"
-            value={choice ?? ""}
-            disabled={locked}
-            placeholder="이메일 직접 입력/수정"
-            onChange={(e) => onPick(item.id, e.target.value)}
-            title="확정 전 이메일을 수정하거나 직접 입력할 수 있습니다"
-          />
+              폼만 있던(후보 0) 행엔 새 이메일 추가도 가능. 읽기 전용(브라우즈)에선 편집처럼
+              보이는 비활성 입력 대신 값을 텍스트로 보여준다(다중 후보는 위 라디오가 표시). */}
+          {readOnly ? (
+            item.candidates.length <= 1 &&
+            (choice ? (
+              <span className="font-mono [overflow-wrap:anywhere]">{choice}</span>
+            ) : (
+              <span className="text-muted">—</span>
+            ))
+          ) : (
+            <input
+              className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+              type="email"
+              value={choice ?? ""}
+              disabled={locked}
+              placeholder="이메일 직접 입력/수정"
+              onChange={(e) => onPick(item.id, e.target.value)}
+              title="확정 전 이메일을 수정하거나 직접 입력할 수 있습니다"
+            />
+          )}
         </td>
         <td className={`${TD} ${COL_W[4]} text-xs`}>
           <EmailBadge status={item.email_status} />
