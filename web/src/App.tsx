@@ -77,11 +77,13 @@ function Workbench({
 }) {
   const isAdmin = role === "admin";
   // 새로고침(F5) 시 탭이 유지되도록 localStorage 에 저장. 관리자 아니면 admin 탭 무시.
+  // 저장된 뷰가 없으면(첫 방문) 역할별 착지 — admin 은 관리 전담이라 콘솔로, 그 외는 내 작업.
   const [view, setViewState] = useState<View>(() => {
     const saved = localStorage.getItem("wb.view") as View | null;
     if (saved === "browse") return "browse";
     if (saved === "admin" && isAdmin) return "admin";
-    return "mine";
+    if (saved === "mine") return "mine";
+    return isAdmin ? "admin" : "mine";
   });
   const setView = (v: View) => {
     localStorage.setItem("wb.view", v);
