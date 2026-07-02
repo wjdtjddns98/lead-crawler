@@ -29,6 +29,23 @@ from .search_provider import SearchProvider, build_naver_provider, build_search_
 
 log = get_logger("sources.domain_resolver")
 
+# 펀드·신탁·유동화 SPC 등 '웹사이트가 있을 수 없는' 비영업 엔티티 판정(고정밀 패턴만).
+# GLEIF/EDGAR 딥페이지는 LEI 의무 등록된 펀드가 대량으로 나온다(라이브 2026-07-02:
+# 한화/키움 투자신탁·TDF·미국 ETF 연발) — 건당 검색 쿼터(네이버 25k/일·Serper 크레딧)를
+# 낭비하므로 쿼리 전에 스킵한다. 오탐 주의: 'TRUST'(Northern Trust)·'TDF'(佛 TDF SAS) 같은
+# 실기업 어휘는 제외하고, TDF 는 빈티지 연도가 붙은 형태(TDF2050)만 매칭한다.
+_FUND_NAME_RE = re.compile(
+    r"투자신탁|증권투자회사|투자목적회사|유동화전문|펀드|"
+    r"\bETFs?\b|\bUCITS\b|\bSICAV\b|\bFUNDS?\b|INVESTMENT TRUST|TDF\s*20\d\d",
+    re.IGNORECASE,
+)
+
+
+def is_fund_entity(name: str | None) -> bool:
+    """이름이 펀드/신탁/유동화 SPC 등 비영업 엔티티로 보이면 True(도메인 해석 무의미)."""
+    return bool(name and _FUND_NAME_RE.search(name))
+
+
 # 회사명에서 떼어낼 법인격·일반어(도메인 매칭 신호로 무의미). 소문자 토큰 기준.
 _NAME_STOPWORDS = frozenset({
     "group", "holdings", "holding", "co", "ltd", "inc", "corp", "corporation",
@@ -78,6 +95,10 @@ class DomainResolver:
         """
         s = self._settings
         if s.dry_run or dc.domain:
+            return None
+        if is_fund_entity(dc.name) or is_fund_entity(dc.name_eng):
+            # 펀드/신탁/SPC 는 자체 웹사이트가 없다 — 검색 쿼터를 쓰지 않고 스킵.
+            log.info("resolve.skip.fund", name=dc.name)
             return None
         country = resolve_country(dc.country)
         provider = self._get_provider()
