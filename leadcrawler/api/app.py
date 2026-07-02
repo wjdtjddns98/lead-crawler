@@ -37,8 +37,8 @@ from ..storage.review import (
     claim_work,
     count_reviews,
     get_review,
+    my_work,
     query_reviews,
-    release_my_claims,
     set_review_status,
 )
 from .admin import register_admin
@@ -108,7 +108,8 @@ def create_app() -> FastAPI:
     ) -> QueueResponse:
         """검증 큐 항목을 조회한다(상태·국가/업종/상장 작업범위 필터·페이지네이션).
 
-        ``total`` 도 동일 필터를 반영해 '이 범위 잔여건수' 표시에 쓴다.
+        점유(claim) 중인 행은 목록·``total`` 에서 제외된다(전체큐 = 아직 아무도 안
+        받아간 작업). ``total`` 도 동일 필터를 반영해 '이 범위 잔여건수' 표시에 쓴다.
         """
         status_val = status.value if status is not None else None
         countries = _split_csv(country)
@@ -155,27 +156,29 @@ def create_app() -> FastAPI:
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> list[ReviewItem]:
-        """내 작업분을 배치 크기까지 채워 반환한다(당겨가기 — 6명 동시 충돌 방지·자동 리필).
+        """새 작업을 배치(+30)만큼 추가 점유하고 내 작업분 전체를 반환한다(총량 cap 상한).
 
-        본문 ``ClaimRequest`` 로 국가/업종/상장 작업범위를 동반하면 그 조건의 행만 점유하고,
-        직전 호출과 범위가 달라지면 비매칭 점유를 먼저 반납한다(화면엔 현재 범위만). 본문
-        생략/빈 객체 = 전체(하위호환).
+        "작업 받기" 1회 = +batch. 남은 작업이 있어도 다른 세그먼트 지시를 받아 미리
+        받아둘 수 있다(선취 — cap 도달 시 신규 배정 0). 점유는 처리(확정/거부) 전까지
+        계정에 영구 귀속(반납·TTL 복귀 없음 — 회수는 관리자 ``/admin/users/{id}/reclaim``).
+        본문 ``ClaimRequest`` 의 국가/업종/상장 작업범위는 **신규 배정에만** 적용되고,
+        응답엔 필터 무관 내 점유 전체가 담긴다. 부작용 없는 조회는 ``GET /queue/mine``.
         """
         s = get_settings()
         items = claim_work(
-            db, user.id, target=s.review_claim_batch, ttl_minutes=s.review_claim_ttl_minutes,
+            db, user.id, batch=s.review_claim_batch, cap=s.review_claim_cap,
             countries=_split_csv(payload.country), industries=_split_csv(payload.industry),
             listed=payload.listed or None,
         )
         return [ReviewItem(**it) for it in items]
 
-    @app.post("/queue/release")
-    def release_queue(
+    @app.get("/queue/mine", response_model=list[ReviewItem])
+    def my_queue(
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
-    ) -> dict[str, int]:
-        """내가 점유한 미처리 항목을 풀로 반납한다(작업 종료)."""
-        return {"released": release_my_claims(db, user.id)}
+    ) -> list[ReviewItem]:
+        """내 점유 작업분 조회 — 부작용 없음(새로고침·재로그인 복원용, 추가 점유는 claim)."""
+        return [ReviewItem(**it) for it in my_work(db, user.id)]
 
     @app.get("/queue/{review_id}", response_model=ReviewItem)
     def get_queue_item(
@@ -309,9 +312,8 @@ def _set_status(
             assignee=actor.username,
             assignee_id=actor.id,
             selected=selected,
-            claim_ttl_minutes=get_settings().review_claim_ttl_minutes,
         )
-    except ReviewConflict as exc:  # 타인이 활성 점유 중 → 409(동시성 백스톱).
+    except ReviewConflict as exc:  # 타인이 점유 중 → 409(영구 배정 — 시간 경과 무관).
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:  # 후보에 없는 selected → 400.
         raise HTTPException(status_code=400, detail=str(exc)) from exc

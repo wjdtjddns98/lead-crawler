@@ -26,6 +26,7 @@ from ..security import (
 from ..sources.countries import korean_label, supported_countries
 from ..sources.industry import supported_industries
 from ..storage.audit import recent_audit, user_stats
+from ..storage.review import admin_reclaim
 from ..storage.crawl_job import (
     active_crawl_job,
     crawl_job_dict,
@@ -159,6 +160,23 @@ def register_admin(
             delete_user_sessions(db, user.id)  # 비활성 즉시 기존 토큰 폐기.
         db.flush()
         return _stats_item(db, user)
+
+    @app.post("/admin/users/{user_id}/reclaim")
+    def reclaim_user_claims(
+        user_id: str,
+        db: Session = Depends(get_db),
+        admin: UserRow = Depends(require_admin),
+    ) -> dict[str, int]:
+        """해당 계정이 점유한 pending 항목을 전부 풀로 회수한다(영구 배정의 유일한 해제).
+
+        퇴사·장기부재 계정 대응. 회수분은 즉시 다른 직원이 당겨갈 수 있고, 감사 로그에
+        action="reclaim" 으로 남는다.
+        """
+        user = db.get(UserRow, user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="계정을 찾을 수 없습니다")
+        n = admin_reclaim(db, user_id, actor_id=admin.id, actor_username=admin.username)
+        return {"reclaimed": n}
 
     @app.get("/admin/audit", response_model=list[AuditEntry])
     def audit(

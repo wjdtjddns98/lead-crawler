@@ -10,15 +10,24 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..schema import CompanyRow, ReviewAuditRow, ReviewQueueRow, UserRow
-from .review import CONFIRMED, REJECTED
+from .review import CONFIRMED, PENDING, REJECTED
 
 
 def user_stats(session: Session) -> list[dict]:
-    """계정별 처리 통계 목록 — 확정/거부 건수 + 마지막 처리 시각.
+    """계정별 처리 통계 목록 — 확정/거부 건수 + 마지막 처리 시각 + 현재 점유 건수.
 
     감사 로그(actor_id)를 액션별로 집계해 각 계정 행에 병합한다(계정 삭제로 actor_id 가
     NULL 이 된 과거 이력은 어느 계정에도 귀속되지 않으므로 통계에서 제외 — 의도된 동작).
+    ``claimed`` 는 영구 배정 모델의 회수 판단용 — 이 계정이 점유 중인 pending 건수.
     """
+    claimed = dict(
+        session.execute(
+            select(ReviewQueueRow.claimed_by, func.count())
+            .where(ReviewQueueRow.claimed_by.is_not(None))
+            .where(ReviewQueueRow.status == PENDING)
+            .group_by(ReviewQueueRow.claimed_by)
+        ).all()
+    )
     # 계정×액션 집계 + 마지막 처리 시각.
     agg = session.execute(
         select(
@@ -54,6 +63,7 @@ def user_stats(session: Session) -> list[dict]:
                 "created_at": u.created_at.isoformat() if u.created_at else None,
                 "confirmed": confirmed.get(u.id, 0),
                 "rejected": rejected.get(u.id, 0),
+                "claimed": claimed.get(u.id, 0),
                 "last_action_at": la.isoformat() if la is not None else None,
             }
         )

@@ -203,6 +203,77 @@ def test_enricher_live_home_failure_returns_empty() -> None:
     assert Enricher(settings, fetcher=FakeFetcher({})).enrich(dc) == []
 
 
+# ── 이메일 추출 강화(난독화·CF보호·원문스캔·프로빙·www폴백) ─────────────────
+
+
+def _cf_encode(email: str, key: int = 0x23) -> str:
+    """테스트용 Cloudflare email-protection 인코더(첫 바이트=XOR 키)."""
+    return bytes([key, *(b ^ key for b in email.encode())]).hex()
+
+
+def test_extract_emails_decodes_cloudflare_protection() -> None:
+    # data-cfemail 속성과 /cdn-cgi/l/email-protection# 링크 둘 다 복호한다.
+    html = (
+        f'<span data-cfemail="{_cf_encode("ir@acme.co.kr")}">[email protected]</span>'
+        f'<a href="/cdn-cgi/l/email-protection#{_cf_encode("info@acme.co.kr", 0x7a)}">메일</a>'
+    )
+    emails = {c.value: c for c in extract_emails(html, source_url="https://acme.co.kr")}
+    assert set(emails) == {"ir@acme.co.kr", "info@acme.co.kr"}
+    assert emails["ir@acme.co.kr"].confidence >= 0.9  # 의도적 게시 — mailto 급 신뢰.
+
+
+def test_extract_emails_ignores_broken_cfemail() -> None:
+    # 깨진 페이로드(홀수 hex·비hex·빈값)는 조용히 무시(크래시 없음).
+    html = '<span data-cfemail="zz">x</span><span data-cfemail="a">y</span>'
+    assert extract_emails(html) == []
+
+
+def test_extract_emails_deobfuscates_at_dot() -> None:
+    html = "<body>문의: info (at) acme (dot) co (dot) kr / ir[at]acme[dot]com</body>"
+    emails = {c.value for c in extract_emails(html)}
+    assert emails == {"info@acme.co.kr", "ir@acme.com"}
+
+
+def test_extract_emails_from_raw_html_attributes_and_jsonld() -> None:
+    # tree.text() 에 안 잡히는 속성·JSON-LD 속 이메일을 원문 스캔(저신뢰)으로 잡는다.
+    html = (
+        '<a href="#" data-email="contact@acme.co.kr">Contact</a>'
+        '<script type="application/ld+json">{"@type":"Organization",'
+        '"email":"help@acme.co.kr"}</script>'
+    )
+    emails = {c.value: c for c in extract_emails(html)}
+    assert {"contact@acme.co.kr", "help@acme.co.kr"} <= set(emails)
+    assert emails["contact@acme.co.kr"].confidence <= 0.4  # 원문 스캔은 저신뢰.
+
+
+def test_extract_emails_rejects_sentry_dsn_subdomain() -> None:
+    # 원문 스캔이 여는 SDK 키 오탐 — 플레이스홀더 서픽스 매칭으로 차단.
+    html = '<script>init("https://abc123@o12345.ingest.sentry.io/678")</script>'
+    assert extract_emails(html) == []
+
+
+def test_emails_from_text_deobfuscates() -> None:
+    out = emails_from_text("문의 ir[at]acme[dot]co[dot]kr")
+    assert {c.value for c in out} == {"ir@acme.co.kr"}
+
+
+def test_enricher_live_falls_back_to_www() -> None:
+    # naked 도메인 미해석(fetch 실패) → https://www. 폴백으로 이메일 확보.
+    pages = {"https://www.acme.co.kr": '<a href="mailto:ir@acme.co.kr">IR</a>'}
+    out = Enricher(Settings(dry_run=False), fetcher=FakeFetcher(pages)).enrich(_DC)
+    assert {c.value for c in out if c.type is ContactType.EMAIL} == {"ir@acme.co.kr"}
+
+
+def test_enricher_live_probes_common_paths_when_no_links() -> None:
+    # JS 렌더 내비(정적 앵커 0개) → /contact 관용 경로 프로빙으로 이메일 확보.
+    pages = {
+        "https://acme.co.kr": "<html><body>JS nav</body></html>",
+        "https://acme.co.kr/contact": '<a href="mailto:info@acme.co.kr">메일</a>',
+    }
+    out = Enricher(Settings(dry_run=False), fetcher=FakeFetcher(pages)).enrich(_DC)
+    assert {c.value for c in out if c.type is ContactType.EMAIL} == {"info@acme.co.kr"}
+
+
 # --- 추출 출처(method) 표기 -------------------------------------------
 
 def test_extract_emails_method_is_settable() -> None:

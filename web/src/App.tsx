@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   confirmReview,
-  exportConfirmed,
   fetchQueue,
   fetchQueueFilters,
   getRole,
@@ -16,8 +15,8 @@ import { MultiPicker, type PickerOption } from "./components/MultiPicker";
 import { QueueTable } from "./components/QueueTable";
 import { TableSkeleton } from "./components/TableSkeleton";
 import { Login } from "./components/Login";
-import { ChevronLeft, ChevronRight, Download } from "lucide-react";
-import { BTN, BTN_EXPORT, tabCls } from "./ui";
+import { ChevronLeft, ChevronRight, Settings } from "lucide-react";
+import { BTN, tabCls } from "./ui";
 import { ErrorBox } from "./components/ErrorBox";
 import type { Listed, ReviewItem, ReviewStatus, Role } from "./types";
 
@@ -185,15 +184,6 @@ function Workbench({
     return ok;
   };
 
-  const doExport = async () => {
-    setError(null);
-    try {
-      await exportConfirmed();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
   const doLogout = async () => {
     await logout();
     onLogout();
@@ -327,7 +317,9 @@ function Workbench({
       <header className="flex items-center justify-between mb-5">
         <h1 className="text-xl font-semibold tracking-tight m-0">검증 워크벤치</h1>
         <div className="flex items-center gap-2.5 text-muted">
-          <nav className="flex gap-1 mr-2">
+          {/* 작업 뷰(내 작업·전체 큐)와 관리자 콘솔은 위계가 다르다 — 구분선·기어 아이콘으로
+              "플로어를 떠나 콘솔로 간다"를 표시. worker 에겐 구분선째 안 보인다. */}
+          <nav className="flex items-center gap-1 mr-2">
             <button className={tabCls(view === "mine")} onClick={() => setView("mine")}>
               내 작업
             </button>
@@ -335,22 +327,20 @@ function Workbench({
               전체 큐
             </button>
             {isAdmin && (
-              <button className={tabCls(view === "admin")} onClick={() => setView("admin")}>
-                관리자
-              </button>
+              <>
+                <span className="w-px h-5 bg-line mx-1.5" aria-hidden />
+                <button className={tabCls(view === "admin")} onClick={() => setView("admin")}>
+                  <span className="inline-flex items-center gap-1">
+                    <Settings size={14} aria-hidden /> 관리자
+                  </span>
+                </button>
+              </>
             )}
           </nav>
           <span className="text-muted">
             {user}
             {isAdmin && " · 관리자"}
           </span>
-          {isAdmin && (
-            <button className={BTN_EXPORT} onClick={() => void doExport()}>
-              <span className="inline-flex items-center gap-1">
-                전체 확정분 엑셀 <Download size={14} aria-hidden />
-              </span>
-            </button>
-          )}
           <button className={BTN} onClick={() => void doLogout()}>
             로그아웃
           </button>
