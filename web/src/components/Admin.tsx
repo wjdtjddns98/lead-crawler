@@ -228,19 +228,16 @@ const LISTED_OPTIONS: { value: Listed; label: string }[] = [
 
 // 내일(다음) 크롤 타깃 설정 — 국가·업종·상장여부·DB적재. 스케줄러가 매일 이 값을 읽는다.
 function CrawlTargetSection() {
-  const [target, setTarget] = useState<CrawlTarget | null>(null);
   const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
   const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
   const [countries, setCountries] = useState("");
   const [industries, setIndustries] = useState("");
   const [listed, setListed] = useState<Listed>("unknown");
   const [persist, setPersist] = useState(true);
-  const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const apply = (t: CrawlTarget) => {
-    setTarget(t);
     setCountries(t.countries);
     setIndustries(t.industries);
     setListed(t.listed);
@@ -275,7 +272,6 @@ function CrawlTargetSection() {
     e.preventDefault();
     setSaving(true);
     setErr(null);
-    setMsg(null);
     try {
       const saved = await saveCrawlTarget({
         countries: countries.trim(),
@@ -284,7 +280,6 @@ function CrawlTargetSection() {
         persist,
       });
       apply(saved);
-      setMsg("저장됨 — 다음 크롤부터 반영됩니다.");
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2));
     } finally {
@@ -336,7 +331,7 @@ function CrawlTargetSection() {
           </select>
         </label>
         {/* DB적재 체크박스는 '저장 시 DB에 넣을지' — 저장 동작의 옵션이라 상장여부(필터)가
-            아니라 타깃 저장 버튼과 한 그룹으로 묶는다. */}
+            아니라 크롤 실행 버튼과 한 그룹으로 묶는다. */}
         <div className="flex flex-col gap-2">
           <label className={FIELD_INLINE}>
             <input
@@ -347,16 +342,10 @@ function CrawlTargetSection() {
             DB 적재(검증 큐로)
           </label>
           <button className={BTN_CONFIRM} type="submit" disabled={saving || !industries.trim()}>
-            {saving ? "저장 중…" : "타깃 저장"}
+            {saving ? "저장 중…" : "크롤 실행"}
           </button>
         </div>
       </form>
-      {msg && <p className="text-muted">{msg}</p>}
-      {target?.updated_by && (
-        <p className="text-muted">
-          최근 설정: {target.updated_by} · {fmt(target.updated_at)}
-        </p>
-      )}
     </section>
   );
 }
