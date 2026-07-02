@@ -60,6 +60,7 @@ class Enricher:
         self._contact_page: str | None = None  # 현재 기업의 문의페이지 힌트(폴백용).
         self._home_html_cache: str | None = None  # 현재 기업의 home HTML(에스컬레이션 단계 간 재사용).
         self._home_url_cache: str | None = None  # fetch 에 성공한 home URL(www 폴백 반영).
+        self._home_fetch_failed = False  # 실패도 캐시 — 단계마다 죽은 홈을 재시도(타임아웃 중복)하지 않게.
         self._home_rendered_cache: str | None = None  # 현재 기업의 headless 렌더 home HTML(실존검증 재사용).
 
     def enrich(self, dc: DiscoveredCompany) -> list[Contact]:
@@ -68,6 +69,7 @@ class Enricher:
         # 기업 값이 새지 않게 한다(last_home_html 은 실존검증 재사용 신호로 외부 노출됨).
         self._home_html_cache = None
         self._home_url_cache = None
+        self._home_fetch_failed = False
         self._home_rendered_cache = None
         self._contact_page = None
         if self._settings.dry_run:
@@ -161,18 +163,26 @@ class Enricher:
         비용 절감). naked 도메인 GET 실패 시 ``www.`` 변형으로 1회 폴백한다(www 에만
         A레코드가 있는 사이트 구제) — 성공한 URL 을 함께 돌려줘 상대링크 join 기준이 맞다.
         캐시는 ``enrich()`` 진입마다 초기화되어 기업 간 누수가 없고, 인스턴스가 워커 스레드
-        전용(run.py 워커별 독립 Enricher)이라 스레드안전하다. 둘 다 실패하면 캐시에 담지
-        않고 예외 전파(단계별 graceful 처리 보존).
+        전용(run.py 워커별 독립 Enricher)이라 스레드안전하다. 둘 다 실패하면 예외 전파
+        (단계별 graceful 처리 보존)하되 **실패도 캐시**한다 — 죽은/느린 홈을 OCR·Vision
+        단계가 또 시도해 타임아웃(naked+www 최대 2회)을 기업당 단계 수만큼 중복 지불하던
+        낭비 제거(라이브 실측: 죽은 도메인 1건이 최대 80초).
         """
+        if self._home_fetch_failed:
+            raise RuntimeError("home fetch already failed for this company")
         if self._home_html_cache is None:
             home = f"https://{domain}"
             try:
-                html = fetcher.get_text(home)
+                try:
+                    html = fetcher.get_text(home)
+                except Exception:
+                    if domain.startswith("www."):
+                        raise
+                    home = f"https://www.{domain}"
+                    html = fetcher.get_text(home)  # 폴백도 실패하면 예외 전파(기존 동작).
             except Exception:
-                if domain.startswith("www."):
-                    raise
-                home = f"https://www.{domain}"
-                html = fetcher.get_text(home)  # 폴백도 실패하면 예외 전파(기존 동작).
+                self._home_fetch_failed = True  # 실패 캐시 — 이후 단계는 즉시 스킵.
+                raise
             self._home_html_cache = html
             self._home_url_cache = home
         assert self._home_url_cache is not None  # 캐시와 함께만 채워진다.

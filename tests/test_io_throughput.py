@@ -158,9 +158,11 @@ def test_mx_cached_but_smtp_probe_runs_per_candidate(monkeypatch) -> None:
     assert probe_calls == ["ir@acme.com", "info@acme.com", "contact@acme.com"]  # 프로브 3회
 
 
-def test_home_fetch_failure_is_not_cached() -> None:
-    # IO-001: home fetch 실패는 캐시에 안 담겨(예외가 대입 전 발생) 각 단계가 자기 try 로 재시도.
-    # 실패 캐싱으로 단계별 graceful 폴백이 깨지지 않음을 보증.
+def test_home_fetch_failure_is_cached_and_stages_skip() -> None:
+    # IO-001(개정 2026-07-02): home fetch 실패도 캐시된다 — 죽은 도메인의 타임아웃을
+    # 단계(_live/OCR/Vision)마다 중복 지불하던 낭비 제거. 일시 장애 재시도는 Fetcher 의
+    # tenacity(3회 지수백오프)가 이미 담당하므로 단계 재fetch 는 순수 중복이었다.
+    # graceful 보증은 유지: 이후 단계는 캐시된 실패를 즉시 예외로 받아 폴백(크래시 없음).
     calls: Counter[str] = Counter()
 
     class _RaisingHomeFetcher(_CountingFetcher):
@@ -171,8 +173,9 @@ def test_home_fetch_failure_is_not_cached() -> None:
     fetcher = _RaisingHomeFetcher()
     enr = _escalating_enricher(fetcher)
     out = enr.enrich(DiscoveredCompany(canonical_key="dom:dead.com", name="Dead", domain="dead.com"))
-    # _live·_escalate_ocr·_escalate_vision 이 각자 home 을 시도(캐시 미적재) → 3회, 크래시 없음.
-    assert calls["https://dead.com"] == 3
+    # naked+www 폴백 각 1회뿐(_live) — OCR/Vision 단계는 실패 캐시로 재fetch 0, 크래시 없음.
+    assert calls["https://dead.com"] == 1
+    assert calls["https://www.dead.com"] == 1
     assert isinstance(out, list)
 
 
