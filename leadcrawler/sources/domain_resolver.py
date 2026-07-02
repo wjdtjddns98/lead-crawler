@@ -80,7 +80,13 @@ class DomainResolver:
                 self._capped_logged = True
             return None
 
-        slug = _name_slug(dc.name)
+        search_name = dc.name
+        slug = _name_slug(search_name)
+        if len(slug) < 3 and dc.name_eng:
+            # 비라틴(한글 등) 명칭은 슬러그가 비어 스킵되던 경로 — 등록처가 준 영문명으로
+            # 폴백하면 검색·도메인 매칭 둘 다 가능해진다(KR 기업 도메인 해석 수율 레버).
+            search_name = dc.name_eng
+            slug = _name_slug(search_name)
         if len(slug) < 3:  # 1~2자·비라틴 명칭은 매칭 신뢰도가 낮아 시도하지 않음(quota 절약).
             return None
 
@@ -90,7 +96,7 @@ class DomainResolver:
         # 전체를 따옴표로 묶으면(예: "EMCOR Group, Inc.") 구글이 정확일치만 찾아 organic 0건이
         # 되는 경우가 많다(라이브 확인). 정밀도는 아래 _name_matches(슬러그↔도메인 root) 가
         # 보장하므로 쿼리는 넓게 두고 후보를 매칭 단계에서 거른다.
-        query = f"{dc.name} {keyword}"
+        query = f"{search_name} {keyword}"
 
         self._used += 1
         items = provider.fetch_page(query, gl=gl, lr=lr, start=1)  # 단일 쿼리(기업당 1회).

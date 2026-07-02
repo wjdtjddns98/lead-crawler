@@ -37,6 +37,7 @@ from ..storage.review import (
     claim_work,
     count_reviews,
     get_review,
+    list_regions,
     my_work,
     query_reviews,
     set_review_status,
@@ -103,27 +104,31 @@ def create_app() -> FastAPI:
         country: str = Query(default="", description="쉼표구분 국가(ISO2/별칭), 빈값=전체"),
         industry: str = Query(default="", description="쉼표구분 업종, 빈값=전체"),
         listed: _ListedFilter = Query(default="", description="상장여부, 빈값=전체"),
+        region: str = Query(default="", description="쉼표구분 지역(시/도·도시), 빈값=전체"),
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> QueueResponse:
-        """검증 큐 항목을 조회한다(상태·국가/업종/상장 작업범위 필터·페이지네이션).
+        """검증 큐 항목을 조회한다(상태·국가/업종/상장/지역 작업범위 필터·페이지네이션).
 
         점유(claim) 중인 행은 목록·``total`` 에서 제외된다(전체큐 = 아직 아무도 안
         받아간 작업). ``total`` 도 동일 필터를 반영해 '이 범위 잔여건수' 표시에 쓴다.
+        지역 필터는 지역 미상(주소 없는 소스 유입) 행을 자연히 제외한다.
         """
         status_val = status.value if status is not None else None
         countries = _split_csv(country)
         industries = _split_csv(industry)
         listed_val = listed or None
+        regions = _split_csv(region)
         items = query_reviews(
             db, status=status_val, limit=limit, offset=offset,
-            countries=countries, industries=industries, listed=listed_val,
+            countries=countries, industries=industries, listed=listed_val, regions=regions,
         )
         return QueueResponse(
             items=[ReviewItem(**it) for it in items],
             total=count_reviews(
                 db, status=status_val,
                 countries=countries, industries=industries, listed=listed_val,
+                regions=regions,
             ),
             limit=limit,
             offset=offset,
@@ -131,9 +136,10 @@ def create_app() -> FastAPI:
 
     @app.get("/queue/filters", response_model=QueueFilterOptions)
     def queue_filters(
+        db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> QueueFilterOptions:
-        """작업범위 필터 옵션(직원 접근) — 국가/업종/상장 셀렉트 단일 출처.
+        """작업범위 필터 옵션(직원 접근) — 국가/업종/상장/지역 셀렉트 단일 출처.
 
         ``/admin/*`` 과 동일 출처지만 직원(worker)도 필요하므로 admin 라우트를 오염시키지
         않고 비관리자 경로로 노출한다(상장여부는 고정 3값).
@@ -141,6 +147,7 @@ def create_app() -> FastAPI:
         구분(업종) 옵션은 크롤 타깃용 ``supported_industries()`` 가 아니라 큐 행에 실제
         저장되는 **구분 택소노미**(:data:`INDUSTRY_TAXONOMY` + 미분류)다 — 필터 매칭은
         ``CompanyRow.industry`` 문자열 일치이므로 저장 어휘와 같아야 0건 매치가 안 난다.
+        지역 옵션도 같은 이유로 고정 목록이 아니라 실제 수집된 값 distinct(정렬)다.
         """
         return QueueFilterOptions(
             countries=[
@@ -152,6 +159,7 @@ def create_app() -> FastAPI:
                 for label in (*INDUSTRY_TAXONOMY, UNCLASSIFIED)
             ],
             listed=["listed", "unlisted", "unknown"],
+            regions=list_regions(db),
         )
 
     @app.post("/queue/claim", response_model=list[ReviewItem])
@@ -172,7 +180,7 @@ def create_app() -> FastAPI:
         items = claim_work(
             db, user.id, batch=s.review_claim_batch, cap=s.review_claim_cap,
             countries=_split_csv(payload.country), industries=_split_csv(payload.industry),
-            listed=payload.listed or None,
+            listed=payload.listed or None, regions=_split_csv(payload.region),
         )
         return [ReviewItem(**it) for it in items]
 

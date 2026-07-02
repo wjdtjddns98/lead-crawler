@@ -69,6 +69,7 @@ class ClaimRequest(BaseModel):
     country: str = ""  # 쉼표구분 ISO2/별칭(country_match_set 로 별칭 확장)
     industry: str = ""  # 쉼표구분 업종(대소문자 무시 매칭)
     listed: Literal["", "listed", "unlisted", "unknown"] = ""  # 빈값=전체
+    region: str = ""  # 쉼표구분 지역(시/도·도시, 대소문자 무시 매칭), 빈값=전체
 
 
 class ConfirmRequest(BaseModel):
@@ -172,6 +173,7 @@ class QueueFilterOptions(BaseModel):
     countries: list[CountryOption]
     industries: list[IndustryOption]
     listed: list[str]  # 고정 3값(listed/unlisted/unknown)
+    regions: list[str] = []  # 실제 수집된 지역 distinct(정렬) — 빈 목록=지역 데이터 없음
 
 
 class SendPreview(BaseModel):

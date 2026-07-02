@@ -42,13 +42,15 @@ def _apply_queue_filters(
     countries: Sequence[str] | None,
     industries: Sequence[str] | None,
     listed: str | None,
+    regions: Sequence[str] | None = None,
 ) -> object:
-    """CompanyRow 가 이미 조인된 select 에 국가/업종/상장 작업범위 필터를 적용한다.
+    """CompanyRow 가 이미 조인된 select 에 국가/업종/상장/지역 작업범위 필터를 적용한다.
 
     국가는 별칭·대소문자 무시 매칭(:func:`country_match_set`, 'KR'↔'대한민국'), 업종은
-    대소문자 무시 매칭(엑셀 export·아웃리치 발송 선례와 동일 규약). 상장 여부는
-    ``CompanyRow.canonical_key → DiscoveredCompanyRow`` 조인 후 ``listed`` 일치로 거른다
-    (상장 컬럼은 CompanyRow 가 아니라 DiscoveredCompanyRow 에만 있음). 빈 값은 무시(전체).
+    대소문자 무시 매칭(엑셀 export·아웃리치 발송 선례와 동일 규약). 상장 여부·지역은
+    ``CompanyRow.canonical_key → DiscoveredCompanyRow`` 조인 후 일치로 거른다
+    (두 컬럼 다 DiscoveredCompanyRow 에만 있음 — 조인은 한 번만). 빈 값은 무시(전체).
+    지역 필터는 region 미상(NULL) 행을 자연히 제외한다(주소 없는 소스 유입분).
     """
     if countries:
         cset = country_match_set(countries)
@@ -58,15 +60,21 @@ def _apply_queue_filters(
         wanted = {i.strip().lower() for i in industries if i and i.strip()}
         if wanted:
             stmt = stmt.where(func.lower(CompanyRow.industry).in_(wanted))
-    if listed:
-        # 스토리지 계층 방어선 — API 는 Literal 로 막지만(422), 비API 직접 호출의 오타·대문자
-        # ('LISTED')가 조용히 0건이 되지 않게 fail-loud(set_review_status 의 상태검증과 동일 결).
-        if listed not in _VALID_LISTED:
-            raise ValueError(f"허용되지 않은 listed 값: {listed}")
+    rset = {r.strip().lower() for r in (regions or []) if r and r.strip()}
+    if listed or rset:
+        if listed:
+            # 스토리지 계층 방어선 — API 는 Literal 로 막지만(422), 비API 직접 호출의 오타·
+            # 대문자('LISTED')가 조용히 0건이 되지 않게 fail-loud.
+            if listed not in _VALID_LISTED:
+                raise ValueError(f"허용되지 않은 listed 값: {listed}")
         stmt = stmt.join(
             DiscoveredCompanyRow,
             CompanyRow.canonical_key == DiscoveredCompanyRow.canonical_key,
-        ).where(DiscoveredCompanyRow.listed == listed)
+        )
+        if listed:
+            stmt = stmt.where(DiscoveredCompanyRow.listed == listed)
+        if rset:
+            stmt = stmt.where(func.lower(DiscoveredCompanyRow.region).in_(rset))
     return stmt
 
 
@@ -74,9 +82,25 @@ def _has_queue_filters(
     countries: Sequence[str] | None,
     industries: Sequence[str] | None,
     listed: str | None,
+    regions: Sequence[str] | None = None,
 ) -> bool:
-    """국가/업종/상장 중 실제로 거를 값이 하나라도 있으면 True(빈 값=전체)."""
-    return bool(countries) or bool(industries) or bool(listed)
+    """국가/업종/상장/지역 중 실제로 거를 값이 하나라도 있으면 True(빈 값=전체)."""
+    return bool(countries) or bool(industries) or bool(listed) or bool(regions)
+
+
+def list_regions(session: Session) -> list[str]:
+    """수집된 지역 라벨 distinct 목록(정렬) — 큐 지역필터 옵션의 단일 출처.
+
+    고정 목록 대신 실제 저장값을 쓴다(데이터 없는 지역 옵션 방지). 지역 미상(NULL)은
+    옵션이 아니라 '필터 안 걸었을 때 전체'로만 접근 가능하다.
+    """
+    rows = session.scalars(
+        select(DiscoveredCompanyRow.region)
+        .where(DiscoveredCompanyRow.region.is_not(None))
+        .distinct()
+        .order_by(DiscoveredCompanyRow.region)
+    ).all()
+    return [r for r in rows if r]
 
 
 class ReviewConflict(Exception):
@@ -161,15 +185,16 @@ def count_reviews(
     countries: Sequence[str] | None = None,
     industries: Sequence[str] | None = None,
     listed: str | None = None,
+    regions: Sequence[str] | None = None,
 ) -> int:
-    """큐 항목 수(선택적 상태 + 국가/업종/상장 작업범위 필터) — 점유 중 행 제외.
+    """큐 항목 수(선택적 상태 + 국가/업종/상장/지역 작업범위 필터) — 점유 중 행 제외.
 
     누군가 점유(claim)한 행은 전체큐에서 숨긴다(전체큐 = 아직 아무도 안 받아간 작업).
     확정/거부 행은 점유가 해제되므로 상태별 카운트엔 영향 없다. 필터가 있으면
-    CompanyRow(상장은 DiscoveredCompanyRow)를 조인해 카운트한다 — 조인은 모두
+    CompanyRow(상장·지역은 DiscoveredCompanyRow)를 조인해 카운트한다 — 조인은 모두
     1:1(canonical_key/id 유일)이라 행 증식이 없어 count 가 정확하다.
     """
-    if not _has_queue_filters(countries, industries, listed):
+    if not _has_queue_filters(countries, industries, listed, regions):
         stmt = (
             select(func.count())
             .select_from(ReviewQueueRow)
@@ -187,7 +212,7 @@ def count_reviews(
     if status is not None:
         stmt = stmt.where(ReviewQueueRow.status == status)
     stmt = _apply_queue_filters(
-        stmt, countries=countries, industries=industries, listed=listed
+        stmt, countries=countries, industries=industries, listed=listed, regions=regions
     )
     return int(session.scalar(stmt) or 0)
 
@@ -248,6 +273,7 @@ def query_reviews(
     countries: Sequence[str] | None = None,
     industries: Sequence[str] | None = None,
     listed: str | None = None,
+    regions: Sequence[str] | None = None,
 ) -> list[dict]:
     """큐 항목을 회사 정보와 함께 DTO dict 목록으로 반환한다(큐 행과 1:1).
 
@@ -265,7 +291,7 @@ def query_reviews(
     if status is not None:
         stmt = stmt.where(ReviewQueueRow.status == status)
     stmt = _apply_queue_filters(
-        stmt, countries=countries, industries=industries, listed=listed
+        stmt, countries=countries, industries=industries, listed=listed, regions=regions
     )
     stmt = (
         stmt.order_by(ReviewQueueRow.status, CompanyRow.name, ReviewQueueRow.id)
@@ -387,6 +413,7 @@ def _claim_more(
     countries: Sequence[str] | None = None,
     industries: Sequence[str] | None = None,
     listed: str | None = None,
+    regions: Sequence[str] | None = None,
 ) -> int:
     """미점유 pending 항목을 최대 ``want`` 개 이 직원에게 배타 배정한다.
 
@@ -403,10 +430,10 @@ def _claim_more(
         .where(ReviewQueueRow.status == PENDING)
         .where(ReviewQueueRow.claimed_by.is_(None))
     )
-    if _has_queue_filters(countries, industries, listed):
+    if _has_queue_filters(countries, industries, listed, regions):
         stmt = stmt.join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
         stmt = _apply_queue_filters(
-            stmt, countries=countries, industries=industries, listed=listed
+            stmt, countries=countries, industries=industries, listed=listed, regions=regions
         )
     stmt = stmt.order_by(ReviewQueueRow.id).limit(want)
     if session.bind is not None and session.bind.dialect.name == "postgresql":
@@ -466,6 +493,7 @@ def claim_work(
     countries: Sequence[str] | None = None,
     industries: Sequence[str] | None = None,
     listed: str | None = None,
+    regions: Sequence[str] | None = None,
 ) -> list[dict]:
     """새 작업을 최대 ``batch`` 개 추가 점유하고(총량 ``cap`` 상한) 내 작업분 전체를 반환한다.
 
@@ -482,7 +510,7 @@ def claim_work(
     if want > 0:
         _claim_more(
             session, user_id, want=want, now=now,
-            countries=countries, industries=industries, listed=listed,
+            countries=countries, industries=industries, listed=listed, regions=regions,
         )
         session.flush()
     return my_work(session, user_id)
