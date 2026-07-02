@@ -161,6 +161,8 @@ class OpenCorporatesSource:
             registry_id=f"{jurisdiction}/{number}",
             address=opt_str(company.get("registered_address_in_full")),
             region=opt_str(ra.get("locality")) if isinstance(ra, dict) else None,
+            # 현지 등록번호(관할 제외) — 등록처 직소스(CH 등)와 dedup 확정 교차 매칭용.
+            reg_no=str(number),
         )
 
 
