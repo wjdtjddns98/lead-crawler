@@ -8,6 +8,7 @@ import {
   logout,
   rejectReview,
   setAuthErrorHandler,
+  UNCLASSIFIED_INDUSTRY_OPTION,
 } from "./api";
 import { Admin } from "./components/Admin";
 import { MyWork } from "./components/MyWork";
@@ -146,7 +147,12 @@ function Workbench({
         setCountryOpts(
           f.countries.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
         );
-        setIndustryOpts(f.industries.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })));
+        // '미분류'(분류 실패 폴백값)도 조회 대상이라 픽커 맨 뒤에 덧붙인다.
+        setIndustryOpts(
+          f.industries
+            .concat(UNCLASSIFIED_INDUSTRY_OPTION)
+            .map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
+        );
       })
       .catch(() => {
         // 옵션 로드 실패해도 큐 조회는 가능 — 픽커만 빈 채로 둔다.

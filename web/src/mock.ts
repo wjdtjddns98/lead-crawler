@@ -57,6 +57,9 @@ const MOCK_INDUSTRIES: { value: string; label: string; aliases: string[] }[] = [
 
 const COUNTRY_CODES = MOCK_COUNTRIES.map((c) => c.iso2);
 const INDUSTRY_KEYS = MOCK_INDUSTRIES.map((i) => i.value);
+// 합성 아이템 업종 주기 — 표준 업종 + '미분류'(BE 분류 실패 폴백값). 픽커의 '미분류'
+// 옵션(api.ts UNCLASSIFIED_INDUSTRY_OPTION)이 mock 에서도 실제로 걸리게 한다.
+const SYNTH_INDUSTRY_KEYS = [...INDUSTRY_KEYS, "미분류"];
 const LISTED_CYCLE: Listed[] = ["listed", "unlisted", "unknown"];
 
 // 상장여부는 큐 DTO(ReviewItem)에 없고 BE 가 DiscoveredCompanyRow 조인으로 거른다.
@@ -232,8 +235,8 @@ function synthSamples(count: number): ReviewItem[] {
   const rows: ReviewItem[] = [];
   for (let i = 0; i < count; i++) {
     const country = COUNTRY_CODES[i % COUNTRY_CODES.length];
-    // 업종은 *5 로 국가 주기와 어긋나게 돌려 (국가×업종) 조합을 다양화(gcd(5,18)=1 → 전 업종 순회).
-    const industry = INDUSTRY_KEYS[(i * 5) % INDUSTRY_KEYS.length];
+    // 업종은 *5 로 국가 주기와 어긋나게 돌려 (국가×업종) 조합을 다양화(gcd(5,19)=1 → 전 업종 순회).
+    const industry = SYNTH_INDUSTRY_KEYS[(i * 5) % SYNTH_INDUSTRY_KEYS.length];
     const id = `g${i + 1}`;
     // 이메일 상태를 3주기로 변형 — valid / unknown / 없음(폼만) 셀을 골고루 만든다.
     const variant = i % 3;

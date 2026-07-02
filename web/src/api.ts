@@ -248,6 +248,15 @@ export async function fetchIndustries(): Promise<IndustryOption[]> {
   );
 }
 
+// 업종 '미분류' 필터 옵션 — BE 분류 폴백 저장값(sources/taxonomy.py UNCLASSIFIED)과 동일 토큰.
+// 옵션 API(supported_industries)엔 없지만 DB industry 컬럼에 실존해 필터가 그대로 매칭된다.
+// 조회 필터(전체큐·작업받기·발송·추출)에만 붙인다 — 크롤 타깃 설정(실업종 지정)엔 무의미.
+export const UNCLASSIFIED_INDUSTRY_OPTION: IndustryOption = {
+  value: "미분류",
+  label: "미분류",
+  aliases: ["unclassified"],
+};
+
 export async function fetchSendPreview(country = "", industry = ""): Promise<SendPreview> {
   const q = new URLSearchParams();
   if (country) q.set("country", country);

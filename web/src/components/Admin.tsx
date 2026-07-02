@@ -13,6 +13,7 @@ import {
   saveCrawlTarget,
   sendCampaign,
   setUserActive,
+  UNCLASSIFIED_INDUSTRY_OPTION,
 } from "../api";
 import type {
   AuditEntry,
@@ -382,7 +383,12 @@ function SendSection() {
         setCountryOpts(
           cs.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
         );
-        setIndustryOpts(is.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })));
+        // '미분류'(분류 실패 폴백값)도 발송 범위로 고를 수 있게 픽커 맨 뒤에 덧붙인다.
+        setIndustryOpts(
+          is
+            .concat(UNCLASSIFIED_INDUSTRY_OPTION)
+            .map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
+        );
       })
       .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
@@ -541,7 +547,12 @@ function ExportSection() {
         setCountryOpts(
           cs.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
         );
-        setIndustryOpts(is.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })));
+        // '미분류'(분류 실패 폴백값)도 추출 범위로 고를 수 있게 픽커 맨 뒤에 덧붙인다.
+        setIndustryOpts(
+          is
+            .concat(UNCLASSIFIED_INDUSTRY_OPTION)
+            .map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
+        );
       })
       .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
     return () => {

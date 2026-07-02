@@ -6,6 +6,7 @@ import {
   fetchQueue,
   fetchQueueFilters,
   rejectReview,
+  UNCLASSIFIED_INDUSTRY_OPTION,
 } from "../api";
 import { QueueTable } from "./QueueTable";
 import { TableSkeleton } from "./TableSkeleton";
@@ -119,7 +120,12 @@ export function MyWork() {
         setCountryOpts(
           f.countries.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
         );
-        setIndustryOpts(f.industries.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })));
+        // '미분류'(분류 실패 폴백값)도 작업범위로 받을 수 있게 픽커 맨 뒤에 덧붙인다.
+        setIndustryOpts(
+          f.industries
+            .concat(UNCLASSIFIED_INDUSTRY_OPTION)
+            .map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
+        );
       })
       .catch(() => {
         // 옵션 로드 실패해도 작업 자체는 가능 — 무시(셀렉트만 빈 채로).
