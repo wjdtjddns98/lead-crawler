@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     google_cse_cx: str = Field(default="")
     serper_api_key: str = Field(default="")  # Serper.dev SERP API(유료·CSE 신규차단 대체)
     bing_api_key: str = Field(default="")
+    # 네이버 검색 API(무료 25,000쿼리/일) — KR 기업 도메인 해석 전용(둘 다 있어야 활성).
+    naver_client_id: str = Field(default="")
+    naver_client_secret: str = Field(default="")
     # 검색 공급자 선택: auto(serper 키>cse 키) | serper | cse | none.
     search_provider: str = Field(default="auto")
 
