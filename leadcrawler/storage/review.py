@@ -302,7 +302,8 @@ def query_reviews(
     ids = [company.id for _, company in rows]
     signals = _email_signals_by_value(session, ids)
     forms = _forms_by_company(session, ids)
-    return [_to_dict(rq, company, signals, forms) for rq, company in rows]
+    listed_map = _listed_by_company(session, [company for _, company in rows])
+    return [_to_dict(rq, company, signals, forms, listed_map) for rq, company in rows]
 
 
 def get_review(session: Session, review_id: str) -> dict | None:
@@ -313,7 +314,7 @@ def get_review(session: Session, review_id: str) -> dict | None:
     company = session.get(CompanyRow, rq.company_id)
     signals = _email_signals_by_value(session, [rq.company_id])
     forms = _forms_by_company(session, [rq.company_id])
-    return _to_dict(rq, company, signals, forms)
+    return _to_dict(rq, company, signals, forms, _listed_by_company(session, [company]))
 
 
 def _parse_candidates(rq: ReviewQueueRow) -> list[str]:
@@ -480,7 +481,8 @@ def my_work(session: Session, user_id: str) -> list[dict]:
     ids = [c.id for _, c in current]
     signals = _email_signals_by_value(session, ids)
     forms = _forms_by_company(session, ids)
-    return [_to_dict(rq, company, signals, forms) for rq, company in current]
+    listed_map = _listed_by_company(session, [company for _, company in current])
+    return [_to_dict(rq, company, signals, forms, listed_map) for rq, company in current]
 
 
 def claim_work(
@@ -560,11 +562,31 @@ def admin_reclaim(
     return len(ids)
 
 
+def _listed_by_company(session: Session, companies: Sequence[CompanyRow | None]) -> dict[str, str]:
+    """회사 목록의 상장여부를 원장에서 배치 조회해 ``company_id → listed`` 로 돌려준다.
+
+    listed 는 발견 원장(DiscoveredCompanyRow)에만 있어 canonical_key 로 IN 1회 조회한다
+    (페이지당 1쿼리 — signals/forms 배치와 동일 패턴, N+1 방지). 원장 미존재는 unknown.
+    """
+    present = [c for c in companies if c is not None]
+    if not present:
+        return {}
+    keys = {c.canonical_key for c in present}
+    rows = session.execute(
+        select(DiscoveredCompanyRow.canonical_key, DiscoveredCompanyRow.listed).where(
+            DiscoveredCompanyRow.canonical_key.in_(keys)
+        )
+    ).all()
+    by_key = {key: listed for key, listed in rows}
+    return {c.id: by_key.get(c.canonical_key, "unknown") for c in present}
+
+
 def _to_dict(
     rq: ReviewQueueRow,
     company: CompanyRow | None,
     signals: dict[tuple[str, str], _EmailSignal],
     forms: dict[str, tuple[str, float]] | None = None,
+    listed_map: dict[str, str] | None = None,
 ) -> dict:
     """ORM 행 + 후보별 이메일 신호를 API DTO dict 로 평탄화한다."""
     candidates = _parse_candidates(rq)
@@ -594,6 +616,7 @@ def _to_dict(
         "name": company.name if company else "",
         "country": company.country if company else "",
         "industry": company.industry if company else "",
+        "listed": (listed_map or {}).get(rq.company_id, "unknown"),
         "homepage": company.homepage if company else None,
         "site_alive": company.site_alive if company else False,
         # 문의폼 URL + 신뢰도(없으면 None) — 저신뢰(폴백 0.3)면 리뷰레인서 '사람 확인' 표기.

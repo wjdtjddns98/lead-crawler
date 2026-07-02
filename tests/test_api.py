@@ -286,6 +286,17 @@ def test_queue_total_reflects_filter(worker_client: TestClient) -> None:
     assert worker_client.get("/queue").json()["total"] == 3  # 빈 필터=전체.
 
 
+def test_queue_items_include_listed(worker_client: TestClient) -> None:
+    """#122: 큐 응답 아이템에 listed(상장여부) 탑재 — 목록·claim·mine 세 라우트 모두."""
+    items = worker_client.get("/queue").json()["items"]
+    by_name = {it["name"]: it["listed"] for it in items}
+    assert by_name == {"kr1.com": "unknown", "us1.com": "listed", "us2.com": "unlisted"}
+    claimed = worker_client.post("/queue/claim").json()
+    assert {it["name"]: it["listed"] for it in claimed} == by_name
+    mine = worker_client.get("/queue/mine").json()
+    assert {it["name"]: it["listed"] for it in mine} == by_name
+
+
 def test_queue_invalid_listed_422(worker_client: TestClient) -> None:
     assert worker_client.get("/queue", params={"listed": "bogus"}).status_code == 422
 
