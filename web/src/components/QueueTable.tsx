@@ -1,6 +1,6 @@
 import { memo, useCallback, useMemo, useRef, useState, type MouseEvent } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, FileText } from "lucide-react";
-import type { ReviewItem } from "../types";
+import type { Listed, ReviewItem } from "../types";
 import { BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
 import { EmailBadge, StatusBadge } from "./StatusBadge";
 import { SiteExplorer, type SiteTab } from "./SiteExplorer";
@@ -19,13 +19,18 @@ const COL_W = [
   "min-w-[120px]", // 업체명
   "", // 국가
   "", // 구분
+  "whitespace-nowrap", // 상장여부
   "min-w-[240px]", // 이메일 후보(편집 입력 포함 — 넓게 유지)
   "", // 메일
   "whitespace-nowrap", // 사이트(내용 길이만큼 유동 확장)
   "", // 상태
   "min-w-[120px]", // 액션(버튼 2개 가로 유지)
 ];
-const HEADERS = ["업체명", "국가", "구분", "이메일 후보", "메일", "사이트", "상태", "액션"];
+const HEADERS = ["업체명", "국가", "구분", "상장여부", "이메일 후보", "메일", "사이트", "상태", "액션"];
+
+// 상장여부 표기·정렬 순서 — 필터 셀렉트 어휘(상장/비상장/미상)와 동일, 상장 먼저.
+const LISTED_LABEL: Record<Listed, string> = { listed: "상장", unlisted: "비상장", unknown: "미상" };
+const LISTED_RANK: Record<Listed, number> = { listed: 0, unlisted: 1, unknown: 2 };
 
 // 상태 정렬 순서(pending 먼저 = 처리해야 할 것 위로). 알파벳순보다 업무 흐름에 맞다.
 const STATUS_RANK: Record<ReviewItem["status"], number> = {
@@ -40,7 +45,8 @@ const SORT_KEY: Record<number, (it: ReviewItem) => string | number> = {
   0: (it) => it.name,
   1: (it) => it.country,
   2: (it) => it.industry,
-  6: (it) => STATUS_RANK[it.status],
+  3: (it) => LISTED_RANK[it.listed],
+  7: (it) => STATUS_RANK[it.status],
 };
 
 type Sort = { col: number; dir: "asc" | "desc" };
@@ -134,7 +140,10 @@ const QueueRow = memo(
         </td>
         <td className={`${TD} ${COL_W[1]}`}>{item.country}</td>
         <td className={`${TD} ${COL_W[2]}`}>{item.industry}</td>
-        <td className={`${TD} ${COL_W[3]} font-mono text-[13px]`}>
+        <td className={`${TD} ${COL_W[3]} ${item.listed === "unknown" ? "text-muted" : ""}`}>
+          {LISTED_LABEL[item.listed]}
+        </td>
+        <td className={`${TD} ${COL_W[4]} font-mono text-[13px]`}>
           {item.candidates.length > 1 && (
             <div className="flex flex-col gap-1">
               {item.candidates.map((c) => (
@@ -179,12 +188,12 @@ const QueueRow = memo(
             />
           )}
         </td>
-        <td className={`${TD} ${COL_W[4]} text-xs`}>
+        <td className={`${TD} ${COL_W[5]} text-xs`}>
           <EmailBadge status={item.email_status} />
           <span className="text-muted ml-2 whitespace-nowrap">MX {tri(item.email_mx)}</span>
           <span className="text-muted ml-2 whitespace-nowrap">SMTP {tri(item.email_smtp)}</span>
         </td>
-        <td className={`${TD} ${COL_W[5]}`}>
+        <td className={`${TD} ${COL_W[6]}`}>
           {href ? (
             <a
               href={href}
@@ -225,7 +234,7 @@ const QueueRow = memo(
             </div>
           )}
         </td>
-        <td className={`${TD} ${COL_W[6]}`}>
+        <td className={`${TD} ${COL_W[7]}`}>
           <StatusBadge status={item.status} />
           {item.assignee && (
             <span className="text-muted text-xs" title={item.reviewed_at ?? undefined}>
@@ -238,7 +247,7 @@ const QueueRow = memo(
           )}
         </td>
         {!readOnly && (
-          <td className={`${TD} ${COL_W[7]}`}>
+          <td className={`${TD} ${COL_W[8]}`}>
             <div className="flex gap-1.5 flex-wrap">
               <button
                 className={BTN_CONFIRM}
