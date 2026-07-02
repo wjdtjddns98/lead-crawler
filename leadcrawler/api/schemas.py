@@ -39,6 +39,7 @@ class ReviewItem(BaseModel):
     name: str
     country: str = ""
     industry: str = ""
+    listed: str = "unknown"  # 상장여부 listed/unlisted/unknown — 원장(발견) 값, FE 컬럼 표시용
     homepage: str | None = None
     site_alive: bool = False
     form: str | None = None  # 문의폼 URL(이메일 없을 때 폼으로 처리)
