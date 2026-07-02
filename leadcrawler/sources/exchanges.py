@@ -11,10 +11,35 @@
   (2026-06-19 실연동 검증).
 - SET(태국)/Bursa(말레이시아): 공개 목록이 WAF/JS 렌더링으로 정적 HTTP 차단 → 라이브
   비활성(dry 전용). 해당국은 당분간 Tier A(GLEIF/Wikidata)로 커버. 헤드리스/대체소스 필요.
-- SGX(싱가포르): ``api.sgx.com/securities`` 공개 JSON(인증 불필요). 응답 축약필드 스키마는
-  온네트워크 확인 필요한 베스트에포트 — 파서는 관대·graceful.
-- IDX(인도네시아): ``GetCompanyProfiles`` JSON(페이징). 실서비스 Cloudflare 보호 가능성
-  있어 graceful(차단 시 빈 결과). 스키마는 베스트에포트.
+- SGX(싱가포르): ``api.sgx.com/securities`` 공개 JSON(인증 불필요) — 200 OK 로 정상 실측
+  됨(2026-07-02). 실 스키마 확인: ``data.prices[]`` 각 행의 코드=``nc``, 이름=``n``(기존
+  가정과 일치). 단, 응답에 ``type`` 필드로 11종 상품이 혼재(전체 1276건 중 실제 상장기업
+  주식 ``stocks`` 는 565건뿐, 나머지 711건은 워런트(companywarrants/structuredwarrants/
+  dlcertificates/liprod)·ETF(etfs)·ADR(adrs, 외국기업 이중상장이라 SG 로 분류하면 국가
+  오분류)·리츠/비즈니스트러스트(reits/businesstrusts)·기타(others) 였다 — 필터 없이
+  저장하면 실존 '기업'이 아닌 금융상품이 과반수 유입(제약② 위반). ``stocks`` 에 더해
+  리츠·비즈니스트러스트는 IR 조직을 갖춘 실존 상장 운영체(CapitaLand·Mapletree 급)라
+  수집 대상에 포함, 워런트·ETF·ADR 등 순수 금융상품만 배제한다(이 커밋).
+- IDX(인도네시아): ``GetCompanyProfiles`` JSON(페이징) — 실측 결과 Cloudflare 가 403
+  "Attention Required" 챌린지 페이지로 차단함을 확인(2026-07-02, ``cf-ray`` 헤더 존재).
+  기존 graceful(예외 시 빈 결과) 동작이 이미 정확히 대응 — 파서 변경 없음. 스키마는
+  여전히 베스트에포트(온네트워크 확인 시 재검증 필요).
+- HOSE(베트남, hsx.vn): ``/`` 및 ``/Modules/Listed/Web/SymbolList`` 등 전 경로가 동일한
+  1900바이트 React SPA 셸을 반환(클라이언트 라우팅, 정적 JSON 없음). ``Accept:
+  application/json`` 헤더를 주면 F5 BIG-IP(WAF, ``TS...`` 지속쿠키) 가 "Request Rejected"
+  로 차단 → 정적 HTTP 로는 뚫리지 않음(2026-07-02 실측: 루트 200/SPA셸, SymbolList
+  200/동일셸, JSON Accept 헤더 시 WAF 403 성격 차단). 라이브 비활성(dry 전용) +
+  bypass_capable=True(SET/Bursa 와 동일 상황 — 헤드리스 렌더링 필요).
+- HNX(베트남, hnx.vn — UPCoM 포함): 상장목록 페이지(``/vi-vn/co-phieu-etfs/...``)는
+  legacy ASP.NET 서버렌더링이지만 실제 종목 테이블은 Vue 컴포넌트가 별도 호출로 채우는
+  구조로 보이며, 정적 HTML 에는 데이터가 없다. 유일하게 발견한 AJAX 엔드포인트
+  ``/vi-vn/ModuleSearchALL/SearchDataHNX/SearchSuggestSymbol?symbol=`` 는 세션 쿠키
+  없이는 빈 배열, 쿠키를 주면 "리소스를 찾을 수 없음" 오류를 반환해 불안정하고 전체
+  상장목록도 아님(심볼 자동완성용으로 추정) → 신뢰 가능한 공개 JSON 목록 미발견
+  (2026-07-02 실측). UPCoM 은 HNX 산하 게시판이라 별도 엔드포인트를 못 찾은 이상 별도
+  소스를 신설하지 않고 ``HnxSource`` 로 통합 표현(라이브 확보 시 board 파라미터로 분기
+  예정). 라이브 비활성(dry 전용) + bypass_capable=True(헤드리스 렌더링 필요 — Bursa 와
+  동일 상황).
 
 dry_run: 네트워크 없는 결정적 더미(전 소스 공통). 키 불필요.
 """
@@ -243,21 +268,27 @@ class SetSource(ExchangeSource):
 
 
 class SgxSource(ExchangeSource):
-    """싱가포르 거래소(SGX) 상장목록 소스 — 공개 JSON API(인증 불필요).
+    """싱가포르 거래소(SGX) 상장목록 소스 — 공개 JSON API(인증 불필요, 2026-07-02 실측).
 
     SGX 는 전 상장종목을 ``api.sgx.com/securities`` 로 공개한다(1회 호출, 페이징 없음).
-    응답 스키마(축약 필드명)는 온네트워크 확인이 필요한 베스트에포트라, 파서는 코드/이름
-    후보 키를 관대히 탐색하고 형식 불일치는 graceful 하게 건너뛴다. 목록엔 웹사이트가
-    없어 도메인은 None(enrich 단계로). dry_run 은 베이스 더미.
+    실측 확인된 스키마: 코드=``nc``, 이름=``n``(기존 가정과 일치). 단 응답에는 워런트·ETF·
+    ADR 등 11종 상품이 ``type`` 필드로 섞여 있어(실측 1276건 중 실제 회사 주식 ``stocks``
+    는 565건뿐) 필터 없이는 실존 기업이 아닌 금융상품이 과반수 유입된다(제약②) — 그래서
+    회사 실체가 있는 ``stocks``/``reits``/``businesstrusts`` 만 채택한다(모듈 docstring
+    참조). 형식 불일치는 graceful 하게 건너뛴다. 목록엔 웹사이트가 없어 도메인은 None
+    (enrich 단계로). dry_run 은 베이스 더미.
     """
 
     name = "sgx"
     registry = "sgx"
     countries = frozenset({"sg", "sgp", "singapore", "싱가포르"})
     list_url = "https://api.sgx.com/securities/v1.1"
+    # 회사 실체가 있는 종목 유형만(리츠·비즈니스트러스트=IR 보유 상장 운영체 — 포함,
+    # 워런트/ETF/ADR 등 순수 금융상품 제외, 2026-07-02 실측).
+    _WANTED_TYPES = frozenset({"stocks", "reits", "businesstrusts"})
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
-        """SGX securities 목록을 1회 조회해 상장사를 수집한다(코드 dedup + 캡)."""
+        """SGX securities 목록을 1회 조회해 상장사 주식만 수집한다(코드 dedup + 캡)."""
         fetcher = self._client()
         cap = self._settings.discovery_max_per_source
         listed_seg = Segment(country=segment.country, industry=segment.industry, listed="listed")
@@ -272,6 +303,8 @@ class SgxSource(ExchangeSource):
         out: list[DiscoveredCompany] = []
         seen: set[str] = set()
         for row in _sgx_rows(payload):
+            if not isinstance(row, dict) or row.get("type") not in self._WANTED_TYPES:
+                continue  # 워런트/ETF/ADR 등 비회사 금융상품 제외(실측, 모듈 docstring).
             symbol = _first_str(row, ("nc", "code", "symbol"))
             name = _first_str(row, ("n", "name", "companyName"))
             if not symbol or not name or symbol in seen:
@@ -379,6 +412,72 @@ class BursaSource(ExchangeSource):
             return []
         rows = self._parse_listing(html, segment)
         log.info("bursa.bypass", segment=segment.label, found=len(rows))
+        return rows
+
+
+class HoseSource(ExchangeSource):
+    """베트남 호치민 증권거래소(HOSE) 상장목록 소스 — 라이브는 WAF 차단으로 비활성(dry 전용).
+
+    HOSE 공개 사이트는 전 경로가 동일한 React SPA 셸을 반환하고(정적 JSON 없음),
+    JSON 성향 요청은 F5 WAF 가 차단한다(2026-07-02 실측 — 모듈 docstring 참조).
+    """
+
+    name = "hose"
+    registry = "hose"
+    countries = frozenset({"vn", "vnm", "vietnam", "viet nam", "베트남"})
+    bypass_capable = True  # SPA/WAF 차단 → enable_bypass 시 InsaneFetcher 로 우회.
+    list_url = "https://www.hsx.vn/Modules/Listed/Web/SymbolList/144"
+
+    def _live(self, segment: Segment) -> list[DiscoveredCompany]:
+        """HOSE 공개 목록은 React SPA + F5 WAF 로 정적 HTTP 차단(2026-07-02 확인).
+
+        ``enable_bypass`` 시 벤더 엔진(InsaneFetcher)으로 렌더링된 목록 HTML 을 가져와
+        파싱한다. off 면 빈 결과(베트남은 Tier A 로 커버). 우회 실패/형식불일치도 graceful.
+        """
+        if not self._settings.enable_bypass:
+            log.info("hose.skip.bypass_off", segment=segment.label)
+            return []
+        try:
+            page_html = self._client().get_text(self.list_url)
+        except Exception as exc:  # 우회/네트워크/형식 → graceful 빈 결과.
+            log.info("hose.error", err_type=type(exc).__name__, err=str(exc))
+            return []
+        rows = self._parse_listing(page_html, segment)
+        log.info("hose.bypass", segment=segment.label, found=len(rows))
+        return rows
+
+
+class HnxSource(ExchangeSource):
+    """베트남 하노이 증권거래소(HNX) 상장목록 소스(UPCoM 포함) — 라이브는 검증대기(dry 전용).
+
+    HNX 상장목록 페이지는 실 종목 데이터가 정적 HTML 에 없고(JS 컴포넌트가 별도 채움),
+    유일하게 찾은 AJAX 엔드포인트(SearchSuggestSymbol)는 불안정·전체목록 아님이라 미채택
+    (2026-07-02 실측 — 모듈 docstring 참조). UPCoM 은 HNX 산하 게시판이라 별도 소스를
+    두지 않고 이 클래스로 통합 표현한다.
+    """
+
+    name = "hnx"
+    registry = "hnx"
+    countries = frozenset({"vn", "vnm", "vietnam", "viet nam", "베트남"})
+    bypass_capable = True  # JS 컴포넌트 렌더 필요 → enable_bypass 시 InsaneFetcher 로 우회.
+    list_url = "https://www.hnx.vn/vi-vn/co-phieu-etfs/chung-khoan-ny.html"
+
+    def _live(self, segment: Segment) -> list[DiscoveredCompany]:
+        """HNX 상장목록은 JS 렌더링 필요로 정적 HTTP 로는 데이터 없음(SET/Bursa 와 동일 상황).
+
+        ``enable_bypass`` 시 벤더 엔진으로 렌더링된 목록 HTML 을 가져와 파싱한다. off 면
+        빈 결과(베트남은 Tier A 로 커버). 우회 실패/형식불일치도 graceful 빈 결과.
+        """
+        if not self._settings.enable_bypass:
+            log.info("hnx.skip.bypass_off", segment=segment.label)
+            return []
+        try:
+            page_html = self._client().get_text(self.list_url)
+        except Exception as exc:  # 우회/네트워크/형식 → graceful 빈 결과.
+            log.info("hnx.error", err_type=type(exc).__name__, err=str(exc))
+            return []
+        rows = self._parse_listing(page_html, segment)
+        log.info("hnx.bypass", segment=segment.label, found=len(rows))
         return rows
 
 

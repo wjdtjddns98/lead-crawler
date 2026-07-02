@@ -14,6 +14,7 @@ from leadcrawler.sources.base import Segment
 from leadcrawler.sources.companieshouse import CompaniesHouseSource
 from leadcrawler.sources.dart import DartSource
 from leadcrawler.sources.edgar import EdgarSource
+from leadcrawler.sources.gleif import GleifSource
 from leadcrawler.sources.registry import build_sources
 from leadcrawler.storage.db import get_sessionmaker, init_db, session_scope
 from leadcrawler.storage.discovery_cursor import DbCursorStore, get_cursor, set_cursor
@@ -244,6 +245,78 @@ def test_companies_house_dry_run_never_touches_store() -> None:
     assert len(src.discover(Segment(country="GB", industry="전체"))) == 2
 
 
+# --- GLEIF ------------------------------------------------------------------
+
+
+def _gleif_page(records: list[dict]) -> dict:
+    return {"data": records}
+
+
+def _gleif_rec(i: int) -> dict:
+    return {
+        "id": f"TH{i:010d}",
+        "attributes": {
+            "entity": {
+                "legalName": {"name": f"Corp {i}"},
+                "status": "ACTIVE",
+                "legalAddress": {"country": "TH"},
+            }
+        },
+    }
+
+
+def test_gleif_continues_from_cursor_and_resets_on_exhaust() -> None:
+    settings = Settings(dry_run=False, discovery_max_per_source=1)
+    # page[size]=1 이므로 페이지당 레코드 1건: 1페이지→레코드1, 2페이지→레코드2, 3페이지→빈 목록(끝).
+    pages = {1: _gleif_page([_gleif_rec(1)]), 2: _gleif_page([_gleif_rec(2)]), 3: _gleif_page([])}
+    seen_pages: list[int] = []
+
+    def _json(url: str, params: dict) -> Any:
+        page = params["page[number]"]
+        seen_pages.append(page)
+        return pages[page]
+
+    store = DictStore()
+    src = GleifSource(settings, fetcher=FakeFetcher(json=_json), cursor_store=store)
+    seg = Segment(country="TH", industry="전체")
+
+    out1 = src.discover(seg)
+    assert [d.registry_id for d in out1] == ["TH0000000001"]
+    assert seen_pages == [1]
+    assert store.get("gleif", "TH") == 2  # 다음 런은 2페이지부터.
+
+    out2 = src.discover(seg)  # 2런: 이전 페이지에서 이어 스캔.
+    assert [d.registry_id for d in out2] == ["TH0000000002"]
+    assert seen_pages[1:] == [2]
+    assert store.get("gleif", "TH") == 3
+
+    assert src.discover(seg) == []  # 3런: 빈 페이지 = 모집단 끝.
+    assert store.get("gleif", "TH") == 0  # 0 리셋(재검증 재개).
+
+
+def test_gleif_without_store_keeps_old_behavior() -> None:
+    settings = Settings(dry_run=False, discovery_max_per_source=1)
+    pages = {1: _gleif_page([_gleif_rec(1)]), 2: _gleif_page([_gleif_rec(2)])}
+    seen_pages: list[int] = []
+
+    def _json(url: str, params: dict) -> Any:
+        page = params["page[number]"]
+        seen_pages.append(page)
+        return pages[page]
+
+    src = GleifSource(settings, fetcher=FakeFetcher(json=_json))
+    seg = Segment(country="TH", industry="전체")
+    src.discover(seg)
+    src.discover(seg)
+    # store 미주입 → 매 런 같은 1페이지(기존 동작, 회귀 0).
+    assert seen_pages == [1, 1]
+
+
+def test_gleif_dry_run_never_touches_store() -> None:
+    src = GleifSource(Settings(dry_run=True), cursor_store=BoomStore())
+    assert len(src.discover(Segment(country="TH", industry="전체"))) == 2
+
+
 # --- 배선 --------------------------------------------------------------------
 
 
@@ -253,7 +326,7 @@ def test_build_sources_passes_cursor_store_to_registry_sources() -> None:
     wired = {
         s.name: s._cursor_store
         for s in sources
-        if isinstance(s, (DartSource, EdgarSource, CompaniesHouseSource))
+        if isinstance(s, (DartSource, EdgarSource, CompaniesHouseSource, GleifSource))
     }
-    assert set(wired) == {"dart", "edgar", "companies_house"}
+    assert set(wired) == {"dart", "edgar", "companies_house", "gleif"}
     assert all(v is store for v in wired.values())

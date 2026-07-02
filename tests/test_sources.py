@@ -13,6 +13,8 @@ from leadcrawler.sources.dart import DartSource
 from leadcrawler.sources.edgar import EdgarSource
 from leadcrawler.sources.exchanges import (
     BursaSource,
+    HnxSource,
+    HoseSource,
     IdxSource,
     PseSource,
     SetSource,
@@ -234,7 +236,7 @@ def test_build_sources_registers_all_adapters() -> None:
     names = {src.name for src in build_sources(_dry_settings())}
     assert names == {
         "edgar", "dart", "companies_house", "pse", "set", "sgx", "idx", "bursa",
-        "gleif", "wikidata", "opencorporates", "search",
+        "hose", "hnx", "gleif", "wikidata", "opencorporates", "search",
     }
 
 
@@ -285,6 +287,28 @@ def test_new_exchanges_dry_run_registry_keyed_and_listed() -> None:
     # 결정적이어야 한다(제약 ① 안정성).
     assert [c.canonical_key for c in sg] == [
         c.canonical_key for c in SgxSource(s).discover(Segment(country="SG", industry="금융"))
+    ]
+
+
+def test_vn_exchanges_applies_to_country_routing() -> None:
+    s = _dry_settings()
+    # 광범위 업종(미매핑 '전체')으로 순수 국가 라우팅만 검증(업종 게이팅과 분리).
+    vn = Segment(country="베트남", industry="전체")
+    kr = Segment(country="KR", industry="전체")
+    assert HoseSource(s).applies_to(vn) and not HoseSource(s).applies_to(kr)
+    assert HnxSource(s).applies_to(vn) and not HnxSource(s).applies_to(kr)
+
+
+def test_vn_exchanges_dry_run_registry_keyed_and_listed() -> None:
+    s = _dry_settings()
+    hose = HoseSource(s).discover(Segment(country="VN", industry="금융"))
+    hnx = HnxSource(s).discover(Segment(country="VN", industry="금융"))
+    assert hose and all(c.canonical_key.startswith("reg:hose:") for c in hose)
+    assert hnx and all(c.canonical_key.startswith("reg:hnx:") for c in hnx)
+    assert all(c.listed == "listed" for c in hose + hnx)
+    # 결정적이어야 한다(제약 ① 안정성).
+    assert [c.canonical_key for c in hose] == [
+        c.canonical_key for c in HoseSource(s).discover(Segment(country="VN", industry="금융"))
     ]
 
 
