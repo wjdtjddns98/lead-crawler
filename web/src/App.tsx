@@ -285,6 +285,10 @@ function Workbench({
           remaining={total}
           onConfirm={(id, selected) => act(id, "confirm", selected)}
           onReject={(id) => act(id, "reject")}
+          // 전체큐는 점유 항목이 서버에서 제외됨 — pending 0 = "받아갈 수 있는 작업 없음".
+          emptyText={
+            filter === "pending" ? "받아갈 수 있는 작업이 없습니다 — 모두 처리되었거나 다른 직원이 작업 중입니다." : undefined
+          }
         />
       )}
 

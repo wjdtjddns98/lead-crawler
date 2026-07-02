@@ -2,10 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   claimWork,
   confirmReview,
+  fetchMyWork,
   fetchQueue,
   fetchQueueFilters,
   rejectReview,
-  releaseWork,
 } from "../api";
 import { QueueTable } from "./QueueTable";
 import { TableSkeleton } from "./TableSkeleton";
@@ -50,38 +50,42 @@ function loadFilter(): ClaimFilter {
   return EMPTY_FILTER;
 }
 
-// 내 작업 뷰(당겨가기) — 내 작업분만 보여 6명 동시 검증 충돌을 막는다. 처리하면 자동 리필.
-// 상단 작업범위 바에서 국가·업종·상장을 골라 두고 '더 받기'를 누르면 그 조건의 pending 만 전체
-// 큐에서 당겨온다. 필터 변경 자체는 네트워크 없이 조건만 저장(실제 당겨오기는 '더 받기'가 한다).
+// 내 작업 뷰(영구 배정) — 받아간 항목은 확정/거부 전까지 내 계정 귀속(반납·TTL 없음).
+// '작업 받기' 클릭 1회 = 상단 작업범위 조건으로 +30개 추가 배정(총량 100 상한, 선취 가능).
+// 목록 복원·처리 후 갱신은 부작용 없는 GET /queue/mine 으로만 한다(claim 은 버튼 클릭 전용).
 export function MyWork() {
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<ClaimFilter>(loadFilter);
-  // 적용된(실제 당겨온) 범위 — 픽커의 pending filter 와 분리한다. 국가·업종·상장을 선택/해제하는
-  // 동안엔 filter 만 바뀌고 applied 는 그대로라, 아래 '내 작업' 목록·자동리필이 영향받지 않는다.
-  // '더 받기'를 눌러야 filter → applied 로 커밋되고 그 범위로 당겨온다.
-  const [applied, setApplied] = useState<ClaimFilter>(filter);
   const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
   const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
   const [remaining, setRemaining] = useState<number | null>(null);
-  // 이번 세션 처리(확정+거부) 건수 — 모달 하단 진행률 바의 분자. '더 받기'로 범위를 다시
-  // 커밋하면 0 으로 리셋.
+  // 이번 세션 처리(확정+거부) 건수 — 모달 하단 진행률 바의 분자. '작업 받기'로 새 배치를
+  // 받으면 0 으로 리셋.
   const [sessionDone, setSessionDone] = useState(0);
-  const reqRef = useRef(0); // 최신 refill 토큰 — 빠른 '더 받기' 연타 시 뒤늦은 응답을 폐기(경쟁 방지).
+  const reqRef = useRef(0); // 최신 요청 토큰 — 버튼 연타 시 뒤늦은 응답을 폐기(경쟁 방지).
+  // refresh 가 useCallback([]) 안에서 최신 필터로 잔여 카운트를 조회하도록 ref 로 동행.
+  const filterRef = useRef(filter);
 
-  // 현재 필터로 작업분을 채우고 "이 범위 잔여 pending" 카운트를 갱신한다.
-  const refill = useCallback(async (f: ClaimFilter) => {
+  // 내 점유 목록(items)과 결과(mine 또는 claim 응답 — 둘 다 내 점유 전체)를 화면에 반영하고
+  // "현재 범위 잔여 pending" 카운트를 갱신하는 공통부.
+  const sync = useCallback(async (fetchItems: () => Promise<ReviewItem[]>) => {
     const token = ++reqRef.current;
     setLoading(true);
     setError(null);
     try {
-      const claimed = await claimWork(f);
-      // limit=1 — 카운트(total)만 필요. total 은 필터 반영분.
-      const q = await fetchQueue({ status: "pending", limit: 1, offset: 0, filter: f });
+      const mine = await fetchItems();
+      // limit=1 — 카운트(total)만 필요. total 은 미점유 pending 중 필터 반영분(=받아갈 수 있는 수).
+      const q = await fetchQueue({
+        status: "pending",
+        limit: 1,
+        offset: 0,
+        filter: filterRef.current,
+      });
       if (token !== reqRef.current) return; // 더 최신 요청이 진행 중 — 결과 버림.
-      setItems(claimed);
+      setItems(mine);
       setRemaining(q.total);
     } catch (e) {
       if (token === reqRef.current) setError(e instanceof Error ? e.message : String(e));
@@ -90,7 +94,15 @@ export function MyWork() {
     }
   }, []);
 
-  // 최초: 필터 옵션 로드 + 저장된 필터로 첫 당겨가기.
+  // 부작용 없는 목록 갱신 — 페이지 로드·재로그인 복원·확정/거부 후. 점유는 절대 안 늘어난다.
+  const refresh = useCallback(() => sync(fetchMyWork), [sync]);
+  // '작업 받기' 전용 — 현재 필터 조건으로 +30개 추가 배정(응답 = 내 점유 전체).
+  const claimMore = () => {
+    setSessionDone(0); // 새 배치 — 진행률 세션 리셋.
+    void sync(() => claimWork(filterRef.current));
+  };
+
+  // 최초: 필터 옵션 로드 + 내 작업분 복원(추가 배정 없음 — 로그아웃·새로고침해도 그대로).
   useEffect(() => {
     fetchQueueFilters()
       .then((f) => {
@@ -102,15 +114,15 @@ export function MyWork() {
       .catch(() => {
         // 옵션 로드 실패해도 작업 자체는 가능 — 무시(셀렉트만 빈 채로).
       });
-    void refill(applied);
+    void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 작업범위(픽커) 변경 — pending 조건만 상태·localStorage 에 저장한다. 네트워크도, 아래 '내 작업'
-  // 목록도 건드리지 않는다: 실제 당겨오기·필터 적용은 '더 받기'가 applied 로 커밋할 때만 일어난다.
-  // (자동리필은 applied 를 쓰므로 선택 도중 행을 처리해도 화면이 새 조건으로 바뀌지 않는다.)
+  // 작업범위(픽커) 변경 — 조건만 상태·localStorage 에 저장한다(네트워크 없음). 필터는 '작업
+  // 받기'의 신규 배정분에만 적용되고, 이미 받은 작업분은 필터를 바꿔도 그대로 유지된다.
   const setFilterValue = (next: ClaimFilter) => {
     setFilter(next);
+    filterRef.current = next;
     localStorage.setItem(FILTER_KEY, JSON.stringify(next));
   };
 
@@ -125,7 +137,8 @@ export function MyWork() {
       setSessionDone((n) => n + 1);
       ok = true;
     } catch (e) {
-      // 409(타인 점유 중)·400(형식 오류) 등 — 메시지 표시. ok=false 라 전진하지 않는다.
+      // 409(타인 점유 중 — 관리자 회수 후 재배정된 경우)·400(형식 오류) 등 — 메시지 표시.
+      // ok=false 라 전진하지 않고, 아래 refresh 가 내 점유가 아닌 항목을 목록에서 걷어낸다.
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusyIds((p) => {
@@ -133,26 +146,21 @@ export function MyWork() {
         n.delete(id);
         return n;
       });
-      await refill(applied); // 처리(또는 충돌) 후 자동 리필 — 적용된(applied) 범위로만 채운다.
+      await refresh(); // 처리(또는 충돌) 후 목록 갱신 — 부작용 없는 조회(추가 배정 없음).
     }
     return ok;
   };
 
-  const release = async () => {
-    setError(null);
-    try {
-      await releaseWork();
-      setItems([]);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  const hasFilter = Boolean(applied.country || applied.industry || applied.listed);
+  const hasFilter = Boolean(filter.country || filter.industry || filter.listed);
 
   return (
     <>
       <div className="flex flex-wrap items-start gap-3 mb-4 p-3 border border-line rounded-md bg-[rgba(127,127,127,0.06)]">
+        {/* FE-3: 필터는 신규 배정에만 적용 — 기존 작업분 유지 안내를 필터 바 안에 상시 노출. */}
+        <p className="w-full m-0 text-muted text-[12px]">
+          작업범위는 <strong className="text-ink font-medium">새로 받아올 작업</strong>에만
+          적용됩니다 — 바꿔도 이미 받은 작업분은 그대로 유지됩니다.
+        </p>
         <div className={FIELD}>
           <span>국가 <span className="text-muted">(선택 안 함 = 전체)</span></span>
           <MultiPicker
@@ -189,7 +197,7 @@ export function MyWork() {
         </label>
         {remaining !== null && (
           <span className="text-muted text-[13px] pb-1.5 tabular-nums">
-            현재 범위 잔여 <strong className="text-ink">{remaining}</strong>건
+            현재 범위에서 받아갈 수 있는 작업 <strong className="text-ink">{remaining}</strong>건
           </span>
         )}
       </div>
@@ -199,19 +207,12 @@ export function MyWork() {
           내 작업 {items.length}건{loading && " · 불러오는 중…"}
         </p>
         <div className="flex gap-1">
-          <button
-            className={BTN}
-            onClick={() => {
-              setApplied(filter); // pending 픽커 조건을 적용 범위로 커밋.
-              setSessionDone(0); // 새 작업 범위 — 진행률 세션 리셋.
-              void refill(filter);
-            }}
-            disabled={loading}
-          >
-            더 받기 / 새로고침
+          {/* 추가형(+30) — 자동 호출 금지, 이 버튼만 claim 을 부른다(그 외 갱신은 전부 mine). */}
+          <button className={BTN} onClick={claimMore} disabled={loading}>
+            작업 받기 (+30건)
           </button>
-          <button className={BTN} onClick={() => void release()} disabled={items.length === 0}>
-            작업 종료(반납)
+          <button className={BTN} onClick={() => void refresh()} disabled={loading}>
+            새로고침
           </button>
         </div>
       </div>
@@ -222,9 +223,11 @@ export function MyWork() {
         <TableSkeleton />
       ) : items.length === 0 ? (
         <p className={EMPTY}>
-          {hasFilter
-            ? "이 범위에 남은 작업이 없습니다 — 필터를 넓히거나 해제해 보세요."
-            : "받을 작업분이 없습니다 — 큐가 비었거나 모두 처리되었습니다."}
+          {remaining === 0
+            ? hasFilter
+              ? "받아둔 작업이 없고, 이 범위에 받아갈 작업도 없습니다 — 필터를 넓히거나 해제해 보세요."
+              : "받아둔 작업이 없고, 받아갈 수 있는 작업도 없습니다 — 큐가 비었거나 모두 처리되었습니다."
+            : "받아둔 작업이 없습니다 — '작업 받기'를 눌러 새 작업을 받아오세요."}
         </p>
       ) : (
         <QueueTable

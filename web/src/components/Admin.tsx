@@ -9,6 +9,7 @@ import {
   fetchIndustries,
   fetchSendPreview,
   fetchUsers,
+  reclaimUser,
   saveCrawlTarget,
   sendCampaign,
   setUserActive,
@@ -42,6 +43,7 @@ export function Admin() {
   const [users, setUsers] = useState<UserStats[]>([]);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null); // 회수 등 액션 성공 피드백
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
@@ -72,6 +74,22 @@ export function Admin() {
     }
   };
 
+  // 점유 회수 — 영구 배정이라 방치 점유(퇴사·장기부재)는 이 버튼이 유일한 해제 경로.
+  // 되돌릴 수 없는 건 아니지만 다른 직원 작업분에 영향이 커 확인 다이얼로그를 거친다.
+  const reclaim = async (u: UserStats) => {
+    if (
+      !window.confirm(
+        `${u.username} 계정이 점유 중인 작업 ${u.claimed}건을 전부 회수할까요?\n회수된 작업은 즉시 다른 직원이 받아갈 수 있습니다.`,
+      )
+    )
+      return;
+    setMsg(null);
+    await act(async () => {
+      const r = await reclaimUser(u.id);
+      setMsg(`${u.username} 계정의 점유 ${r.reclaimed}건을 회수했습니다.`);
+    });
+  };
+
   return (
     <div className="flex flex-col gap-7">
       {error && <ErrorBox>{error}</ErrorBox>}
@@ -87,6 +105,11 @@ export function Admin() {
           계정 {loading && <span className="text-muted">· 불러오는 중…</span>}
         </h2>
         <CreateUserForm onCreate={(u, p, r) => act(() => createUser(u, p, r))} />
+        {msg && (
+          <p className="text-ok-fg text-[13px] my-2" role="status">
+            {msg}
+          </p>
+        )}
         {loading && users.length === 0 ? (
           <TableSkeleton rows={4} />
         ) : (
@@ -98,6 +121,7 @@ export function Admin() {
               <th className={TH}>상태</th>
               <th className={TH}>확정</th>
               <th className={TH}>거부</th>
+              <th className={TH}>점유</th>
               <th className={TH}>마지막 처리</th>
               <th className={TH}>액션</th>
             </tr>
@@ -110,6 +134,7 @@ export function Admin() {
                 <td className={TD}>{u.is_active ? "활성" : "비활성"}</td>
                 <td className={TD}>{u.confirmed}</td>
                 <td className={TD}>{u.rejected}</td>
+                <td className={`${TD} tabular-nums`}>{u.claimed}</td>
                 <td className={`${TD} text-muted`}>{fmt(u.last_action_at)}</td>
                 <td className={TD}>
                   <div className="flex gap-1.5 flex-wrap">
@@ -131,6 +156,14 @@ export function Admin() {
                         활성
                       </button>
                     )}
+                    <button
+                      className={BTN}
+                      disabled={u.claimed === 0}
+                      onClick={() => void reclaim(u)}
+                      title="이 계정이 점유 중인 미처리 작업을 전부 풀로 되돌립니다"
+                    >
+                      회수
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -162,7 +195,7 @@ export function Admin() {
                 <tr key={a.id}>
                   <td className={`${TD} text-muted`}>{fmt(a.at)}</td>
                   <td className={TD}>{a.actor_username || "—"}</td>
-                  <td className={TD}>{a.action === "confirmed" ? "확정" : "거부"}</td>
+                  <td className={TD}>{ACTION_LABEL[a.action] ?? a.action}</td>
                   <td className={`${TD} font-semibold`}>{a.company_name || "—"}</td>
                   <td className={TD}>{a.selected ?? "—"}</td>
                 </tr>
@@ -174,6 +207,13 @@ export function Admin() {
     </div>
   );
 }
+
+// 감사 로그 액션 한글 라벨 — reclaim 은 관리자 점유 회수(PRD-queue-claim-permanent §4.6).
+const ACTION_LABEL: Record<string, string> = {
+  confirmed: "확정",
+  rejected: "거부",
+  reclaim: "회수",
+};
 
 const LISTED_OPTIONS: { value: Listed; label: string }[] = [
   { value: "unknown", label: "전체" },

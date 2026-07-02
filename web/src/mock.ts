@@ -4,7 +4,9 @@
 // admin 세션을 localStorage 에 시드해 로그인 화면을 건너뛴다. 매칭 안 되는 API 는 빈/스텁으로 응답.
 import type { CandidateInfo, ClaimFilter, Listed, ReviewItem } from "./types";
 
-const BATCH = 10;
+// 영구 배정 계약(PRD-queue-claim-permanent) — claim 1회 = +BATCH 추가, 총량 CAP 상한.
+const BATCH = 30;
+const CAP = 100;
 
 // 국가 옵션 — leadcrawler/sources/countries.py supported_countries() 전량(우선순위 순).
 // iso2=필터/저장 토큰, label=한글 표시명(korean_label), aliases=검색용(영문/ISO).
@@ -271,6 +273,8 @@ function seed(): ReviewItem[] {
 }
 
 let db: ReviewItem[] = seed();
+// 내(mock 단일 사용자) 점유 id — 처리(확정/거부)하면 점유도 소멸. 새로고침 시 리셋(메모리 전용).
+let claimedIds = new Set<string>();
 
 function setStatus(
   id: string,
@@ -283,6 +287,7 @@ function setStatus(
   if (selected !== undefined) it.selected = selected;
   it.assignee = "mock-admin";
   it.reviewed_at = new Date().toISOString();
+  claimedIds.delete(id); // 처리 완료 — 점유 종료.
   return it;
 }
 
@@ -360,14 +365,14 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     });
   }
 
-  // 검증 큐.
+  // 검증 큐 — 전체큐(GET /queue)에선 점유 중인 행이 아예 안 보인다(미점유만, BE 와 동일).
   if (path === "/queue" && method === "GET") {
     const status = u.searchParams.get("status");
     const limit = Number(u.searchParams.get("limit") ?? "50");
     const offset = Number(u.searchParams.get("offset") ?? "0");
     const f = readFilter(u, init);
     const filtered = db.filter(
-      (x) => (!status || x.status === status) && matches(x, f),
+      (x) => (!status || x.status === status) && !claimedIds.has(x.id) && matches(x, f),
     );
     return jsonRes({
       items: filtered.slice(offset, offset + limit),
@@ -376,12 +381,20 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
       offset,
     });
   }
+  // 작업 받기(추가형) — 미점유 pending 에서 필터 매칭분 +BATCH 점유(총량 CAP 상한).
+  // 응답은 필터와 무관하게 내 점유 전체(BE §4.2 와 동일).
   if (path === "/queue/claim" && method === "POST") {
     const f = readFilter(u, init);
-    return jsonRes(pending().filter((x) => matches(x, f)).slice(0, BATCH));
+    const room = Math.max(0, CAP - claimedIds.size);
+    pending()
+      .filter((x) => !claimedIds.has(x.id) && matches(x, f))
+      .slice(0, Math.min(BATCH, room))
+      .forEach((x) => claimedIds.add(x.id));
+    return jsonRes(pending().filter((x) => claimedIds.has(x.id)));
   }
-  if (path === "/queue/release" && method === "POST")
-    return jsonRes({ released: pending().length });
+  // 내 작업분 조회(부작용 없음) — 몇 번을 불러도 점유 불변.
+  if (path === "/queue/mine" && method === "GET")
+    return jsonRes(pending().filter((x) => claimedIds.has(x.id)));
 
   const confirm = path.match(/^\/queue\/([^/]+)\/confirm$/);
   if (confirm && method === "POST") {
@@ -462,6 +475,7 @@ export function installMock(): void {
   localStorage.setItem("lc_user", "mock-admin");
   localStorage.setItem("lc_role", "admin");
   db = seed();
+  claimedIds = new Set();
 
   const realFetch = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
