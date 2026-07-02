@@ -16,6 +16,8 @@ import type { ClaimFilter, Listed, ReviewItem } from "../types";
 
 const FILTER_KEY = "lc_claim_filter";
 const EMPTY_FILTER: ClaimFilter = { country: "", industry: "", listed: "" };
+// 한 계정 동시 점유 총량 상한 — BE review_claim_cap 과 동일값(계약: PRD-queue-claim-permanent §4.2).
+const CLAIM_CAP = 100;
 
 // 상장여부 필터 — 빈값=전체 + Listed 3값(크롤타깃과 달리 "전체"는 ""이고 unknown 은 별개 상태).
 const LISTED_OPTIONS: { value: "" | Listed; label: string }[] = [
@@ -70,36 +72,44 @@ export function MyWork() {
   const filterRef = useRef(filter);
 
   // 내 점유 목록(items)과 결과(mine 또는 claim 응답 — 둘 다 내 점유 전체)를 화면에 반영하고
-  // "현재 범위 잔여 pending" 카운트를 갱신하는 공통부.
-  const sync = useCallback(async (fetchItems: () => Promise<ReviewItem[]>) => {
-    const token = ++reqRef.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const mine = await fetchItems();
-      // limit=1 — 카운트(total)만 필요. total 은 미점유 pending 중 필터 반영분(=받아갈 수 있는 수).
-      const q = await fetchQueue({
-        status: "pending",
-        limit: 1,
-        offset: 0,
-        filter: filterRef.current,
-      });
-      if (token !== reqRef.current) return; // 더 최신 요청이 진행 중 — 결과 버림.
-      setItems(mine);
-      setRemaining(q.total);
-    } catch (e) {
-      if (token === reqRef.current) setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (token === reqRef.current) setLoading(false);
-    }
-  }, []);
+  // "현재 범위 잔여 pending" 카운트를 갱신하는 공통부. 성공 시 반영된 목록을 반환(경쟁 폐기·
+  // 오류면 null) — 호출부가 "실제로 뭔가 받았는지" 판단하는 데 쓴다.
+  const sync = useCallback(
+    async (fetchItems: () => Promise<ReviewItem[]>): Promise<ReviewItem[] | null> => {
+      const token = ++reqRef.current;
+      setLoading(true);
+      setError(null);
+      try {
+        const mine = await fetchItems();
+        // limit=1 — 카운트(total)만 필요. total 은 미점유 pending 중 필터 반영분(=받아갈 수 있는 수).
+        const q = await fetchQueue({
+          status: "pending",
+          limit: 1,
+          offset: 0,
+          filter: filterRef.current,
+        });
+        if (token !== reqRef.current) return null; // 더 최신 요청이 진행 중 — 결과 버림.
+        setItems(mine);
+        setRemaining(q.total);
+        return mine;
+      } catch (e) {
+        if (token === reqRef.current) setError(e instanceof Error ? e.message : String(e));
+        return null;
+      } finally {
+        if (token === reqRef.current) setLoading(false);
+      }
+    },
+    [],
+  );
 
   // 부작용 없는 목록 갱신 — 페이지 로드·재로그인 복원·확정/거부 후. 점유는 절대 안 늘어난다.
   const refresh = useCallback(() => sync(fetchMyWork), [sync]);
   // '작업 받기' 전용 — 현재 필터 조건으로 +30개 추가 배정(응답 = 내 점유 전체).
-  const claimMore = () => {
-    setSessionDone(0); // 새 배치 — 진행률 세션 리셋.
-    void sync(() => claimWork(filterRef.current));
+  // 진행률 세션 리셋은 새 항목이 실제로 들어왔을 때만(풀 고갈·총량 100 도달이면 배정 0 — 유지).
+  const claimMore = async () => {
+    const before = items.length;
+    const mine = await sync(() => claimWork(filterRef.current));
+    if (mine && mine.length > before) setSessionDone(0);
   };
 
   // 최초: 필터 옵션 로드 + 내 작업분 복원(추가 배정 없음 — 로그아웃·새로고침해도 그대로).
@@ -207,8 +217,18 @@ export function MyWork() {
           내 작업 {items.length}건{loading && " · 불러오는 중…"}
         </p>
         <div className="flex gap-1">
-          {/* 추가형(+30) — 자동 호출 금지, 이 버튼만 claim 을 부른다(그 외 갱신은 전부 mine). */}
-          <button className={BTN} onClick={claimMore} disabled={loading}>
+          {/* 추가형(+30) — 자동 호출 금지, 이 버튼만 claim 을 부른다(그 외 갱신은 전부 mine).
+              총량 100(CLAIM_CAP) 도달 시 서버가 0건 배정하므로 버튼을 막고 이유를 표시. */}
+          <button
+            className={BTN}
+            onClick={() => void claimMore()}
+            disabled={loading || items.length >= CLAIM_CAP}
+            title={
+              items.length >= CLAIM_CAP
+                ? `동시 점유 상한(${CLAIM_CAP}건)에 도달했습니다 — 받아둔 작업을 먼저 처리하세요`
+                : undefined
+            }
+          >
             작업 받기 (+30건)
           </button>
           <button className={BTN} onClick={() => void refresh()} disabled={loading}>
@@ -234,7 +254,9 @@ export function MyWork() {
           items={items}
           busyIds={busyIds}
           doneCount={sessionDone}
-          remaining={remaining ?? 0}
+          // 진행률 분모 = 이번 세션 처리분 + 내 잔여 작업분(내 배치 기준). 전체큐 잔여(remaining)를
+          // 쓰면 영구 배정에선 내 점유가 전체큐에서 빠져 있어 처리해도 분모가 계속 자란다.
+          remaining={items.length}
           onConfirm={(id, selected) => act(id, "confirm", selected)}
           onReject={(id) => act(id, "reject")}
         />

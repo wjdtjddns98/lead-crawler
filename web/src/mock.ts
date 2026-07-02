@@ -414,7 +414,28 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
   }
 
   // admin / send — 범위 밖이라 화면이 안 깨질 만큼만 빈/스텁 응답.
-  if (path === "/admin/users") return jsonRes([]);
+  // 단, 계정 목록·회수는 FE-5(점유 컬럼+회수 버튼) 시연용으로 실제 점유 상태를 반영한다:
+  // 작업 받기 → claimed 증가 → 회수 → 점유 전부 풀로(전체큐 복귀) 흐름을 mock 만으로 확인 가능.
+  if (path === "/admin/users" && method === "GET")
+    return jsonRes([
+      {
+        id: "u1",
+        username: "mock-admin",
+        role: "admin",
+        is_active: true,
+        created_at: null,
+        confirmed: db.filter((x) => x.status === "confirmed").length,
+        rejected: db.filter((x) => x.status === "rejected").length,
+        claimed: claimedIds.size,
+        last_action_at: null,
+      },
+    ]);
+  const reclaimM = path.match(/^\/admin\/users\/([^/]+)\/reclaim$/);
+  if (reclaimM && method === "POST") {
+    const n = claimedIds.size;
+    claimedIds = new Set();
+    return jsonRes({ reclaimed: n });
+  }
   if (path === "/admin/audit") return jsonRes([]);
   if (path === "/admin/countries") return jsonRes([]);
   if (path === "/admin/industries") return jsonRes([]);

@@ -49,7 +49,7 @@ interface Props {
   items: ReviewItem[];
   busyIds: Set<string>;
   doneCount: number; // 이번 세션 처리 건수(진행률 바 분자)
-  remaining: number; // 남은 대기 건수(필터 반영 total) — 분모 = doneCount + remaining
+  remaining: number; // 남은 작업 건수(호출부 기준 — 내 작업=내 잔여분, 전체큐=필터 반영 total). 분모 = doneCount + remaining
   // 성공(처리 완료) 시 true 를 resolve — 팝업에서 '성공해야 다음 행 전진' 판단에 쓴다.
   onConfirm: (id: string, selected?: string) => Promise<boolean>;
   onReject: (id: string) => Promise<boolean>;

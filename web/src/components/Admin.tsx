@@ -66,6 +66,7 @@ export function Admin() {
 
   const act = async (fn: () => Promise<unknown>) => {
     setError(null);
+    setMsg(null); // 이전 액션의 성공 메시지 잔존 방지 — fn 이 성공 시 새 메시지를 채운다.
     try {
       await fn();
       await load();
@@ -83,7 +84,6 @@ export function Admin() {
       )
     )
       return;
-    setMsg(null);
     await act(async () => {
       const r = await reclaimUser(u.id);
       setMsg(`${u.username} 계정의 점유 ${r.reclaimed}건을 회수했습니다.`);

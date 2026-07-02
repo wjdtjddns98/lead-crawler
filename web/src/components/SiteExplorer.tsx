@@ -408,8 +408,9 @@ export function SiteExplorer({
             {/* 하단 클러스터 — 세션 진행률 바 + 확정/거부. mt-auto 로 사이드바 바닥에 고정,
                 버튼과 한 묶음이라 후보가 적어 생기던 죽은 공간을 진행률이 채운다. */}
             <div className="mt-auto flex flex-col gap-3">
-              {/* 이번 세션 처리(확정+거부) / (처리 + 남은 대기). pending 필터에선 처리할 때마다
-                  remaining 이 함께 줄어 분모가 유지되며 바가 매끄럽게 찬다. done+remaining=0 이면 숨김. */}
+              {/* 이번 세션 처리(확정+거부) / (처리 + 남은 작업). remaining 은 호출부가 준
+                  "처리할 때마다 줄어드는" 값(내 작업=내 잔여분, 전체큐=pending total)이라
+                  분모가 유지되며 바가 매끄럽게 찬다. done+remaining=0 이면 숨김. */}
               {doneCount + remaining > 0 && (
                 <div className="flex flex-col gap-1">
                   <div className="flex items-center justify-between text-xs text-muted">
