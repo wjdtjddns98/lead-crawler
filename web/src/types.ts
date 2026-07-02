@@ -29,6 +29,8 @@ export interface ReviewItem {
   email_status: string | null;
   email_mx: boolean | null;
   email_smtp: boolean | null;
+  // 상장여부 — BE 계약 확장 필요(GET /queue·/queue/mine·POST /queue/claim 응답에 추가).
+  listed: Listed;
 }
 
 export interface QueueResponse {

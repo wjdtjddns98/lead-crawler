@@ -105,8 +105,8 @@ const COUNTRY_CODES = MOCK_COUNTRIES.map((c) => c.iso2);
 const SYNTH_INDUSTRY_KEYS = MOCK_QUEUE_INDUSTRIES.map((i) => i.value);
 const LISTED_CYCLE: Listed[] = ["listed", "unlisted", "unknown"];
 
-// 상장여부는 큐 DTO(ReviewItem)에 없고 BE 가 DiscoveredCompanyRow 조인으로 거른다.
-// mock 에선 id→listed 사이드맵으로 그 조인을 흉내 낸다(필터 동작 시연용). 합성분은 seed() 가 채운다.
+// 상장여부 — BE 는 DiscoveredCompanyRow 조인으로 채워 DTO(listed)에 싣는다.
+// mock 실측분은 이 수기표에서, 합성분은 seed() 가 3주기로 배정한다.
 const HAND_LISTED: Record<string, Listed> = {
   c1: "listed",
   c11: "listed",
@@ -120,7 +120,6 @@ const HAND_LISTED: Record<string, Listed> = {
   c9: "listed",
   c10: "unknown",
 };
-let MOCK_LISTED: Record<string, Listed> = { ...HAND_LISTED };
 
 function cand(
   value: string,
@@ -148,6 +147,7 @@ function mk(p: Partial<ReviewItem> & { id: string; name: string }): ReviewItem {
     email_status: null,
     email_mx: null,
     email_smtp: null,
+    listed: "unknown",
     ...p,
   };
 }
@@ -308,14 +308,13 @@ function synthSamples(count: number): ReviewItem[] {
   return rows;
 }
 
-// 전체 큐 시드 = 실측 11건 + 합성 89건(총 100건). 합성분 상장여부는 3주기로 배정해 MOCK_LISTED 채움.
+// 전체 큐 시드 = 실측 11건 + 합성 89건(총 100건). 합성분 상장여부는 3주기로 배정.
 function seed(): ReviewItem[] {
-  const hand = handSamples();
-  const synth = synthSamples(89);
-  MOCK_LISTED = { ...HAND_LISTED };
-  synth.forEach((r, i) => {
-    MOCK_LISTED[r.id] = LISTED_CYCLE[i % LISTED_CYCLE.length];
-  });
+  const hand = handSamples().map((r) => ({ ...r, listed: HAND_LISTED[r.id] ?? r.listed }));
+  const synth = synthSamples(89).map((r, i) => ({
+    ...r,
+    listed: LISTED_CYCLE[i % LISTED_CYCLE.length],
+  }));
   return [...hand, ...synth];
 }
 
@@ -378,7 +377,7 @@ function matches(it: ReviewItem, f: ClaimFilter): boolean {
   if (countries.size && !countries.has(it.country.toLowerCase())) return false;
   const industries = csvSet(f.industry);
   if (industries.size && !industries.has(it.industry.toLowerCase())) return false;
-  if (f.listed && MOCK_LISTED[it.id] !== f.listed) return false;
+  if (f.listed && it.listed !== f.listed) return false;
   return true;
 }
 
