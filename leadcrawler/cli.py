@@ -483,13 +483,18 @@ def enqueue() -> None:
         session.close()
 
 
-def backfill_industries(session, classifier, *, fetch_html, limit: int = 0) -> tuple[int, int]:
+def backfill_industries(
+    session, classifier, *, fetch_html, limit: int = 0, commit_every: int = 50
+) -> tuple[int, int]:
     """'미분류'·catch-all 구분의 실존 회사를 재분류해 갱신한다 — (검토, 갱신) 건수 반환.
 
     파이프라인 유입 시점과 같은 규칙(AMBIGUOUS_LABELS → 분류기, abstain=원래값 유지)을
     기존 행에 소급 적용한다. 홈페이지가 있으면 ``fetch_html`` 로 본문을 받아 분류 근거를
     보강한다(없거나 실패하면 이름·도메인만). 닫힌 택소노미 밖 값은 절대 쓰지 않고
     abstain 은 원래값을 유지하므로 반복 실행해도 안전하다(멱등).
+
+    ``commit_every`` 건마다 중간 커밋한다 — 전체 런은 행당 유료 호출이 있어, 중단 시
+    전량 롤백이면 그만큼의 LLM 지출이 통째로 증발한다(0=끄기, 마지막 커밋은 호출부).
     """
     from sqlalchemy import select
 
@@ -509,13 +514,15 @@ def backfill_industries(session, classifier, *, fetch_html, limit: int = 0) -> t
         stmt = stmt.limit(limit)
     rows = session.execute(stmt).all()
     updated = 0
-    for company, domain in rows:
+    for i, (company, domain) in enumerate(rows, start=1):
         html = fetch_html(company.homepage) if company.homepage else None
         # 분류기는 계약상 실패를 abstain(None)으로 흡수한다 — 확신 라벨일 때만 갱신.
         verdict = classifier.classify(company.name, domain, html)
         if verdict.label and verdict.label != company.industry:
             company.industry = verdict.label
             updated += 1
+        if commit_every and i % commit_every == 0:
+            session.commit()  # 중단돼도 여기까지의 재분류(=지출)는 살린다.
     return len(rows), updated
 
 
@@ -546,6 +553,8 @@ def backfill_industry(
     )
 
     def fetch_html(url: str) -> str | None:
+        if classifier.model == "stub":  # dry_run/키없음 — 네트워크 0 계약(§2) 유지.
+            return None
         try:
             r = client.get(url)
             return r.text if r.status_code < 400 else None
