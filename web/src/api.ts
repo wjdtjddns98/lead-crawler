@@ -134,8 +134,9 @@ export async function fetchQueue(params: {
   );
 }
 
-// 내 작업분을 배치 크기까지 채워 받는다(당겨가기 — 6명 동시 충돌 방지·자동 리필).
-// filter(국가·업종·상장)를 동반하면 그 조건의 pending 만 배정받는다(빈 객체/생략=전체, 하위호환).
+// 작업 받기 — 호출 1회 = +30개 추가 배정(선취, 총량 100 상한). 응답은 필터와 무관하게 내 점유
+// 전체. 추가형이라 새로고침·복원 용도로 쓰면 안 됨(그 용도는 fetchMyWork) — "작업 받기" 버튼
+// 클릭 시에만 호출한다. filter(국가·업종·상장)는 신규 배정분에만 적용(빈값=전체).
 export async function claimWork(filter?: ClaimFilter): Promise<ReviewItem[]> {
   return jsonOrThrow<ReviewItem[]>(
     await fetch(`${BASE}/queue/claim`, {
@@ -157,10 +158,10 @@ export async function fetchQueueFilters(): Promise<QueueFilters> {
   );
 }
 
-// 내가 점유한 미처리 항목을 풀로 반납한다(작업 종료).
-export async function releaseWork(): Promise<{ released: number }> {
-  return jsonOrThrow<{ released: number }>(
-    await fetch(`${BASE}/queue/release`, { method: "POST", headers: authHeaders() }),
+// 내 작업분 조회(부작용 없음) — 페이지 로드·새로고침·재로그인 복원·처리 후 목록 갱신용.
+export async function fetchMyWork(): Promise<ReviewItem[]> {
+  return jsonOrThrow<ReviewItem[]>(
+    await fetch(`${BASE}/queue/mine`, { headers: authHeaders() }),
   );
 }
 
@@ -219,6 +220,13 @@ export async function setUserActive(id: string, active: boolean): Promise<UserSt
       method: "POST",
       headers: authHeaders(),
     }),
+  );
+}
+
+// 계정의 pending 점유 전부를 풀로 회수한다(영구 배정의 유일한 해제 경로 — 관리자 전용).
+export async function reclaimUser(id: string): Promise<{ reclaimed: number }> {
+  return jsonOrThrow<{ reclaimed: number }>(
+    await fetch(`${BASE}/admin/users/${id}/reclaim`, { method: "POST", headers: authHeaders() }),
   );
 }
 

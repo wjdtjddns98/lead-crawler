@@ -52,6 +52,7 @@ export interface UserStats {
   created_at: string | null;
   confirmed: number;
   rejected: number;
+  claimed: number; // 현재 점유 중인 pending 건수 — 관리자 회수 판단용
   last_action_at: string | null;
 }
 
