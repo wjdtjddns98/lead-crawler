@@ -22,6 +22,10 @@ CANCELLED = "cancelled"
 # 종료 상태(더 이상 진행/취소 대상 아님).
 TERMINAL = frozenset({DONE, FAILED, CANCELLED})
 
+# 실행 모드 — once(단발 1회전) | continuous(취소까지 라운드 반복).
+MODE_ONCE = "once"
+MODE_CONTINUOUS = "continuous"
+
 # 갱신 가능한 카운터·상태 필드 화이트리스트(임의 컬럼 주입 차단).
 _UPDATABLE = frozenset(
     {
@@ -31,6 +35,7 @@ _UPDATABLE = frozenset(
         "discovered",
         "enriched",
         "saved",
+        "rounds_done",
         "error",
         "finished_at",
     }
@@ -58,6 +63,8 @@ def crawl_job_dict(row: CrawlJobRow) -> dict[str, object]:
         "discovered": row.discovered,
         "enriched": row.enriched,
         "saved": row.saved,
+        "mode": row.mode,
+        "rounds_done": row.rounds_done,
         "error": row.error,
         "cancel_requested": row.cancel_requested,
         "triggered_by": row.triggered_by,
@@ -76,6 +83,7 @@ def create_crawl_job(
     persist: bool,
     segments_total: int,
     triggered_by: str | None,
+    mode: str = MODE_ONCE,
 ) -> CrawlJobRow:
     """새 크롤 작업 행을 만든다(status='running'). flush 후 행 반환."""
     row = CrawlJobRow(
@@ -87,6 +95,7 @@ def create_crawl_job(
         persist=persist,
         segments_total=segments_total,
         triggered_by=triggered_by,
+        mode=mode,
     )
     session.add(row)
     session.flush()

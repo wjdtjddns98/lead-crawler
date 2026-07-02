@@ -8,6 +8,7 @@ from leadcrawler.config import get_settings
 from leadcrawler.pipeline import background as bg
 from leadcrawler.sources.segments import generate_segments
 from leadcrawler.pipeline.background import (
+    CrawlBusy,
     CrawlTooLarge,
     is_crawl_running,
     trigger_crawl_job,
@@ -181,6 +182,99 @@ def test_trigger_too_large_rejected(settings) -> None:
             persist=False, triggered_by="x",  # 1국×2업종 = 2 세그먼트 > 1.
         )
     assert is_crawl_running() is False  # 캡 거부는 가드를 건드리지 않는다.
+
+
+def test_run_crawl_job_continuous_rounds_then_cancel(settings, monkeypatch) -> None:
+    # 연속모드 — 취소 관측까지 라운드 반복 + rounds_done 기록, cancelled 로 종료.
+    small = settings.model_copy(update={"crawl_loop_pause_sec": 0})
+    with session_scope(small) as db:
+        jid = create_crawl_job(
+            db, countries="KR", industries="건설", listed="unknown",
+            persist=False, segments_total=1, triggered_by="관리자", mode="continuous",
+        ).id
+    calls = {"n": 0}
+
+    def _fake_pipeline(*_a, **_k):
+        calls["n"] += 1
+        if calls["n"] >= 2:  # 2라운드째가 끝나면 취소 요청 → 라운드 종료 체크에서 관측.
+            with session_scope(small) as db:
+                request_cancel(db, jid)
+        return []
+
+    monkeypatch.setattr(bg, "run_pipeline", _fake_pipeline)
+    bg.run_crawl_job(small, jid, [], persist=False, continuous=True)
+    with session_scope(small) as db:
+        d = crawl_job_dict(get_crawl_job(db, jid))
+    assert calls["n"] == 2  # 취소 없었으면 계속 돌았을 것 — 정확히 2라운드에서 멈춤.
+    assert d["status"] == "cancelled" and d["rounds_done"] == 2
+    assert bg.is_crawl_running() is False  # 가드 해제됨.
+
+
+def test_run_crawl_job_once_single_round(settings) -> None:
+    # 단발(기본) — 1라운드 후 done, rounds_done=1(하위호환: 기존 호출 경로 그대로).
+    with session_scope(settings) as db:
+        jid = create_crawl_job(
+            db, countries="KR", industries="건설", listed="unknown",
+            persist=False, segments_total=1, triggered_by="관리자",
+        ).id
+    segments = generate_segments(["건설"], countries=["KR"], listed=["unknown"])
+    bg.run_crawl_job(settings, jid, segments, persist=False)
+    with session_scope(settings) as db:
+        d = crawl_job_dict(get_crawl_job(db, jid))
+    assert d["status"] == "done" and d["rounds_done"] == 1 and d["mode"] == "once"
+
+
+def test_trigger_continuous_records_mode(settings) -> None:
+    # continuous 트리거 — mode='continuous' 로 기록·노출되고 runner 에 플래그 전달.
+    seen: dict[str, object] = {}
+
+    def _capture(_s, _jid, _segs, _persist, _target, continuous) -> None:
+        seen["continuous"] = continuous
+
+    try:
+        info = trigger_crawl_job(
+            settings, countries="KR", industries="건설", listed="unknown",
+            persist=False, triggered_by="x", runner=_capture, continuous=True,
+        )
+    finally:
+        with bg._guard:  # 동기 러너는 가드를 되돌리지 않으므로 테스트가 직접 해제.
+            bg._running = False
+    assert info["mode"] == "continuous" and info["rounds_done"] == 0
+    assert seen["continuous"] is True
+    with session_scope(settings) as db:
+        assert get_crawl_job(db, str(info["id"])).mode == "continuous"
+
+
+def test_trigger_busy_raises(settings, monkeypatch) -> None:
+    # 이미 크롤이 도는 중이면 CrawlBusy(라우트에서 409) — 연속잡이 점유 중일 때의 가드.
+    monkeypatch.setattr(bg, "_running", True)
+    with pytest.raises(CrawlBusy):
+        trigger_crawl_job(
+            settings, countries="KR", industries="건설", listed="unknown",
+            persist=False, triggered_by="x",
+        )
+
+
+def test_pause_cancelled_polls_during_sleep(monkeypatch) -> None:
+    # 휴지 중 취소 폴링 — 자는 사이 취소가 켜지면 남은 휴지를 버리고 True.
+    flag = {"v": False}
+    monkeypatch.setattr(bg, "_read_cancel", lambda *_a: flag["v"])
+    clock = {"t": 0.0}
+    monkeypatch.setattr(bg.time, "monotonic", lambda: clock["t"])
+
+    def _sleep(sec: float) -> None:
+        clock["t"] += sec
+        flag["v"] = True  # 자는 사이 취소 요청.
+
+    monkeypatch.setattr(bg.time, "sleep", _sleep)
+    assert bg._pause_cancelled(None, "job", pause_sec=10.0) is True
+    assert clock["t"] < 10.0  # 휴지를 끝까지 채우지 않고 조기 복귀.
+
+
+def test_pause_zero_returns_immediately(monkeypatch) -> None:
+    # pause 0 — 취소 없으면 자지 않고 즉시 False(다음 라운드로).
+    monkeypatch.setattr(bg, "_read_cancel", lambda *_a: False)
+    assert bg._pause_cancelled(None, "job", pause_sec=0) is False
 
 
 def test_trigger_spawn_failure_resets_guard(settings) -> None:

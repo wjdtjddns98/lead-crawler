@@ -355,8 +355,8 @@ def _sync_crawl(monkeypatch):
     """백그라운드 스레드 대신 동기 실행으로 바꿔 테스트를 결정적으로 만든다."""
     import leadcrawler.pipeline.background as bg
 
-    def _run_now(settings, job_id, segments, persist, target_count=0):
-        bg.run_crawl_job(settings, job_id, segments, persist, target_count)
+    def _run_now(settings, job_id, segments, persist, target_count=0, continuous=False):
+        bg.run_crawl_job(settings, job_id, segments, persist, target_count, continuous)
 
     monkeypatch.setattr(bg, "_spawn_thread", _run_now)
 

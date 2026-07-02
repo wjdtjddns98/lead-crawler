@@ -239,7 +239,7 @@ class CrawlTargetRequest(BaseModel):
 class CrawlJobRequest(BaseModel):
     """직접 크롤 실행 요청(관리자 전용) — 폼 즉석 입력값으로 즉시 크롤.
 
-    크롤 타깃 저장과 무관하게, 이 요청의 국가/업종/상장/적재로 바로 1회전 크롤을 돈다.
+    크롤 타깃 저장과 무관하게, 이 요청의 국가/업종/상장/적재로 바로 크롤을 돈다.
     업종은 최소 1개(빈 업종은 전 집계원 대상이라 과도한 발견 방지).
     """
 
@@ -247,8 +247,10 @@ class CrawlJobRequest(BaseModel):
     industries: str = Field(min_length=1, max_length=512)
     listed: Literal["unknown", "listed", "unlisted"] = "unknown"
     persist: bool = True
-    # 확보 목표 실존 회사 수 — 도달 시 조기 종료. 0=세그먼트 전부 깊게 소진(continuous).
+    # 확보 목표 실존 회사 수 — 라운드 안에서 도달 시 조기 종료. 0=세그먼트 전부 깊게 소진.
     target_count: int = Field(default=0, ge=0)
+    # True 면 취소 전까지 1회전(라운드)을 반복하는 연속 크롤(24/7 베이스). False=단발.
+    continuous: bool = False
 
     @field_validator("industries", mode="before")
     @classmethod
@@ -261,6 +263,8 @@ class CrawlJobInfo(BaseModel):
 
     ``status``: idle(작업 없음) | running | done | failed | cancelled. 카운터는
     discovered(중복제외 발견)·enriched(보강완료)·saved(실존 확인분)·segments_done/total.
+    ``mode``: once(단발) | continuous(연속 — 취소까지 반복, 카운터는 현재 라운드 기준이고
+    ``rounds_done`` 이 완료 라운드 수).
     """
 
     id: str | None = None
@@ -274,6 +278,8 @@ class CrawlJobInfo(BaseModel):
     discovered: int = 0
     enriched: int = 0
     saved: int = 0
+    mode: str = "once"
+    rounds_done: int = 0
     error: str | None = None
     cancel_requested: bool = False
     triggered_by: str | None = None

@@ -250,9 +250,10 @@ def register_admin(
         body: CrawlJobRequest,
         admin: UserRow = Depends(require_admin),
     ) -> CrawlJobInfo:
-        """폼 입력값으로 즉시 크롤을 1회전 돌린다(관리자, 백그라운드 실행).
+        """폼 입력값으로 즉시 크롤을 돌린다(관리자, 백그라운드 실행).
 
-        타깃 저장과 무관하게 이 요청값으로 바로 실행한다. 진행현황은 GET /admin/crawl 로
+        타깃 저장과 무관하게 이 요청값으로 바로 실행한다. ``continuous=true`` 면 취소
+        전까지 라운드를 반복하는 연속 크롤(24/7 베이스). 진행현황은 GET /admin/crawl 로
         폴링한다. 이미 진행 중이면 409, 세그먼트 상한 초과면 422.
         """
         try:
@@ -264,6 +265,7 @@ def register_admin(
                 persist=body.persist,
                 triggered_by=admin.username,
                 target_count=body.target_count,
+                continuous=body.continuous,
             )
         except CrawlBusy as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

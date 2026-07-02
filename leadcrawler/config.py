@@ -71,6 +71,8 @@ class Settings(BaseSettings):
     # 웹 직접 크롤 — 한 번에 도는 세그먼트(국가×업종×상장) 상한. 빈 국가=지원 전체국이라
     # 다업종 선택 시 세그먼트가 폭증할 수 있어, 우발적 대량 크롤(예산·시간 낭비)을 막는 캡.
     crawl_max_segments: int = Field(default=500, ge=1)
+    # 연속(continuous) 크롤 — 라운드 사이 휴지(초). 휴지 중에도 취소 폴링이 돌아 즉시 멈춘다.
+    crawl_loop_pause_sec: int = Field(default=60, ge=0)
 
     # 이메일 보강/검증
     hunter_api_key: str = Field(default="")
