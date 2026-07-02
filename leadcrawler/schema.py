@@ -60,6 +60,17 @@ class DiscoveredCompanyRow(Base):
     last_crawled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # ── 풍부필드 — 등록처 응답이 이미 주는 값(전부 additive·NULL=소스 미제공).
+    # 주소 원문(DART adres·GLEIF legalAddress·CH registered_office 등).
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 정규화 지역 라벨(KR=17개 시/도 축약형, 그 외=소스가 준 도시/주) — 지역 필터 대상.
+    region: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # 현지 등록번호(KR 사업자번호·GLEIF registeredAs 등) — dedup 확정키 조회 대상.
+    reg_no: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    ticker: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ir_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    name_eng: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # ── Entity Resolution(중복해소) — 전부 additive·기본 NULL. C1 배치 리포트는 읽기전용이고,
     # 실제 머지 기록(C3 골든레코드)·사람 확정(C4)이 이 컬럼들을 채운다(가역·감사 가능).
     # 캐노니컬(법인 정식) 회사명 라벨 — survivorship 결과(C3). NULL=아직 라벨 안 함.

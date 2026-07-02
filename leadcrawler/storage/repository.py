@@ -151,6 +151,13 @@ def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompan
             domain=dc.domain,
             segment=dc.segment,
             source=dc.source,
+            address=dc.address,
+            region=_clip(dc.region, 64) if dc.region else None,
+            reg_no=_clip(dc.reg_no, 64) if dc.reg_no else None,
+            ticker=_clip(dc.ticker, 32) if dc.ticker else None,
+            phone=_clip(dc.phone, 64) if dc.phone else None,
+            ir_url=_clip(dc.ir_url) if dc.ir_url else None,
+            name_eng=_clip(dc.name_eng) if dc.name_eng else None,
         )
         session.add(row)
     row.last_crawled_at = _utcnow()
