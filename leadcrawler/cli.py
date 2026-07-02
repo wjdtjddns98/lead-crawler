@@ -483,6 +483,91 @@ def enqueue() -> None:
         session.close()
 
 
+def backfill_industries(session, classifier, *, fetch_html, limit: int = 0) -> tuple[int, int]:
+    """'미분류'·catch-all 구분의 실존 회사를 재분류해 갱신한다 — (검토, 갱신) 건수 반환.
+
+    파이프라인 유입 시점과 같은 규칙(AMBIGUOUS_LABELS → 분류기, abstain=원래값 유지)을
+    기존 행에 소급 적용한다. 홈페이지가 있으면 ``fetch_html`` 로 본문을 받아 분류 근거를
+    보강한다(없거나 실패하면 이름·도메인만). 닫힌 택소노미 밖 값은 절대 쓰지 않고
+    abstain 은 원래값을 유지하므로 반복 실행해도 안전하다(멱등).
+    """
+    from sqlalchemy import select
+
+    from .schema import CompanyRow, DiscoveredCompanyRow
+    from .sources.taxonomy import AMBIGUOUS_LABELS
+
+    stmt = (
+        select(CompanyRow, DiscoveredCompanyRow.domain)
+        .join(
+            DiscoveredCompanyRow,
+            DiscoveredCompanyRow.canonical_key == CompanyRow.canonical_key,
+        )
+        .where(CompanyRow.is_active.is_(True), CompanyRow.industry.in_(AMBIGUOUS_LABELS))
+        .order_by(CompanyRow.id)
+    )
+    if limit:
+        stmt = stmt.limit(limit)
+    rows = session.execute(stmt).all()
+    updated = 0
+    for company, domain in rows:
+        html = fetch_html(company.homepage) if company.homepage else None
+        # 분류기는 계약상 실패를 abstain(None)으로 흡수한다 — 확신 라벨일 때만 갱신.
+        verdict = classifier.classify(company.name, domain, html)
+        if verdict.label and verdict.label != company.industry:
+            company.industry = verdict.label
+            updated += 1
+    return len(rows), updated
+
+
+@app.command("backfill-industry")
+def backfill_industry(
+    limit: int = typer.Option(0, help="처리 상한(0=전체) — 소량 시험용"),
+) -> None:
+    """'미분류'·catch-all 구분으로 남은 기존 회사를 LLM 으로 소급 재분류한다(멱등).
+
+    파이프라인은 유입 시점에만 분류하므로, 그때 보류(abstain — 홈페이지 없음·429 등)된
+    행은 이 명령으로 재시도한다. dry_run/키없음이면 무료 키워드 스텁으로 동작하고,
+    라이브는 cost_ledger 월예산·런당캡 가드 안에서만 과금 호출한다.
+    """
+    import httpx
+
+    from .cost_ledger import CostLedger
+    from .enrich.industry_classify import build_classifier
+    from .storage.db import get_sessionmaker
+
+    configure_logging()
+    settings = get_settings()
+    ledger = CostLedger(settings, persist=not settings.dry_run)
+    classifier = build_classifier(settings, ledger=ledger)
+    client = httpx.Client(
+        timeout=10,
+        follow_redirects=True,
+        headers={"User-Agent": settings.discovery_user_agent},
+    )
+
+    def fetch_html(url: str) -> str | None:
+        try:
+            r = client.get(url)
+            return r.text if r.status_code < 400 else None
+        except Exception:  # 죽은 사이트·타임아웃 → 본문 없이(이름·도메인만) 분류.
+            return None
+
+    session = get_sessionmaker(settings)()
+    try:
+        examined, updated = backfill_industries(
+            session, classifier, fetch_html=fetch_html, limit=limit
+        )
+        session.commit()
+    finally:
+        session.close()
+        client.close()
+    mode = "스텁(무과금)" if classifier.model == "stub" else f"LLM({classifier.model})"
+    typer.echo(
+        f"구분 백필 완료[{mode}]: 검토 {examined}건 → 재분류 {updated}건 "
+        f"(보류 {examined - updated}건은 원래값 유지)"
+    )
+
+
 @app.command("seed-mock")
 def seed_mock() -> None:
     """로컬 개발용 목 리드 5건을 DB 에 적재한다(검증 웹앱 둘러보기용 — 멱등).
