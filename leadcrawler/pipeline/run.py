@@ -19,6 +19,7 @@ from ..config import Settings, get_settings
 from ..cost_ledger import CostLedger
 from ..emailrules import accepted_emails
 from ..enrich.enricher import Enricher
+from ..enrich.industry_classify import SupportsClassifier, build_classifier
 from ..logging import get_logger
 from ..models import (
     Company,
@@ -32,6 +33,7 @@ from ..dedup_resolve.inline import find_inline_duplicate
 from ..dedup_resolve.inline_lexical import InlineLexicalMatcher
 from ..sources.base import DiscoveredCompany, Segment
 from ..sources.domain_resolver import DomainResolver
+from ..sources.taxonomy import AMBIGUOUS_LABELS
 from ..sources.http import HostRateLimiters
 from ..sources.registry import build_sources, close_sources, discover_segment
 from ..storage.db import get_sessionmaker
@@ -66,6 +68,7 @@ def _build_lead(
     enricher: Enricher,
     existence: ExistenceVerifier,
     email_validator: EmailValidator,
+    classifier: SupportsClassifier,
 ) -> CompanyLead:
     """기업 1건: 연락처 보강 + 실존 검증 + 이메일 검증 → CompanyLead.
 
@@ -89,11 +92,26 @@ def _build_lead(
         home_html=enricher.last_home_html,
         rendered_html=enricher.last_home_rendered_html,
     )
+    # 구분(업종) 실질화: 등록처 코드로 대분류가 안 잡혀 미분류이거나 catch-all(모호)이면
+    # 무조건 LLM 한번 거쳐 닫힌 대분류에 배치한다. 확신 라벨은 스킵(비용). abstain 이면
+    # 원래값(미분류/기타) 유지 — 리드는 그대로 보존(제약②). dry_run/키없음이면 스텁이라 무과금.
+    # **is_active 게이트**: 실존 확인(적재 대상) 회사만 분류한다 — 비활성(도메인 없는 GLEIF
+    # 엔티티 등)은 company 테이블에 안 실리므로 분류해도 버려져 LLM 비용만 낭비된다.
+    industry = dc.industry
+    if ex.is_active and industry in AMBIGUOUS_LABELS:
+        # 방어: 분류기는 계약상 예외를 안 던지지만(abstain), 만일 던져도 실존 리드를 잃지
+        # 않도록 흡수한다(제약② — 배치 catch 로 리드가 통째 드롭되는 것 방지).
+        try:
+            verdict = classifier.classify(dc.name, dc.domain, enricher.last_home_html)
+            if verdict.label:
+                industry = verdict.label
+        except Exception as exc:
+            log.info("pipeline.classify.error", key=dc.canonical_key, err=str(exc))
     company = Company(
         canonical_key=dc.canonical_key,
         name=dc.name,
         country=dc.country,
-        industry=dc.industry,
+        industry=industry,
         listed=_listed_of(dc),
         homepage=f"https://{dc.domain}" if dc.domain else None,
         domain=dc.domain,
@@ -187,6 +205,9 @@ def run_pipeline(
     cost_ledger = CostLedger(settings, persist=persist) if not settings.dry_run else None
     email_validator = EmailValidator(settings, cost_ledger=cost_ledger)
     enricher = Enricher(settings, cost_ledger=cost_ledger)
+    # 산업 분류기 — 상태없는(호출당 독립 client) 공유 인스턴스라 워커 간 공유 안전(내부 락으로
+    # 런당 호출 카운터만 보호). dry_run/플래그off/키없음이면 무네트워크 결정적 스텁으로 폴백.
+    classifier = build_classifier(settings, ledger=cost_ledger)
     # 도메인 해석(opt-in·라이브) — 발견이 도메인을 못 준 기업(GLEIF 등)을 회사명으로 보강.
     # 없으면 enrich 가 즉시 빈손이라 사이트·이메일을 못 얻는다(핵심 커버리지 갭 해소).
     resolver = (
@@ -207,7 +228,11 @@ def run_pipeline(
     def _process_one(dc: DiscoveredCompany) -> CompanyLead:
         if pool is None:  # 순차 — 공유 인스턴스(메인 스레드 단독 실행, 기존 경로와 동일).
             return _build_lead(
-                dc, enricher=enricher, existence=existence, email_validator=email_validator
+                dc,
+                enricher=enricher,
+                existence=existence,
+                email_validator=email_validator,
+                classifier=classifier,
             )
         w = getattr(_tl, "trio", None)
         if w is None:  # 워커 스레드당 독립 인스턴스 1회 생성. registry_checker 까지 워커별로
@@ -221,7 +246,9 @@ def run_pipeline(
             with _created_lock:
                 _created.extend([enr, exi, val, *([rc] if rc is not None else [])])
         enr, exi, val = w
-        return _build_lead(dc, enricher=enr, existence=exi, email_validator=val)
+        return _build_lead(
+            dc, enricher=enr, existence=exi, email_validator=val, classifier=classifier
+        )
 
     leads: list[CompanyLead] = []
     pending: list[DiscoveredCompany] = []  # 배치 — 메인 dedup 통과분, 풀로 동시 처리.

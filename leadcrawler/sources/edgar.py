@@ -17,7 +17,7 @@ from ..dedup import normalize_domain
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company, is_country
 from .http import Fetcher, HostRateLimiters, SupportsFetch
-from .industry import matches_prefix, sic_prefixes
+from .industry import industry_from_sic, matches_prefix, sic_prefixes
 
 log = get_logger("sources.edgar")
 
@@ -120,6 +120,8 @@ class EdgarSource:
                     domain=normalize_domain(website if isinstance(website, str) else None),
                     registry="sec",
                     registry_id=str(cik),
+                    # broad 검색 시 구분을 대분류로 복원(SIC). 구체 검색이면 무시된다.
+                    industry_code_label=industry_from_sic(sub.get("sic")),
                 )
             )
             if len(out) >= cap:

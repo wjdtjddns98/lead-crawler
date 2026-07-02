@@ -91,6 +91,10 @@ class Settings(BaseSettings):
 
     # AI (Claude Vision)
     anthropic_api_key: str = Field(default="")
+    # OAuth Bearer 인증(구독 기반) — 산업 분류 LLM 을 x-api-key(종량 API 과금) 대신
+    # Authorization: Bearer 토큰으로 호출한다(Max 구독 auth). 값이 있으면 분류기가 api_key
+    # 대신 이 토큰을 우선 사용(anthropic SDK auth_token). LEADCRAWLER_ANTHROPIC_AUTH_TOKEN.
+    anthropic_auth_token: str = Field(default="")
 
     # 중복해소 LLM 판정(C2, opt-in·유료) — 무료·결정적 사다리가 못 가른 쇼트리스트만
     # Claude(Haiku)로 동일기업 여부 판정. 호출당 과금이라 기본 off + 런당 캡, anthropic_api_key
@@ -98,6 +102,16 @@ class Settings(BaseSettings):
     dedup_llm_judge: bool = Field(default=False)
     dedup_llm_model: str = Field(default="claude-haiku-4-5-20251001")  # 저가 모델 기본(비용)
     dedup_llm_max_pairs: int = Field(default=200, ge=0)  # 런당 유료 판정 상한(과금 보호)
+
+    # 산업 분류 LLM(구분 컬럼 실질화, opt-in·유료) — 등록처 코드로 대분류가 안 잡히거나
+    # 모호/미분류인 회사만 Claude(Haiku)가 회사 신호(이름·도메인·홈페이지)를 보고 닫힌 대분류
+    # 택소노미 중 하나로 배치한다. 호출당 과금이라 기본 off + 런당 캡, anthropic_api_key 없으면
+    # 미동작(StubClassifier 폴백). dry_run 은 네트워크 없는 결정적 스텁으로 동작.
+    industry_llm_classify: bool = Field(default=False)
+    # Haiku 기본: 구독 OAuth(Bearer)가 Sonnet 은 하드 레이트리밋(429)하고 Haiku 는 허용해
+    # 벌크 분류가 가능하다(실측 2026-07-01). 종량 API 키를 쓸 땐 Sonnet 으로 올려도 됨.
+    industry_llm_model: str = Field(default="claude-haiku-4-5-20251001")
+    industry_llm_max_calls: int = Field(default=5000, ge=0)  # 런당 유료 분류 상한(과금 보호)
     # 수집 파이프라인 inline 중복 승격(C5, opt-in) — 정확 dedup 통과한 신규 리드를 기존
     # 원장과 near_dup 대조, 최상위(auto) 티어면 재추출 없이 흡수(제약①). off 면 기존 동작.
     dedup_inline: bool = Field(default=False)

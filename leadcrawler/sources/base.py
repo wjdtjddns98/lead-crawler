@@ -12,6 +12,7 @@ from typing import Protocol
 from pydantic import BaseModel, Field
 
 from ..dedup import canonical_key
+from .industry import resolve_industry_label
 
 
 class Segment(BaseModel):
@@ -68,8 +69,15 @@ def build_company(
     domain: str | None = None,
     registry: str | None = None,
     registry_id: str | None = None,
+    industry_code_label: str | None = None,
 ) -> DiscoveredCompany:
-    """식별 정보로 ``canonical_key`` 를 산정해 :class:`DiscoveredCompany` 를 만든다."""
+    """식별 정보로 ``canonical_key`` 를 산정해 :class:`DiscoveredCompany` 를 만든다.
+
+    ``industry`` 는 :func:`resolve_industry_label` 로 정한다: 구체 업종 검색이면 세그먼트
+    업종 그대로, broad('전체' 등)면 등록처 코드에서 복원한 ``industry_code_label``(명확
+    단일매치, 등록처 소스만 전달)을 쓰고 없으면 '미분류'(파이프라인이 이후 LLM 배치 시도).
+    ``segment`` 라벨(provenance)은 원래 세그먼트 업종을 유지한다 — 구분 컬럼과 별개.
+    """
     key = canonical_key(
         registry=registry,
         registry_id=registry_id,
@@ -81,7 +89,7 @@ def build_company(
         canonical_key=key,
         name=name,
         country=segment.country,
-        industry=segment.industry,
+        industry=resolve_industry_label(segment.industry, code_label=industry_code_label),
         listed=segment.listed,
         domain=domain,
         registry=registry,
@@ -112,7 +120,7 @@ class DummySource(BaseModel):
                     canonical_key=canonical_key(domain=domain),
                     name=f"{segment.industry} 더미기업 {i}",
                     country=segment.country,
-                    industry=segment.industry,
+                    industry=resolve_industry_label(segment.industry),
                     domain=domain,
                     source=self.name,
                     segment=segment.label,
