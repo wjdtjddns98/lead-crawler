@@ -240,3 +240,42 @@ def test_naver_api_error_returns_miss() -> None:
 
     r = DomainResolver(_naver_settings(), fetcher=BoomFetcher())
     assert r.resolve(_dc("SK hynix", country="KR")) is None  # 크래시 없음(miss).
+
+
+# ── 펀드/신탁/SPC 스킵(검색 쿼터 보호) ──────────────────────────────────────
+
+
+def test_fund_entities_skip_search() -> None:
+    from leadcrawler.sources.domain_resolver import is_fund_entity
+
+    funds = (
+        "한화 해외채권 EMP 일반사모 증권 투자신탁 1호(채권-재간접파생형)",
+        "키움키워드림다이나믹적격TDF2050증권자투자신탁제1호(H)[주식혼합-재간접형]",
+        "케이비제12차유동화전문유한회사",
+        "미래에셋글로벌펀드",
+        "xETFs AI Bottleneck & Chokepoint ETF",
+        "KEY MULTI ALTERNATIVES SOLUTIONS FUND",
+        "ABC UCITS ICAV",
+        "Scottish Mortgage Investment Trust PLC",
+    )
+    for name in funds:
+        assert is_fund_entity(name), name
+    f = UrlFakeFetcher(_items("https://never-called.com"))
+    r = DomainResolver(_naver_settings(), fetcher=f)
+    dc = DiscoveredCompany(
+        canonical_key="reg:lei:F1", name="한화글로벌채권ETF일반사모증권투자신탁12호",
+        country="KR", name_eng="Hanwha Global Bond Trust 12",
+    )
+    assert r.resolve(dc) is None
+    assert f.urls == []  # 검색 쿼터 미사용.
+
+
+def test_real_companies_not_flagged_as_fund() -> None:
+    from leadcrawler.sources.domain_resolver import is_fund_entity
+
+    real = (
+        "SK hynix Inc.", "Northern Trust Corporation", "TDF SAS",  # 佛 통신인프라 실기업.
+        "삼성전자", "두산에너빌리티", "Fundrise LLC", "현대투자파트너스",
+    )
+    for name in real:
+        assert not is_fund_entity(name), name
