@@ -832,3 +832,17 @@ def test_enricher_no_form_fallback_when_email_present() -> None:
     out = Enricher(settings, fetcher=FakeFetcher(pages)).enrich(dc)
     assert any(c.value == "ir@acme.co.kr" for c in out)
     assert not [c for c in out if c.type is ContactType.FORM]  # 폴백 없음.
+
+
+def test_dead_home_not_refetched_by_later_stages() -> None:
+    """홈 fetch 실패(naked+www)는 캐시돼 OCR/Vision 단계가 재시도하지 않는다(타임아웃 중복 제거)."""
+    fetcher = FakeFetcher({})  # 모든 fetch 실패 = 죽은 도메인.
+    ocr = FakeOcr("ir@acme.co.kr")
+    vision = FakeVision("ir@acme.co.kr")
+    out = Enricher(
+        Settings(dry_run=False, enrich_ocr=True, enrich_vision=True, anthropic_api_key="k"),
+        fetcher=fetcher, ocr=ocr, vision=vision,
+    ).enrich(_DC)
+    assert out == []
+    assert fetcher.calls == 2  # _live 의 naked+www 각 1회뿐 — 이후 단계 재fetch 0.
+    assert ocr.calls == [] and vision.calls == []
