@@ -57,6 +57,9 @@ class DiscoveredCompany(BaseModel):
     phone: str | None = None
     ir_url: str | None = None
     name_eng: str | None = None
+    # 상장 시장(보드) 세분화 — 예: KOSPI/KOSDAQ/KONEX(DART corp_cls)·NASDAQ/NYSE(EDGAR)·
+    # PSE/SGX(거래소 소스). listed 3값(listed/unlisted/unknown)의 세부 라벨(None=미상).
+    market: str | None = None
 
 
 class DiscoverySource(Protocol):
@@ -153,6 +156,7 @@ def build_company(
     phone: str | None = None,
     ir_url: str | None = None,
     name_eng: str | None = None,
+    market: str | None = None,
 ) -> DiscoveredCompany:
     """식별 정보로 ``canonical_key`` 를 산정해 :class:`DiscoveredCompany` 를 만든다.
 
@@ -189,6 +193,7 @@ def build_company(
         phone=phone,
         ir_url=ir_url,
         name_eng=name_eng,
+        market=market,
     )
 
 

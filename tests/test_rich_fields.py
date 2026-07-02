@@ -274,3 +274,82 @@ def test_dart_live_parses_rich_fields() -> None:
     assert dc.ir_url == "https://www.samsung.com/ir"
     assert dc.name_eng == "Samsung Electronics"
     assert dc.listed == "listed"
+    assert dc.market == "KOSPI"  # corp_cls Y → 시장 세분화.
+
+
+# --- 상장 시장(market) 세분화 ---------------------------------------------
+
+def test_dart_corp_cls_e_maps_unlisted_no_market() -> None:
+    """corp_cls='E'(기타법인 — 상장폐지 포함, corpCode 에 stock_code 잔존) → unlisted·market 없음."""
+    import io
+    import zipfile
+
+    xml = (
+        "<result><list><corp_code>00260985</corp_code>"
+        "<corp_name>한빛네트</corp_name><stock_code>036720</stock_code></list></result>"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("CORPCODE.xml", xml)
+
+    class _Fake:
+        def get_bytes(self, url, *, params=None, headers=None):
+            return buf.getvalue()
+
+        def get_json(self, url, *, params=None, headers=None):
+            return {
+                "status": "000",
+                "corp_name": "한빛네트",
+                "corp_cls": "E",
+                "stock_code": "036720",
+                "hm_url": "www.hanbitnet.example",
+            }
+
+    from leadcrawler.sources.dart import DartSource
+
+    src = DartSource(Settings(dry_run=False, dart_api_key="k"), fetcher=_Fake())
+    out = src.discover(Segment(country="KR", industry="전체"))
+    assert len(out) == 1
+    assert out[0].listed == "unlisted"
+    assert out[0].market is None
+
+
+def test_edgar_tickers_exchange_keeps_exchange() -> None:
+    """universe 파서가 거래소를 보존한다(비허용 거래소 행 제외, 소문자 정규화)."""
+    from leadcrawler.sources.edgar import _parse_tickers_exchange
+
+    payload = {
+        "fields": ["cik", "name", "ticker", "exchange"],
+        "data": [
+            [320193, "Apple Inc.", "AAPL", "Nasdaq"],
+            [111, "OTC Co", "OTCX", "OTC"],
+            [222, "Foreign Plc", "FRN", "LSE"],  # 비허용 거래소 → 제외.
+        ],
+    }
+    assert _parse_tickers_exchange(payload) == [
+        (320193, "Apple Inc.", "nasdaq"),
+        (111, "OTC Co", "otc"),
+    ]
+
+
+def test_exchange_source_sets_market() -> None:
+    """거래소 소스는 항상 listed + 거래소명 market 을 기입한다(dry 경로)."""
+    from leadcrawler.sources.exchanges import PseSource
+
+    out = PseSource(Settings(dry_run=True)).discover(Segment(country="PH", industry="전체"))
+    assert out and all(dc.listed == "listed" and dc.market == "PSE" for dc in out)
+
+
+def test_save_discovered_persists_market(tmp_path) -> None:
+    settings = Settings(database_url=f"sqlite:///{tmp_path}/m.db", dry_run=True)
+    init_db(settings)
+    seg = Segment(country="KR", industry="전체", listed="listed")
+    dc = build_company(
+        source="dart", segment=seg, name="시장기업", registry="dart",
+        registry_id="00000002", market="KOSDAQ",
+    )
+    with session_scope(settings) as s:
+        save_discovered(s, dc)
+    with session_scope(settings) as s:
+        row = s.get(DiscoveredCompanyRow, dc.canonical_key)
+        assert row is not None and row.market == "KOSDAQ"

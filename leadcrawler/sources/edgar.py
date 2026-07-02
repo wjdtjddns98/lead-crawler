@@ -118,7 +118,7 @@ class EdgarSource:
         scanned = 0
 
         out: list[DiscoveredCompany] = []
-        for cik, name in universe[offset : offset + scan_limit]:
+        for cik, name, exchange in universe[offset : offset + scan_limit]:
             scanned += 1
             try:
                 sub = fetcher.get_json(_SUBMISSIONS_URL.format(cik=f"{cik:010d}"))
@@ -132,10 +132,19 @@ class EdgarSource:
             website = sub.get("investorWebsite") or sub.get("website")
             address, region = _business_address(sub.get("addresses"))
             tickers = sub.get("tickers")
+            # 상장여부 세분화: universe 는 거래소 필드가 있는 SEC 공시기업 목록 — 실거래소
+            # (nasdaq/nyse/cboe)=listed, 장외(otc)=unlisted, 빈 값=세그먼트 값 유지(미상).
+            listed = (
+                segment.listed
+                if not exchange
+                else ("unlisted" if exchange == "otc" else "listed")
+            )
             out.append(
                 build_company(
                     source=self.name,
-                    segment=segment,
+                    segment=Segment(
+                        country=segment.country, industry=segment.industry, listed=listed
+                    ),
                     name=sub.get("name") or name,
                     domain=normalize_domain(website if isinstance(website, str) else None),
                     registry="sec",
@@ -150,6 +159,7 @@ class EdgarSource:
                     ticker=(
                         opt_str(tickers[0]) if isinstance(tickers, list) and tickers else None
                     ),
+                    market=exchange.upper() or None,
                 )
             )
             if len(out) >= cap:
@@ -176,17 +186,18 @@ def _business_address(addresses: Any) -> tuple[str | None, str | None]:
     return address, opt_str(business.get("stateOrCountry"))
 
 
-def _parse_tickers_exchange(payload: Any) -> list[tuple[int, str]]:
-    """company_tickers_exchange.json → 거래소 상장 (cik, 회사명) 목록.
+def _parse_tickers_exchange(payload: Any) -> list[tuple[int, str, str]]:
+    """company_tickers_exchange.json → 거래소 상장 (cik, 회사명, 거래소 소문자) 목록.
 
     형식: ``{"fields": ["cik","name","ticker","exchange"], "data": [[...], ...]}``.
+    거래소는 listed/market 세분화에 쓰인다(빈 문자열=미상).
     """
     if not isinstance(payload, dict):
         return []
     fields = [str(f).lower() for f in payload.get("fields", [])]
     idx = {f: i for i, f in enumerate(fields)}
     ci, ni, ei = idx.get("cik"), idx.get("name"), idx.get("exchange")
-    out: list[tuple[int, str]] = []
+    out: list[tuple[int, str, str]] = []
     for row in payload.get("data", []):
         if ci is None or ci >= len(row):
             continue
@@ -198,5 +209,5 @@ def _parse_tickers_exchange(payload: Any) -> list[tuple[int, str]]:
         except (TypeError, ValueError):
             continue
         name = str(row[ni]) if ni is not None and ni < len(row) else ""
-        out.append((cik, name))
+        out.append((cik, name, exchange))
     return out

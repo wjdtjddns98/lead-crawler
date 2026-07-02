@@ -158,6 +158,7 @@ def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompan
             phone=_clip(dc.phone, 64) if dc.phone else None,
             ir_url=_clip(dc.ir_url) if dc.ir_url else None,
             name_eng=_clip(dc.name_eng) if dc.name_eng else None,
+            market=_clip(dc.market, 32) if dc.market else None,
         )
         session.add(row)
     row.last_crawled_at = _utcnow()
