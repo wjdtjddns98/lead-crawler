@@ -18,7 +18,7 @@ const STRIPE: Record<ReviewItem["status"], string> = {
 const COL_W = [
   "min-w-[120px]", // 업체명
   "", // 국가
-  "", // 구분
+  "", // 업종
   "whitespace-nowrap", // 상장여부
   "min-w-[240px]", // 이메일 후보(편집 입력 포함 — 넓게 유지)
   "", // 메일
@@ -26,7 +26,7 @@ const COL_W = [
   "", // 상태
   "min-w-[120px]", // 액션(버튼 2개 가로 유지)
 ];
-const HEADERS = ["업체명", "국가", "구분", "상장여부", "이메일 후보", "메일", "사이트", "상태", "액션"];
+const HEADERS = ["업체명", "국가", "업종", "상장여부", "이메일 후보", "메일", "사이트", "상태", "액션"];
 
 // 상장여부 표기·정렬 순서 — 필터 셀렉트 어휘(상장/비상장/미상)와 동일, 상장 먼저.
 const LISTED_LABEL: Record<Listed, string> = { listed: "상장", unlisted: "비상장", unknown: "미상" };
