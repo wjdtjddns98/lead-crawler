@@ -7,12 +7,14 @@ import {
   fetchCountries,
   fetchCrawlTarget,
   fetchIndustries,
+  fetchQueueFilters,
   fetchSendPreview,
   fetchUsers,
   reclaimUser,
   saveCrawlTarget,
   sendCampaign,
   setUserActive,
+  withUnclassified,
 } from "../api";
 import type {
   AuditEntry,
@@ -376,13 +378,17 @@ function SendSection() {
 
   useEffect(() => {
     let alive = true;
-    Promise.all([fetchCountries(), fetchIndustries()])
-      .then(([cs, is]) => {
+    fetchQueueFilters()
+      .then((f) => {
         if (!alive) return;
         setCountryOpts(
-          cs.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
+          f.countries.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
         );
-        setIndustryOpts(is.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })));
+        // 발송 범위 업종은 큐 행 저장 어휘(구분 택소노미+미분류)와 일치해야 매치된다(#115) —
+        // 크롤 타깃용 /admin/industries(18키)가 아니라 /queue/filters 를 출처로 쓴다.
+        setIndustryOpts(
+          withUnclassified(f.industries).map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
+        );
       })
       .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
@@ -479,7 +485,7 @@ function SendSection() {
               options={industryOpts}
               value={industries}
               onChange={setIndustries}
-              placeholder="업종 검색 (예: 건설, construction)"
+              placeholder="업종 검색 (예: 반도체, 미분류)"
               emptyHint="전체 업종"
             />
           </div>
@@ -535,13 +541,17 @@ function ExportSection() {
 
   useEffect(() => {
     let alive = true;
-    Promise.all([fetchCountries(), fetchIndustries()])
-      .then(([cs, is]) => {
+    fetchQueueFilters()
+      .then((f) => {
         if (!alive) return;
         setCountryOpts(
-          cs.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
+          f.countries.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
         );
-        setIndustryOpts(is.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })));
+        // 추출 범위 업종도 큐 행 저장 어휘(구분 택소노미+미분류)와 일치해야 매치된다(#115) —
+        // 크롤 타깃용 /admin/industries(18키)가 아니라 /queue/filters 를 출처로 쓴다.
+        setIndustryOpts(
+          withUnclassified(f.industries).map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
+        );
       })
       .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
@@ -586,7 +596,7 @@ function ExportSection() {
             options={industryOpts}
             value={industries}
             onChange={setIndustries}
-            placeholder="업종 검색 (예: 건설, construction)"
+            placeholder="업종 검색 (예: 반도체, 미분류)"
             emptyHint="전체 업종"
           />
         </div>

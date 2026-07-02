@@ -8,6 +8,7 @@ import {
   logout,
   rejectReview,
   setAuthErrorHandler,
+  withUnclassified,
 } from "./api";
 import { Admin } from "./components/Admin";
 import { MyWork } from "./components/MyWork";
@@ -146,7 +147,10 @@ function Workbench({
         setCountryOpts(
           f.countries.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
         );
-        setIndustryOpts(f.industries.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })));
+        // '미분류'(분류 실패 폴백값)도 조회 대상 — BE 옵션에 없을 때만 덧붙인다(#115 중복 방지).
+        setIndustryOpts(
+          withUnclassified(f.industries).map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
+        );
       })
       .catch(() => {
         // 옵션 로드 실패해도 큐 조회는 가능 — 픽커만 빈 채로 둔다.
@@ -245,7 +249,7 @@ function Workbench({
               setIndustry(csv);
               setOffset(0);
             }}
-            placeholder="업종 검색 (예: 건설, construction)"
+            placeholder="업종 검색 (예: 반도체, 미분류)"
             emptyHint="전체 업종"
           />
         </div>

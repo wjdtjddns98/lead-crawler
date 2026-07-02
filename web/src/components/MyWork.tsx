@@ -6,6 +6,7 @@ import {
   fetchQueue,
   fetchQueueFilters,
   rejectReview,
+  withUnclassified,
 } from "../api";
 import { QueueTable } from "./QueueTable";
 import { TableSkeleton } from "./TableSkeleton";
@@ -119,7 +120,10 @@ export function MyWork() {
         setCountryOpts(
           f.countries.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
         );
-        setIndustryOpts(f.industries.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })));
+        // '미분류'(분류 실패 폴백값)도 작업범위 대상 — BE 옵션에 없을 때만 덧붙인다(#115 중복 방지).
+        setIndustryOpts(
+          withUnclassified(f.industries).map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
+        );
       })
       .catch(() => {
         // 옵션 로드 실패해도 작업 자체는 가능 — 무시(셀렉트만 빈 채로).
@@ -187,7 +191,7 @@ export function MyWork() {
             options={industryOpts}
             value={filter.industry}
             onChange={(csv) => setFilterValue({ ...filter, industry: csv })}
-            placeholder="업종 검색 (예: 건설, construction)"
+            placeholder="업종 검색 (예: 반도체, 미분류)"
             emptyHint="전체 업종"
           />
         </div>
