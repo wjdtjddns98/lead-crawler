@@ -27,8 +27,8 @@
    "id": "G004",
    "title": "검색 강화",
    "objective": "영문명·티커 쿼리확장+도메인해석 힌트+API 지역필터 노출",
-   "status": "pending",
-   "evidence": null
+   "status": "complete",
+   "evidence": "domain_resolver 한글명→name_eng 폴백 + 큐 국/업/상장에 지역필터 4번째 축 추가(query/count/claim/_apply 공유조인) + /queue?region + ClaimRequest.region + /queue/filters regions(DB distinct) + list_regions"
   }
  ]
 }
