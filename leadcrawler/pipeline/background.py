@@ -4,6 +4,11 @@
 만들고 데몬 스레드에서 :func:`run_pipeline` 을 돌린다(요청은 즉시 202 로 반환). 스레드는
 짧은 세션을 열어 카운터를 갱신하고 취소 플래그를 폴링한다(현황은 GET 폴링으로 노출).
 
+연속(continuous) 모드: 취소 전까지 1회전(라운드)을 반복한다 — 24/7 베이스 크롤.
+라운드 사이 ``crawl_loop_pause_sec`` 만큼 쉬고, 휴지 중에도 취소를 폴링한다. 진행
+카운터는 라운드마다 새로 세고(현재 라운드 기준) ``rounds_done`` 으로 회전수를 노출한다.
+등록처 커서가 영속이라 다음 라운드는 이어서 긁는다(같은 구간 재크롤 아님).
+
 동시 1건 제한: 이 프로세스 안에서 크롤은 한 번에 하나만 — uvicorn 단일 프로세스라
 모듈 락으로 충분하다. 프로세스가 죽어 남은 stale running 행은 다음 트리거가 정리한다.
 스케줄러(별도 프로세스)와의 동시 실행은 막지 않지만, 파이프라인이 기업 단위 트랜잭션·
@@ -27,6 +32,8 @@ from ..storage.crawl_job import (
     CANCELLED,
     DONE,
     FAILED,
+    MODE_CONTINUOUS,
+    MODE_ONCE,
     create_crawl_job,
     crawl_job_dict,
     fail_running_jobs,
@@ -52,8 +59,8 @@ _PROGRESS_THROTTLE_SEC = 1.5
 _CANCEL_POLL_THROTTLE_SEC = 2.0
 
 # 테스트가 동기 실행을 주입할 수 있게 하는 러너 시그니처(기본은 데몬 스레드 spawn).
-# (settings, job_id, segments, persist, target_count)
-JobRunner = Callable[[Settings, str, list[Segment], bool, int], None]
+# (settings, job_id, segments, persist, target_count, continuous)
+JobRunner = Callable[[Settings, str, list[Segment], bool, int, bool], None]
 
 
 class CrawlBusy(RuntimeError):
@@ -83,11 +90,13 @@ def trigger_crawl_job(
     triggered_by: str | None,
     runner: JobRunner | None = None,
     target_count: int = 0,
+    continuous: bool = False,
 ) -> dict[str, object]:
     """크롤 작업을 만들고 백그라운드 실행을 시작한다 — 작업 스냅샷(dict) 반환.
 
     이미 진행 중이면 :class:`CrawlBusy`. ``runner`` 주입 시 그것으로 실행(테스트 동기화).
     ``target_count`` >0 이면 실존 저장 누계가 그 값에 도달할 때 조기 종료(0=세그먼트 전부 소진).
+    ``continuous`` 면 취소 전까지 라운드를 반복한다(mode='continuous' 로 기록).
     """
     global _running
     inds = [s for s in industries.split(",") if s.strip()]
@@ -118,6 +127,7 @@ def trigger_crawl_job(
                 persist=persist,
                 segments_total=len(segments),
                 triggered_by=triggered_by,
+                mode=MODE_CONTINUOUS if continuous else MODE_ONCE,
             )
             info = crawl_job_dict(row)
             session.commit()
@@ -129,9 +139,12 @@ def trigger_crawl_job(
         raise
 
     job_id = str(info["id"])
-    log.info("crawl_job.start", job=job_id, countries=countries, industries=industries)
+    log.info(
+        "crawl_job.start",
+        job=job_id, countries=countries, industries=industries, continuous=continuous,
+    )
     try:
-        (runner or _spawn_thread)(settings, job_id, segments, persist, target_count)
+        (runner or _spawn_thread)(settings, job_id, segments, persist, target_count, continuous)
     except Exception as exc:  # 스레드 spawn 실패 — 가드 누수 방지 + 작업을 failed 로.
         log.warning("crawl_job.spawn_failed", job=job_id, err=str(exc))
         _finalize(get_sessionmaker(settings), job_id, status=FAILED, error=f"실행 시작 실패: {exc}")
@@ -142,12 +155,13 @@ def trigger_crawl_job(
 
 
 def _spawn_thread(
-    settings: Settings, job_id: str, segments: list[Segment], persist: bool, target_count: int = 0
+    settings: Settings, job_id: str, segments: list[Segment], persist: bool,
+    target_count: int = 0, continuous: bool = False,
 ) -> None:
     """데몬 스레드로 작업을 실행한다(요청 스레드를 막지 않음)."""
     thread = threading.Thread(
         target=run_crawl_job,
-        args=(settings, job_id, segments, persist, target_count),
+        args=(settings, job_id, segments, persist, target_count, continuous),
         name=f"crawl-{job_id}",
         daemon=True,
     )
@@ -156,12 +170,14 @@ def _spawn_thread(
 
 def run_crawl_job(
     settings: Settings, job_id: str, segments: list[Segment], persist: bool,
-    target_count: int = 0,
+    target_count: int = 0, continuous: bool = False,
 ) -> None:
     """작업 본체 — 파이프라인을 돌리며 카운터/취소를 DB로 중계하고 종료 상태를 적는다.
 
     진행/취소/종료는 각각 짧은 세션으로 처리해(읽기 커밋·identity-map stale 회피) 다른
     트랜잭션(취소 요청)이 켠 플래그를 즉시 본다. 예외는 status='failed'+error 로 기록한다.
+    ``continuous`` 면 취소가 관측될 때까지 라운드를 반복한다(라운드 사이
+    ``crawl_loop_pause_sec`` 휴지 — 휴지 중에도 취소 폴링). 카운터는 라운드마다 새로 센다.
     """
     global _running
     sm = get_sessionmaker(settings)
@@ -176,24 +192,65 @@ def run_crawl_job(
             _write_progress(sm, job_id, counts)
 
     try:
-        run_pipeline(
-            segments,
-            settings=settings,
-            persist=persist,
-            on_progress=_on_progress,
-            should_cancel=_make_cancel_poller(sm, job_id),
-            target_saved=target_count or None,  # 0 → None(세그먼트 전부 소진).
-        )
-        if state["counts"] is not None:  # throttle 로 누락된 최종 카운터를 확정 기록.
-            _write_progress(sm, job_id, state["counts"])  # type: ignore[arg-type]
-        final = CANCELLED if _read_cancel(sm, job_id) else DONE
-        _finalize(sm, job_id, status=final)
+        rounds = 0
+        while True:
+            run_pipeline(
+                segments,
+                settings=settings,
+                persist=persist,
+                on_progress=_on_progress,
+                should_cancel=_make_cancel_poller(sm, job_id),
+                target_saved=target_count or None,  # 0 → None(세그먼트 전부 소진).
+            )
+            rounds += 1
+            if state["counts"] is not None:  # throttle 로 누락된 최종 카운터를 확정 기록.
+                _write_progress(sm, job_id, state["counts"])  # type: ignore[arg-type]
+            _write_rounds(sm, job_id, rounds)
+            if _read_cancel(sm, job_id):  # 라운드 중 취소 관측 → 즉시 종료(연속 포함).
+                _finalize(sm, job_id, status=CANCELLED)
+                return
+            if not continuous:
+                _finalize(sm, job_id, status=DONE)
+                return
+            if _pause_cancelled(sm, job_id, settings.crawl_loop_pause_sec):
+                _finalize(sm, job_id, status=CANCELLED)
+                return
     except Exception as exc:  # 크롤 실패 — 작업을 failed 로 남겨 현황에 노출(프로세스는 생존).
         log.warning("crawl_job.failed", job=job_id, err=str(exc))
         _finalize(sm, job_id, status=FAILED, error=str(exc)[:1000])
     finally:
         with _guard:
             _running = False
+
+
+def _pause_cancelled(sm: sessionmaker, job_id: str, pause_sec: float) -> bool:
+    """라운드 사이 휴지 — 휴지 중에도 취소를 폴링한다(True=취소 관측, 즉시 복귀).
+
+    1초 단위로 쪼개 자며 :func:`_make_cancel_poller`(throttle 폴러)로 취소를 본다 —
+    긴 휴지 중 취소가 최대 ~throttle 초 안에 반영된다.
+    """
+    poll = _make_cancel_poller(sm, job_id)
+    deadline = time.monotonic() + pause_sec
+    while True:
+        if poll():
+            return True
+        remain = deadline - time.monotonic()
+        if remain <= 0:
+            return False
+        time.sleep(min(1.0, remain))
+
+
+def _write_rounds(sm: sessionmaker, job_id: str, rounds: int) -> None:
+    """완료 라운드 수를 기록한다(짧은 세션). 실패해도 크롤은 계속(현황만 손실)."""
+    session = sm()
+    try:
+        update_crawl_job(session, job_id, rounds_done=rounds)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        log.warning("crawl_job.rounds_failed", job=job_id, err=str(exc))
+    finally:
+        session.close()
 
 
 def _write_progress(sm: sessionmaker, job_id: str, counts: dict[str, int]) -> None:

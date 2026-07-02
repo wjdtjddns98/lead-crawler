@@ -270,6 +270,7 @@ class CrawlJobRow(Base):
     이 행의 카운터(발견/처리/저장·세그먼트 진행)를 갱신하고, 프론트가 주기 폴링으로 표시한다.
     ``cancel_requested`` 를 켜면 실행 스레드가 다음 기업 처리 전에 협조적으로 멈춘다.
     status: running | done | failed | cancelled. started_at 인덱스로 '최근 작업'을 빠르게 찾는다.
+    mode: once(단발 1회전) | continuous(취소까지 라운드 반복 — 24/7 베이스 크롤).
     """
 
     __tablename__ = "crawl_job"
@@ -278,6 +279,10 @@ class CrawlJobRow(Base):
     status: Mapped[str] = mapped_column(
         String(16), default="running", server_default=text("'running'"), index=True
     )
+    # 실행 모드 — continuous 면 취소 전까지 1회전(라운드)을 반복한다. rounds_done 은
+    # 완료된 라운드 수(진행 카운터는 현재 라운드 기준으로 매 라운드 새로 센다).
+    mode: Mapped[str] = mapped_column(String(16), default="once", server_default=text("'once'"))
+    rounds_done: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     countries: Mapped[str] = mapped_column(String(256), default="", server_default=text("''"))
     industries: Mapped[str] = mapped_column(String(512), default="", server_default=text("''"))
     listed: Mapped[str] = mapped_column(

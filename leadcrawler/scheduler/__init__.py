@@ -65,19 +65,46 @@ def _effective_target(settings: Settings) -> tuple[list[str], list[str] | None, 
     return inds, ctys, "unknown", settings.report_persist
 
 
+def _continuous_crawl_running(settings: Settings) -> bool:
+    """웹 연속(continuous) 크롤 잡이 도는 중인지 DB 로 확인한다(실패/DB없음=False).
+
+    스케줄러는 uvicorn 과 별도 프로세스라 모듈 가드를 못 보고 crawl_job 테이블이 유일한
+    신호다. 연속잡이 이미 24/7 로 도는 동안 데일리 크롤까지 겹치면 같은 타깃을 이중으로
+    긁으므로 크롤만 스킵한다(리포팅은 그대로).
+    """
+    try:
+        from ..storage.crawl_job import MODE_CONTINUOUS, active_crawl_job
+        from ..storage.db import get_sessionmaker
+
+        session = get_sessionmaker(settings)()
+        try:
+            row = active_crawl_job(session)
+            return row is not None and row.mode == MODE_CONTINUOUS
+        finally:
+            session.close()
+    except Exception as exc:  # DB 없음/미마이그레이션 — 기존 동작(크롤 진행) 유지.
+        log.warning("scheduler.continuous_check_failed", err=str(exc))
+        return False
+
+
 def run_daily_report(
     settings: Settings | None = None, *, date: str | None = None
 ) -> dict[str, dict]:
     """일일 잡 본체 — 설정대로 크롤 1회전 후 Notion 3종 보드를 자동 기입한다.
 
     APScheduler 잡이 매일 호출하는 단위이자, 테스트가 직접 부르는 진입점.
-    ``dry_run`` 기본이라 키 없이도 결정적으로 동작한다.
+    ``dry_run`` 기본이라 키 없이도 결정적으로 동작한다. 웹 연속 크롤 잡이 도는 중이면
+    크롤은 스킵하고(이중 크롤 방지) 리포팅만 수행한다.
     """
     settings = settings or get_settings()
     report_date = date or _today_utc()
-    inds, ctys, listed, persist = _effective_target(settings)
-    segments = generate_segments(inds, countries=ctys, listed=[listed])
-    leads = run_pipeline(segments, settings=settings, persist=persist)
+    if _continuous_crawl_running(settings):
+        log.info("scheduler.daily_crawl_skipped", reason="continuous_job_running")
+        leads = []
+    else:
+        inds, ctys, listed, persist = _effective_target(settings)
+        segments = generate_segments(inds, countries=ctys, listed=[listed])
+        leads = run_pipeline(segments, settings=settings, persist=persist)
     result = auto_report(
         leads, date=report_date, settings=settings, milestone=settings.report_milestone
     )
