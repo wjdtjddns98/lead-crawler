@@ -65,6 +65,18 @@ def normalize_domain(value: str | None) -> str | None:
     return ".".join(labels[-2:])
 
 
+def normalize_reg_no(value: str | None) -> str | None:
+    """현지 등록번호(사업자번호 등)를 비교용으로 정규화한다(영숫자만·소문자).
+
+    "124-81-00998" 과 "1248100998" 이 같은 번호로 비교되도록 구분기호를 제거한다.
+    선행 0 보존을 위해 문자열 비교만 한다(숫자 변환 금지).
+    """
+    if not value:
+        return None
+    normalized = _NON_ALNUM.sub("", value.strip().lower())
+    return normalized or None
+
+
 def _clamp_key(key: str) -> str:
     """255자 초과 키를 결정적으로 축약한다(접두사 보존 + 해시로 충돌 회피)."""
     if len(key) <= _KEY_MAXLEN:

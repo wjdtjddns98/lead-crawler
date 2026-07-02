@@ -24,6 +24,8 @@ from .base import (
     SupportsCursorStore,
     build_company,
     is_country,
+    join_address,
+    opt_str,
 )
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import industry_from_uk_sic, matches_prefix, uk_sic_prefixes
@@ -175,6 +177,17 @@ class CompaniesHouseSource:
         code_label = next(
             (lbl for c in sic_codes if (lbl := industry_from_uk_sic(c)) is not None), None
         )
+        # 풍부필드 — 같은 검색 응답이 이미 주는 값(추가 호출 0): 등기주소.
+        roa = item.get("registered_office_address")
+        address = region = None
+        if isinstance(roa, dict):
+            address = join_address(
+                roa.get("address_line_1"),
+                roa.get("address_line_2"),
+                roa.get("locality"),
+                roa.get("postal_code"),
+            )
+            region = opt_str(roa.get("locality"))
         return build_company(
             source=self.name,
             segment=segment,
@@ -183,4 +196,9 @@ class CompaniesHouseSource:
             registry="companies_house",
             registry_id=str(number),
             industry_code_label=code_label,
+            address=address,
+            region=region,
+            # 등록번호를 reg_no 에도 채운다 — GLEIF(registeredAs)·OpenCorporates 로 들어온
+            # 같은 영국 법인과 dedup 확정 티어에서 교차 매칭되도록(registry_id 는 소스별 상이).
+            reg_no=str(number),
         )

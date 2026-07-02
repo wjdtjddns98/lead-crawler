@@ -29,11 +29,12 @@ _SPARQL_URL = "https://query.wikidata.org/sparql"
 # 다중 웹사이트(P856) 엔티티는 ?item 당 여러 행이 와 seen dedup 으로 접히므로,
 # 고유 기업 cap 을 채우려면 LIMIT 에 오버페치 마진을 둔다.
 _OVERFETCH = 3
-# 기업(business enterprise Q4830453 및 하위) 중 해당 국가(P17) — 공식 웹사이트는 선택.
-_QUERY = """SELECT ?item ?itemLabel ?website WHERE {{
+# 기업(business enterprise Q4830453 및 하위) 중 해당 국가(P17) — 웹사이트·본사 소재지는 선택.
+_QUERY = """SELECT ?item ?itemLabel ?website ?hqLabel WHERE {{
   ?item wdt:P31/wdt:P279* wd:Q4830453 .
   ?item wdt:P17 wd:{qid} .
   OPTIONAL {{ ?item wdt:P856 ?website. }}
+  OPTIONAL {{ ?item wdt:P159 ?hq. }}
   SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
 }}
 LIMIT {limit}"""
@@ -144,6 +145,11 @@ class WikidataSource:
         if not name or name == qid:  # 라벨 미해소 시 QID 가 라벨로 옴 → 스킵.
             return None
         seen.add(qid)
+        # 본사 소재지(P159) 라벨 — 미해소 시 QID(Q+숫자)가 라벨로 오므로 걸러낸다
+        # (Quebec 같은 실제 지명 오탐 방지 위해 접두 Q 가 아니라 QID 패턴으로 판정).
+        hq = _cell(row, "hqLabel")
+        if hq and hq[:1] == "Q" and hq[1:].isdigit():
+            hq = None
         return build_company(
             source=self.name,
             segment=segment,
@@ -151,6 +157,7 @@ class WikidataSource:
             domain=normalize_domain(_cell(row, "website")),
             registry="wikidata",
             registry_id=qid,
+            region=hq,
         )
 
 

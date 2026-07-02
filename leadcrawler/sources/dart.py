@@ -25,6 +25,7 @@ from .base import (
     build_company,
     cursor_offset,
     is_country,
+    opt_str,
 )
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import industry_from_ksic, ksic_prefixes, matches_prefix
@@ -149,6 +150,14 @@ class DartSource:
                     # broad 검색 시 구분을 대분류로 복원(KSIC induty_code). 구체 검색이면
                     # resolve 가 세그먼트 업종을 그대로 써 이 값은 무시된다.
                     industry_code_label=industry_from_ksic(info.get("induty_code")),
+                    # 풍부필드 — 같은 응답이 이미 주는 값(추가 호출 0). region 은
+                    # build_company 가 adres 에서 시/도로 파생한다.
+                    address=opt_str(info.get("adres")),
+                    reg_no=opt_str(info.get("bizr_no")),
+                    ticker=opt_str(info.get("stock_code")),
+                    phone=opt_str(info.get("phn_no")),
+                    ir_url=opt_str(info.get("ir_url")),
+                    name_eng=opt_str(info.get("corp_name_eng")),
                 )
             )
             if len(out) >= cap:

@@ -4,8 +4,9 @@
 rapidfuzz 토큰셋 유사도 + 도메인root 일치로 **티어 분류**한다. 네트워크·과금 없음,
 입력이 같으면 출력도 같다(결정적).
 
-티어(자동제거는 최상위만, 나머지는 LLM/사람 쇼트리스트 — 제약② 리드손실 방지):
-- ``auto``      이름 高 + 도메인root 일치 → 최상위 자동제거 후보(가역).
+티어(자동제거는 최상위 2개만, 나머지는 LLM/사람 쇼트리스트 — 제약② 리드손실 방지):
+- ``reg_no``    같은 국가 + 현지 등록번호(사업자번호 등) 일치 → **확정** 중복(점수 무관).
+- ``auto``      이름 高 + 도메인root 일치 → 자동제거 후보(가역).
 - ``domain``    도메인root 일치·이름 낮음 → 같은 기업 가능(쇼트리스트).
 - ``lexical``   이름 高·도메인 불명(한쪽이라도 없음) → 쇼트리스트.
 - ``shortlist`` 이름 中(경계) → LLM/사람 판정.
@@ -21,7 +22,7 @@ from itertools import combinations
 from pydantic import BaseModel
 from rapidfuzz import fuzz
 
-from ..dedup import normalize_domain, tokenize_name
+from ..dedup import normalize_domain, normalize_reg_no, tokenize_name
 from ..logging import get_logger
 
 log = get_logger("dedup_resolve")
@@ -39,7 +40,10 @@ NAME_PREFIX_BLOCK = 6
 MAX_BLOCK_SIZE = 1000
 
 # 리포트 정렬·요약용 티어 우선순위(작을수록 먼저).
-_TIER_ORDER = {"auto": 0, "domain": 1, "lexical": 2, "shortlist": 3, "keep_both": 4}
+_TIER_ORDER = {"reg_no": 0, "auto": 1, "domain": 2, "lexical": 3, "shortlist": 4, "keep_both": 5}
+
+# 확정(자동머지 가능) 티어 — cli dedup-merge·리포트 auto_removable 이 공유하는 단일 출처.
+CONFIRMED_TIERS: frozenset[str] = frozenset({"reg_no", "auto"})
 
 
 class CompanyRecord(BaseModel):
@@ -49,6 +53,7 @@ class CompanyRecord(BaseModel):
     name: str
     country: str = ""
     domain: str | None = None
+    reg_no: str | None = None  # 현지 등록번호(사업자번호 등) — 일치 시 확정 티어
 
 
 class DuplicateCandidate(BaseModel):
@@ -62,14 +67,14 @@ class DuplicateCandidate(BaseModel):
     domain_a: str | None
     domain_b: str | None
     name_score: float  # 0~100 토큰셋 유사도
-    tier: str  # auto | domain | lexical | shortlist | keep_both
+    tier: str  # reg_no | auto | domain | lexical | shortlist | keep_both
     reason: str
 
 
 class SkippedBlock(BaseModel):
     """크기 초과로 쌍 비교를 생략한 블록 — 커버리지 공백을 명시적으로 남긴다."""
 
-    kind: str  # 'dom'(도메인root) | 'name'(이름prefix)
+    kind: str  # 'reg'(등록번호) | 'dom'(도메인root) | 'name'(이름prefix)
     country: str
     bucket: str  # 도메인 root 또는 이름 prefix
     size: int
@@ -92,22 +97,37 @@ def _classify(
     rec_b: CompanyRecord,
     tokens: dict[str, list[str]],
     domains: dict[str, str | None],
+    regs: dict[str, str | None],
     *,
     name_strong: float,
     name_medium: float,
 ) -> DuplicateCandidate | None:
     """두 레코드를 비교해 티어를 매긴다(후보 아니면 None).
 
-    토큰·정규화 도메인은 레코드당 1회만 산정해 ``tokens``/``domains`` 로 넘긴다(쌍마다
-    재계산하면 블록당 O(n²) 호출로 폭증 — 전건 배치에서 도메인 파싱이 지배비용이 됨).
+    토큰·정규화 도메인·등록번호는 레코드당 1회만 산정해 ``tokens``/``domains``/``regs`` 로
+    넘긴다(쌍마다 재계산하면 블록당 O(n²) 호출로 폭증 — 전건 배치에서 파싱이 지배비용이 됨).
     """
     score = _name_score(tokens[rec_a.key], tokens[rec_b.key])
     dom_a = domains[rec_a.key]
     dom_b = domains[rec_b.key]
     both_dom = dom_a is not None and dom_b is not None
     dom_equal = both_dom and dom_a == dom_b
+    reg_a = regs[rec_a.key]
+    reg_b = regs[rec_b.key]
 
-    if dom_equal:
+    # 확정 티어: 같은 국가 + 등록번호 일치는 이름·도메인과 무관하게 동일 기업
+    # (등록처가 발급한 고유번호라 표기 차이로 갈라진 행을 점수 없이 접는다).
+    # 역방향도 확정적이다: 둘 다 번호가 있는데 다르면 **별개 법인** — 이름·도메인이
+    # 겹쳐도(계열사가 그룹 도메인 공유 등) 자동머지(auto) 대상에서 제외한다.
+    both_reg = reg_a is not None and reg_b is not None and rec_a.country == rec_b.country
+    if both_reg and reg_a == reg_b:
+        tier, reason = "reg_no", "현지 등록번호 일치(확정)"
+    elif both_reg:  # 번호 상이 = 별개 법인 확정
+        if score >= name_strong or dom_equal:
+            tier, reason = "keep_both", "등록번호 상이(별개 법인 → 둘 다 유지)"
+        else:
+            return None
+    elif dom_equal:
         if score >= name_strong:
             tier, reason = "auto", "이름 高 + 도메인root 일치"
         else:
@@ -146,15 +166,19 @@ def _blocks(
     records: list[CompanyRecord],
     tokens: dict[str, list[str]],
     domains: dict[str, str | None],
+    regs: dict[str, str | None],
 ) -> dict[tuple[str, str, str], list[CompanyRecord]]:
-    """비교쌍 폭발을 막는 블로킹 — 같은 (국가, 도메인root) 또는 (국가, 이름prefix) 끼리 묶는다.
+    """비교쌍 폭발을 막는 블로킹 — 같은 (국가, 등록번호/도메인root/이름prefix) 끼리 묶는다.
 
-    한 레코드가 도메인 블록과 이름 블록 양쪽에 들어갈 수 있다(서로 다른 후보를 잡기 위함).
-    토큰·도메인은 미리 산정한 ``tokens``/``domains`` 를 재사용한다(레코드당 1회).
+    한 레코드가 여러 블록에 들어갈 수 있다(서로 다른 후보를 잡기 위함).
+    토큰·도메인·등록번호는 미리 산정한 dict 를 재사용한다(레코드당 1회).
     """
     by_block: dict[tuple[str, str, str], list[CompanyRecord]] = defaultdict(list)
     for rec in records:
         country = rec.country or ""
+        reg = regs[rec.key]
+        if reg:
+            by_block[("reg", country, reg)].append(rec)
         dom = domains[rec.key]
         if dom:
             by_block[("dom", country, dom)].append(rec)
@@ -181,12 +205,13 @@ def match_records(
     결과 후보는 (티어, -점수, key) 순으로 결정적 정렬한다.
     """
     recs = list(records)
-    # 레코드당 1회만 토큰화·도메인 정규화(쌍마다 재계산 회피 — 전건 배치 핫패스).
+    # 레코드당 1회만 토큰화·도메인/등록번호 정규화(쌍마다 재계산 회피 — 전건 배치 핫패스).
     tokens = {r.key: tokenize_name(r.name) for r in recs}
     domains = {r.key: normalize_domain(r.domain) for r in recs}
+    regs = {r.key: normalize_reg_no(r.reg_no) for r in recs}
     found: dict[tuple[str, str], DuplicateCandidate] = {}
     skipped: list[SkippedBlock] = []
-    for (kind, country, bucket), block in _blocks(recs, tokens, domains).items():
+    for (kind, country, bucket), block in _blocks(recs, tokens, domains, regs).items():
         if len(block) < 2:
             continue
         if len(block) > max_block_size:
@@ -207,7 +232,7 @@ def match_records(
             if pair in found:
                 continue  # first-wins — _classify 가 블록무관 순수함수라 안전(m3)
             cand = _classify(
-                a, b, tokens, domains, name_strong=name_strong, name_medium=name_medium
+                a, b, tokens, domains, regs, name_strong=name_strong, name_medium=name_medium
             )
             if cand is not None:
                 found[pair] = cand

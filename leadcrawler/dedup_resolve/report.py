@@ -19,6 +19,7 @@ from ..cost_ledger import SupportsCostLedger
 from ..schema import DiscoveredCompanyRow
 from .llm_judge import JudgedPair, SupportsJudge, judge_candidates
 from .near_dup import (
+    CONFIRMED_TIERS,
     MAX_BLOCK_SIZE,
     NAME_MEDIUM,
     NAME_STRONG,
@@ -42,7 +43,7 @@ class DuplicateReport(BaseModel):
     total_records: int  # 비교 대상이 된 발견 레코드 수
     total_candidates: int  # 찾은 중복 후보 쌍 수(keep_both 포함)
     by_tier: dict[str, int]  # 티어별 후보 수
-    auto_removable: int  # 최상위(auto) 티어 — 자동제거 가능(가역)
+    auto_removable: int  # 확정 티어(reg_no+auto) — 자동제거 가능(가역)
     keep_both: int  # 동명이인 가능(둘 다 유지) — total 에 포함되나 해소 대상 아님(정보용)
     name_strong: float  # 사용한 임계값(이름 高)
     name_medium: float  # 사용한 임계값(이름 中)
@@ -67,12 +68,13 @@ def load_company_records(
         DiscoveredCompanyRow.name,
         DiscoveredCompanyRow.country,
         DiscoveredCompanyRow.domain,
+        DiscoveredCompanyRow.reg_no,
     )
     if not include_merged:
         stmt = stmt.where(DiscoveredCompanyRow.duplicate_of.is_(None))
     return [
-        CompanyRecord(key=key, name=name, country=country or "", domain=domain)
-        for key, name, country, domain in session.execute(stmt).all()
+        CompanyRecord(key=key, name=name, country=country or "", domain=domain, reg_no=reg_no)
+        for key, name, country, domain, reg_no in session.execute(stmt).all()
     ]
 
 
@@ -108,7 +110,7 @@ def build_report(
         total_records=len(records),
         total_candidates=len(candidates),
         by_tier=by_tier,
-        auto_removable=by_tier.get("auto", 0),
+        auto_removable=sum(by_tier.get(t, 0) for t in CONFIRMED_TIERS),
         keep_both=by_tier.get("keep_both", 0),
         name_strong=name_strong,
         name_medium=name_medium,

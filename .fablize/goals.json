@@ -1,41 +1,34 @@
 {
- "brief": "코드리뷰 MEDIUM 잔여 실재 10건을 그룹별 PR로 순차 수정",
- "created": "2026-06-30T00:31:34.073325+00:00",
+ "brief": "발견 풍부필드 흡수: 스키마+소스통로+dedup확정키+검색강화 (PR 단계별 순차 머지)",
+ "created": "2026-07-02T04:44:45.693019+00:00",
  "goals": [
   {
    "id": "G001",
-   "title": "정합 fix",
-   "objective": "inline 국가 NULL dedup(제약①)·insane_fetcher UTF-8 재인코딩·cost_ledger 드리프트 수정 PR 머지",
+   "title": "스키마 확장",
+   "objective": "DiscoveredCompany·DB 컬럼 추가+build_company 통로+alembic 마이그레이션+region 정규화 유틸",
    "status": "complete",
-   "evidence": "정밀검증 결과 3건 모두 비결함이라 코드변경 없음: ①inline 국가 NULL=오탐(country non-nullable·server_default ''·schema.py:10 'NULL아님' 컨벤션) ②insane_fetcher utf-8=무손실 str.encode·get_bytes 실호출처 없음(bypass는 get_text) ③cost_ledger 드리프트=설계상 의도(락 직렬화·DB 진실원천·refresh 재시드, 문서화됨). 빈 브랜치 폐기."
+   "evidence": "ruff green + pytest 9 passed(test_rich_fields 5신규+db+persist) + alembic upgrade head 스크래치 SQLite: 컬럼 7개+ix_region/ix_reg_no 확인"
   },
   {
    "id": "G002",
-   "title": "보안 fix",
-   "objective": "auth 로그인 무차별대입 방어 + LoginRequest 길이상한 PR 머지",
+   "title": "소스 파싱",
+   "objective": "DART·EDGAR·GLEIF·CH·OpenCorporates·Wikidata 에서 풍부필드 파싱해 통로에 연결",
    "status": "complete",
-   "evidence": "PR#79 머지(main). LoginThrottle(std-lib·_MAX_KEYS 축출)+429+LoginRequest 64/256 길이상한. 적대적 리뷰 2회(correctness 전축 정확·보안 HIGH 키증가→축출 반영). ruff green, test_security+test_api 50 passed(+10신규). 후속 보류: per-IP 레이트리밋·body 크기 미들웨어."
+   "evidence": "6개 소스(DART·EDGAR·GLEIF·CH·OpenCorporates·Wikidata) 풍부필드 파싱 연결 — 소스별 페이로드 주입 테스트 7건 신규"
   },
   {
    "id": "G003",
-   "title": "검증 perf",
-   "objective": "existence↔email_validator DNS/MX 공유캐시·SMTP/catch-all 캐시·헤드리스 중복렌더 PR 머지",
+   "title": "dedup 확정키",
+   "objective": "등록번호·LEI·CIK 완전일치를 최상위 확정 티어로 삽입",
    "status": "complete",
-   "evidence": "PR#82 머지(main). 헤드리스 중복렌더 제거(enrich 렌더 home→existence 재사용·graceful None 폴백). 리뷰어 APPROVE(제약② 전경로 보존)+LOW 빈문자열 방어 반영. 항목①DNS/MX·②SMTP catch-all 은 검토 후 저가치로 보류(근거 PR 본문). CI green(테스트더블 _FakeEnricher/_FakeExistence 에 새 seam 반영). 로컬 11실패=.env baseline(내 파일 무관)."
+   "evidence": "reg_no 확정 티어(near_dup 최상위)+역방향 계열사 보호(번호 상이=keep_both)+CONFIRMED_TIERS 로 cli 머지·리포트 일원화+CH/OC reg_no 채움"
   },
   {
    "id": "G004",
-   "title": "발견 perf",
-   "objective": "dart/edgar cap×10 직렬 개선 + background 취소폴링 throttle PR 머지",
+   "title": "검색 강화",
+   "objective": "영문명·티커 쿼리확장+도메인해석 힌트+API 지역필터 노출",
    "status": "complete",
-   "evidence": "PR#84 머지(main). 취소폴링 throttle+래치(_make_cancel_poller, 2s)로 2만건 DB세션 churn 제거. 리뷰어 APPROVE+LOW(float -inf 첫폴 보장) 반영. dart/edgar 직렬은 rate-limit 안전성(per-company API·배치없음·SEC fair-access·DART쿼터)으로 보류. ruff green, crawl_job 11 passed(+신규1). CI green."
-  },
-  {
-   "id": "G005",
-   "title": "검증 게이트",
-   "objective": "전 PR 머지 후 ruff + 전체 테스트 green 확인",
-   "status": "complete",
-   "evidence": "전 BE PR(#79·#82·#84) main 머지 후 게이트 green. 머지 전 각 PR CI(3.11/3.12/3.13·PG) 모두 green."
+   "evidence": "domain_resolver 한글명→name_eng 폴백 + 큐 국/업/상장에 지역필터 4번째 축 추가(query/count/claim/_apply 공유조인) + /queue?region + ClaimRequest.region + /queue/filters regions(DB distinct) + list_regions"
   }
  ]
 }

@@ -229,13 +229,17 @@ def confirmed_pairs_from_report(
 ) -> list[tuple[str, str]]:
     """리포트(dict)에서 **확정 중복 쌍**을 수집한다(머지 입력). 결정적·순수.
 
-    - auto 티어는 항상 포함(최상위 자동제거 후보).
+    - 확정 티어(reg_no=등록번호 일치, auto=이름高+도메인일치)는 항상 포함.
     - ``include_llm`` 이면 LLM 판정도 포함하되 ① same=True ② confidence>=임계 ③ **비-스텁**만.
       스텁(dry_run/키없음)은 도메인root 동일이면 무조건 same 이라 실제 머지 근거로 쓰면
       공유호스팅·별개 사업부를 오병합한다(제약② — 확실치 않으면 보존). key_a<key_b 보장됨.
     """
+    from .dedup_resolve.near_dup import CONFIRMED_TIERS
+
     pairs: list[tuple[str, str]] = [
-        (c["key_a"], c["key_b"]) for c in data.get("candidates", []) if c.get("tier") == "auto"
+        (c["key_a"], c["key_b"])
+        for c in data.get("candidates", [])
+        if c.get("tier") in CONFIRMED_TIERS
     ]
     if include_llm:
         for j in data.get("judged", []):
@@ -477,6 +481,100 @@ def enqueue() -> None:
         )
     finally:
         session.close()
+
+
+def backfill_industries(
+    session, classifier, *, fetch_html, limit: int = 0, commit_every: int = 50
+) -> tuple[int, int]:
+    """'미분류'·catch-all 구분의 실존 회사를 재분류해 갱신한다 — (검토, 갱신) 건수 반환.
+
+    파이프라인 유입 시점과 같은 규칙(AMBIGUOUS_LABELS → 분류기, abstain=원래값 유지)을
+    기존 행에 소급 적용한다. 홈페이지가 있으면 ``fetch_html`` 로 본문을 받아 분류 근거를
+    보강한다(없거나 실패하면 이름·도메인만). 닫힌 택소노미 밖 값은 절대 쓰지 않고
+    abstain 은 원래값을 유지하므로 반복 실행해도 안전하다(멱등).
+
+    ``commit_every`` 건마다 중간 커밋한다 — 전체 런은 행당 유료 호출이 있어, 중단 시
+    전량 롤백이면 그만큼의 LLM 지출이 통째로 증발한다(0=끄기, 마지막 커밋은 호출부).
+    """
+    from sqlalchemy import select
+
+    from .schema import CompanyRow, DiscoveredCompanyRow
+    from .sources.taxonomy import AMBIGUOUS_LABELS
+
+    stmt = (
+        select(CompanyRow, DiscoveredCompanyRow.domain)
+        .join(
+            DiscoveredCompanyRow,
+            DiscoveredCompanyRow.canonical_key == CompanyRow.canonical_key,
+        )
+        .where(CompanyRow.is_active.is_(True), CompanyRow.industry.in_(AMBIGUOUS_LABELS))
+        .order_by(CompanyRow.id)
+    )
+    if limit:
+        stmt = stmt.limit(limit)
+    rows = session.execute(stmt).all()
+    updated = 0
+    for i, (company, domain) in enumerate(rows, start=1):
+        html = fetch_html(company.homepage) if company.homepage else None
+        # 분류기는 계약상 실패를 abstain(None)으로 흡수한다 — 확신 라벨일 때만 갱신.
+        verdict = classifier.classify(company.name, domain, html)
+        if verdict.label and verdict.label != company.industry:
+            company.industry = verdict.label
+            updated += 1
+        if commit_every and i % commit_every == 0:
+            session.commit()  # 중단돼도 여기까지의 재분류(=지출)는 살린다.
+    return len(rows), updated
+
+
+@app.command("backfill-industry")
+def backfill_industry(
+    limit: int = typer.Option(0, help="처리 상한(0=전체) — 소량 시험용"),
+) -> None:
+    """'미분류'·catch-all 구분으로 남은 기존 회사를 LLM 으로 소급 재분류한다(멱등).
+
+    파이프라인은 유입 시점에만 분류하므로, 그때 보류(abstain — 홈페이지 없음·429 등)된
+    행은 이 명령으로 재시도한다. dry_run/키없음이면 무료 키워드 스텁으로 동작하고,
+    라이브는 cost_ledger 월예산·런당캡 가드 안에서만 과금 호출한다.
+    """
+    import httpx
+
+    from .cost_ledger import CostLedger
+    from .enrich.industry_classify import build_classifier
+    from .storage.db import get_sessionmaker
+
+    configure_logging()
+    settings = get_settings()
+    ledger = CostLedger(settings, persist=not settings.dry_run)
+    classifier = build_classifier(settings, ledger=ledger)
+    client = httpx.Client(
+        timeout=10,
+        follow_redirects=True,
+        headers={"User-Agent": settings.discovery_user_agent},
+    )
+
+    def fetch_html(url: str) -> str | None:
+        if classifier.model == "stub":  # dry_run/키없음 — 네트워크 0 계약(§2) 유지.
+            return None
+        try:
+            r = client.get(url)
+            return r.text if r.status_code < 400 else None
+        except Exception:  # 죽은 사이트·타임아웃 → 본문 없이(이름·도메인만) 분류.
+            return None
+
+    session = get_sessionmaker(settings)()
+    try:
+        examined, updated = backfill_industries(
+            session, classifier, fetch_html=fetch_html, limit=limit
+        )
+        session.commit()
+    finally:
+        session.close()
+        client.close()
+    mode = "스텁(무과금)" if classifier.model == "stub" else f"LLM({classifier.model})"
+    typer.echo(
+        f"구분 백필 완료[{mode}]: 검토 {examined}건 → 재분류 {updated}건 "
+        f"(보류 {examined - updated}건은 원래값 유지)"
+    )
 
 
 @app.command("seed-mock")

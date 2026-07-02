@@ -242,6 +242,11 @@ def test_queue_filters_accessible_to_worker(worker_client: TestClient) -> None:
     body = r.json()
     assert body["listed"] == ["listed", "unlisted", "unknown"]
     assert len(body["countries"]) > 0 and len(body["industries"]) > 0
+    # 구분 옵션 = 저장 어휘(구분 택소노미 + 미분류) — 크롤 타깃용 18개 목록이 아니다(#106).
+    from leadcrawler.sources.taxonomy import INDUSTRY_TAXONOMY, UNCLASSIFIED
+
+    assert [o["value"] for o in body["industries"]] == [*INDUSTRY_TAXONOMY, UNCLASSIFIED]
+    assert all(o["value"] == o["label"] for o in body["industries"])
     # 동일 직원은 admin 옵션 라우트엔 여전히 접근 불가(분리 확인).
     assert worker_client.get("/admin/countries").status_code == 403
 
