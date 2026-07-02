@@ -23,7 +23,14 @@ from typing import Any
 
 from ..config import Settings
 from ..logging import get_logger
-from .base import DiscoveredCompany, Segment, SupportsCursorStore, build_company
+from .base import (
+    DiscoveredCompany,
+    Segment,
+    SupportsCursorStore,
+    build_company,
+    join_address,
+    opt_str,
+)
 from .countries import resolve_country
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import is_specific_industry
@@ -172,6 +179,17 @@ class GleifSource:
         lei = rec.get("id") or attrs.get("lei")
         if not name or not lei:
             return None
+        # 풍부필드 — LEI 레코드가 이미 주는 값(추가 호출 0): 법정주소·현지 등록번호.
+        la = entity.get("legalAddress")
+        address = region = None
+        if isinstance(la, dict):
+            lines = la.get("addressLines")
+            address = join_address(
+                *(lines if isinstance(lines, list) else []),
+                la.get("city"),
+                la.get("postalCode"),
+            )
+            region = opt_str(la.get("city"))
         return build_company(
             source=self.name,
             segment=segment,
@@ -179,4 +197,7 @@ class GleifSource:
             domain=None,  # LEI 레코드엔 웹사이트 없음 → enrich 단계에서 보강.
             registry="lei",
             registry_id=str(lei),
+            address=address,
+            region=region,
+            reg_no=opt_str(entity.get("registeredAs")),
         )

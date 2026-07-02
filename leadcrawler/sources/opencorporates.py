@@ -18,7 +18,7 @@ from typing import Any
 
 from ..config import Settings
 from ..logging import get_logger
-from .base import DiscoveredCompany, Segment, build_company
+from .base import DiscoveredCompany, Segment, build_company, opt_str
 from .countries import resolve_country
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import industry_search_term
@@ -150,6 +150,8 @@ class OpenCorporatesSource:
         name = company.get("name")
         if not number or not jurisdiction or not name:
             return None
+        # 풍부필드 — 같은 검색 응답이 이미 주는 값(추가 호출 0): 등기주소.
+        ra = company.get("registered_address")
         return build_company(
             source=self.name,
             segment=segment,
@@ -157,6 +159,8 @@ class OpenCorporatesSource:
             domain=None,  # 집계 레코드엔 웹사이트 없음 → enrich 단계에서 보강.
             registry="opencorporates",
             registry_id=f"{jurisdiction}/{number}",
+            address=opt_str(company.get("registered_address_in_full")),
+            region=opt_str(ra.get("locality")) if isinstance(ra, dict) else None,
         )
 
 

@@ -23,6 +23,8 @@ from .base import (
     build_company,
     cursor_offset,
     is_country,
+    join_address,
+    opt_str,
 )
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import industry_from_sic, matches_prefix, sic_prefixes
@@ -128,6 +130,8 @@ class EdgarSource:
             if not matches_prefix(sub.get("sic"), prefixes):
                 continue
             website = sub.get("investorWebsite") or sub.get("website")
+            address, region = _business_address(sub.get("addresses"))
+            tickers = sub.get("tickers")
             out.append(
                 build_company(
                     source=self.name,
@@ -138,6 +142,14 @@ class EdgarSource:
                     registry_id=str(cik),
                     # broad 검색 시 구분을 대분류로 복원(SIC). 구체 검색이면 무시된다.
                     industry_code_label=industry_from_sic(sub.get("sic")),
+                    # 풍부필드 — 같은 submissions 응답이 이미 주는 값(추가 호출 0).
+                    address=address,
+                    region=region,
+                    phone=opt_str(sub.get("phone")),
+                    ir_url=opt_str(sub.get("investorWebsite")),
+                    ticker=(
+                        opt_str(tickers[0]) if isinstance(tickers, list) and tickers else None
+                    ),
                 )
             )
             if len(out) >= cap:
@@ -145,6 +157,23 @@ class EdgarSource:
         advance_cursor(self._cursor_store, self.name, segment, offset + scanned, len(universe))
         log.info("edgar.live", segment=segment.label, n=len(out), offset=offset, scanned=scanned)
         return out
+
+
+def _business_address(addresses: Any) -> tuple[str | None, str | None]:
+    """submissions.addresses.business → (주소 원문, 지역=주(state) 코드)."""
+    if not isinstance(addresses, dict):
+        return None, None
+    business = addresses.get("business")
+    if not isinstance(business, dict):
+        return None, None
+    address = join_address(
+        business.get("street1"),
+        business.get("street2"),
+        business.get("city"),
+        business.get("stateOrCountry"),
+        business.get("zipCode"),
+    )
+    return address, opt_str(business.get("stateOrCountry"))
 
 
 def _parse_tickers_exchange(payload: Any) -> list[tuple[int, str]]:
