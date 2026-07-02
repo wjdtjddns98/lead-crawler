@@ -596,10 +596,18 @@ def seed_mock() -> None:
 
 @app.command()
 def web(
-    host: str = typer.Option("127.0.0.1", help="바인드 호스트"),
+    host: str = typer.Option("127.0.0.1", help="바인드 호스트(내부망 공개는 0.0.0.0)"),
     port: int = typer.Option(8000, help="포트"),
+    ssl_certfile: str | None = typer.Option(
+        None, help="TLS 인증서(PEM) 경로 — 키와 함께 지정하면 HTTPS 로 서빙"
+    ),
+    ssl_keyfile: str | None = typer.Option(None, help="TLS 개인키(PEM) 경로"),
 ) -> None:
-    """검증 웹앱(FastAPI)을 띄운다. fastapi/uvicorn extra(`.[api]`) 필요."""
+    """검증 웹앱(FastAPI)을 띄운다. fastapi/uvicorn extra(`.[api]`) 필요.
+
+    내부망 HTTPS: `scripts/windows/gen-ssl-cert.ps1` 로 자체서명 인증서를 만든 뒤
+    `leadcrawler web --host 0.0.0.0 --ssl-certfile certs/cert.pem --ssl-keyfile certs/key.pem`.
+    """
     try:
         import uvicorn
     except ModuleNotFoundError as exc:
@@ -607,8 +615,18 @@ def web(
             "uvicorn 이 없습니다. `pip install -e .[api]` 로 설치하세요."
         ) from exc
 
+    if (ssl_certfile is None) != (ssl_keyfile is None):
+        raise typer.BadParameter("--ssl-certfile 과 --ssl-keyfile 은 함께 지정해야 합니다.")
+
     configure_logging()
-    uvicorn.run("leadcrawler.api.app:create_app", factory=True, host=host, port=port)
+    uvicorn.run(
+        "leadcrawler.api.app:create_app",
+        factory=True,
+        host=host,
+        port=port,
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
+    )
 
 
 @app.command()
