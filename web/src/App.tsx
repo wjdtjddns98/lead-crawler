@@ -287,6 +287,10 @@ function Workbench({
           busyIds={busyIds}
           doneCount={sessionDone}
           remaining={total}
+          // 전체 큐 액션은 admin 전용 — worker 는 읽기 전용(진행 확인·검색용). 여기 목록은
+          // 전부 미점유 항목이라 worker 가 직접 처리하면 claim(내 작업) 격리를 우회해
+          // 동시 중복 검토가 나므로, 직접 처리는 '내 작업' 경유만 허용한다.
+          readOnly={!isAdmin}
           onConfirm={(id, selected) => act(id, "confirm", selected)}
           onReject={(id) => act(id, "reject")}
           // 전체큐는 점유 항목이 서버에서 제외됨 — pending 0 = "받아갈 수 있는 작업 없음".

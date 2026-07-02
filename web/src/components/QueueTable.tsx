@@ -54,6 +54,9 @@ interface Props {
   onConfirm: (id: string, selected?: string) => Promise<boolean>;
   onReject: (id: string) => Promise<boolean>;
   emptyText?: string; // 빈 목록 안내 — 화면 맥락별 문구(생략 시 기본).
+  // 읽기 전용(브라우즈) — 액션 컬럼·이메일 편집·미리보기 처리 팝업을 숨긴다. worker 의
+  // 전체 큐가 해당: 직접 처리는 claim(내 작업) 경유만 — 미점유 항목 동시 처리 충돌 방지.
+  readOnly?: boolean;
 }
 
 // 크롤된 신뢰불가 URL 의 스킴을 검증한다 — http(s) 만 허용(javascript:/data: 등 XSS 차단).
@@ -106,6 +109,7 @@ interface RowProps {
   item: ReviewItem;
   busy: boolean;
   choice: string | undefined;
+  readOnly: boolean; // 역할 고정값(세션 중 불변) — memo 비교에서 제외해도 안전.
   onPick: (id: string, value: string) => void;
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
@@ -117,8 +121,10 @@ interface RowProps {
 // 핸들러를 매 렌더 새로 만들어도 논리는 동일하고, 행은 item 이 바뀔 때 최신 핸들러로
 // 갱신되므로 안전하다(필터 변경 시 item 객체가 새로 와 자연히 재렌더).
 const QueueRow = memo(
-  function QueueRow({ item, busy, choice, onPick, onConfirm, onReject, onOpen }: RowProps) {
+  function QueueRow({ item, busy, choice, readOnly, onPick, onConfirm, onReject, onOpen }: RowProps) {
     const done = item.status !== "pending";
+    // 읽기 전용이면 pending 행도 처리(라디오·입력) 잠금 — 처리 완료 행과 동일한 표시.
+    const locked = done || readOnly;
     const href = safeHref(item.homepage);
     const formHref = safeHref(item.form);
     return (
@@ -142,7 +148,7 @@ const QueueRow = memo(
                     className="cursor-pointer flex-none mt-0.5"
                     name={`sel-${item.id}`}
                     checked={choice === c.value}
-                    disabled={done}
+                    disabled={locked}
                     onChange={() => onPick(item.id, c.value)}
                   />
                   <span className="font-mono [overflow-wrap:anywhere]">{c.value}</span>
@@ -157,7 +163,7 @@ const QueueRow = memo(
             className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
             type="email"
             value={choice ?? ""}
-            disabled={done}
+            disabled={locked}
             placeholder="이메일 직접 입력/수정"
             onChange={(e) => onPick(item.id, e.target.value)}
             title="확정 전 이메일을 수정하거나 직접 입력할 수 있습니다"
@@ -175,8 +181,15 @@ const QueueRow = memo(
               target="_blank"
               rel="noreferrer"
               className={`${LINK_FOCUS} ${item.site_alive ? "text-accent" : "text-muted line-through"}`}
-              title={item.site_alive ? "클릭: 미리보기 창 (Ctrl+클릭: 새 탭)" : "사이트 미응답"}
-              onClick={(e) => openOrTab(e, () => onOpen(item.id, "home"))}
+              title={
+                item.site_alive
+                  ? readOnly
+                    ? "새 탭에서 열기"
+                    : "클릭: 미리보기 창 (Ctrl+클릭: 새 탭)"
+                  : "사이트 미응답"
+              }
+              // 읽기 전용은 처리용 미리보기 창 대신 브라우저 기본(새 탭)으로 연다.
+              onClick={readOnly ? undefined : (e) => openOrTab(e, () => onOpen(item.id, "home"))}
             >
               <span className="inline-flex items-center gap-1">
                 <ExternalLink size={13} className="flex-none" aria-hidden /> {hostOf(href)}
@@ -192,8 +205,8 @@ const QueueRow = memo(
                 target="_blank"
                 rel="noreferrer"
                 className={`${LINK_FOCUS} text-accent`}
-                title="클릭: 미리보기 창 (Ctrl+클릭: 새 탭)"
-                onClick={(e) => openOrTab(e, () => onOpen(item.id, "form"))}
+                title={readOnly ? "새 탭에서 열기" : "클릭: 미리보기 창 (Ctrl+클릭: 새 탭)"}
+                onClick={readOnly ? undefined : (e) => openOrTab(e, () => onOpen(item.id, "form"))}
               >
                 <span className="inline-flex items-center gap-1">
                   <FileText size={13} className="flex-none" aria-hidden /> 문의폼
@@ -214,24 +227,26 @@ const QueueRow = memo(
             </span>
           )}
         </td>
-        <td className={`${TD} ${COL_W[7]}`}>
-          <div className="flex gap-1.5 flex-wrap">
-            <button
-              className={BTN_CONFIRM}
-              disabled={busy || item.status === "confirmed"}
-              onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
-            >
-              확정
-            </button>
-            <button
-              className={BTN_REJECT}
-              disabled={busy || item.status === "rejected"}
-              onClick={() => onReject(item.id)}
-            >
-              거부
-            </button>
-          </div>
-        </td>
+        {!readOnly && (
+          <td className={`${TD} ${COL_W[7]}`}>
+            <div className="flex gap-1.5 flex-wrap">
+              <button
+                className={BTN_CONFIRM}
+                disabled={busy || item.status === "confirmed"}
+                onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
+              >
+                확정
+              </button>
+              <button
+                className={BTN_REJECT}
+                disabled={busy || item.status === "rejected"}
+                onClick={() => onReject(item.id)}
+              >
+                거부
+              </button>
+            </div>
+          </td>
+        )}
       </tr>
     );
   },
@@ -240,7 +255,16 @@ const QueueRow = memo(
 );
 
 // 검증 큐 표 — 회사/이메일 후보(다중 선택)/메일 검증 신호/상태/액션.
-export function QueueTable({ items, busyIds, doneCount, remaining, onConfirm, onReject, emptyText }: Props) {
+export function QueueTable({
+  items,
+  busyIds,
+  doneCount,
+  remaining,
+  onConfirm,
+  onReject,
+  emptyText,
+  readOnly = false,
+}: Props) {
   // 행별 선택(라디오) — 서버 selected 를 기본값으로, 사용자가 바꾸면 덮어쓴다.
   const [picked, setPicked] = useState<Record<string, string>>({});
   const onPick = useCallback((id: string, value: string) => {
@@ -321,7 +345,8 @@ export function QueueTable({ items, busyIds, doneCount, remaining, onConfirm, on
       <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
         <thead>
           <tr>
-            {HEADERS.map((h, i) => {
+            {/* 읽기 전용이면 마지막 '액션' 헤더 제외(행도 액션 셀을 안 그린다). */}
+            {(readOnly ? HEADERS.slice(0, -1) : HEADERS).map((h, i) => {
               const sortable = i in SORT_KEY;
               const active = sort?.col === i;
               return (
@@ -363,6 +388,7 @@ export function QueueTable({ items, busyIds, doneCount, remaining, onConfirm, on
               item={it}
               busy={busyIds.has(it.id)}
               choice={picked[it.id] ?? it.selected ?? it.candidates[0]?.value}
+              readOnly={readOnly}
               onPick={onPick}
               onConfirm={onConfirm}
               onReject={onReject}
