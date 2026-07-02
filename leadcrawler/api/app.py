@@ -26,7 +26,7 @@ from ..outreach import preview as outreach_preview
 from ..outreach import send_campaign
 from ..schema import CompanyRow, ReviewQueueRow, UserRow
 from ..sources.countries import country_match_set, korean_label, supported_countries
-from ..sources.industry import supported_industries
+from ..sources.taxonomy import INDUSTRY_TAXONOMY, UNCLASSIFIED
 from ..storage.db import get_engine, get_sessionmaker
 from ..storage.export import ExcelExporter
 from ..storage.repository import load_leads, register_edited_email
@@ -137,6 +137,10 @@ def create_app() -> FastAPI:
 
         ``/admin/*`` 과 동일 출처지만 직원(worker)도 필요하므로 admin 라우트를 오염시키지
         않고 비관리자 경로로 노출한다(상장여부는 고정 3값).
+
+        구분(업종) 옵션은 크롤 타깃용 ``supported_industries()`` 가 아니라 큐 행에 실제
+        저장되는 **구분 택소노미**(:data:`INDUSTRY_TAXONOMY` + 미분류)다 — 필터 매칭은
+        ``CompanyRow.industry`` 문자열 일치이므로 저장 어휘와 같아야 0건 매치가 안 난다.
         """
         return QueueFilterOptions(
             countries=[
@@ -144,8 +148,8 @@ def create_app() -> FastAPI:
                 for c in supported_countries()
             ],
             industries=[
-                IndustryOption(value=ko, label=ko, aliases=[en])
-                for ko, en in supported_industries()
+                IndustryOption(value=label, label=label)
+                for label in (*INDUSTRY_TAXONOMY, UNCLASSIFIED)
             ],
             listed=["listed", "unlisted", "unknown"],
         )
