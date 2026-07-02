@@ -57,10 +57,13 @@ class Settings(BaseSettings):
     resolve_domains: bool = Field(default=False)
     domain_resolve_max: int = Field(default=50)  # 런당 CSE 해석 호출 상한(quota 보호)
 
-    # 검증 큐 동시 처리(당겨가기) — 6명 동시 검증 시 충돌 방지. 직원이 한 번에 점유하는
-    # 배치 크기. 점유는 처리(확정/거부) 전까지 계정에 영구 귀속(TTL 복귀 없음) —
-    # 회수는 관리자 라우트(/admin/users/{id}/reclaim)로만 한다.
+    # 검증 큐 동시 처리(당겨가기) — 6명 동시 검증 시 충돌 방지. batch=1회 "작업 받기"로
+    # 추가 점유하는 개수, cap=한 계정이 동시에 점유할 수 있는 총량 상한(선취 허용 —
+    # 남은 작업이 있어도 다른 세그먼트 지시를 받아 미리 받아둘 수 있게 batch < cap).
+    # 점유는 처리(확정/거부) 전까지 계정에 영구 귀속(TTL 복귀 없음) — 회수는 관리자
+    # 라우트(/admin/users/{id}/reclaim)로만 한다.
     review_claim_batch: int = Field(default=30, ge=1)
+    review_claim_cap: int = Field(default=100, ge=1)
 
     # 웹 직접 크롤 — 한 번에 도는 세그먼트(국가×업종×상장) 상한. 빈 국가=지원 전체국이라
     # 다업종 선택 시 세그먼트가 폭증할 수 있어, 우발적 대량 크롤(예산·시간 낭비)을 막는 캡.

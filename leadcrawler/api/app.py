@@ -37,6 +37,7 @@ from ..storage.review import (
     claim_work,
     count_reviews,
     get_review,
+    my_work,
     query_reviews,
     set_review_status,
 )
@@ -155,19 +156,29 @@ def create_app() -> FastAPI:
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> list[ReviewItem]:
-        """내 작업분을 배치 크기까지 채워 반환한다(당겨가기 — 6명 동시 충돌 방지·자동 리필).
+        """새 작업을 배치(+30)만큼 추가 점유하고 내 작업분 전체를 반환한다(총량 cap 상한).
 
-        점유는 처리(확정/거부) 전까지 계정에 영구 귀속된다(반납·TTL 복귀 없음 — 회수는
-        관리자 ``/admin/users/{id}/reclaim`` 만). 본문 ``ClaimRequest`` 의 국가/업종/상장
-        작업범위는 **신규 배정에만** 적용되고, 응답엔 필터 무관 내 점유 전체가 담긴다.
-        본문 생략/빈 객체 = 전체(하위호환).
+        "작업 받기" 1회 = +batch. 남은 작업이 있어도 다른 세그먼트 지시를 받아 미리
+        받아둘 수 있다(선취 — cap 도달 시 신규 배정 0). 점유는 처리(확정/거부) 전까지
+        계정에 영구 귀속(반납·TTL 복귀 없음 — 회수는 관리자 ``/admin/users/{id}/reclaim``).
+        본문 ``ClaimRequest`` 의 국가/업종/상장 작업범위는 **신규 배정에만** 적용되고,
+        응답엔 필터 무관 내 점유 전체가 담긴다. 부작용 없는 조회는 ``GET /queue/mine``.
         """
+        s = get_settings()
         items = claim_work(
-            db, user.id, target=get_settings().review_claim_batch,
+            db, user.id, batch=s.review_claim_batch, cap=s.review_claim_cap,
             countries=_split_csv(payload.country), industries=_split_csv(payload.industry),
             listed=payload.listed or None,
         )
         return [ReviewItem(**it) for it in items]
+
+    @app.get("/queue/mine", response_model=list[ReviewItem])
+    def my_queue(
+        db: Session = Depends(get_db),
+        user: UserRow = Depends(require_user),
+    ) -> list[ReviewItem]:
+        """내 점유 작업분 조회 — 부작용 없음(새로고침·재로그인 복원용, 추가 점유는 claim)."""
+        return [ReviewItem(**it) for it in my_work(db, user.id)]
 
     @app.get("/queue/{review_id}", response_model=ReviewItem)
     def get_queue_item(

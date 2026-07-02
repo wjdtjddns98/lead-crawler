@@ -447,36 +447,45 @@ def _my_claimed_rows(
     return [(rq, company) for rq, company in rows]
 
 
+def my_work(session: Session, user_id: str) -> list[dict]:
+    """내 점유 작업분 DTO 목록 — 부작용 없는 조회(새로고침·재로그인 복원용)."""
+    current = _my_claimed_rows(session, user_id)
+    ids = [c.id for _, c in current]
+    signals = _email_signals_by_value(session, ids)
+    forms = _forms_by_company(session, ids)
+    return [_to_dict(rq, company, signals, forms) for rq, company in current]
+
+
 def claim_work(
     session: Session,
     user_id: str,
     *,
-    target: int,
+    batch: int,
+    cap: int,
     now: datetime | None = None,
     countries: Sequence[str] | None = None,
     industries: Sequence[str] | None = None,
     listed: str | None = None,
 ) -> list[dict]:
-    """내 점유를 ``target`` 개까지 채우고(부족분 배타 배정) 내 작업분 DTO 를 반환한다.
+    """새 작업을 최대 ``batch`` 개 추가 점유하고(총량 ``cap`` 상한) 내 작업분 전체를 반환한다.
 
-    매 호출이 target 으로 top-up 하므로 확정/거부로 줄어든 만큼 자동 리필된다(반복 호출
-    멱등 — 항상 ~target 개 유지). 6명이 동시에 불러도 SKIP LOCKED 로 작업분이 겹치지 않는다.
-    점유는 처리 전까지 영구 귀속: 반납·TTL 복귀가 없고, 국가/업종/상장 작업범위 필터는
-    **신규 배정에만** 적용된다(필터를 바꿔도 기존 점유는 유지 — target 상한은 필터 무관 전역).
+    "작업 받기" 1회 = +batch 추가(additive). 남은 작업이 있어도 다른 세그먼트 지시를
+    받아 미리 받아둘 수 있고(선취), 한 계정의 동시 점유 총량은 cap 을 넘지 못한다
+    (cap 도달 시 신규 배정 0 — 기존 점유만 반환). 6명이 동시에 불러도 SKIP LOCKED 로
+    작업분이 겹치지 않는다. 점유는 처리 전까지 영구 귀속: 반납·TTL 복귀가 없고,
+    국가/업종/상장 작업범위 필터는 **신규 배정에만** 적용된다(기존 점유는 필터 무관 유지).
+    부작용 없는 조회는 :func:`my_work`.
     """
     now = now or datetime.now(timezone.utc)
     current = _my_claimed_rows(session, user_id)
-    if len(current) < target:
+    want = min(batch, cap - len(current))
+    if want > 0:
         _claim_more(
-            session, user_id, want=target - len(current), now=now,
+            session, user_id, want=want, now=now,
             countries=countries, industries=industries, listed=listed,
         )
         session.flush()
-        current = _my_claimed_rows(session, user_id)
-    ids = [c.id for _, c in current]
-    signals = _email_signals_by_value(session, ids)
-    forms = _forms_by_company(session, ids)
-    return [_to_dict(rq, company, signals, forms) for rq, company in current]
+    return my_work(session, user_id)
 
 
 def admin_reclaim(
