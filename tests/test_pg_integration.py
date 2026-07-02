@@ -135,8 +135,8 @@ def test_pg_concurrent_claim_same_filter_disjoint(pg_settings: Settings) -> None
     sa, sb = sm(), sm()
     try:
         # alice 의 트랜잭션이 열린(미커밋) 상태에서 bob 가 같은 US 풀을 claim → 잠긴 행 건너뜀.
-        ai = claim_work(sa, a, target=4, ttl_minutes=30, now=_T0, countries=["US"], listed="listed")
-        bi = claim_work(sb, b, target=4, ttl_minutes=30, now=_T0, countries=["US"], listed="listed")
+        ai = claim_work(sa, a, target=4, now=_T0, countries=["US"], listed="listed")
+        bi = claim_work(sb, b, target=4, now=_T0, countries=["US"], listed="listed")
         sa.commit()
         sb.commit()
     finally:
@@ -155,8 +155,8 @@ def test_pg_concurrent_claim_different_filters(pg_settings: Settings) -> None:
     sm = get_sessionmaker(pg_settings)
     sa, sb = sm(), sm()
     try:
-        ai = claim_work(sa, a, target=10, ttl_minutes=30, now=_T0, countries=["KR"])
-        bi = claim_work(sb, b, target=10, ttl_minutes=30, now=_T0, countries=["US"])
+        ai = claim_work(sa, a, target=10, now=_T0, countries=["KR"])
+        bi = claim_work(sb, b, target=10, now=_T0, countries=["US"])
         sa.commit()
         sb.commit()
     finally:

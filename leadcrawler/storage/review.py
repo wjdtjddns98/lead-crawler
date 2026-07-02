@@ -12,10 +12,10 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..logging import get_logger
@@ -162,13 +162,19 @@ def count_reviews(
     industries: Sequence[str] | None = None,
     listed: str | None = None,
 ) -> int:
-    """큐 항목 수(선택적 상태 + 국가/업종/상장 작업범위 필터).
+    """큐 항목 수(선택적 상태 + 국가/업종/상장 작업범위 필터) — 점유 중 행 제외.
 
-    필터가 있으면 CompanyRow(상장은 DiscoveredCompanyRow)를 조인해 카운트한다 —
-    조인은 모두 1:1(canonical_key/id 유일)이라 행 증식이 없어 count 가 정확하다.
+    누군가 점유(claim)한 행은 전체큐에서 숨긴다(전체큐 = 아직 아무도 안 받아간 작업).
+    확정/거부 행은 점유가 해제되므로 상태별 카운트엔 영향 없다. 필터가 있으면
+    CompanyRow(상장은 DiscoveredCompanyRow)를 조인해 카운트한다 — 조인은 모두
+    1:1(canonical_key/id 유일)이라 행 증식이 없어 count 가 정확하다.
     """
     if not _has_queue_filters(countries, industries, listed):
-        stmt = select(func.count()).select_from(ReviewQueueRow)
+        stmt = (
+            select(func.count())
+            .select_from(ReviewQueueRow)
+            .where(ReviewQueueRow.claimed_by.is_(None))
+        )
         if status is not None:
             stmt = stmt.where(ReviewQueueRow.status == status)
         return int(session.scalar(stmt) or 0)
@@ -176,6 +182,7 @@ def count_reviews(
         select(func.count())
         .select_from(ReviewQueueRow)
         .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
+        .where(ReviewQueueRow.claimed_by.is_(None))
     )
     if status is not None:
         stmt = stmt.where(ReviewQueueRow.status == status)
@@ -247,10 +254,13 @@ def query_reviews(
     이메일 검증 신호(status/mx/smtp)는 :func:`_email_signal_map` 로 별도 평탄화해, 회사가
     이메일을 여럿 가져도 큐 행이 복제되지 않게 한다. 정렬에 ``id`` 최종 타이브레이커를
     더해 offset 페이지네이션이 안정적이다. 국가/업종/상장 작업범위 필터는 선택적으로
-    적용한다(:func:`_apply_queue_filters`).
+    적용한다(:func:`_apply_queue_filters`). 점유(claim) 중 행은 :func:`count_reviews` 와
+    동일하게 제외한다(전체큐 = 미점유 작업만 — 단건 조회 :func:`get_review` 는 무관).
     """
-    stmt = select(ReviewQueueRow, CompanyRow).join(
-        CompanyRow, ReviewQueueRow.company_id == CompanyRow.id
+    stmt = (
+        select(ReviewQueueRow, CompanyRow)
+        .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
+        .where(ReviewQueueRow.claimed_by.is_(None))
     )
     if status is not None:
         stmt = stmt.where(ReviewQueueRow.status == status)
@@ -316,15 +326,14 @@ def set_review_status(
     assignee_id: str | None = None,
     selected: str | None = None,
     now: datetime | None = None,
-    claim_ttl_minutes: int | None = None,
 ) -> dict | None:
     """큐 항목 상태(확정/거부/보류)와 선택 후보를 갱신하고 감사 이력을 적재한다.
 
     없으면 None, 잘못된 상태면 ValueError. ``selected`` 가 주어지면 후보 목록에 있어야
     하며(아니면 ValueError), 확정/거부 시 사람이 고른 최종 이메일을 기록한다. 처리자
     (assignee/assignee_id)와 시각(reviewed_at)을 큐 행에 남기고, 변경 1건마다
-    :class:`ReviewAuditRow` 를 append 해 책임추적 이력을 보존한다. ``claim_ttl_minutes``
-    가 주어지면 동시성 백스톱 — 타인이 활성 점유 중인 항목이면 :class:`ReviewConflict`.
+    :class:`ReviewAuditRow` 를 append 해 책임추적 이력을 보존한다. 점유는 영구 귀속이라
+    **타인이 점유한 항목이면 시간 경과와 무관하게** :class:`ReviewConflict`.
     """
     if status not in _VALID_STATUSES:
         raise ValueError(f"허용되지 않은 상태: {status}")
@@ -332,14 +341,9 @@ def set_review_status(
     if rq is None:
         return None
     when = now or datetime.now(timezone.utc)
-    # 클레임 백스톱(동시성) — 활성 점유자가 타인이면 충돌(전체보기 등 우연한 동시처리 차단).
-    if (
-        claim_ttl_minutes is not None
-        and rq.claimed_by is not None
-        and rq.claimed_by != assignee_id
-        and rq.claimed_at is not None
-        and _aware(rq.claimed_at) >= _expiry(when, claim_ttl_minutes)
-    ):
+    # 클레임 백스톱(동시성) — 점유자가 타인이면 충돌. 처리자 없는 내부 호출(assignee_id
+    # None)도 점유 항목엔 동일 적용된다(점유 = 그 계정의 배타 작업분).
+    if rq.claimed_by is not None and rq.claimed_by != assignee_id:
         raise ReviewConflict("다른 직원이 처리 중인 항목입니다. 새로고침 후 다시 시도하세요.")
     if selected is not None:
         if selected not in _parse_candidates(rq):
@@ -374,29 +378,19 @@ def set_review_status(
     return get_review(session, review_id)
 
 
-def _aware(dt: datetime) -> datetime:
-    """naive datetime(SQLite)을 UTC aware 로 보정(비교 안전)."""
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-
-
-def _expiry(now: datetime, ttl_minutes: int) -> datetime:
-    """점유 만료 기준 시각 — 이보다 이전에 점유된 미처리 항목은 풀로 복귀 가능."""
-    return now - timedelta(minutes=max(1, ttl_minutes))
-
-
 def _claim_more(
     session: Session,
     user_id: str,
     *,
     want: int,
-    ttl_minutes: int,
     now: datetime,
     countries: Sequence[str] | None = None,
     industries: Sequence[str] | None = None,
     listed: str | None = None,
 ) -> int:
-    """미점유(또는 TTL 만료) pending 항목을 최대 ``want`` 개 이 직원에게 배타 배정한다.
+    """미점유 pending 항목을 최대 ``want`` 개 이 직원에게 배타 배정한다.
 
+    점유는 처리 전까지 영구 귀속(TTL 만료 재배정 없음 — 회수는 :func:`admin_reclaim` 만).
     PostgreSQL 은 ``FOR UPDATE SKIP LOCKED`` 로 6명 동시 요청에도 서로 다른 행을 받게
     한다(잠긴 행 건너뜀 — 동시 작업 큐의 표준). SQLite(테스트)는 미지원이라 평이한
     select(단일 라이터라 무해). 국가/업종/상장 작업범위 필터가 주어지면 CompanyRow
@@ -404,11 +398,10 @@ def _claim_more(
     """
     if want <= 0:
         return 0
-    expiry = _expiry(now, ttl_minutes)
     stmt = (
         select(ReviewQueueRow.id)
         .where(ReviewQueueRow.status == PENDING)
-        .where(or_(ReviewQueueRow.claimed_by.is_(None), ReviewQueueRow.claimed_at < expiry))
+        .where(ReviewQueueRow.claimed_by.is_(None))
     )
     if _has_queue_filters(countries, industries, listed):
         stmt = stmt.join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
@@ -435,70 +428,23 @@ def _claim_more(
     return len(ids)
 
 
-def _my_active_rows(
-    session: Session,
-    user_id: str,
-    *,
-    ttl_minutes: int,
-    now: datetime,
-    countries: Sequence[str] | None = None,
-    industries: Sequence[str] | None = None,
-    listed: str | None = None,
+def _my_claimed_rows(
+    session: Session, user_id: str
 ) -> list[tuple[ReviewQueueRow, CompanyRow]]:
-    """이 직원이 점유 중인(아직 pending·미만료) 항목 (rq, company) 목록(선택적 필터)."""
-    expiry = _expiry(now, ttl_minutes)
+    """이 직원이 점유 중인(pending) 항목 (rq, company) 전체 목록 — 필터 무관.
+
+    점유는 영구 귀속이라 작업범위 필터를 바꿔도 기존 점유는 반납되지 않고 화면에
+    남는다(필터는 신규 배정에만 적용 — :func:`claim_work`).
+    """
     stmt = (
         select(ReviewQueueRow, CompanyRow)
         .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
         .where(ReviewQueueRow.claimed_by == user_id)
         .where(ReviewQueueRow.status == PENDING)
-        .where(ReviewQueueRow.claimed_at >= expiry)
+        .order_by(CompanyRow.name, ReviewQueueRow.id)
     )
-    stmt = _apply_queue_filters(
-        stmt, countries=countries, industries=industries, listed=listed
-    )
-    stmt = stmt.order_by(CompanyRow.name, ReviewQueueRow.id)
     rows = session.execute(stmt).all()
     return [(rq, company) for rq, company in rows]
-
-
-def release_non_matching(
-    session: Session,
-    user_id: str,
-    *,
-    countries: Sequence[str] | None = None,
-    industries: Sequence[str] | None = None,
-    listed: str | None = None,
-) -> int:
-    """내가 점유한 pending 항목 중 현재 작업범위 필터에 **안 맞는** 것을 풀로 반납한다.
-
-    직원이 작업범위(국가/업종/상장)를 바꾸면 이전 범위로 점유 중이던 비매칭 항목이
-    화면에 남지 않도록 즉시 반납한다(다른 직원이 가져갈 수 있게). 필터가 전부 비면
-    (전체) 반납하지 않는다. 반납한 행 수를 반환한다.
-    """
-    if not _has_queue_filters(countries, industries, listed):
-        return 0
-    matching_ids = set(
-        session.scalars(
-            _apply_queue_filters(
-                select(ReviewQueueRow.id).join(
-                    CompanyRow, ReviewQueueRow.company_id == CompanyRow.id
-                )
-                .where(ReviewQueueRow.claimed_by == user_id)
-                .where(ReviewQueueRow.status == PENDING),
-                countries=countries,
-                industries=industries,
-                listed=listed,
-            )
-        ).all()
-    )
-    release_stmt = update(ReviewQueueRow).where(
-        ReviewQueueRow.claimed_by == user_id, ReviewQueueRow.status == PENDING
-    )
-    if matching_ids:  # 매칭 행은 보존, 나머지만 반납(빈 집합이면 전부 반납).
-        release_stmt = release_stmt.where(ReviewQueueRow.id.notin_(matching_ids))
-    result = session.execute(release_stmt.values(claimed_by=None, claimed_at=None))
-    return int(result.rowcount or 0)
 
 
 def claim_work(
@@ -506,53 +452,75 @@ def claim_work(
     user_id: str,
     *,
     target: int,
-    ttl_minutes: int,
     now: datetime | None = None,
     countries: Sequence[str] | None = None,
     industries: Sequence[str] | None = None,
     listed: str | None = None,
 ) -> list[dict]:
-    """내 활성 점유를 ``target`` 개까지 채우고(부족분 배타 배정) 내 작업분 DTO 를 반환한다.
+    """내 점유를 ``target`` 개까지 채우고(부족분 배타 배정) 내 작업분 DTO 를 반환한다.
 
     매 호출이 target 으로 top-up 하므로 확정/거부로 줄어든 만큼 자동 리필된다(반복 호출
     멱등 — 항상 ~target 개 유지). 6명이 동시에 불러도 SKIP LOCKED 로 작업분이 겹치지 않는다.
-    국가/업종/상장 작업범위 필터가 주어지면 그 조건의 행만 점유하고, 필터를 바꾸면 이전
-    범위의 비매칭 점유를 먼저 반납한다(화면엔 항상 현재 범위만 남는다).
+    점유는 처리 전까지 영구 귀속: 반납·TTL 복귀가 없고, 국가/업종/상장 작업범위 필터는
+    **신규 배정에만** 적용된다(필터를 바꿔도 기존 점유는 유지 — target 상한은 필터 무관 전역).
     """
     now = now or datetime.now(timezone.utc)
-    # 필터 전환 시 비매칭 점유 반납(전체 필터면 no-op).
-    release_non_matching(
-        session, user_id, countries=countries, industries=industries, listed=listed
-    )
-    session.flush()
-    current = _my_active_rows(
-        session, user_id, ttl_minutes=ttl_minutes, now=now,
-        countries=countries, industries=industries, listed=listed,
-    )
+    current = _my_claimed_rows(session, user_id)
     if len(current) < target:
         _claim_more(
-            session, user_id, want=target - len(current), ttl_minutes=ttl_minutes, now=now,
+            session, user_id, want=target - len(current), now=now,
             countries=countries, industries=industries, listed=listed,
         )
         session.flush()
-        current = _my_active_rows(
-            session, user_id, ttl_minutes=ttl_minutes, now=now,
-            countries=countries, industries=industries, listed=listed,
-        )
+        current = _my_claimed_rows(session, user_id)
     ids = [c.id for _, c in current]
     signals = _email_signals_by_value(session, ids)
     forms = _forms_by_company(session, ids)
     return [_to_dict(rq, company, signals, forms) for rq, company in current]
 
 
-def release_my_claims(session: Session, user_id: str) -> int:
-    """내가 점유한 미처리(pending) 항목을 모두 풀로 반납한다(작업 종료). 반납 수 반환."""
-    result = session.execute(
+def admin_reclaim(
+    session: Session,
+    user_id: str,
+    *,
+    actor_id: str | None = None,
+    actor_username: str = "",
+    now: datetime | None = None,
+) -> int:
+    """관리자 회수 — 해당 계정이 점유한 pending 항목을 전부 풀로 되돌린다(회수 수 반환).
+
+    영구 배정 모델에서 유일한 점유 해제 수단(퇴사·장기부재 대응). 회수 1건마다 감사행
+    (action="reclaim", actor=관리자)을 남겨 '누가 언제 풀었는지'를 보존한다.
+    """
+    when = now or datetime.now(timezone.utc)
+    ids = list(
+        session.scalars(
+            select(ReviewQueueRow.id)
+            .where(ReviewQueueRow.claimed_by == user_id)
+            .where(ReviewQueueRow.status == PENDING)
+        ).all()
+    )
+    if not ids:
+        return 0
+    session.execute(
         update(ReviewQueueRow)
-        .where(ReviewQueueRow.claimed_by == user_id, ReviewQueueRow.status == PENDING)
+        .where(ReviewQueueRow.id.in_(ids))
         .values(claimed_by=None, claimed_at=None)
     )
-    return int(result.rowcount or 0)
+    for rid in ids:
+        session.add(
+            ReviewAuditRow(
+                id=uuid4().hex[:12],
+                review_id=rid,
+                actor_id=actor_id,
+                actor_username=actor_username,
+                action="reclaim",
+                selected=None,
+                at=when,
+            )
+        )
+    session.flush()
+    return len(ids)
 
 
 def _to_dict(
