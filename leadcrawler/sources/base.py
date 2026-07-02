@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from ..dedup import canonical_key
 from ..logging import get_logger
+from ..region import region_from_address
 from .industry import resolve_industry_label
 
 log = get_logger("sources.cursor")
@@ -31,7 +32,13 @@ class Segment(BaseModel):
 
 
 class DiscoveredCompany(BaseModel):
-    """발견 단계 산출 — 식별 정보 + canonical_key."""
+    """발견 단계 산출 — 식별 정보 + canonical_key.
+
+    풍부필드(address~name_eng)는 등록처 응답이 이미 주는 값을 버리지 않고 담는
+    optional 슬롯 — 소스마다 채워짐이 다르다(None=해당 소스 미제공).
+    활용처: reg_no=dedup 확정키, region=지역 필터, ir_url·phone=연락처 수율,
+    name_eng·ticker=검색 쿼리 확장.
+    """
 
     canonical_key: str
     name: str
@@ -43,6 +50,13 @@ class DiscoveredCompany(BaseModel):
     registry_id: str | None = None
     source: str = ""
     segment: str | None = None
+    address: str | None = None
+    region: str | None = None
+    reg_no: str | None = None
+    ticker: str | None = None
+    phone: str | None = None
+    ir_url: str | None = None
+    name_eng: str | None = None
 
 
 class DiscoverySource(Protocol):
@@ -109,6 +123,20 @@ def is_country(segment: Segment, names: AbstractSet[str]) -> bool:
     return segment.country.strip().lower() in names
 
 
+def opt_str(value: object) -> str | None:
+    """API 응답 값을 optional 문자열로 정규화한다('' 나 비문자열은 None)."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
+
+
+def join_address(*parts: object) -> str | None:
+    """주소 조각들을 ', ' 로 합친다(빈 값 제거, 전부 비면 None)."""
+    cleaned = [s for p in parts if (s := opt_str(p)) is not None]
+    return ", ".join(cleaned) if cleaned else None
+
+
 def build_company(
     *,
     source: str,
@@ -118,6 +146,13 @@ def build_company(
     registry: str | None = None,
     registry_id: str | None = None,
     industry_code_label: str | None = None,
+    address: str | None = None,
+    region: str | None = None,
+    reg_no: str | None = None,
+    ticker: str | None = None,
+    phone: str | None = None,
+    ir_url: str | None = None,
+    name_eng: str | None = None,
 ) -> DiscoveredCompany:
     """식별 정보로 ``canonical_key`` 를 산정해 :class:`DiscoveredCompany` 를 만든다.
 
@@ -125,6 +160,9 @@ def build_company(
     업종 그대로, broad('전체' 등)면 등록처 코드에서 복원한 ``industry_code_label``(명확
     단일매치, 등록처 소스만 전달)을 쓰고 없으면 '미분류'(파이프라인이 이후 LLM 배치 시도).
     ``segment`` 라벨(provenance)은 원래 세그먼트 업종을 유지한다 — 구분 컬럼과 별개.
+
+    풍부필드는 소스가 받은 만큼만 전달한다. ``region`` 미전달 시 주소 원문에서
+    :func:`region_from_address` 로 파생을 시도한다(현재 KR 만).
     """
     key = canonical_key(
         registry=registry,
@@ -144,6 +182,13 @@ def build_company(
         registry_id=registry_id,
         source=source,
         segment=segment.label,
+        address=address,
+        region=region or region_from_address(segment.country, address),
+        reg_no=reg_no,
+        ticker=ticker,
+        phone=phone,
+        ir_url=ir_url,
+        name_eng=name_eng,
     )
 
 
