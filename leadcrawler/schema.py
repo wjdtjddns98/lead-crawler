@@ -71,6 +71,8 @@ class DiscoveredCompanyRow(Base):
     phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ir_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     name_eng: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # 상장 시장(보드) 세분화 라벨(KOSPI/KOSDAQ/NASDAQ/PSE 등) — listed 의 세부(NULL=미상).
+    market: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # ── Entity Resolution(중복해소) — 전부 additive·기본 NULL. C1 배치 리포트는 읽기전용이고,
     # 실제 머지 기록(C3 골든레코드)·사람 확정(C4)이 이 컬럼들을 채운다(가역·감사 가능).
     # 캐노니컬(법인 정식) 회사명 라벨 — survivorship 결과(C3). NULL=아직 라벨 안 함.

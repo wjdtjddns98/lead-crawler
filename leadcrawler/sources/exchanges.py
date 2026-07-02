@@ -112,6 +112,7 @@ class ExchangeSource:
                 domain=f"{cc}-{self.name}{i}.com",
                 registry=self.registry,
                 registry_id=f"{self.name.upper()}{i:04d}",
+                market=self.name.upper(),
             )
             for i in range(self._count)
         ]
@@ -157,7 +158,7 @@ class ExchangeSource:
             out.append(
                 build_company(
                     source=self.name, segment=listed_seg, name=name, domain=None,
-                    registry=self.registry, registry_id=symbol,
+                    registry=self.registry, registry_id=symbol, market=self.name.upper(),
                 )
             )
             if len(out) >= cap:
@@ -229,6 +230,7 @@ class PseSource(ExchangeSource):
                         domain=None,  # 목록엔 웹사이트 없음 → enrich 단계에서 보강.
                         registry=self.registry,
                         registry_id=symbol,
+                        market=self.name.upper(),
                     )
                 )
                 if len(out) >= cap:
@@ -314,6 +316,7 @@ class SgxSource(ExchangeSource):
                 build_company(
                     source=self.name, segment=listed_seg, name=name,
                     domain=None, registry=self.registry, registry_id=symbol,
+                    market=self.name.upper(),
                 )
             )
             if len(out) >= cap:
@@ -372,6 +375,7 @@ class IdxSource(ExchangeSource):
                     build_company(
                         source=self.name, segment=listed_seg, name=name,
                         domain=None, registry=self.registry, registry_id=symbol,
+                        market=self.name.upper(),
                     )
                 )
                 if len(out) >= cap:

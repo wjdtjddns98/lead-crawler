@@ -35,8 +35,13 @@ log = get_logger("sources.dart")
 _KR = {"kr", "kor", "korea", "south korea", "대한민국", "한국"}
 _CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
 _COMPANY_URL = "https://opendart.fss.or.kr/api/company.json"
-# 상장 시장 구분(corp_cls): 유가증권(Y)/코스닥(K)/코넥스(N).
-_LISTED_CLS = {"Y": "listed", "K": "listed", "N": "listed"}
+# 상장 시장 구분(corp_cls): 유가증권(Y)/코스닥(K)/코넥스(N)=상장, 기타법인(E)=비상장.
+# 주의: corpCode.xml 은 상장폐지 기업도 stock_code 를 유지한다(2026-07-02 실측 —
+# corp_cls='E' + stock_code 잔존, 예: 한빛네트). 즉 E 는 '한때 상장·현재 비상장' 포함
+# → unlisted 로 세분화(과거처럼 unknown 으로 뭉개지 않는다).
+_LISTED_CLS = {"Y": "listed", "K": "listed", "N": "listed", "E": "unlisted"}
+# 시장(보드) 세분화 — E(비상장)는 시장이 없으므로 None.
+_MARKET_CLS = {"Y": "KOSPI", "K": "KOSDAQ", "N": "KONEX"}
 # 업종 필터 시 cap*10 까지 넓게 스캔하되, 후보당 company.json 1 콜이 발생하므로(무료 쿼터
 # 보호) 절대 상한을 둔다 — 예산가드는 Serper 유료검색에만 걸려 무료 등록처는 무방비라서다.
 _SCAN_LIMIT_ABS = 2000
@@ -158,6 +163,7 @@ class DartSource:
                     phone=opt_str(info.get("phn_no")),
                     ir_url=opt_str(info.get("ir_url")),
                     name_eng=opt_str(info.get("corp_name_eng")),
+                    market=_MARKET_CLS.get(info.get("corp_cls", "")),
                 )
             )
             if len(out) >= cap:
