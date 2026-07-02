@@ -113,6 +113,7 @@ class UserStatsItem(BaseModel):
     created_at: str | None = None
     confirmed: int = 0
     rejected: int = 0
+    claimed: int = 0  # 현재 점유 중 pending 건수 — 관리자 회수(reclaim) 판단용.
     last_action_at: str | None = None
 
 

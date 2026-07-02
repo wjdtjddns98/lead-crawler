@@ -17,7 +17,15 @@ from xml.etree import ElementTree
 from ..config import Settings
 from ..dedup import normalize_domain
 from ..logging import get_logger
-from .base import DiscoveredCompany, Segment, build_company, is_country
+from .base import (
+    DiscoveredCompany,
+    Segment,
+    SupportsCursorStore,
+    advance_cursor,
+    build_company,
+    cursor_offset,
+    is_country,
+)
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import industry_from_ksic, ksic_prefixes, matches_prefix
 
@@ -45,11 +53,13 @@ class DartSource:
         count: int = 2,
         fetcher: SupportsFetch | None = None,
         rate_limiters: HostRateLimiters | None = None,
+        cursor_store: SupportsCursorStore | None = None,
     ) -> None:
         self._settings = settings
         self._count = count
         self._fetcher = fetcher
         self._rate_limiters = rate_limiters
+        self._cursor_store = cursor_store
 
     def applies_to(self, segment: Segment) -> bool:
         """한국 세그먼트에 적용된다(상장여부 게이팅은 라이브에서 corp_cls 로)."""
@@ -104,9 +114,15 @@ class DartSource:
             return []
         # 업종 필터가 없으면 상한만큼만, 있으면 더 넓게 스캔(상한*10·절대상한 cap)하며 매칭 수집.
         scan_limit = cap if prefixes is None else min(cap * 10, _SCAN_LIMIT_ABS)
+        # 런 간 커서(딥백필): 지난 런이 멈춘 위치부터 이어 스캔한다(매 런 같은 머리 재방문 방지).
+        # 상류 목록(corpCode.xml) 순서가 런 간 대체로 안정하다고 가정 — 흔들려도 오염은 없고
+        # (제약① dedup) 일부 항목이 다음 소진 사이클(0 리셋)까지 늦어질 뿐(self-heal).
+        offset = cursor_offset(self._cursor_store, self.name, segment, len(listed))
+        scanned = 0
 
         out: list[DiscoveredCompany] = []
-        for corp_code, corp_name in listed[:scan_limit]:
+        for corp_code, corp_name in listed[offset : offset + scan_limit]:
+            scanned += 1
             try:
                 info = fetcher.get_json(
                     _COMPANY_URL, params={"crtfc_key": key, "corp_code": corp_code}
@@ -137,7 +153,8 @@ class DartSource:
             )
             if len(out) >= cap:
                 break
-        log.info("dart.live", segment=segment.label, n=len(out))
+        advance_cursor(self._cursor_store, self.name, segment, offset + scanned, len(listed))
+        log.info("dart.live", segment=segment.label, n=len(out), offset=offset, scanned=scanned)
         return out
 
 
