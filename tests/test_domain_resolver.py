@@ -176,3 +176,67 @@ def test_korean_name_without_name_eng_still_skipped() -> None:
     dc = DiscoveredCompany(canonical_key="reg:dart:2", name="에스케이하이닉스", country="KR")
     assert r.resolve(dc) is None
     assert f.calls == 0
+
+
+# ── 네이버 검색 API 라우팅(KR 전용·무료) ────────────────────────────────────
+
+
+class UrlFakeFetcher:
+    """호출 URL·헤더를 기록하는 가짜 fetcher — 어느 공급자로 라우팅됐는지 검증용."""
+
+    def __init__(self, *payloads: dict) -> None:
+        self._payloads = list(payloads)
+        self.urls: list[str] = []
+        self.headers: list[dict | None] = []
+
+    def get_json(self, url: str, *, params: dict | None = None, headers: dict | None = None) -> dict:
+        self.urls.append(url)
+        self.headers.append(headers)
+        return self._payloads.pop(0) if self._payloads else {"items": []}
+
+
+def _naver_settings(**over) -> Settings:
+    return _settings(naver_client_id="nid", naver_client_secret="nsecret", **over)
+
+
+def test_kr_routes_to_naver_when_keys_present() -> None:
+    f = UrlFakeFetcher(_items("https://skhynix.com/ko/main"))
+    r = DomainResolver(_naver_settings(), fetcher=f)
+    assert r.resolve(_dc("SK hynix Inc.", country="KR")) == "skhynix.com"
+    assert "openapi.naver.com" in f.urls[0]  # KR → 네이버 백엔드.
+    assert f.headers[0]["X-Naver-Client-Id"] == "nid"
+
+
+def test_non_kr_keeps_default_provider() -> None:
+    f = UrlFakeFetcher(_items("https://emcorgroup.com"))
+    r = DomainResolver(_naver_settings(), fetcher=f)
+    assert r.resolve(_dc("EMCOR Group", country="US")) == "emcorgroup.com"
+    assert "customsearch.googleapis.com" in f.urls[0]  # 비KR → 기존(CSE) 유지.
+
+
+def test_kr_without_naver_keys_falls_back_to_default() -> None:
+    f = UrlFakeFetcher(_items("https://skhynix.com"))
+    r = DomainResolver(_settings(), fetcher=f)  # 네이버 키 없음.
+    assert r.resolve(_dc("SK hynix", country="KR")) == "skhynix.com"
+    assert "customsearch.googleapis.com" in f.urls[0]
+
+
+def test_naver_only_keys_resolve_kr_but_not_others() -> None:
+    # 유료 SERP 키가 하나도 없어도 네이버 키만으로 KR 은 해석된다(비KR 은 no-op).
+    f = UrlFakeFetcher(_items("https://skhynix.com"))
+    r = DomainResolver(
+        _naver_settings(google_cse_key="", google_cse_cx=""), fetcher=f
+    )
+    assert r.resolve(_dc("Acme Corp", country="US")) is None  # 공급자 없음.
+    assert f.urls == []
+    assert r.resolve(_dc("SK hynix", country="KR")) == "skhynix.com"
+    assert "openapi.naver.com" in f.urls[0]
+
+
+def test_naver_api_error_returns_miss() -> None:
+    class BoomFetcher:
+        def get_json(self, url, *, params=None, headers=None):
+            raise RuntimeError("quota exceeded")
+
+    r = DomainResolver(_naver_settings(), fetcher=BoomFetcher())
+    assert r.resolve(_dc("SK hynix", country="KR")) is None  # 크래시 없음(miss).

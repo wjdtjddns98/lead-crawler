@@ -25,7 +25,7 @@ from .base import DiscoveredCompany
 from .countries import resolve_country
 from .http import SupportsFetch
 from .search import _BLOCKLIST, _DEFAULT_LOCALE, _LOCALE
-from .search_provider import SearchProvider, build_search_provider
+from .search_provider import SearchProvider, build_naver_provider, build_search_provider
 
 log = get_logger("sources.domain_resolver")
 
@@ -52,6 +52,8 @@ class DomainResolver:
         self._fetcher = fetcher
         self._cost_ledger = cost_ledger
         self._provider: SearchProvider | None = None
+        self._naver: SearchProvider | None = None
+        self._naver_built = False  # None 이 유효값(키 없음)이라 별도 built 플래그로 캐시.
         self._used = 0  # 런당 해석 호출 수(quota·과금 캡 추적).
         self._capped_logged = False
 
@@ -62,6 +64,12 @@ class DomainResolver:
             )
         return self._provider
 
+    def _get_naver(self) -> SearchProvider | None:
+        if not self._naver_built:
+            self._naver = build_naver_provider(self._settings, fetcher=self._fetcher)
+            self._naver_built = True
+        return self._naver
+
     def resolve(self, dc: DiscoveredCompany) -> str | None:
         """발견 기업의 공식 도메인을 해석한다(못 찾으면 None).
 
@@ -71,7 +79,12 @@ class DomainResolver:
         s = self._settings
         if s.dry_run or dc.domain:
             return None
+        country = resolve_country(dc.country)
         provider = self._get_provider()
+        # KR 기업은 네이버(무료 25,000쿼리/일)로 라우팅해 유료 SERP 크레딧을 아낀다.
+        # 네이버 키가 있으면 KR 은 네이버 단독(miss 여도 유료 폴백 없음 — 절약이 목적).
+        if country and country.iso2 == "KR":
+            provider = self._get_naver() or provider
         if provider is None:  # 무키(공급자 없음) → no-op.
             return None
         if self._used >= max(0, s.domain_resolve_max):
@@ -90,7 +103,6 @@ class DomainResolver:
         if len(slug) < 3:  # 1~2자·비라틴 명칭은 매칭 신뢰도가 낮아 시도하지 않음(quota 절약).
             return None
 
-        country = resolve_country(dc.country)
         gl, lr, keyword = _LOCALE.get(country.iso2, _DEFAULT_LOCALE) if country else _DEFAULT_LOCALE
         # 회사명 + 국가 현지화 키워드(공식/IR). 정확구문 인용("...")은 쓰지 않는다 — 법인명
         # 전체를 따옴표로 묶으면(예: "EMCOR Group, Inc.") 구글이 정확일치만 찾아 organic 0건이
