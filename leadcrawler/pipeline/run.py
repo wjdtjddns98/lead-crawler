@@ -37,6 +37,7 @@ from ..sources.taxonomy import AMBIGUOUS_LABELS
 from ..sources.http import HostRateLimiters
 from ..sources.registry import build_sources, close_sources, discover_segment
 from ..storage.db import get_sessionmaker
+from ..storage.discovery_cursor import DbCursorStore
 from ..storage.repository import (
     load_seen_domains,
     load_seen_keys,
@@ -284,6 +285,9 @@ def run_pipeline(
         pending.clear()
 
     session: Session | None = get_sessionmaker(settings)() if persist else None
+    # 등록처 발견 커서(런 간 offset 영속, 딥백필) — persist 런에서만. 호출마다 자체 세션을
+    # 여는 어댑터라 병렬 발견 워커에서도 안전하다. dry_run 은 _live 미진입이라 무접촉.
+    cursor_store = DbCursorStore(get_sessionmaker(settings)) if persist else None
     cancelled = False
     disco_sources: list = []  # finally 가 항상 참조할 수 있게 try 전 바인딩(빌드 실패 시 no-op).
     try:
@@ -292,7 +296,7 @@ def run_pipeline(
         # 단일 스레드라 공유 안전. 병렬(>1)이면 워커별 독립 sources 를 _discover_one 에서 따로
         # 빌드하므로 여기선 빌드하지 않는다(공유 Fetcher throttle 경쟁 회피).
         if settings.discovery_workers <= 1:
-            disco_sources = build_sources(settings, cost_ledger)
+            disco_sources = build_sources(settings, cost_ledger, cursor_store=cursor_store)
         if session is not None:
             seen |= load_seen_keys(session)
             seen_domains |= load_seen_domains(session)
@@ -409,7 +413,12 @@ def run_pipeline(
             def _discover_one(segment: Segment) -> list[DiscoveredCompany]:
                 ws = getattr(disco_tl, "sources", None)
                 if ws is None:
-                    ws = build_sources(settings, cost_ledger, rate_limiters=shared_limiters)
+                    ws = build_sources(
+                        settings,
+                        cost_ledger,
+                        rate_limiters=shared_limiters,
+                        cursor_store=cursor_store,
+                    )
                     disco_tl.sources = ws
                     with disco_created_lock:
                         disco_created.append(ws)
