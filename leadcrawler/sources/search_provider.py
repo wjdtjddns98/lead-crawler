@@ -26,6 +26,7 @@ log = get_logger("sources.search_provider")
 
 _CSE_URL = "https://customsearch.googleapis.com/customsearch/v1"
 _SERPER_URL = "https://google.serper.dev/search"
+_NAVER_URL = "https://openapi.naver.com/v1/search/webkr.json"
 
 
 class SearchProvider(Protocol):
@@ -153,6 +154,45 @@ class SerperProvider(_BaseProvider):
     def _record(self) -> None:
         if self._cost_ledger is not None:
             self._cost_ledger.record("serper")
+
+
+class NaverProvider(_BaseProvider):
+    """네이버 검색 API(웹문서 webkr). 무료 25,000쿼리/일 — KR 기업 도메인 해석용.
+
+    KR 한정 백엔드라 :func:`build_search_provider` 선택 사다리(글로벌 SERP)에는 넣지 않고,
+    :func:`build_naver_provider` 로 별도 구성해 호출부(DomainResolver)가 KR 기업에만
+    라우팅한다. ``gl``/``lr`` 은 무의미(네이버=한국 웹)라 무시한다. 무과금(원장 기록 없음).
+    """
+
+    name = "naver"
+    page_size = 30  # webkr display 상한.
+    max_start = 100  # webkr start 상한.
+
+    def fetch_page(self, query: str, *, gl: str, lr: str, start: int) -> list[dict]:
+        params = {"query": query, "display": self.page_size, "start": start}
+        headers = {
+            "X-Naver-Client-Id": self._settings.naver_client_id,
+            "X-Naver-Client-Secret": self._settings.naver_client_secret,
+        }
+        try:
+            payload = self._fetcher().get_json(_NAVER_URL, params=params, headers=headers)
+        except Exception as exc:  # 검색 실패는 빈 페이지(호출부가 miss 처리).
+            log.info("search.naver.error", start=start, err=str(exc))
+            return []
+        items = payload.get("items") if isinstance(payload, dict) else None
+        return [it for it in (items or []) if isinstance(it, dict)]
+
+
+def build_naver_provider(
+    settings: Settings,
+    *,
+    fetcher: SupportsFetch | None = None,
+    rate_limiters: HostRateLimiters | None = None,
+) -> SearchProvider | None:
+    """네이버 공급자를 만든다(Client ID/Secret 둘 다 필요, 없으면 None)."""
+    if not (settings.naver_client_id and settings.naver_client_secret):
+        return None
+    return NaverProvider(settings, fetcher=fetcher, rate_limiters=rate_limiters)
 
 
 def build_search_provider(
