@@ -32,6 +32,9 @@ from .vision import ClaudeVision, SupportsVision, media_type_for
 
 log = get_logger("enrich")
 
+# 정적 앵커가 부족할 때(JS 렌더 내비 등) cap 여유분으로 프로빙할 관용 문의 경로.
+_PROBE_PATHS = ("/contact", "/contact-us", "/contactus", "/contact.html", "/inquiry", "/about")
+
 
 class Enricher:
     """기업 1건의 연락처를 추출한다(정적 → 헤드리스 → OCR → EmailAPI → Vision, dry_run 더미)."""
@@ -56,6 +59,7 @@ class Enricher:
         self._cost_ledger = cost_ledger
         self._contact_page: str | None = None  # 현재 기업의 문의페이지 힌트(폴백용).
         self._home_html_cache: str | None = None  # 현재 기업의 home HTML(에스컬레이션 단계 간 재사용).
+        self._home_url_cache: str | None = None  # fetch 에 성공한 home URL(www 폴백 반영).
         self._home_rendered_cache: str | None = None  # 현재 기업의 headless 렌더 home HTML(실존검증 재사용).
 
     def enrich(self, dc: DiscoveredCompany) -> list[Contact]:
@@ -63,6 +67,7 @@ class Enricher:
         # 기업별 상태는 진입 즉시 초기화 — 조기 반환(dry_run·도메인없음) 경로에서도 직전
         # 기업 값이 새지 않게 한다(last_home_html 은 실존검증 재사용 신호로 외부 노출됨).
         self._home_html_cache = None
+        self._home_url_cache = None
         self._home_rendered_cache = None
         self._contact_page = None
         if self._settings.dry_run:
@@ -149,17 +154,29 @@ class Enricher:
         """
         return self._home_rendered_cache
 
-    def _home_html(self, fetcher: SupportsFetch, home: str) -> str:
-        """기업 1건의 home HTML 을 1회만 받아 재사용한다(정적·OCR·Vision 단계 공유).
+    def _fetch_home(self, fetcher: SupportsFetch, domain: str) -> tuple[str, str]:
+        """기업 1건의 home (URL, HTML) 을 1회만 받아 재사용한다(정적·OCR·Vision 단계 공유).
 
-        같은 기업의 ``https://{domain}`` 을 단계마다 다시 GET 하던 중복 왕복을 제거한다
-        (throttle·TCP/TLS 비용 절감). 캐시는 ``enrich()`` 진입마다 초기화되어 기업 간
-        누수가 없고, 인스턴스가 워커 스레드 전용(run.py 워커별 독립 Enricher)이라 스레드안전
-        하다. fetch 가 실패하면 캐시에 담지 않아(예외 전파) 단계별 graceful 처리는 보존된다.
+        같은 기업의 home 을 단계마다 다시 GET 하던 중복 왕복을 제거한다(throttle·TCP/TLS
+        비용 절감). naked 도메인 GET 실패 시 ``www.`` 변형으로 1회 폴백한다(www 에만
+        A레코드가 있는 사이트 구제) — 성공한 URL 을 함께 돌려줘 상대링크 join 기준이 맞다.
+        캐시는 ``enrich()`` 진입마다 초기화되어 기업 간 누수가 없고, 인스턴스가 워커 스레드
+        전용(run.py 워커별 독립 Enricher)이라 스레드안전하다. 둘 다 실패하면 캐시에 담지
+        않고 예외 전파(단계별 graceful 처리 보존).
         """
         if self._home_html_cache is None:
-            self._home_html_cache = fetcher.get_text(home)
-        return self._home_html_cache
+            home = f"https://{domain}"
+            try:
+                html = fetcher.get_text(home)
+            except Exception:
+                if domain.startswith("www."):
+                    raise
+                home = f"https://www.{domain}"
+                html = fetcher.get_text(home)  # 폴백도 실패하면 예외 전파(기존 동작).
+            self._home_html_cache = html
+            self._home_url_cache = home
+        assert self._home_url_cache is not None  # 캐시와 함께만 채워진다.
+        return self._home_url_cache, self._home_html_cache
 
     def _renderer_obj(self) -> SupportsRender:
         if self._renderer is None:
@@ -209,7 +226,8 @@ class Enricher:
         renderer = self._renderer_obj()
         # 헤드리스는 느리고 비싸므로 정적(enrich_max_pages)과 분리된 작은 상한을 쓴다(§4).
         cap = max(1, self._settings.headless_max_pages)
-        home = f"https://{dc.domain}"
+        # 정적 단계가 www 폴백으로 성공했다면 렌더도 그 URL 로(naked 재실패 방지).
+        home = self._home_url_cache or f"https://{dc.domain}"
         home_html = renderer.render(home)
         # 렌더한 home 을 실존검증에 재사용하도록 노출(verify_headless 가 같은 도메인을 또
         # 렌더하지 않게 — 기업당 Chromium 중복 기동 제거). 실패(None)면 노출도 None.
@@ -256,9 +274,8 @@ class Enricher:
         """
         fetcher = self._client()
         ocr = self._ocr_obj()
-        home = f"https://{dc.domain}"
         try:
-            home_html = self._home_html(fetcher, home)
+            home, home_html = self._fetch_home(fetcher, dc.domain)
         except Exception as exc:  # 홈 fetch 실패 → 기존 결과 유지.
             log.info("enrich.ocr.home_error", domain=dc.domain, err=str(exc))
             return contacts
@@ -321,9 +338,8 @@ class Enricher:
         """
         fetcher = self._client()
         vision = self._vision_obj()
-        home = f"https://{dc.domain}"
         try:
-            home_html = self._home_html(fetcher, home)
+            home, home_html = self._fetch_home(fetcher, dc.domain)
         except Exception as exc:  # 홈 fetch 실패 → 기존 결과 유지.
             log.info("enrich.vision.home_error", domain=dc.domain, err=str(exc))
             return contacts
@@ -356,16 +372,24 @@ class Enricher:
         """정적 BFS 로 홈페이지·IR/문의 페이지를 훑어 연락처를 모은다."""
         fetcher = self._client()
         cap = max(1, self._settings.enrich_max_pages)
-        home = f"https://{dc.domain}"
         try:
-            home_html = self._home_html(fetcher, home)
+            home, home_html = self._fetch_home(fetcher, dc.domain)
         except Exception as exc:
             log.info("enrich.home.error", domain=dc.domain, err=str(exc))
             return []
 
         home_tree = HTMLParser(home_html or "")  # home 1회 파싱 — 링크추출·아래 루프가 공유.
         links = candidate_links(home_html, base_url=home, domain=dc.domain, limit=cap, tree=home_tree)
-        pages = [home, *links][:cap]
+        pages = [home, *links]
+        # 정적 앵커가 cap 미만이면(JS 렌더 내비 등) 관용 문의 경로를 여유분만큼 프로빙.
+        # 404 등 실패는 아래 _safe_get 이 흡수 — 어차피 비었을 슬롯만 쓴다(호출수 상한 불변).
+        for path in _PROBE_PATHS:
+            if len(pages) >= cap:
+                break
+            url = home + path
+            if url not in pages:
+                pages.append(url)
+        pages = pages[:cap]
         emails: dict[str, Contact] = {}
         phones: dict[str, Contact] = {}
         form: Contact | None = None

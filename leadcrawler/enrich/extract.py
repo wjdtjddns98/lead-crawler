@@ -20,6 +20,29 @@ _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\
 # 신뢰불가 페이지의 본문 정규식 스캔 길이 상한(ReDoS/대용량 CPU 방지).
 _MAX_TEXT_SCAN = 200_000
 
+# 스팸봇 회피 난독화 복원: 'info (at) acme (dot) com' → 'info@acme.com'. 괄호류로 감싼
+# at/dot 만 치환한다 — 맨몸 ' at ' 치환은 일반 문장 오탐 위험(정밀도 우선).
+_OBFUSCATED_AT = re.compile(r"\s*[(\[{]\s*(?:at|골뱅이)\s*[)\]}]\s*", re.IGNORECASE)
+_OBFUSCATED_DOT = re.compile(r"\s*[(\[{]\s*(?:dot|닷|점)\s*[)\]}]\s*", re.IGNORECASE)
+
+
+def _deobfuscate(text: str) -> str:
+    """난독화 표기((at)/(dot)·전각 ＠)를 표준 표기로 되돌린다."""
+    text = text.replace("＠", "@")
+    text = _OBFUSCATED_AT.sub("@", text)
+    return _OBFUSCATED_DOT.sub(".", text)
+
+
+def _decode_cfemail(payload: str) -> str | None:
+    """Cloudflare email-protection 페이로드(hex)를 복호한다(첫 바이트=XOR 키)."""
+    try:
+        data = bytes.fromhex(payload)
+        if len(data) < 2:
+            return None
+        return bytes(b ^ data[0] for b in data[1:]).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
 # 가짜 이메일 차단: ① 도메인 TLD 가 자산 확장자면 이미지/파일명 오탐(예:
 # 'banner@2x-992x379.jpg' → TLD 'jpg'), ② 예시·템플릿 플레이스홀더 도메인.
 _ASSET_TLDS = frozenset({
@@ -28,7 +51,8 @@ _ASSET_TLDS = frozenset({
 })
 _PLACEHOLDER_DOMAINS = frozenset({
     "example.com", "example.org", "example.net", "domain.com", "yourdomain.com",
-    "yourcompany.com", "company.com", "sentry.io", "wix.com", "wixpress.com",
+    "yourcompany.com", "company.com", "sentry.io", "sentry-cdn.com", "wix.com",
+    "wixpress.com",
 })
 
 
@@ -38,7 +62,10 @@ def _is_junk_email(addr: str) -> bool:
     if not domain:
         return True
     tld = domain.rsplit(".", 1)[-1]
-    return tld in _ASSET_TLDS or domain in _PLACEHOLDER_DOMAINS
+    if tld in _ASSET_TLDS:
+        return True
+    # 서브도메인 포함 서픽스 매칭 — Sentry DSN(abc@o1.ingest.sentry.io) 등 SDK 키 오탐 차단.
+    return any(domain == d or domain.endswith("." + d) for d in _PLACEHOLDER_DOMAINS)
 
 # IR/문의 후보 페이지를 가리키는 링크 키워드(BFS 우선순위).
 _IR_HINTS = ("investor", "ir", "투자", "투자자")
@@ -120,10 +147,26 @@ def extract_emails(
         for m in _EMAIL_RE.findall(addr):
             _add(m, 0.9)  # mailto 는 신뢰도 높음.
 
-    # 마크업이 아닌 추출 텍스트만(속성/스크립트 오탐 회피), 길이 상한 적용.
-    text = (tree.text() or "")[:_MAX_TEXT_SCAN]
+    # Cloudflare 이메일 보호(XOR 인코딩) — 렌더 없이 정적 복호 가능(스팸봇 회피 표기).
+    for node in tree.css("[data-cfemail]"):
+        decoded = _decode_cfemail(node.attributes.get("data-cfemail") or "")
+        for m in _EMAIL_RE.findall(decoded or ""):
+            _add(m, 0.9)  # 사이트가 의도적으로 게시한 이메일 — mailto 급 신뢰.
+    for node in tree.css("a[href*='/cdn-cgi/l/email-protection#']"):
+        href = node.attributes.get("href") or ""
+        decoded = _decode_cfemail(href.split("#", 1)[-1])
+        for m in _EMAIL_RE.findall(decoded or ""):
+            _add(m, 0.9)
+
+    # 마크업이 아닌 추출 텍스트(난독화 복원 후), 길이 상한 적용.
+    text = _deobfuscate((tree.text() or "")[:_MAX_TEXT_SCAN])
     for m in _EMAIL_RE.findall(text):
         _add(m, 0.6)
+
+    # 원문 HTML 스캔(저신뢰) — JSON-LD("email": …)·인라인 스크립트·속성·주석 속 이메일.
+    # 마크업 노이즈는 junk 필터(자산 TLD·플레이스홀더 서픽스)와 role 필터가 거른다.
+    for m in _EMAIL_RE.findall((html or "")[:_MAX_TEXT_SCAN]):
+        _add(m, 0.4)
 
     return list(found.values())
 
@@ -141,7 +184,7 @@ def emails_from_text(
     OCR 은 오독 가능성이 있어 기본 신뢰도를 낮게 둔다.
     """
     found: dict[str, Contact] = {}
-    for m in _EMAIL_RE.findall((text or "")[:_MAX_TEXT_SCAN]):
+    for m in _EMAIL_RE.findall(_deobfuscate((text or "")[:_MAX_TEXT_SCAN])):
         addr = m.strip().strip(".").lower()
         if addr in found or _is_junk_email(addr):
             continue
