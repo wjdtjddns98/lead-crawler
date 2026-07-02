@@ -483,8 +483,8 @@ function SendSection() {
   );
 }
 
-// 확정분 엑셀 추출 — 국가/업종을 골라 선택 추출(빈 선택=전체). 헤더의 '전체 확정분'
-// 버튼과 별개로, 국가·업종별로 좁혀 받는다.
+// 확정분 엑셀 추출 — 국가/업종을 골라 선택 추출(빈 선택=전체). 전체 추출도 여기서
+// (선택 없이 다운로드). 헤더의 '전체 확정분' 버튼은 중복이라 제거됨(2026-07-02).
 function ExportSection() {
   const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
   const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
