@@ -31,6 +31,8 @@ export interface ReviewItem {
   email_smtp: boolean | null;
   // 상장여부 — BE 계약 확장 필요(GET /queue·/queue/mine·POST /queue/claim 응답에 추가).
   listed: Listed;
+  // 상장 시장 보드(KOSPI/KOSDAQ/KONEX/NASDAQ…, 미상=null) — BE #136 큐 API 노출.
+  market: string | null;
 }
 
 export interface QueueResponse {

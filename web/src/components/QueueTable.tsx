@@ -142,6 +142,8 @@ const QueueRow = memo(
         <td className={`${TD} ${COL_W[2]}`}>{item.industry}</td>
         <td className={`${TD} ${COL_W[3]} ${item.listed === "unknown" ? "text-muted" : ""}`}>
           {LISTED_LABEL[item.listed]}
+          {/* 시장 보드(#136) — 별도 컬럼 대신 상장여부에 병기(정보 밀도 절제). */}
+          {item.market && <span className="text-muted text-xs ml-1">{item.market}</span>}
         </td>
         <td className={`${TD} ${COL_W[4]} font-mono text-[13px]`}>
           {item.candidates.length > 1 && (
