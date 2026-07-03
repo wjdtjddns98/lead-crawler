@@ -3,6 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 팝업으로 기업 사이트 열 때 Referer 제거 — 국내 호스팅 WAF(mod_security)가
+         낯선 Referer 를 406 으로 차단하는 것 방지. 내부 API 는 same-origin 이라 무영향. -->
+    <meta name="referrer" content="no-referrer" />
     <title>lead-crawler 검증 워크벤치</title>
   </head>
   <body>
