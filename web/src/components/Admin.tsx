@@ -318,6 +318,12 @@ function CrawlTargetSection() {
 
   const running = job?.status === "running";
 
+  // 지역 픽커는 KR 이 크롤 범위에 있을 때만 노출 — BE 가 무시하는 값(KR 외 국가만 선택)을
+  // 고르게 두면 오해만 남는다. 국가 미선택(=전체)은 KR 포함이므로 보인다. 숨김 중엔 전송도
+  // 빈값으로 비워 잔존 선택이 몰래 나가는 걸 막고, 상태는 유지해 KR 재선택 시 복원한다.
+  const krInScope =
+    !countries.trim() || countries.split(",").some((c) => c.trim().toUpperCase() === "KR");
+
   const apply = (t: CrawlTarget) => {
     setCountries(t.countries);
     setIndustries(t.industries);
@@ -390,7 +396,7 @@ function CrawlTargetSection() {
           listed,
           persist,
           continuous,
-          regions: regions.trim(),
+          regions: krInScope ? regions.trim() : "",
         }),
       );
       // 시작 피드백 — 휘발성 정보라 인라인 문구 대신 토스트(자동 소멸).
@@ -455,18 +461,20 @@ function CrawlTargetSection() {
             emptyHint="전체 업종"
           />
         </div>
-        <div className={FIELD}>
-          <span>
-            지역 <span className="text-muted">(KR 전용 · 선택 시 지역별 검색 팬아웃)</span>
-          </span>
-          <MultiPicker
-            options={KR_REGION_OPTS}
-            value={regions}
-            onChange={setRegions}
-            placeholder="지역 검색 (예: 서울, 경기)"
-            emptyHint="지역 팬아웃 없음(기본)"
-          />
-        </div>
+        {krInScope && (
+          <div className={FIELD}>
+            <span>
+              지역 <span className="text-muted">(KR 전용 · 선택 시 지역별 검색 팬아웃)</span>
+            </span>
+            <MultiPicker
+              options={KR_REGION_OPTS}
+              value={regions}
+              onChange={setRegions}
+              placeholder="지역 검색 (예: 서울, 경기)"
+              emptyHint="지역 팬아웃 없음(기본)"
+            />
+          </div>
+        )}
         <label className={FIELD}>
           상장여부
           <select
