@@ -10,17 +10,19 @@
 - **각 담당은 상대 영역을 직접 수정하지 않는다** — 필요하면 제안·PR 코멘트로만(직접 커밋 금지).
 - 경계: 워크벤치 UI 트랙(예: PLAN C4)은 **백엔드가 API**, **프론트가 React 컴포넌트**. FastAPI 서버 로직은 백엔드.
 
-### 협업 워크플로 (트렁크 기반 — 한 리포, 분기 안 나눔)
-- **`dev`·역할별 장기 브랜치 안 씀.** main 하나가 트렁크. 모든 작업은 main 에서 짧은 브랜치 따서 PR.
+### 협업 워크플로 (dev 트렁크 + prod 배포 — 2026-07-03 전환)
+- **`dev`=통합 트렁크(기본 브랜치), `prod`=배포, `main`=동결(잠금·히스토리 보존).** 모든 작업은
+  dev 에서 짧은 브랜치 따서 PR → dev. 배포는 **dev→prod 승격 PR**(같은 `ci-ok` 게이트) —
+  내부망 서버는 prod 를 `git pull` 해서 반영한다(CD 파이프라인 없음, pull 반영 운영).
 - 브랜치명 영역 프리픽스: 백엔드 `feat/be-*`·`fix/be-*`, 프론트 `feat/fe-*`(또는 `feat/web-*`).
-- 작업 시작 전 `git checkout main && git pull`. 변경은 **PR → green CI → squash 머지 → 브랜치 삭제**.
+- 작업 시작 전 `git checkout dev && git pull`. 변경은 **PR → green CI → squash 머지 → 브랜치 삭제**.
 - 소유권은 `.github/CODEOWNERS` 로 표기(`web/**`→프론트, 그 외→백엔드). **상호 인간 코드리뷰는 안 한다**
   (서로 도메인을 모름) — 각자 Claude 로 리뷰하고 self-merge 한다. 그래서 PR 승인(approval) 요구는 0.
 - CI(`.github/workflows/ci.yml`): 영역 path 필터로 백엔드 잡(test·pg)과 프론트 잡(web-build)을 분리하고
   단일 게이트 `ci-ok` 하나만 통과하면 머지 가능 → 백엔드 PR 은 프론트 빌드를, 프론트 PR 은 백엔드
   테스트를 **서로 안 기다린다**.
 - **FE↔BE 계약(엔드포인트·요청/응답 스키마) 변경은 PR 본문에 명시 + 상대에게 공유**(양쪽 영향).
-- main 브랜치 보호: **PR 필수 + `ci-ok` green 필수**(직접 push·force-push 차단). 인간 승인 0(위 사유).
+- dev·prod 브랜치 보호: **PR 필수 + `ci-ok` green 필수**(직접 push·force-push 차단). 인간 승인 0(위 사유).
 
 ## 0. 기본 동작 *(공통)*
 - **소~중형 개발**(버그픽스·옵션 추가·멀티파일 수정) → 담당자가 직접 구현 + 리뷰어 1회 검증.
@@ -29,7 +31,7 @@
 - 주석·커밋 메시지·PR 본문은 한국어.
 
 ## 1. 안전 가드레일 *(공통)*
-- **main 직접 push 금지** — `feat/*`·`fix/*` 브랜치 + PR + green CI 경유(브랜치명 영역 프리픽스: `*-be`/`*-fe`).
+- **dev·prod 직접 push 금지** — `feat/*`·`fix/*` 브랜치 + PR + green CI 경유(브랜치명 영역 프리픽스: `*-be`/`*-fe`).
 - 커밋 전 로컬 게이트 green 필수 — **백엔드**: `ruff check .` + `pytest -q` / **프론트**: `npm run build`(tsc+vite)(+lint).
 - Conventional commit + `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>` 트레일러.
 
