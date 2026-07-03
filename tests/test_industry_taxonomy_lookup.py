@@ -1,0 +1,55 @@
+"""크롤 업종 어휘의 택소노미 통일 — 라벨 조회 확장 + supported_industries 택소노미 노출."""
+
+from __future__ import annotations
+
+from leadcrawler.sources.industry import (
+    industry_search_terms,
+    is_specific_industry,
+    ksic_prefixes,
+    sic_prefixes,
+    supported_industries,
+    uk_sic_prefixes,
+)
+from leadcrawler.sources.taxonomy import INDUSTRY_TAXONOMY
+
+
+def test_taxonomy_label_resolves_code_prefixes() -> None:
+    # 택소노미 라벨이 기존 키(바이오∪제약 등)의 코드 접두 합집합으로 풀린다.
+    assert ksic_prefixes("제약·바이오") == ("21",)
+    assert sic_prefixes("제약·바이오") == ("283", "8731")
+    assert uk_sic_prefixes("건설·엔지니어링") == ("41", "42", "43")
+    assert ksic_prefixes("IT·소프트웨어") == ("58", "62", "63")
+
+
+def test_taxonomy_label_union_search_terms() -> None:
+    terms = industry_search_terms("제약·바이오")
+    # 바이오·제약 양쪽 고유 동의어가 모두 포함되고 중복은 없어야 한다.
+    assert "biotech" in terms
+    assert "generic drugs" in terms
+    assert len(terms) == len(set(terms))
+
+
+def test_taxonomy_label_is_specific() -> None:
+    # 매핑 있는 라벨=구체(집계원 OFF), 매핑 없는 라벨=광범위(집계원 유지).
+    assert is_specific_industry("IT·소프트웨어")
+    assert not is_specific_industry("게임")
+
+
+def test_old_keys_still_work() -> None:
+    # 저장된 크롤 타깃("바이오,제약" 등) 하위호환 — 기존 키 조회 불변.
+    assert ksic_prefixes("바이오") == ("21",)
+    assert industry_search_terms("제약")[0] == "pharmaceutical"
+    assert is_specific_industry("반도체")
+
+
+def test_supported_industries_are_taxonomy_labels() -> None:
+    labels = [ko for ko, _ in supported_industries()]
+    assert labels
+    assert set(labels) <= set(INDUSTRY_TAXONOMY)
+    assert "제약·바이오" in labels
+    # 모호 키는 단일 대분류 확정 불가로 미노출(비택소노미 구분 라벨 파편화 방지).
+    assert "제조" not in labels
+    assert "금융" not in labels
+    # 영문 검색어도 같이 내려간다(UI 별칭 검색용).
+    en = dict(supported_industries())["제약·바이오"]
+    assert en == "biotech"
