@@ -176,6 +176,7 @@ class QueueFilterOptions(BaseModel):
     industries: list[IndustryOption]
     listed: list[str]  # 고정 3값(listed/unlisted/unknown)
     regions: list[str] = []  # 실제 수집된 지역 distinct(정렬) — 빈 목록=지역 데이터 없음
+    markets: list[str] = []  # 실제 수집된 시장 보드 distinct(정렬) — 빈 목록=FE 폴백 어휘 사용
 
 
 class SendPreview(BaseModel):

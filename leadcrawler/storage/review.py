@@ -43,14 +43,16 @@ def _apply_queue_filters(
     industries: Sequence[str] | None,
     listed: str | None,
     regions: Sequence[str] | None = None,
+    markets: Sequence[str] | None = None,
 ) -> object:
-    """CompanyRow 가 이미 조인된 select 에 국가/업종/상장/지역 작업범위 필터를 적용한다.
+    """CompanyRow 가 이미 조인된 select 에 국가/업종/상장/지역/시장 작업범위 필터를 적용한다.
 
     국가는 별칭·대소문자 무시 매칭(:func:`country_match_set`, 'KR'↔'대한민국'), 업종은
-    대소문자 무시 매칭(엑셀 export·아웃리치 발송 선례와 동일 규약). 상장 여부·지역은
+    대소문자 무시 매칭(엑셀 export·아웃리치 발송 선례와 동일 규약). 상장 여부·지역·시장은
     ``CompanyRow.canonical_key → DiscoveredCompanyRow`` 조인 후 일치로 거른다
-    (두 컬럼 다 DiscoveredCompanyRow 에만 있음 — 조인은 한 번만). 빈 값은 무시(전체).
-    지역 필터는 region 미상(NULL) 행을 자연히 제외한다(주소 없는 소스 유입분).
+    (세 컬럼 다 DiscoveredCompanyRow 에만 있음 — 조인은 한 번만). 빈 값은 무시(전체).
+    지역·시장 필터는 미상(NULL) 행을 자연히 제외한다. 시장(KOSPI/KOSDAQ…)은 저장값이
+    전부 대문자라 upper() 정규화 매칭한다.
     """
     if countries:
         cset = country_match_set(countries)
@@ -61,7 +63,8 @@ def _apply_queue_filters(
         if wanted:
             stmt = stmt.where(func.lower(CompanyRow.industry).in_(wanted))
     rset = {r.strip().lower() for r in (regions or []) if r and r.strip()}
-    if listed or rset:
+    mset = {m.strip().upper() for m in (markets or []) if m and m.strip()}
+    if listed or rset or mset:
         if listed:
             # 스토리지 계층 방어선 — API 는 Literal 로 막지만(422), 비API 직접 호출의 오타·
             # 대문자('LISTED')가 조용히 0건이 되지 않게 fail-loud.
@@ -75,6 +78,8 @@ def _apply_queue_filters(
             stmt = stmt.where(DiscoveredCompanyRow.listed == listed)
         if rset:
             stmt = stmt.where(func.lower(DiscoveredCompanyRow.region).in_(rset))
+        if mset:
+            stmt = stmt.where(func.upper(DiscoveredCompanyRow.market).in_(mset))
     return stmt
 
 
@@ -83,9 +88,12 @@ def _has_queue_filters(
     industries: Sequence[str] | None,
     listed: str | None,
     regions: Sequence[str] | None = None,
+    markets: Sequence[str] | None = None,
 ) -> bool:
-    """국가/업종/상장/지역 중 실제로 거를 값이 하나라도 있으면 True(빈 값=전체)."""
-    return bool(countries) or bool(industries) or bool(listed) or bool(regions)
+    """국가/업종/상장/지역/시장 중 실제로 거를 값이 하나라도 있으면 True(빈 값=전체)."""
+    return (
+        bool(countries) or bool(industries) or bool(listed) or bool(regions) or bool(markets)
+    )
 
 
 def list_regions(session: Session) -> list[str]:
@@ -101,6 +109,22 @@ def list_regions(session: Session) -> list[str]:
         .order_by(DiscoveredCompanyRow.region)
     ).all()
     return [r for r in rows if r]
+
+
+def list_markets(session: Session) -> list[str]:
+    """수집된 시장 보드(KOSPI/KOSDAQ…) distinct 목록(정렬) — 큐 시장필터 옵션의 단일 출처.
+
+    :func:`list_regions` 와 같은 이유로 고정 목록이 아니라 실제 저장값을 쓴다(데이터 없는
+    보드 옵션 방지 — FE 는 이 목록이 비면 자체 폴백 어휘를 쓴다). 미상(NULL)은 옵션이
+    아니라 '필터 안 걸었을 때 전체'로만 접근 가능하다.
+    """
+    rows = session.scalars(
+        select(DiscoveredCompanyRow.market)
+        .where(DiscoveredCompanyRow.market.is_not(None))
+        .distinct()
+        .order_by(DiscoveredCompanyRow.market)
+    ).all()
+    return [m for m in rows if m]
 
 
 class ReviewConflict(Exception):
@@ -186,15 +210,16 @@ def count_reviews(
     industries: Sequence[str] | None = None,
     listed: str | None = None,
     regions: Sequence[str] | None = None,
+    markets: Sequence[str] | None = None,
 ) -> int:
-    """큐 항목 수(선택적 상태 + 국가/업종/상장/지역 작업범위 필터) — 점유 중 행 제외.
+    """큐 항목 수(선택적 상태 + 국가/업종/상장/지역/시장 작업범위 필터) — 점유 중 행 제외.
 
     누군가 점유(claim)한 행은 전체큐에서 숨긴다(전체큐 = 아직 아무도 안 받아간 작업).
     확정/거부 행은 점유가 해제되므로 상태별 카운트엔 영향 없다. 필터가 있으면
-    CompanyRow(상장·지역은 DiscoveredCompanyRow)를 조인해 카운트한다 — 조인은 모두
+    CompanyRow(상장·지역·시장은 DiscoveredCompanyRow)를 조인해 카운트한다 — 조인은 모두
     1:1(canonical_key/id 유일)이라 행 증식이 없어 count 가 정확하다.
     """
-    if not _has_queue_filters(countries, industries, listed, regions):
+    if not _has_queue_filters(countries, industries, listed, regions, markets):
         stmt = (
             select(func.count())
             .select_from(ReviewQueueRow)
@@ -212,7 +237,8 @@ def count_reviews(
     if status is not None:
         stmt = stmt.where(ReviewQueueRow.status == status)
     stmt = _apply_queue_filters(
-        stmt, countries=countries, industries=industries, listed=listed, regions=regions
+        stmt, countries=countries, industries=industries, listed=listed, regions=regions,
+        markets=markets,
     )
     return int(session.scalar(stmt) or 0)
 
@@ -274,6 +300,7 @@ def query_reviews(
     industries: Sequence[str] | None = None,
     listed: str | None = None,
     regions: Sequence[str] | None = None,
+    markets: Sequence[str] | None = None,
 ) -> list[dict]:
     """큐 항목을 회사 정보와 함께 DTO dict 목록으로 반환한다(큐 행과 1:1).
 
@@ -291,7 +318,8 @@ def query_reviews(
     if status is not None:
         stmt = stmt.where(ReviewQueueRow.status == status)
     stmt = _apply_queue_filters(
-        stmt, countries=countries, industries=industries, listed=listed, regions=regions
+        stmt, countries=countries, industries=industries, listed=listed, regions=regions,
+        markets=markets,
     )
     stmt = (
         stmt.order_by(ReviewQueueRow.status, CompanyRow.name, ReviewQueueRow.id)
