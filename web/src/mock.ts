@@ -121,6 +121,18 @@ const HAND_LISTED: Record<string, Listed> = {
   c10: "unknown",
 };
 
+// 시장 보드(#136) — 상장(listed) 실측분만 실제 보드로. 비상장/미상은 null(표기 없음).
+const HAND_MARKET: Record<string, string> = {
+  c1: "KOSDAQ",
+  c11: "KOSDAQ",
+  c2: "KOSPI",
+  c4: "KOSDAQ",
+  c6: "KOSDAQ",
+  c9: "KOSDAQ",
+};
+// 합성 상장분 보드 주기 — 국내외 보드가 골고루 보이게.
+const MARKET_CYCLE = ["KOSPI", "KOSDAQ", "NASDAQ", "NYSE"];
+
 function cand(
   value: string,
   email_status: string | null = "valid",
@@ -148,6 +160,7 @@ function mk(p: Partial<ReviewItem> & { id: string; name: string }): ReviewItem {
     email_mx: null,
     email_smtp: null,
     listed: "unknown",
+    market: null,
     ...p,
   };
 }
@@ -310,10 +323,19 @@ function synthSamples(count: number): ReviewItem[] {
 
 // 전체 큐 시드 = 실측 11건 + 합성 89건(총 100건). 합성분 상장여부는 3주기로 배정.
 function seed(): ReviewItem[] {
-  const hand = handSamples().map((r) => ({ ...r, listed: HAND_LISTED[r.id] ?? r.listed }));
+  const hand = handSamples().map((r) => ({
+    ...r,
+    listed: HAND_LISTED[r.id] ?? r.listed,
+    market: HAND_MARKET[r.id] ?? null,
+  }));
   const synth = synthSamples(89).map((r, i) => ({
     ...r,
     listed: LISTED_CYCLE[i % LISTED_CYCLE.length],
+    // listed(3주기 첫 슬롯)만 보드 부여 — BE 와 동일하게 미상장은 null.
+    market:
+      LISTED_CYCLE[i % LISTED_CYCLE.length] === "listed"
+        ? MARKET_CYCLE[i % MARKET_CYCLE.length]
+        : null,
   }));
   return [...hand, ...synth];
 }
