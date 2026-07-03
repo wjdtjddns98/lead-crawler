@@ -38,6 +38,7 @@ from ..storage.review import (
     claim_work,
     count_reviews,
     get_review,
+    list_markets,
     list_regions,
     my_work,
     query_reviews,
@@ -109,30 +110,33 @@ def create_app() -> FastAPI:
         industry: str = Query(default="", description="쉼표구분 업종, 빈값=전체"),
         listed: _ListedFilter = Query(default="", description="상장여부, 빈값=전체"),
         region: str = Query(default="", description="쉼표구분 지역(시/도·도시), 빈값=전체"),
+        market: str = Query(default="", description="쉼표구분 시장 보드(KOSPI/KOSDAQ…), 빈값=전체"),
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> QueueResponse:
-        """검증 큐 항목을 조회한다(상태·국가/업종/상장/지역 작업범위 필터·페이지네이션).
+        """검증 큐 항목을 조회한다(상태·국가/업종/상장/지역/시장 작업범위 필터·페이지네이션).
 
         점유(claim) 중인 행은 목록·``total`` 에서 제외된다(전체큐 = 아직 아무도 안
         받아간 작업). ``total`` 도 동일 필터를 반영해 '이 범위 잔여건수' 표시에 쓴다.
-        지역 필터는 지역 미상(주소 없는 소스 유입) 행을 자연히 제외한다.
+        지역·시장 필터는 미상(주소 없는 소스 유입·시장 미기입) 행을 자연히 제외한다.
         """
         status_val = status.value if status is not None else None
         countries = _split_csv(country)
         industries = _split_csv(industry)
         listed_val = listed or None
         regions = _split_csv(region)
+        markets = _split_csv(market)
         items = query_reviews(
             db, status=status_val, limit=limit, offset=offset,
             countries=countries, industries=industries, listed=listed_val, regions=regions,
+            markets=markets,
         )
         return QueueResponse(
             items=[ReviewItem(**it) for it in items],
             total=count_reviews(
                 db, status=status_val,
                 countries=countries, industries=industries, listed=listed_val,
-                regions=regions,
+                regions=regions, markets=markets,
             ),
             limit=limit,
             offset=offset,
@@ -164,6 +168,7 @@ def create_app() -> FastAPI:
             ],
             listed=["listed", "unlisted", "unknown"],
             regions=list_regions(db),
+            markets=list_markets(db),
         )
 
     @app.post("/queue/claim", response_model=list[ReviewItem])
