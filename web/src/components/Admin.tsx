@@ -264,9 +264,8 @@ function CrawlTargetSection() {
 
   useEffect(() => {
     let alive = true;
-    // 현황도 함께 읽어 새로고침/재방문 시 진행 중인 크롤을 이어서 보여준다.
-    Promise.all([fetchCrawlTarget(), fetchCountries(), fetchIndustries(), fetchCrawlStatus()])
-      .then(([t, countryList, industryList, status]) => {
+    Promise.all([fetchCrawlTarget(), fetchCountries(), fetchIndustries()])
+      .then(([t, countryList, industryList]) => {
         if (!alive) return;
         apply(t);
         setCountryOpts(
@@ -280,9 +279,13 @@ function CrawlTargetSection() {
         setIndustryOpts(
           industryList.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
         );
-        if (status.status !== "idle") setJob(status);
       })
       .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
+    // 현황은 별도 조회 — 새로고침 시 진행 중이거나 최근 종료된 크롤을 이어서 보여주되,
+    // 이 조회가 실패해도 폼(타깃·픽커) 로딩은 살린다(Promise.all 결합 회피).
+    fetchCrawlStatus()
+      .then((s) => alive && s.status !== "idle" && setJob(s))
+      .catch(() => undefined);
     return () => {
       alive = false;
     };
@@ -325,9 +328,15 @@ function CrawlTargetSection() {
       toast.success("크롤 실행 시작");
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2));
-      // 409(이미 진행 중) 대비 — 현황을 받아 진행 패널·중지 버튼을 노출한다.
+      // 409(이미 진행 중) 대비 — 현황을 받아 진행 패널·중지 버튼으로 복구하고, 복구가
+      // 됐으면(=실제로 running) 에러 박스는 걷는다. running 이 아니면(422 등) 에러 유지.
       fetchCrawlStatus()
-        .then((s) => s.status !== "idle" && setJob(s))
+        .then((s) => {
+          if (s.status === "running") {
+            setJob(s);
+            setErr(null);
+          }
+        })
         .catch(() => undefined);
     } finally {
       setBusy(false);
@@ -419,7 +428,14 @@ function CrawlTargetSection() {
               {busy || running ? "실행 중…" : "크롤 실행"}
             </button>
             {running && (
-              <button className={BTN_REJECT} type="button" disabled={busy} onClick={() => void stop()}>
+              <button
+                className={BTN_REJECT}
+                type="button"
+                // 중지 요청 후엔 비활성 — BE 가 멈출 때까지 running 이 유지되므로 재클릭(확인
+                // 다이얼로그 반복)을 막는다.
+                disabled={busy || job?.cancel_requested}
+                onClick={() => void stop()}
+              >
                 <span className="inline-flex items-center gap-1">
                   중지 <Square size={14} aria-hidden />
                 </span>
@@ -450,7 +466,9 @@ function CrawlProgress({ job }: { job: CrawlJob }) {
             · 연속 —{" "}
             {job.status === "running"
               ? `라운드 ${job.rounds_done + 1}회차 진행 중`
-              : `라운드 ${job.rounds_done}회 완료`}
+              : job.rounds_done > 0
+                ? `라운드 ${job.rounds_done}회 완료`
+                : "첫 라운드에서 종료"}
           </span>
         )}
         {stopping && <span className="text-muted"> · 중지 요청됨…</span>}
