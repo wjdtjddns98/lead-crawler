@@ -530,6 +530,9 @@ def _persist_lead(session: Session, dc: DiscoveredCompany, lead: CompanyLead) ->
 
     원장은 항상 기록(제약 ①), 회사 본체는 실존(active)만 저장(제약 ②). 동시 워커가
     같은 기업을 먼저 적재해 PK/UNIQUE 충돌이 나면 해당 기업만 스킵(배치 전체 보호).
+    그 외 DB 예외도 기업 1건 격리로 흡수한다 — 비정상 데이터 1건(예: 컬럼 길이 초과)이
+    연속(24/7) 크롤 잡 전체를 죽인 실사고의 방어선. rollback 으로 세션을 살려 다음
+    기업 적재를 계속한다.
     """
     try:
         save_discovered(session, dc)
@@ -539,3 +542,6 @@ def _persist_lead(session: Session, dc: DiscoveredCompany, lead: CompanyLead) ->
     except IntegrityError:
         session.rollback()
         log.info("persist.skip.conflict", key=dc.canonical_key)
+    except Exception as exc:
+        session.rollback()
+        log.warning("persist.skip.error", key=dc.canonical_key, err=str(exc)[:300])

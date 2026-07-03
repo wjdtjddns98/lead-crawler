@@ -83,8 +83,11 @@ def test_resolve_industry_label():
     assert I.resolve_industry_label("전체", code_label="제약·바이오") == "제약·바이오"
     # broad + 코드없음 → 미분류(파이프라인이 이후 LLM)
     assert I.resolve_industry_label("전체") == UNCLASSIFIED
-    # 비-broad(구체·자유텍스트) → 원문 보존(오라벨 방지)
-    assert I.resolve_industry_label("제약") == "제약"
+    # 비-broad 구체 업종 → 택소노미로 정규화(큐/엑셀 필터 정확일치 보장)
+    assert I.resolve_industry_label("제약") == "제약·바이오"
+    assert I.resolve_industry_label("바이오") == "제약·바이오"
+    assert I.resolve_industry_label("IT") == "IT·소프트웨어"
+    # 매핑 없는 자유텍스트 → 원문 보존(오라벨 방지)
     assert I.resolve_industry_label("우주항공") == "우주항공"
 
 
@@ -98,9 +101,9 @@ def test_build_company_applies_resolution():
     # broad + 코드없음 → 미분류.
     dc2 = build_company(source="s", segment=Segment(country="KR", industry="전체"), name="B")
     assert dc2.industry == UNCLASSIFIED
-    # 구체 검색 → 그대로.
+    # 구체 검색 → 택소노미 정규화(세그먼트 라벨 그대로 적으면 필터 파편화).
     dc3 = build_company(source="s", segment=Segment(country="KR", industry="제약"), name="C")
-    assert dc3.industry == "제약"
+    assert dc3.industry == "제약·바이오"
 
 
 # ── 분류기: 라벨 검증 · 스텁 · HTML 전처리 ─────────────────────────────────

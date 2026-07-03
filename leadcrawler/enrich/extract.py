@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 from selectolax.parser import HTMLParser
 
@@ -58,8 +58,14 @@ _PLACEHOLDER_DOMAINS = frozenset({
 
 def _is_junk_email(addr: str) -> bool:
     """이미지/자산 파일명 오탐과 예시·플레이스홀더 도메인을 가짜로 판정한다."""
-    domain = addr.rsplit("@", 1)[-1]
+    local, _, domain = addr.rpartition("@")
     if not domain:
+        return True
+    # RFC 5321 길이 상한(로컬 64·전체 254) 초과 = 이메일일 수 없음. URL 인코딩 텍스트
+    # 덩어리(%c3%a0…)가 정규식 로컬파트([%…]+)에 통째로 매칭돼 수천 자 "이메일"이 만들어져
+    # review_queue.selected VARCHAR(320) 을 뚫고 크롤 잡 전체를 죽인 실사고의 재발 방지.
+    # '%' 포함도 같은 이유로 가짜 판정(실사용 이메일에 % 는 사실상 없음 — 인코딩 잔재 신호).
+    if len(addr) > 254 or len(local) > 64 or "%" in addr:
         return True
     tld = domain.rsplit(".", 1)[-1]
     if tld in _ASSET_TLDS:
@@ -143,7 +149,8 @@ def extract_emails(
 
     for node in tree.css("a[href^='mailto:']"):
         href = node.attributes.get("href") or ""
-        addr = href[len("mailto:"):].split("?", 1)[0]
+        # href 는 URL 이라 퍼센트 인코딩될 수 있다(info%40acme.com) — 복호 후 매칭.
+        addr = unquote(href[len("mailto:"):].split("?", 1)[0])
         for m in _EMAIL_RE.findall(addr):
             _add(m, 0.9)  # mailto 는 신뢰도 높음.
 

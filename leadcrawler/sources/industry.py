@@ -111,9 +111,11 @@ _EN_INDUSTRY_TERMS: dict[str, tuple[str, ...]] = {
     "금융": ("financial services", "bank", "investment management"),
     "it": ("software", "information technology", "technology"),
     "소프트웨어": ("software", "SaaS", "software development"),
+    # '의료기기(medical devices)'·'진단(diagnostics)' 동의어는 제외 — 검색 결과가 세그먼트
+    # 라벨(제약·바이오)로 저장되는데 이들은 별도 대분류('의료기기')라 오라벨 유입원이 된다.
     "바이오": (
         "biotech", "biotechnology", "pharmaceutical", "biopharmaceutical",
-        "life sciences", "drug manufacturer", "medical devices", "diagnostics",
+        "life sciences", "drug manufacturer",
     ),
     "제약": (
         "pharmaceutical", "biopharmaceutical", "drug manufacturer",
@@ -321,11 +323,12 @@ def is_broad_industry(industry: str | None) -> bool:
 def resolve_industry_label(segment_industry: str, *, code_label: str | None = None) -> str:
     """구분(엑셀 I열)에 기입할 라벨을 정한다.
 
-    - **비-broad**(구체 업종 검색·자유텍스트): 그대로 보존한다(이미 그 업종으로 필터돼 있어
-      코드 복원이 불필요하고, 코드 복원이 오히려 오라벨을 부를 수 있다).
+    - **비-broad**(구체 업종 검색·자유텍스트): 대분류 택소노미로 **정규화해** 보존한다 —
+      "제약"·"바이오"를 그대로 적으면 큐/엑셀 필터("제약·바이오" 정확일치)에 안 걸리는
+      라벨 파편화가 생긴다(실사고). 매핑 없는 자유텍스트는 원문 유지(오라벨 방지).
     - **broad**('전체'·'기타'·빈값): 등록처 코드에서 복원한 ``code_label``(명확 단일매치),
       없으면 :data:`UNCLASSIFIED`. 후자는 파이프라인이 이후 LLM 배치를 시도한다.
     """
     if not is_broad_industry(segment_industry):
-        return segment_industry
+        return _OLD_TO_TAXO.get(segment_industry.strip().lower(), segment_industry)
     return code_label or UNCLASSIFIED
