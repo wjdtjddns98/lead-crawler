@@ -32,6 +32,8 @@
 
 ## 1. 안전 가드레일 *(공통)*
 - **dev·prod 직접 push 금지** — `feat/*`·`fix/*` 브랜치 + PR + green CI 경유(브랜치명 영역 프리픽스: `*-be`/`*-fe`).
+- 하네스: `.claude/settings.json` PreToolUse 훅(`scripts/hooks/block-frozen-push.mjs`)이 **main/prod 직접
+  push 를 도구 실행 전에 차단**한다(서버측 잠금·보호와 이중 방어). 우회 금지 — 막히면 dev 타깃 PR 로.
 - 커밋 전 로컬 게이트 green 필수 — **백엔드**: `ruff check .` + `pytest -q` / **프론트**: `npm run build`(tsc+vite)(+lint).
 - Conventional commit + `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>` 트레일러.
 
