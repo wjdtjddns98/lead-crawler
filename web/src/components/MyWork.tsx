@@ -10,6 +10,7 @@ import {
 } from "../api";
 import { QueueTable } from "./QueueTable";
 import { TableSkeleton } from "./TableSkeleton";
+import { FilterPopover, pickSummary } from "./FilterPopover";
 import { MultiPicker, type PickerOption } from "./MultiPicker";
 import { BTN, EMPTY } from "../ui";
 import { ErrorBox } from "./ErrorBox";
@@ -28,7 +29,6 @@ const LISTED_OPTIONS: { value: "" | Listed; label: string }[] = [
   { value: "unknown", label: "미상" },
 ];
 
-const FIELD = "flex flex-col gap-1 text-muted text-[13px]";
 const INPUT = "bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md min-w-[120px]";
 
 const LISTED_VALUES = new Set<string>(["listed", "unlisted", "unknown"]);
@@ -169,14 +169,14 @@ export function MyWork() {
 
   return (
     <>
-      <div className="flex flex-wrap items-start gap-3 mb-4 p-3 border border-line rounded-md bg-[rgba(127,127,127,0.06)]">
-        {/* FE-3: 필터는 신규 배정에만 적용 — 기존 작업분 유지 안내를 필터 바 안에 상시 노출. */}
-        <p className="w-full m-0 text-muted text-[12px]">
-          작업범위는 <strong className="text-ink font-medium">새로 받아올 작업</strong>에만
-          적용됩니다 — 바꿔도 이미 받은 작업분은 그대로 유지됩니다.
-        </p>
-        <div className={FIELD}>
-          <span>국가 <span className="text-muted">(선택 안 함 = 전체)</span></span>
+      {/* 작업범위(국가·업종·상장) — 팝오버로 접어 한 줄. 트리거에 선택 요약 상시 표시. */}
+      <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+        <span className="text-muted text-[13px]">작업범위</span>
+        <FilterPopover
+          label="국가"
+          summary={pickSummary(filter.country, countryOpts)}
+          active={filter.country !== ""}
+        >
           <MultiPicker
             options={countryOpts}
             value={filter.country}
@@ -184,9 +184,12 @@ export function MyWork() {
             placeholder="국가 검색 (예: 미국, US, 일본)"
             emptyHint="전체 국가"
           />
-        </div>
-        <div className={FIELD}>
-          <span>업종 <span className="text-muted">(선택 안 함 = 전체)</span></span>
+        </FilterPopover>
+        <FilterPopover
+          label="업종"
+          summary={pickSummary(filter.industry, industryOpts)}
+          active={filter.industry !== ""}
+        >
           <MultiPicker
             options={industryOpts}
             value={filter.industry}
@@ -194,8 +197,8 @@ export function MyWork() {
             placeholder="업종 검색 (예: 반도체, 미분류)"
             emptyHint="전체 업종"
           />
-        </div>
-        <label className={FIELD}>
+        </FilterPopover>
+        <label className="flex items-center gap-1.5 text-muted text-[13px]">
           상장여부
           <select
             className={INPUT}
@@ -210,11 +213,16 @@ export function MyWork() {
           </select>
         </label>
         {remaining !== null && (
-          <span className="text-muted text-[13px] pb-1.5 tabular-nums">
+          <span className="text-muted text-[13px] tabular-nums">
             현재 범위에서 받아갈 수 있는 작업 <strong className="text-ink">{remaining}</strong>건
           </span>
         )}
       </div>
+      {/* FE-3: 필터는 신규 배정에만 적용 — 안내는 팝오버에 숨기지 않고 상시 노출 유지. */}
+      <p className="m-0 mb-4 text-muted text-[12px]">
+        작업범위는 <strong className="text-ink font-medium">새로 받아올 작업</strong>에만
+        적용됩니다 — 바꿔도 이미 받은 작업분은 그대로 유지됩니다.
+      </p>
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
         <p className="text-muted my-2 tabular-nums">
