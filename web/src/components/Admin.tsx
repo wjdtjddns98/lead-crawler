@@ -293,11 +293,21 @@ function collapseAllIndustries(csv: string, opts: PickerOption[]): string {
   return isAll ? "" : csv;
 }
 
+// KR 17개 시/도(표준 축약형) — BE region.KR_REGIONS 와 동일 목록·순서(#139).
+// 지역 팬아웃은 KR 세그먼트 전용이라 조회 API 없이 고정 목록으로 둔다.
+const KR_REGION_OPTS: PickerOption[] = [
+  "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
+  "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+].map((r) => ({ value: r, label: r }));
+
 function CrawlTargetSection() {
   const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
   const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
   const [countries, setCountries] = useState("");
   const [industries, setIndustries] = useState("");
+  // KR 지역 팬아웃(#139) — 빈값=팬아웃 없음(BE 기본). 쿼터를 크게 늘리는 opt-in 이라
+  // 업종의 '선택 안 함 = 전체' 확장을 따르지 않는다. 타깃 저장 계약에도 없음(실행 전용).
+  const [regions, setRegions] = useState("");
   const [listed, setListed] = useState<Listed>("unknown");
   const [persist, setPersist] = useState(true);
   // 연속 크롤(#132) — 중지까지 라운드 반복. 쿼터를 계속 쓰므로 기본 꺼짐(명시적 opt-in).
@@ -307,6 +317,12 @@ function CrawlTargetSection() {
   const [busy, setBusy] = useState(false); // 실행/중지 요청 왕복 중(이중 클릭 방지)
 
   const running = job?.status === "running";
+
+  // 지역 픽커는 KR 이 크롤 범위에 있을 때만 노출 — BE 가 무시하는 값(KR 외 국가만 선택)을
+  // 고르게 두면 오해만 남는다. 국가 미선택(=전체)은 KR 포함이므로 보인다. 숨김 중엔 전송도
+  // 빈값으로 비워 잔존 선택이 몰래 나가는 걸 막고, 상태는 유지해 KR 재선택 시 복원한다.
+  const krInScope =
+    !countries.trim() || countries.split(",").some((c) => c.trim().toUpperCase() === "KR");
 
   const apply = (t: CrawlTarget) => {
     setCountries(t.countries);
@@ -380,6 +396,7 @@ function CrawlTargetSection() {
           listed,
           persist,
           continuous,
+          regions: krInScope ? regions.trim() : "",
         }),
       );
       // 시작 피드백 — 휘발성 정보라 인라인 문구 대신 토스트(자동 소멸).
@@ -444,6 +461,20 @@ function CrawlTargetSection() {
             emptyHint="전체 업종"
           />
         </div>
+        {krInScope && (
+          <div className={FIELD}>
+            <span>
+              지역 <span className="text-muted">(KR 전용 · 선택 시 지역별 검색 팬아웃)</span>
+            </span>
+            <MultiPicker
+              options={KR_REGION_OPTS}
+              value={regions}
+              onChange={setRegions}
+              placeholder="지역 검색 (예: 서울, 경기)"
+              emptyHint="지역 팬아웃 없음(기본)"
+            />
+          </div>
+        )}
         <label className={FIELD}>
           상장여부
           <select
