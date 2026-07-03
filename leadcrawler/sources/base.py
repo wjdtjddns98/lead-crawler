@@ -20,15 +20,21 @@ log = get_logger("sources.cursor")
 
 
 class Segment(BaseModel):
-    """수집 단위: 국가 × 업종 × 상장여부."""
+    """수집 단위: 국가 × 업종 × 상장여부 (× 지역 — KR 검색 팬아웃 전용).
+
+    ``region`` 이 있으면 검색 소스만 지역 키워드를 붙여 돈다(등록처·집계원은 주소로
+    열거하지 않으므로 기본 세그먼트에서 1회 — :func:`registry.discover_segment` 가 게이팅).
+    """
 
     country: str
     industry: str
     listed: str = "unknown"
+    region: str | None = None
 
     @property
     def label(self) -> str:
-        return f"{self.country}/{self.industry}/{self.listed}"
+        base = f"{self.country}/{self.industry}/{self.listed}"
+        return f"{base}/{self.region}" if self.region else base
 
 
 class DiscoveredCompany(BaseModel):

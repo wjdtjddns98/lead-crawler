@@ -151,14 +151,19 @@ class SearchSource:
         return self._live(segment, provider, seen)
 
     def _dry(self, segment: Segment) -> list[DiscoveredCompany]:
-        """네트워크 없는 결정적 더미(도메인 기반 canonical_key)."""
+        """네트워크 없는 결정적 더미(도메인 기반 canonical_key).
+
+        지역 세그먼트는 도메인에 지역 태그(utf-8 hex — ascii 안전·결정적)를 섞어
+        지역마다 다른 더미가 나오게 한다(팬아웃이 dedup 에 전부 접히지 않도록).
+        """
         cc = (segment.country or "xx").strip().lower()
+        tag = f"-{segment.region.encode('utf-8').hex()[:8]}" if segment.region else ""
         return [
             build_company(
                 source=self.name,
                 segment=segment,
-                name=f"{segment.industry} 서치기업 {i}",
-                domain=f"{cc}-search{i}.com",
+                name=f"{segment.region or ''} {segment.industry} 서치기업 {i}".strip(),
+                domain=f"{cc}{tag}-search{i}.com",
             )
             for i in range(self._count)
         ]
@@ -183,7 +188,10 @@ class SearchSource:
         country = resolve_country(segment.country)
         gl, lr, keyword = _LOCALE.get(country.iso2, _DEFAULT_LOCALE) if country else _DEFAULT_LOCALE
         terms = industry_search_terms(segment.industry)
-        queries = [f"{term} {keyword}" for term in terms]
+        # 지역 세그먼트(KR 팬아웃)면 지역 키워드를 선행시켜 검색을 그 지역으로 편향시킨다
+        # ("서울 pharmaceutical …") — 전국 쿼리에 안 잡히던 롱테일 기업 발굴 축.
+        prefix = f"{segment.region} " if segment.region else ""
+        queries = [f"{prefix}{term} {keyword}" for term in terms]
 
         # 동의어 쿼리들을 병렬로 동시에 던진다 — 각 쿼리는 독립 네트워크 호출이라 순차 대기
         # 없이 한꺼번에 쏴 산출을 최대화한다(워커=쿼리 수, 상한 8). 단일 쿼리는 풀 없이 직접.

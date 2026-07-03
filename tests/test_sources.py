@@ -145,6 +145,15 @@ def test_unknown_country_routes_to_search_only() -> None:
     assert {r.source for r in rows} == {"search"}
 
 
+def test_region_segment_routes_to_search_only() -> None:
+    # 지역 세그먼트(KR 팬아웃)는 검색 전용 — 등록처·집계원은 주소로 열거하지 않으므로
+    # 지역 없는 기본 세그먼트에서 1회만 돈다(쿼터 낭비·커서 파편화 방지).
+    seg = Segment(country="KR", industry="전체", region="서울")
+    rows = discover_segment(seg, _dry_settings())
+    assert rows and {r.source for r in rows} == {"search"}
+    assert all(r.segment == "KR/전체/unknown/서울" for r in rows)
+
+
 def test_aggregator_dry_run_keys_are_registry_based() -> None:
     s = _dry_settings()
     seg = Segment(country="PH", industry="제조")

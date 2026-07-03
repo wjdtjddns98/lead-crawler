@@ -122,6 +122,11 @@ def discover_segment(
     seg_domains: set[str] = set()  # 이번 세그먼트 내부 dedup 도메인.
     free_new = 0  # 무료(비검색) 소스가 이 세그먼트에서 찾은 글로벌-신규 수(② 스킵 판단).
     for src in src_list:
+        # 지역 세그먼트(KR 팬아웃)는 검색 전용 — 등록처·집계원·거래소는 주소로 열거하지
+        # 않으므로 지역마다 같은 스캔을 반복하면 쿼터 낭비 + 커서(label 키) 파편화만 남는다.
+        # 그 소스들은 지역 없는 기본 세그먼트에서 1회만 돈다.
+        if segment.region is not None and not isinstance(src, SearchSource):
+            continue
         if not src.applies_to(segment):
             continue
         if isinstance(src, SearchSource):
