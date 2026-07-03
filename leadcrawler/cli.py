@@ -577,6 +577,103 @@ def backfill_industry(
     )
 
 
+def backfill_dart_markets(
+    session, get_info, *, limit: int = 0, commit_every: int = 50
+) -> tuple[int, int]:
+    """DART 원장 행의 상장여부(listed)·시장 보드(market)를 corp_cls 로 소급 기입한다
+    — (검토, 갱신) 건수 반환.
+
+    대상: registry='dart' 이고 ① listed='unknown'(#130 corp_cls 세분화 이전 코드가 남긴
+    잔재) 또는 ② listed='listed' 인데 market 미상. ``get_info(corp_code)`` 는 DART
+    company.json 응답 dict(실패/미확인=None)를 돌려주는 주입 함수(테스트=스텁, 라이브=API).
+    corp_cls 를 못 받으면 원래값을 유지하므로 반복 실행해도 안전하다(멱등).
+    ``commit_every`` 건마다 중간 커밋한다(중단 시 진행분 보존, 0=끄기).
+    """
+    from sqlalchemy import and_, or_, select
+
+    from .schema import DiscoveredCompanyRow
+    from .sources.dart import _LISTED_CLS, _MARKET_CLS
+
+    stmt = (
+        select(DiscoveredCompanyRow)
+        .where(
+            DiscoveredCompanyRow.registry == "dart",
+            DiscoveredCompanyRow.registry_id.is_not(None),
+            or_(
+                DiscoveredCompanyRow.listed == "unknown",
+                and_(
+                    DiscoveredCompanyRow.listed == "listed",
+                    DiscoveredCompanyRow.market.is_(None),
+                ),
+            ),
+        )
+        .order_by(DiscoveredCompanyRow.canonical_key)
+    )
+    if limit:
+        stmt = stmt.limit(limit)
+    rows = session.scalars(stmt).all()
+    updated = 0
+    for i, row in enumerate(rows, start=1):
+        info = get_info(row.registry_id)
+        cls = (info or {}).get("corp_cls", "")
+        new_listed = _LISTED_CLS.get(cls)
+        if new_listed is None:  # 응답 실패/미지 corp_cls → 원래값 유지(멱등·보수적).
+            continue
+        new_market = _MARKET_CLS.get(cls)
+        if (row.listed, row.market) != (new_listed, new_market):
+            row.listed = new_listed
+            row.market = new_market
+            updated += 1
+        if commit_every and i % commit_every == 0:
+            session.commit()  # 중단돼도 여기까지의 기입(=API 콜 소비분)은 살린다.
+    return len(rows), updated
+
+
+@app.command("backfill-market")
+def backfill_market(
+    limit: int = typer.Option(0, help="처리 상한(0=전체) — 소량 시험용"),
+) -> None:
+    """DART 원장 행의 상장여부·시장 보드를 corp_cls 로 소급 기입한다(멱등, 무료 쿼터).
+
+    corp_cls 세분화(#130) 이전 코드가 남긴 listed='unknown' 잔재와 market 미상 상장행을
+    company.json 재조회로 채운다. 행당 1콜(무료 쿼터) — DRY-RUN/키 없음이면 무과금
+    계약(§2)에 따라 아무것도 하지 않는다.
+    """
+    from .sources.dart import _COMPANY_URL
+    from .sources.http import Fetcher
+    from .storage.db import get_sessionmaker
+
+    configure_logging()
+    settings = get_settings()
+    if settings.dry_run or not settings.dart_api_key:
+        typer.echo("DRY-RUN 또는 DART 키 없음 — 네트워크 0 계약에 따라 건너뜀")
+        raise typer.Exit(0)
+    fetcher = Fetcher(
+        min_interval=settings.http_request_delay, timeout=settings.http_timeout
+    )
+
+    def get_info(corp_code: str) -> dict | None:
+        try:
+            info = fetcher.get_json(
+                _COMPANY_URL,
+                params={"crtfc_key": settings.dart_api_key, "corp_code": corp_code},
+            )
+        except Exception:  # 개별 실패는 보류(다음 실행에 재시도) — 배치 보호.
+            return None
+        return info if isinstance(info, dict) and info.get("status") == "000" else None
+
+    session = get_sessionmaker(settings)()
+    try:
+        examined, updated = backfill_dart_markets(session, get_info, limit=limit)
+        session.commit()
+    finally:
+        session.close()
+    typer.echo(
+        f"시장 백필 완료: 검토 {examined}건 → 기입 {updated}건 "
+        f"(보류 {examined - updated}건은 원래값 유지, 재실행 시 재시도)"
+    )
+
+
 @app.command("seed-mock")
 def seed_mock() -> None:
     """로컬 개발용 목 리드 5건을 DB 에 적재한다(검증 웹앱 둘러보기용 — 멱등).

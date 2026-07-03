@@ -40,6 +40,7 @@ class ReviewItem(BaseModel):
     country: str = ""
     industry: str = ""
     listed: str = "unknown"  # 상장여부 listed/unlisted/unknown — 원장(발견) 값, FE 컬럼 표시용
+    market: str | None = None  # 상장 시장 보드(KOSPI/KOSDAQ/KONEX/NASDAQ/NYSE/OTC/PSE…, 미상=None)
     homepage: str | None = None
     site_alive: bool = False
     form: str | None = None  # 문의폼 URL(이메일 없을 때 폼으로 처리)
