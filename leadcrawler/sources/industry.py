@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from .taxonomy import UNCLASSIFIED
+from .taxonomy import INDUSTRY_TAXONOMY, UNCLASSIFIED
 
 # 업종명(소문자) → KSIC 소분류 접두(3자리) 집합. induty_code.startswith 로 매칭.
 _KSIC: dict[str, tuple[str, ...]] = {
@@ -135,10 +135,31 @@ _EN_INDUSTRY_TERMS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _lookup_keys(industry: str) -> tuple[str, ...]:
+    """조회 키 확장 — 택소노미 라벨이면 대응하는 기존 매핑 키들로, 아니면 자기 자신.
+
+    크롤 업종 어휘를 큐/발송 탭과 같은 대분류 택소노미로 통일하기 위해, 택소노미 라벨
+    (예: "제약·바이오")을 기존 코드/검색어 표의 키("바이오"·"제약")로 풀어 조회한다.
+    기존 키("바이오" 등) 입력은 그대로 동작한다(저장된 크롤 타깃 하위호환).
+    """
+    key = industry.strip().lower()
+    return _TAXO_TO_OLD.get(key, (key,))
+
+
+def _prefixes_for(industry: str, table: dict[str, tuple[str, ...]]) -> tuple[str, ...] | None:
+    """업종(기존 키 또는 택소노미 라벨)에 대응하는 코드 접두 합집합(매핑 없으면 None)."""
+    found = [table[k] for k in _lookup_keys(industry) if k in table]
+    if not found:
+        return None
+    return tuple(sorted({p for ps in found for p in ps}))
+
+
 def industry_search_term(industry: str) -> str:
     """업종명을 영어 검색어로 옮긴다(매핑 없으면 원문 그대로 — 베스트에포트)."""
-    key = industry.strip().lower()
-    return _EN_INDUSTRY.get(key, industry.strip())
+    for k in _lookup_keys(industry):
+        if k in _EN_INDUSTRY:
+            return _EN_INDUSTRY[k]
+    return industry.strip()
 
 
 def industry_search_terms(industry: str) -> tuple[str, ...]:
@@ -146,23 +167,33 @@ def industry_search_terms(industry: str) -> tuple[str, ...]:
 
     검색 발견(SearchSource)이 세그먼트당 이 목록만큼 쿼리를 던져 합집합을 모은다 — 한글
     업종어를 영어권 색인에 그대로 넣어 헛방 나던 문제를 고치고(번역), 동의어로 커버리지를
-    넓힌다(SERP 쿼리당 ~10건 한계 보완).
+    넓힌다(SERP 쿼리당 ~10건 한계 보완). 택소노미 라벨은 대응 기존 키들의 합집합
+    (예: "제약·바이오" = 바이오∪제약 동의어, 등장 순서 보존 중복 제거).
     """
-    key = industry.strip().lower()
-    terms = _EN_INDUSTRY_TERMS.get(key)
+    terms: list[str] = []
+    for k in _lookup_keys(industry):
+        for t in _EN_INDUSTRY_TERMS.get(k, ()):
+            if t not in terms:
+                terms.append(t)
     if terms:
-        return terms
+        return tuple(terms)
     return (industry_search_term(industry),)
 
 
 def supported_industries() -> tuple[tuple[str, str], ...]:
-    """선택 가능한 표준 업종 목록 (한글명, 영문 검색어) — 업종 선택 UI 의 단일 출처.
+    """선택 가능한 크롤 업종 목록 (택소노미 라벨, 영문 검색어) — 업종 선택 UI 의 단일 출처.
 
-    여기 있는 업종만 등록처 코드(KSIC/SIC/UK SIC)로 정확히 필터된다. 자유 텍스트 입력은
-    오타·미매핑으로 필터가 통째로 풀려 비대상 업종이 섞이므로(집계원 폴백), UI 는 이
-    목록에서만 고르게 해 업종 정밀도를 보장한다.
+    큐/발송 탭과 같은 **대분류 택소노미 어휘**로 노출한다 — 크롤 세그먼트 라벨이 곧 큐
+    구분 필터 값이 되도록 어휘 이원화를 제거(택소노미 정확일치 필터와 정합). 기존
+    코드/검색어 매핑으로 풀리는 라벨만 노출해 업종 정밀도를 유지한다. '제조'·'금융' 같은
+    모호 키는 단일 대분류 확정이 불가해 제외한다(비택소노미 구분 라벨 파편화 방지 —
+    은행/증권 등 세분 대분류는 코드 매핑이 생기면 추가).
     """
-    return tuple(_EN_INDUSTRY.items())
+    return tuple(
+        (label, industry_search_term(label))
+        for label in INDUSTRY_TAXONOMY
+        if label.lower() in _TAXO_TO_OLD
+    )
 
 
 def is_specific_industry(industry: str) -> bool:
@@ -175,22 +206,25 @@ def is_specific_industry(industry: str) -> bool:
     key = (industry or "").strip().lower()
     if not key:
         return False
-    return key in _EN_INDUSTRY or key in _KSIC or key in _SIC or key in _UK_SIC
+    return any(
+        k in _EN_INDUSTRY or k in _KSIC or k in _SIC or k in _UK_SIC
+        for k in _lookup_keys(industry)
+    )
 
 
 def ksic_prefixes(industry: str) -> tuple[str, ...] | None:
-    """업종명에 대응하는 KSIC 접두 집합(없으면 None)."""
-    return _KSIC.get(industry.strip().lower())
+    """업종명에 대응하는 KSIC 접두 집합(없으면 None). 택소노미 라벨은 기존 키 합집합."""
+    return _prefixes_for(industry, _KSIC)
 
 
 def sic_prefixes(industry: str) -> tuple[str, ...] | None:
-    """업종명에 대응하는 SIC 접두 집합(없으면 None)."""
-    return _SIC.get(industry.strip().lower())
+    """업종명에 대응하는 SIC 접두 집합(없으면 None). 택소노미 라벨은 기존 키 합집합."""
+    return _prefixes_for(industry, _SIC)
 
 
 def uk_sic_prefixes(industry: str) -> tuple[str, ...] | None:
-    """업종명에 대응하는 UK SIC 2007 접두 집합(없으면 None)."""
-    return _UK_SIC.get(industry.strip().lower())
+    """업종명에 대응하는 UK SIC 2007 접두 집합(없으면 None). 택소노미 라벨은 기존 키 합집합."""
+    return _prefixes_for(industry, _UK_SIC)
 
 
 def matches_prefix(code: object, prefixes: tuple[str, ...] | None) -> bool:
@@ -241,6 +275,23 @@ _OLD_TO_TAXO: dict[str, str] = {
     "semiconductor": "반도체·디스플레이",
     "통신": "통신·네트워크",
 }
+
+
+def _invert_taxo_to_old() -> dict[str, tuple[str, ...]]:
+    """_OLD_TO_TAXO 역방향(택소노미 라벨 소문자 → 기존 매핑 키들) — 조회 키 확장용.
+
+    크롤 진입 어휘를 택소노미로 통일하면서도 코드/검색어 표는 기존 키 그대로 재사용한다.
+    """
+    out: dict[str, list[str]] = {}
+    for old, taxo in _OLD_TO_TAXO.items():
+        keys = out.setdefault(taxo.lower(), [])
+        if old not in keys:
+            keys.append(old)
+    return {label: tuple(keys) for label, keys in out.items()}
+
+
+# 택소노미 라벨(소문자) → 기존 키 집합. _lookup_keys() 가 이 표로 라벨을 풀어 조회한다.
+_TAXO_TO_OLD: dict[str, tuple[str, ...]] = _invert_taxo_to_old()
 
 
 # 역매핑에서 제외할 저정밀 접두 — 한 코드군이 여러 대분류에 걸쳐 '확신 단일매치'로 오라벨을

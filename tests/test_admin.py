@@ -296,9 +296,11 @@ def test_list_industries(admin: TestClient) -> None:
     rows = admin.get("/admin/industries").json()
     assert len(rows) == len(supported_industries())
     by_val = {r["value"]: r for r in rows}
-    assert "건설" in by_val and by_val["건설"]["label"] == "건설"
-    # 영문 별칭으로 검색 가능하게 노출('construction'→건설).
-    assert "construction" in by_val["건설"]["aliases"]
+    # 크롤 업종 옵션은 큐/발송 탭과 같은 택소노미 라벨 어휘로 노출된다.
+    assert "건설·엔지니어링" in by_val
+    assert by_val["건설·엔지니어링"]["label"] == "건설·엔지니어링"
+    # 영문 별칭으로 검색 가능하게 노출('construction'→건설·엔지니어링).
+    assert "construction" in by_val["건설·엔지니어링"]["aliases"]
 
 
 def test_worker_cannot_list_industries(worker: TestClient) -> None:
