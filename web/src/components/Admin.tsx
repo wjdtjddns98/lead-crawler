@@ -287,8 +287,9 @@ function collapseAllIndustries(csv: string, opts: PickerOption[]): string {
       .map((s) => s.trim())
       .filter(Boolean),
   );
-  const isAll =
-    opts.length > 0 && picked.size === opts.length && opts.every((o) => picked.has(o.value));
+  // 상위집합도 '전체'로 접는다 — 현 옵션을 모두 덮으면 의미상 전체이고, 어휘가 줄어든
+  // 뒤 남은 구 라벨 잔여분도 다음 재저장에서 자연 정리된다(정확일치 요구 시 회복 불가).
+  const isAll = opts.length > 0 && opts.every((o) => picked.has(o.value));
   return isAll ? "" : csv;
 }
 
