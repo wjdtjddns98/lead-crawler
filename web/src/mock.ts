@@ -489,6 +489,8 @@ function matches(it: ReviewItem, f: ClaimFilter): boolean {
   const industries = csvSet(f.industry);
   if (industries.size && !industries.has(it.industry.toLowerCase())) return false;
   if (f.listed && it.listed !== f.listed) return false;
+  const markets = csvSet(f.market ?? "");
+  if (markets.size && !markets.has((it.market ?? "").toLowerCase())) return false;
   return true;
 }
 
@@ -504,6 +506,7 @@ function readFilter(u: URL, init?: RequestInit): ClaimFilter {
     country: u.searchParams.get("country") ?? body.country ?? "",
     industry: u.searchParams.get("industry") ?? body.industry ?? "",
     listed: (u.searchParams.get("listed") as "" | Listed | null) ?? body.listed ?? "",
+    market: u.searchParams.get("market") ?? body.market ?? "",
   };
 }
 
@@ -538,6 +541,8 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
       countries: MOCK_COUNTRIES,
       industries: MOCK_QUEUE_INDUSTRIES,
       listed: ["listed", "unlisted", "unknown"],
+      // 시장 어휘 — BE 계약(distinct market)과 동일하게 데이터 실측분만 정렬해 내려준다.
+      markets: [...new Set(db.map((x) => x.market).filter((m): m is string => !!m))].sort(),
     });
   }
 

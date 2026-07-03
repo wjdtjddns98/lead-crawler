@@ -108,6 +108,9 @@ export interface ClaimFilter {
   country: string; // 쉼표구분 ISO2/별칭, 빈값=전체
   industry: string; // 쉼표구분 업종, 빈값=전체
   listed: "" | Listed; // 빈값=전체
+  // 쉼표구분 시장 보드(KOSPI/KOSDAQ…), 빈값=전체 — 전체 큐(GET /queue) 조회 전용.
+  // BE 계약 확장 대기: 파라미터 추가 전까지 실서버에선 무시된다(PR 본문 계약 명세 참조).
+  market?: string;
 }
 
 // 검증 직원용 필터 옵션(국가+업종 한 번에) — GET /queue/filters (worker 접근 가능).
@@ -116,6 +119,8 @@ export interface QueueFilters {
   countries: CountryOption[];
   industries: IndustryOption[];
   listed: string[];
+  // 시장 보드 어휘(DB distinct) — BE 계약 확장 대기. 없으면 FE 폴백 목록 사용.
+  markets?: string[];
 }
 
 export interface CrawlTarget {

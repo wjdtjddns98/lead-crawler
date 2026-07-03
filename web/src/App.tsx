@@ -35,6 +35,24 @@ const LISTED_OPTIONS: { value: "" | Listed; label: string }[] = [
   { value: "unknown", label: "미상" },
 ];
 
+// 시장 보드 검색용 한글 별칭 — BE 어휘엔 라벨/별칭이 없어 FE 가 표기만 보강한다.
+const MARKET_ALIASES: Record<string, string[]> = {
+  KOSPI: ["코스피"],
+  KOSDAQ: ["코스닥"],
+  KONEX: ["코넥스"],
+  NASDAQ: ["나스닥"],
+  NYSE: ["뉴욕증권거래소"],
+};
+
+// 시장 보드 어휘 → 픽커 옵션. 라벨은 큐 테이블 표기(item.market 원문)와 동일한 보드 코드.
+function toMarketOpts(markets: string[]): PickerOption[] {
+  return markets.map((m) => ({ value: m, label: m, aliases: MARKET_ALIASES[m] }));
+}
+
+// 폴백 어휘 — /queue/filters 가 markets 를 아직 안 주면(BE 계약 확장 전) 대표 보드로 표시.
+// 별칭 맵과 단일 소스(키 = 보드 코드) — 한쪽만 갱신돼 별칭이 새는 사고 방지(리뷰 반영).
+const FALLBACK_MARKETS = Object.keys(MARKET_ALIASES);
+
 const FILTERS: { value: Filter; label: string }[] = [
   { value: "", label: "전체" },
   { value: "pending", label: "대기" },
@@ -115,8 +133,10 @@ function Workbench({
   const [country, setCountry] = useState("");
   const [industry, setIndustry] = useState("");
   const [listed, setListed] = useState<"" | Listed>("");
+  const [market, setMarket] = useState("");
   const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
   const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
+  const [marketOpts, setMarketOpts] = useState<PickerOption[]>(toMarketOpts(FALLBACK_MARKETS));
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -138,7 +158,7 @@ function Workbench({
         status: filter,
         limit: PAGE,
         offset,
-        filter: { country, industry, listed },
+        filter: { country, industry, listed, market },
       });
       if (myReq !== reqRef.current) return; // 더 새 요청이 진행 중 — 결과 폐기
       // 마지막 페이지의 마지막 항목을 처리해 페이지가 비면 한 페이지 앞으로 보정.
@@ -154,7 +174,7 @@ function Workbench({
     } finally {
       if (myReq === reqRef.current) setLoading(false);
     }
-  }, [filter, offset, country, industry, listed]);
+  }, [filter, offset, country, industry, listed, market]);
 
   useEffect(() => {
     void load();
@@ -171,6 +191,8 @@ function Workbench({
         setIndustryOpts(
           withUnclassified(f.industries).map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
         );
+        // 시장 어휘는 BE 계약 확장 대기 — 내려올 때만 폴백을 실측 목록으로 교체.
+        if (f.markets?.length) setMarketOpts(toMarketOpts(f.markets));
       })
       .catch(() => {
         // 옵션 로드 실패해도 큐 조회는 가능 — 픽커만 빈 채로 둔다.
@@ -228,7 +250,7 @@ function Workbench({
   // 내부 선택 상태가 사라지므로 인라인 element 로 유지).
   const queueView = (
     <>
-      {/* 상태 탭 + 국가·업종·상장 필터(팝오버) + 새로고침 — 툴바 한 줄. 필터 선택 시
+      {/* 상태 탭 + 국가·업종·상장·시장 필터(팝오버) + 새로고침 — 툴바 한 줄. 필터 선택 시
           total(총 N건)이 해당 조건 건수로 바뀌고, 트리거에 선택 요약이 상시 표시된다. */}
       <div className="flex items-center gap-4 mb-4 flex-wrap">
         <div className="flex gap-1">
@@ -292,6 +314,24 @@ function Workbench({
               ))}
             </select>
           </label>
+          {/* 시장 보드(KOSPI/KOSDAQ…) — 상장여부와 독립 조건(AND). 비상장+시장 조합은
+              모순이라 0건이 되지만, 트리거 요약이 둘 다 강조돼 원인이 화면에 보인다. */}
+          <FilterPopover
+            label="시장"
+            summary={pickSummary(market, marketOpts)}
+            active={market !== ""}
+          >
+            <MultiPicker
+              options={marketOpts}
+              value={market}
+              onChange={(csv) => {
+                setMarket(csv);
+                setOffset(0);
+              }}
+              placeholder="시장 검색 (예: 코스피, KOSDAQ)"
+              emptyHint="전체 시장"
+            />
+          </FilterPopover>
         </div>
         <button className={BTN} onClick={() => void load()} disabled={loading}>
           새로고침
