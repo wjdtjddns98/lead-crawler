@@ -252,6 +252,9 @@ class CrawlJobRequest(BaseModel):
     target_count: int = Field(default=0, ge=0)
     # True 면 취소 전까지 1회전(라운드)을 반복하는 연속 크롤(24/7 베이스). False=단발.
     continuous: bool = False
+    # KR 지역별 검색 팬아웃 — 'all'=17개 시/도 전부, 또는 쉼표구분('서울,경기').
+    # KR 세그먼트에만 적용(다른 국가는 무시), 빈값(기본)=팬아웃 없음.
+    regions: str = Field(default="", max_length=512)
 
     @field_validator("industries", mode="before")
     @classmethod

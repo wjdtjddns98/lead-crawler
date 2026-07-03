@@ -27,7 +27,7 @@ from sqlalchemy.orm import sessionmaker
 from ..config import Settings
 from ..logging import get_logger
 from ..sources.base import Segment
-from ..sources.segments import generate_segments
+from ..sources.segments import generate_segments, parse_regions
 from ..storage.crawl_job import (
     CANCELLED,
     DONE,
@@ -91,21 +91,26 @@ def trigger_crawl_job(
     runner: JobRunner | None = None,
     target_count: int = 0,
     continuous: bool = False,
+    regions: str = "",
 ) -> dict[str, object]:
     """크롤 작업을 만들고 백그라운드 실행을 시작한다 — 작업 스냅샷(dict) 반환.
 
     이미 진행 중이면 :class:`CrawlBusy`. ``runner`` 주입 시 그것으로 실행(테스트 동기화).
     ``target_count`` >0 이면 실존 저장 누계가 그 값에 도달할 때 조기 종료(0=세그먼트 전부 소진).
     ``continuous`` 면 취소 전까지 라운드를 반복한다(mode='continuous' 로 기록).
+    ``regions``('all' 또는 쉼표구분)는 KR 세그먼트를 지역별 검색 세그먼트로 팬아웃한다
+    (KR 외 국가는 무시 — :func:`generate_segments`). crawl_job 행에는 따로 기록하지 않는다.
     """
     global _running
     inds = [s for s in industries.split(",") if s.strip()]
     ctys = [s for s in countries.split(",") if s.strip()] or None
-    segments = generate_segments(inds, countries=ctys, listed=[listed])
+    segments = generate_segments(
+        inds, countries=ctys, listed=[listed], regions=parse_regions(regions)
+    )
     if len(segments) > settings.crawl_max_segments:
         raise CrawlTooLarge(
             f"세그먼트 {len(segments)}개가 상한({settings.crawl_max_segments})을 초과합니다. "
-            "국가/업종을 좁히세요."
+            "국가/업종/지역을 좁히세요."
         )
 
     with _guard:

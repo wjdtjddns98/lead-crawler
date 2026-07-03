@@ -393,6 +393,18 @@ def test_start_crawl_runs_and_reports(admin: TestClient, _sync_crawl) -> None:
     assert status["finished_at"] is not None
 
 
+def test_start_crawl_regions_fan_out(admin: TestClient, _sync_crawl) -> None:
+    # KR 지역 팬아웃: 기본 1 + 지역 2 = 세그먼트 3(지역 세그먼트는 검색 전용으로 돈다).
+    r = admin.post(
+        "/admin/crawl",
+        json={"industries": "건설", "countries": "KR", "regions": "서울,부산"},
+    )
+    assert r.status_code == 202
+    status = admin.get("/admin/crawl").json()
+    assert status["status"] == "done"
+    assert status["segments_total"] == 3
+
+
 def test_crawl_busy_returns_409(admin: TestClient, monkeypatch) -> None:
     # 이미 진행 중(가드 점유)이면 새 크롤은 409.
     import leadcrawler.pipeline.background as bg

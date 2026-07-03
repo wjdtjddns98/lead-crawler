@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from leadcrawler.region import KR_REGIONS
 from leadcrawler.sources.countries import supported_countries
-from leadcrawler.sources.segments import generate_segments
+from leadcrawler.sources.segments import generate_segments, parse_regions
 
 
 def test_default_countries_is_all_supported() -> None:
@@ -34,3 +35,23 @@ def test_blank_inputs_are_dropped() -> None:
     segs = generate_segments(["건설", "  ", ""], countries=["PH", ""])
     assert len(segs) == 1  # 빈 업종·국가 제거 → 1 × 1.
     assert segs[0].country == "PH" and segs[0].industry == "건설"
+
+
+def test_regions_fan_out_kr_only() -> None:
+    segs = generate_segments(["바이오"], countries=["KR", "US"], regions=["서울", "부산"])
+    kr = [s for s in segs if s.country == "KR"]
+    us = [s for s in segs if s.country == "US"]
+    # KR: 기본 세그먼트(등록처용) 먼저, 그 뒤 지역별 세그먼트(검색 팬아웃).
+    assert [s.region for s in kr] == [None, "서울", "부산"]
+    assert kr[1].label == "KR/바이오/unknown/서울"
+    assert kr[0].label == "KR/바이오/unknown"  # 기본 라벨은 기존 3파트 그대로(커서 키 보존).
+    # KR 외 국가는 regions 를 무시한다(주소 정규화·지역 키워드가 KR 전용).
+    assert [s.region for s in us] == [None]
+
+
+def test_parse_regions() -> None:
+    assert parse_regions("") is None
+    assert parse_regions(" , ") is None
+    assert parse_regions("서울, 경기") == ["서울", "경기"]
+    assert parse_regions("all") == list(KR_REGIONS)
+    assert len(KR_REGIONS) == 17  # 1차 행정구역 17개 시/도.
