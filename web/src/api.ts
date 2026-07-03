@@ -129,6 +129,7 @@ export async function fetchQueue(params: {
   if (params.filter?.country) q.set("country", params.filter.country);
   if (params.filter?.industry) q.set("industry", params.filter.industry);
   if (params.filter?.listed) q.set("listed", params.filter.listed);
+  if (params.filter?.market) q.set("market", params.filter.market);
   return jsonOrThrow<QueueResponse>(
     await fetch(`${BASE}/queue?${q.toString()}`, { headers: authHeaders() }),
   );
