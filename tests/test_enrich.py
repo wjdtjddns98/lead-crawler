@@ -58,6 +58,22 @@ def test_extract_emails_rejects_asset_filenames_and_placeholders() -> None:
     assert "address@example.com" not in emails
 
 
+def test_extract_emails_rejects_url_encoded_blobs_and_oversize() -> None:
+    # URL 인코딩 텍스트 덩어리(%…)가 로컬파트로 통째 매칭돼 수천 자 "이메일"이 되던
+    # 크롤킬러 실사고 재현 — % 포함·RFC 길이 초과(로컬>64·전체>254)는 전부 배제.
+    blob = "ng%c3%a0y%2029%2f6%20" * 30 + "info@vio.vn"
+    long_local = "a" * 70 + "@good.com"
+    html = f"<body>{blob} · {long_local} · 진짜 ir@good.com</body>"
+    emails = {c.value for c in extract_emails(html)}
+    assert emails == {"ir@good.com"}
+
+
+def test_extract_emails_decodes_percent_encoded_mailto() -> None:
+    # mailto href 의 퍼센트 인코딩(%40=@)은 복호해 정상 추출한다.
+    html = '<a href="mailto:info%40acme.co.kr">메일</a>'
+    assert {c.value for c in extract_emails(html)} == {"info@acme.co.kr"}
+
+
 def test_extract_phones() -> None:
     phones = extract_phones(_HOME)
     assert any("1234-5678" in p.value for p in phones)
