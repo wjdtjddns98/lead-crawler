@@ -12,6 +12,7 @@ import {
   fetchQueueFilters,
   fetchSendPreview,
   fetchUsers,
+  getUser,
   reclaimUser,
   saveCrawlTarget,
   sendCampaign,
@@ -82,6 +83,28 @@ export function Admin() {
     }
   };
 
+  // 잠금성 액션(강등·비활성)은 회수와 같은 confirm 패턴 — 대상 계정이 즉시 접근을 잃는다.
+  // 본인 계정은 버튼 자체를 disable(관리자가 스스로를 잠그는 사고 방지). 백엔드 가드는 별도.
+  const me = getUser();
+
+  const demote = async (u: UserStats) => {
+    if (
+      !window.confirm(
+        `${u.username} 계정을 직원으로 변경할까요?\n관리자 콘솔 접근이 즉시 차단됩니다.`,
+      )
+    )
+      return;
+    await act(() => changeUserRole(u.id, "worker"));
+  };
+
+  const deactivate = async (u: UserStats) => {
+    if (
+      !window.confirm(`${u.username} 계정을 비활성화할까요?\n해당 계정은 즉시 로그인이 차단됩니다.`)
+    )
+      return;
+    await act(() => setUserActive(u.id, false));
+  };
+
   // 점유 회수 — 영구 배정이라 방치 점유(퇴사·장기부재)는 이 버튼이 유일한 해제 경로.
   // 되돌릴 수 없는 건 아니지만 다른 직원 작업분에 영향이 커 확인 다이얼로그를 거친다.
   const reclaim = async (u: UserStats) => {
@@ -134,7 +157,9 @@ export function Admin() {
             </tr>
           </thead>
           <tbody>
-            {users.map((u) => (
+            {users.map((u) => {
+              const self = u.username === me;
+              return (
               <tr key={u.id} className={u.is_active ? "" : "opacity-60"}>
                 <td className={`${TD} font-semibold`}>{u.username}</td>
                 <td className={TD}>{u.role === "admin" ? "관리자" : "직원"}</td>
@@ -146,7 +171,12 @@ export function Admin() {
                 <td className={TD}>
                   <div className="flex gap-1.5 flex-wrap">
                     {u.role === "admin" ? (
-                      <button className={BTN} onClick={() => void act(() => changeUserRole(u.id, "worker"))}>
+                      <button
+                        className={BTN}
+                        disabled={self}
+                        title={self ? "본인 계정은 강등할 수 없습니다" : undefined}
+                        onClick={() => void demote(u)}
+                      >
                         직원으로
                       </button>
                     ) : (
@@ -155,7 +185,12 @@ export function Admin() {
                       </button>
                     )}
                     {u.is_active ? (
-                      <button className={BTN_REJECT} onClick={() => void act(() => setUserActive(u.id, false))}>
+                      <button
+                        className={BTN_REJECT}
+                        disabled={self}
+                        title={self ? "본인 계정은 비활성화할 수 없습니다" : undefined}
+                        onClick={() => void deactivate(u)}
+                      >
                         비활성
                       </button>
                     ) : (
@@ -174,7 +209,8 @@ export function Admin() {
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
         )}
