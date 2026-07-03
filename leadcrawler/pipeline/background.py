@@ -110,7 +110,7 @@ def trigger_crawl_job(
     if len(segments) > settings.crawl_max_segments:
         raise CrawlTooLarge(
             f"세그먼트 {len(segments)}개가 상한({settings.crawl_max_segments})을 초과합니다. "
-            "국가/업종을 좁히세요."
+            "국가/업종/지역을 좁히세요."
         )
 
     with _guard:

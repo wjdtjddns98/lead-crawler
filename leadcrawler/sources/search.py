@@ -157,7 +157,8 @@ class SearchSource:
         지역마다 다른 더미가 나오게 한다(팬아웃이 dedup 에 전부 접히지 않도록).
         """
         cc = (segment.country or "xx").strip().lower()
-        tag = f"-{segment.region.encode('utf-8').hex()[:8]}" if segment.region else ""
+        # 전체 hex 사용 — 절단하면 첫 글자가 같은 지역쌍(충북/충남 등)이 같은 태그로 접힌다.
+        tag = f"-{segment.region.encode('utf-8').hex()}" if segment.region else ""
         return [
             build_company(
                 source=self.name,

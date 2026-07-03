@@ -38,16 +38,21 @@ def test_clean_name_empty_title_uses_domain() -> None:
 
 def test_dry_region_segments_yield_distinct_domains() -> None:
     # 지역 세그먼트별 더미 도메인이 달라야 dry 크롤에서 팬아웃이 dedup 에 접히지 않는다.
+    # 17개 시/도 전부 + 기본(지역 없음)이 상호 disjoint 여야 한다 — hex 태그를 절단하면
+    # 첫 글자가 같은 쌍(충북/충남·전북/전남·경북/경남)이 접히는 회귀를 잡는다.
+    from leadcrawler.region import KR_REGIONS
+
     src = SearchSource(Settings(dry_run=True))
-    seoul = src.discover(Segment(country="KR", industry="바이오", region="서울"))
-    busan = src.discover(Segment(country="KR", industry="바이오", region="부산"))
-    base = src.discover(Segment(country="KR", industry="바이오"))
-    assert seoul and busan and base
-    domains = [{d.domain for d in rows} for rows in (seoul, busan, base)]
-    assert domains[0].isdisjoint(domains[1]) and domains[0].isdisjoint(domains[2])
+    domain_sets = {
+        r: {d.domain for d in src.discover(Segment(country="KR", industry="바이오", region=r))}
+        for r in (*KR_REGIONS, None)
+    }
+    assert all(domain_sets.values())
+    all_domains = [d for s in domain_sets.values() for d in s]
+    assert len(all_domains) == len(set(all_domains))  # 전 지역×기본 도메인 전역 중복 0.
     # 같은 지역은 결정적(재실행 동일).
     again = src.discover(Segment(country="KR", industry="바이오", region="서울"))
-    assert {d.domain for d in again} == domains[0]
+    assert {d.domain for d in again} == domain_sets["서울"]
 
 
 def test_live_queries_get_region_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
