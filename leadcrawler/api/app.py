@@ -310,8 +310,12 @@ def create_app() -> FastAPI:
 
     # 프론트 빌드(web/dist) 정적 서빙 — 내부망 단일 프로세스 배포용(같은 출처라 CORS·
     # VITE_API_BASE 불필요). API 라우트가 먼저 등록돼 있어 마운트가 API 를 가리지 않고,
-    # 빌드가 없으면 생략(개발은 vite 프록시 그대로).
-    if (_WEB_DIST / "index.html").is_file():
+    # 빌드 디렉터리가 없으면 생략(개발은 vite 프록시 그대로).
+    # 조건이 index.html 이 아니라 **디렉터리**인 이유: `vite build --watch`(#141 런처)가
+    # 시작할 때 dist 내용물을 비웠다 다시 채우는데, 그 빈 순간에 서버가 뜨면 index 조건은
+    # 마운트를 영구 생략해 / 가 404 로 고정된다(실사고). StaticFiles 는 요청마다 디스크를
+    # 읽으므로 디렉터리만 있으면 마운트해 두면 빌드가 채워지는 즉시 자가 치유된다.
+    if _WEB_DIST.is_dir():
         from fastapi.staticfiles import StaticFiles
 
         app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")
