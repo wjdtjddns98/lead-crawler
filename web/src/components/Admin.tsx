@@ -276,6 +276,23 @@ const CRAWL_STATUS_LABEL: Record<CrawlJob["status"], string> = {
 // 크롤 실행 — 국가·업종·상장여부·DB적재 타깃을 저장하고 즉시 크롤을 시작한다(#87 제거분
 // 재통합). 타깃 저장을 함께 유지해 일일 스케줄러 타깃과 동기화 — 이후 '다음 크롤 예약'
 // 확장도 이 저장 지점에 붙는다. 진행현황은 3초 폴링, 진행 중에는 '중지'로 협조적 취소.
+
+// 전 업종 CSV ↔ 빈값(=전체) 접기 — BE 는 빈 업종을 422 로 거부하므로(과도 발견 방지)
+// 빈 선택은 전송 시 전 업종 CSV 로 확장하고, 표시할 땐 전 업종 일치 시 빈값으로 되돌려
+// 발송/추출 섹션과 같은 '선택 안 함 = 전체' UI 를 유지한다.
+function collapseAllIndustries(csv: string, opts: PickerOption[]): string {
+  const picked = new Set(
+    csv
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  // 상위집합도 '전체'로 접는다 — 현 옵션을 모두 덮으면 의미상 전체이고, 어휘가 줄어든
+  // 뒤 남은 구 라벨 잔여분도 다음 재저장에서 자연 정리된다(정확일치 요구 시 회복 불가).
+  const isAll = opts.length > 0 && opts.every((o) => picked.has(o.value));
+  return isAll ? "" : csv;
+}
+
 function CrawlTargetSection() {
   const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
   const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
@@ -303,7 +320,6 @@ function CrawlTargetSection() {
     Promise.all([fetchCrawlTarget(), fetchCountries(), fetchIndustries()])
       .then(([t, countryList, industryList]) => {
         if (!alive) return;
-        apply(t);
         setCountryOpts(
           countryList.map((c) => ({
             value: c.iso2,
@@ -312,9 +328,13 @@ function CrawlTargetSection() {
             aliases: c.aliases,
           })),
         );
-        setIndustryOpts(
-          industryList.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
-        );
+        const iOpts = industryList.map((i) => ({
+          value: i.value,
+          label: i.label,
+          aliases: i.aliases,
+        }));
+        setIndustryOpts(iOpts);
+        apply({ ...t, industries: collapseAllIndustries(t.industries, iOpts) });
       })
       .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
     // 현황은 별도 조회 — 새로고침 시 진행 중이거나 최근 종료된 크롤을 이어서 보여주되,
@@ -343,18 +363,20 @@ function CrawlTargetSection() {
     setBusy(true);
     setErr(null);
     try {
+      // 빈 선택(=전체)은 전 업종 CSV 로 확장해 전송(BE 는 빈 업종 422).
+      const inds = industries.trim() || industryOpts.map((o) => o.value).join(",");
       // 타깃 저장 → 즉시 실행. 저장이 스케줄러 타깃(=다음 크롤)도 갱신한다.
       const saved = await saveCrawlTarget({
         countries: countries.trim(),
-        industries: industries.trim(),
+        industries: inds,
         listed,
         persist,
       });
-      apply(saved);
+      apply({ ...saved, industries: collapseAllIndustries(saved.industries, industryOpts) });
       setJob(
         await startCrawl({
           countries: countries.trim(),
-          industries: industries.trim(),
+          industries: inds,
           listed,
           persist,
           continuous,
@@ -412,14 +434,14 @@ function CrawlTargetSection() {
         </div>
         <div className={FIELD}>
           <span>
-            업종 <span className="text-muted">(1개 이상 필수)</span>
+            업종 <span className="text-muted">(선택 안 함 = 전체)</span>
           </span>
           <MultiPicker
             options={industryOpts}
             value={industries}
             onChange={setIndustries}
             placeholder="업종 검색 (예: 건설, construction)"
-            emptyHint="업종을 1개 이상 선택하세요"
+            emptyHint="전체 업종"
           />
         </div>
         <label className={FIELD}>
@@ -459,7 +481,8 @@ function CrawlTargetSection() {
             <button
               className={BTN_CONFIRM}
               type="submit"
-              disabled={busy || running || !industries.trim()}
+              // 빈 선택은 전 업종 확장에 옵션 목록이 필요 — 미로드 상태만 잠깐 막는다.
+              disabled={busy || running || (!industries.trim() && industryOpts.length === 0)}
             >
               {busy || running ? "실행 중…" : "크롤 실행"}
             </button>
