@@ -562,23 +562,29 @@ def admin_reclaim(
     return len(ids)
 
 
-def _listed_by_company(session: Session, companies: Sequence[CompanyRow | None]) -> dict[str, str]:
-    """회사 목록의 상장여부를 원장에서 배치 조회해 ``company_id → listed`` 로 돌려준다.
+def _listed_by_company(
+    session: Session, companies: Sequence[CompanyRow | None]
+) -> dict[str, tuple[str, str | None]]:
+    """회사 목록의 상장여부·시장 보드를 원장에서 배치 조회해
+    ``company_id → (listed, market)`` 로 돌려준다.
 
-    listed 는 발견 원장(DiscoveredCompanyRow)에만 있어 canonical_key 로 IN 1회 조회한다
-    (페이지당 1쿼리 — signals/forms 배치와 동일 패턴, N+1 방지). 원장 미존재는 unknown.
+    listed/market 은 발견 원장(DiscoveredCompanyRow)에만 있어 canonical_key 로 IN 1회
+    조회한다(페이지당 1쿼리 — signals/forms 배치와 동일 패턴, N+1 방지). 원장 미존재는
+    (unknown, None).
     """
     present = [c for c in companies if c is not None]
     if not present:
         return {}
     keys = {c.canonical_key for c in present}
     rows = session.execute(
-        select(DiscoveredCompanyRow.canonical_key, DiscoveredCompanyRow.listed).where(
-            DiscoveredCompanyRow.canonical_key.in_(keys)
-        )
+        select(
+            DiscoveredCompanyRow.canonical_key,
+            DiscoveredCompanyRow.listed,
+            DiscoveredCompanyRow.market,
+        ).where(DiscoveredCompanyRow.canonical_key.in_(keys))
     ).all()
-    by_key = {key: listed for key, listed in rows}
-    return {c.id: by_key.get(c.canonical_key, "unknown") for c in present}
+    by_key = {key: (listed, market) for key, listed, market in rows}
+    return {c.id: by_key.get(c.canonical_key, ("unknown", None)) for c in present}
 
 
 def _to_dict(
@@ -586,7 +592,7 @@ def _to_dict(
     company: CompanyRow | None,
     signals: dict[tuple[str, str], _EmailSignal],
     forms: dict[str, tuple[str, float]] | None = None,
-    listed_map: dict[str, str] | None = None,
+    listed_map: dict[str, tuple[str, str | None]] | None = None,
 ) -> dict:
     """ORM 행 + 후보별 이메일 신호를 API DTO dict 로 평탄화한다."""
     candidates = _parse_candidates(rq)
@@ -604,6 +610,7 @@ def _to_dict(
     )
     form_entry = (forms or {}).get(rq.company_id)
     form_url, form_conf = form_entry if form_entry is not None else (None, None)
+    listed, market = (listed_map or {}).get(rq.company_id, ("unknown", None))
     return {
         "id": rq.id,
         "company_id": rq.company_id,
@@ -616,7 +623,8 @@ def _to_dict(
         "name": company.name if company else "",
         "country": company.country if company else "",
         "industry": company.industry if company else "",
-        "listed": (listed_map or {}).get(rq.company_id, "unknown"),
+        "listed": listed,
+        "market": market,
         "homepage": company.homepage if company else None,
         "site_alive": company.site_alive if company else False,
         # 문의폼 URL + 신뢰도(없으면 None) — 저신뢰(폴백 0.3)면 리뷰레인서 '사람 확인' 표기.
