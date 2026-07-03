@@ -12,6 +12,7 @@ import {
 } from "./api";
 import { Admin } from "./components/Admin";
 import { MyWork } from "./components/MyWork";
+import { FilterPopover, pickSummary } from "./components/FilterPopover";
 import { MultiPicker, type PickerOption } from "./components/MultiPicker";
 import { QueueTable } from "./components/QueueTable";
 import { TableSkeleton } from "./components/TableSkeleton";
@@ -227,6 +228,8 @@ function Workbench({
   // 내부 선택 상태가 사라지므로 인라인 element 로 유지).
   const queueView = (
     <>
+      {/* 상태 탭 + 국가·업종·상장 필터(팝오버) + 새로고침 — 툴바 한 줄. 필터 선택 시
+          total(총 N건)이 해당 조건 건수로 바뀌고, 트리거에 선택 요약이 상시 표시된다. */}
       <div className="flex items-center gap-4 mb-4 flex-wrap">
         <div className="flex gap-1">
           {FILTERS.map((f) => (
@@ -239,56 +242,60 @@ function Workbench({
             </button>
           ))}
         </div>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <FilterPopover
+            label="국가"
+            summary={pickSummary(country, countryOpts)}
+            active={country !== ""}
+          >
+            <MultiPicker
+              options={countryOpts}
+              value={country}
+              onChange={(csv) => {
+                setCountry(csv);
+                setOffset(0);
+              }}
+              placeholder="국가 검색 (예: 미국, US, 일본)"
+              emptyHint="전체 국가"
+            />
+          </FilterPopover>
+          <FilterPopover
+            label="업종"
+            summary={pickSummary(industry, industryOpts)}
+            active={industry !== ""}
+          >
+            <MultiPicker
+              options={industryOpts}
+              value={industry}
+              onChange={(csv) => {
+                setIndustry(csv);
+                setOffset(0);
+              }}
+              placeholder="업종 검색 (예: 반도체, 미분류)"
+              emptyHint="전체 업종"
+            />
+          </FilterPopover>
+          <label className="flex items-center gap-1.5 text-muted text-[13px]">
+            상장여부
+            <select
+              className="bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md"
+              value={listed}
+              onChange={(e) => {
+                setListed(e.target.value as "" | Listed);
+                setOffset(0);
+              }}
+            >
+              {LISTED_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
         <button className={BTN} onClick={() => void load()} disabled={loading}>
           새로고침
         </button>
-      </div>
-
-      {/* 국가·업종 필터 — 선택 시 total(총 N건)이 해당 조건 건수로 바뀐다. */}
-      <div className="flex flex-wrap items-start gap-3 mb-4 p-3 border border-line rounded-md bg-[rgba(127,127,127,0.06)]">
-        <div className="flex flex-col gap-1 text-muted text-[13px]">
-          <span>국가 <span className="text-muted">(선택 안 함 = 전체)</span></span>
-          <MultiPicker
-            options={countryOpts}
-            value={country}
-            onChange={(csv) => {
-              setCountry(csv);
-              setOffset(0);
-            }}
-            placeholder="국가 검색 (예: 미국, US, 일본)"
-            emptyHint="전체 국가"
-          />
-        </div>
-        <div className="flex flex-col gap-1 text-muted text-[13px]">
-          <span>업종 <span className="text-muted">(선택 안 함 = 전체)</span></span>
-          <MultiPicker
-            options={industryOpts}
-            value={industry}
-            onChange={(csv) => {
-              setIndustry(csv);
-              setOffset(0);
-            }}
-            placeholder="업종 검색 (예: 반도체, 미분류)"
-            emptyHint="전체 업종"
-          />
-        </div>
-        <label className="flex flex-col gap-1 text-muted text-[13px]">
-          상장여부
-          <select
-            className="bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md min-w-[120px]"
-            value={listed}
-            onChange={(e) => {
-              setListed(e.target.value as "" | Listed);
-              setOffset(0);
-            }}
-          >
-            {LISTED_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
 
       {error && <ErrorBox>{error}</ErrorBox>}
