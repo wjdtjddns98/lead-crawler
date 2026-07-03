@@ -15,6 +15,7 @@ import { MultiPicker, type PickerOption } from "../MultiPicker";
 import { ErrorBox } from "../ErrorBox";
 import { BTN_CONFIRM, BTN_REJECT } from "../../ui";
 import { SECTION_H2, FIELD, FIELD_INLINE, INPUT_WIDE, CRAWL_TARGET, fmt } from "./shared";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 const LISTED_OPTIONS: { value: Listed; label: string }[] = [
   { value: "unknown", label: "전체" },
@@ -72,6 +73,7 @@ export function CrawlTargetSection() {
   const [job, setJob] = useState<CrawlJob | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false); // 실행/중지 요청 왕복 중(이중 클릭 방지)
+  const [stopDialog, setStopDialog] = useState(false); // 중지 확인 다이얼로그
 
   const running = job?.status === "running";
 
@@ -175,24 +177,40 @@ export function CrawlTargetSection() {
     }
   };
 
-  const stop = async () => {
-    if (!window.confirm("진행 중인 크롤을 중지할까요? (처리된 분은 보존됩니다)")) return;
+  // 협조적 취소 — 즉시 멈추지 않고 cancel_requested 로 표시, 폴링이 종료를 확인한다.
+  const doStop = async () => {
     setBusy(true);
     setErr(null);
     try {
-      // 협조적 취소 — 즉시 멈추지 않고 cancel_requested 로 표시, 폴링이 종료를 확인한다.
       setJob(await cancelCrawl());
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setStopDialog(false);
     }
   };
+
+  // window.confirm → ConfirmDialog 전환 — 버튼 클릭 시 다이얼로그만 열고, 실제 취소는
+  // doStop 에서 수행. disabled(busy||cancel_requested) 조건은 버튼 측이 이미 막는다.
+  const stop = () => setStopDialog(true);
 
   return (
     <section>
       <h2 className={SECTION_H2}>크롤 실행</h2>
       {err && <ErrorBox>{err}</ErrorBox>}
+      <ConfirmDialog
+        open={stopDialog}
+        title="진행 중인 크롤을 중지할까요?"
+        danger
+        confirmLabel="중지"
+        busy={busy}
+        busyLabel="중지 요청 중…"
+        onConfirm={() => void doStop()}
+        onCancel={() => setStopDialog(false)}
+      >
+        <p className="m-0 text-muted text-sm">처리된 분은 보존됩니다</p>
+      </ConfirmDialog>
       <form className={CRAWL_TARGET} onSubmit={(e) => void run(e)}>
         <div className={FIELD}>
           <span>
@@ -265,7 +283,7 @@ export function CrawlTargetSection() {
             />
             연속 실행(중지까지 반복)
           </label>
-          <div className="flex gap-2">
+          <div className="flex gap-2 mt-0.5">
             <button
               className={BTN_CONFIRM}
               type="submit"
@@ -278,8 +296,8 @@ export function CrawlTargetSection() {
               <button
                 className={BTN_REJECT}
                 type="button"
-                // 중지 요청 후엔 비활성 — BE 가 멈출 때까지 running 이 유지되므로 재클릭(확인
-                // 다이얼로그 반복)을 막는다.
+                // 중지 요청 후엔 비활성 — BE 가 멈출 때까지 running 이 유지되므로 재클릭(다이얼로그
+                // 반복)을 막는다.
                 disabled={busy || job?.cancel_requested}
                 onClick={() => void stop()}
               >
@@ -303,14 +321,16 @@ function CrawlProgress({ job }: { job: CrawlJob }) {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const stopping = job.status === "running" && job.cancel_requested;
   return (
-    <div className="mt-3 p-3 border border-line rounded-md bg-[rgba(127,127,127,0.06)]">
-      <p className="my-1">
-        <strong>상태: {CRAWL_STATUS_LABEL[job.status]}</strong>
+    <div className="mt-3 p-3 border border-line rounded-md bg-panel">
+      {/* 상태 헤더 — 주요 상태 강조(text-ink), 보조 정보(연속·중지요청·트리거)는 muted */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 my-1">
+        <span className="font-semibold text-ink text-sm">
+          상태: {CRAWL_STATUS_LABEL[job.status]}
+        </span>
         {/* 연속 모드 — 카운터는 현재 라운드 기준이라 몇 회차인지 함께 보여준다. */}
         {job.mode === "continuous" && (
-          <span className="text-muted">
-            {" "}
-            · 연속 —{" "}
+          <span className="text-muted text-xs">
+            연속 ·{" "}
             {job.status === "running"
               ? `라운드 ${job.rounds_done + 1}회차 진행 중`
               : job.rounds_done > 0
@@ -318,16 +338,28 @@ function CrawlProgress({ job }: { job: CrawlJob }) {
                 : "첫 라운드에서 종료"}
           </span>
         )}
-        {stopping && <span className="text-muted"> · 중지 요청됨…</span>}
-        {job.triggered_by && <span className="text-muted"> · {job.triggered_by}</span>}
-      </p>
-      <progress className="w-full h-3.5" value={done} max={total || 1} />
-      <p className="text-muted my-1">
-        세그먼트 {done}/{total} ({pct}%) · 발견 {job.discovered} · 처리 {job.enriched} · 저장(실존){" "}
-        {job.saved}
-      </p>
+        {stopping && <span className="text-muted text-xs">· 중지 요청됨…</span>}
+        {job.triggered_by && <span className="text-muted text-xs">· {job.triggered_by}</span>}
+      </div>
+      {/* 진행바 — bg-line 트랙 + bg-ok 채움. 기존 토큰만 사용 */}
+      <div
+        className="w-full h-1.5 rounded-full bg-line my-2 overflow-hidden"
+        role="progressbar"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <div className="h-full bg-ok rounded-full transition-[width]" style={{ width: `${pct}%` }} />
+      </div>
+      {/* 카운터 — tabular-nums 으로 숫자 흔들림 방지, 항목별 gap 으로 가독성 확보 */}
+      <div className="flex flex-wrap gap-x-4 text-muted text-xs tabular-nums my-1">
+        <span>세그먼트 {done}/{total} ({pct}%)</span>
+        <span>발견 <span className="text-ink">{job.discovered}</span></span>
+        <span>처리 <span className="text-ink">{job.enriched}</span></span>
+        <span>저장(실존) <span className="text-ink">{job.saved}</span></span>
+      </div>
       {job.error && <ErrorBox>{job.error}</ErrorBox>}
-      {job.finished_at && <p className="text-muted my-1">종료: {fmt(job.finished_at)}</p>}
+      {job.finished_at && <p className="text-muted text-xs my-1">종료: {fmt(job.finished_at)}</p>}
     </div>
   );
 }

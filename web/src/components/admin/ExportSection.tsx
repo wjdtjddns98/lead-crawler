@@ -77,12 +77,8 @@ export function ExportSection() {
             emptyHint="전체 업종"
           />
         </div>
-        {/* 버튼을 검색 input 줄에 맞춤 — 피커 라벨과 같은 높이의 투명 스페이서로 라벨 줄을
-            비워 버튼 top 이 input top 과 같아진다(items-start 라 라벨에 붙어 뜨던 것 보정). */}
-        <div className="flex flex-col gap-1">
-          <span className="text-[13px] invisible select-none" aria-hidden>
-            맞춤
-          </span>
+        {/* pt-6 = 라벨 줄 높이(text-[13px]×1.5≈20px) + gap-1(4px) — input 상단에 버튼 정렬 */}
+        <div className="pt-6">
           <button className={BTN_EXPORT} type="button" disabled={busy} onClick={() => void download()}>
             {busy ? (
               "추출 중…"

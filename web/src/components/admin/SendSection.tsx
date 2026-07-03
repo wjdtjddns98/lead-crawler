@@ -100,59 +100,72 @@ export function SendSection() {
   };
 
   const canSend = subject.trim().length > 0 && bodyText.trim().length > 0;
+
   return (
     <section>
       <h2 className={SECTION_H2}>확정큐 이메일 발송</h2>
       {err && <ErrorBox>{err}</ErrorBox>}
-      <div className="flex flex-col gap-3 max-w-[780px]">
-        <label className={FIELD}>
-          제목
-          <input className={INPUT} value={subject} onChange={(e) => setSubject(e.target.value)} />
-        </label>
-        <label className={FIELD}>
-          발신 표시명 <span className="text-muted">(From 주소는 서버 발신계정 고정)</span>
-          <input
-            className={INPUT}
-            value={fromName}
-            onChange={(e) => setFromName(e.target.value)}
-            placeholder="예: Zenith Asset IR"
-          />
-        </label>
-        <label className={FIELD}>
-          본문
-          <textarea
-            className={`${INPUT} text-[13px] resize-y font-sans`}
-            value={bodyText}
-            rows={6}
-            onChange={(e) => setBodyText(e.target.value)}
-          />
-        </label>
-        <div className={CRAWL_TARGET}>
-          <div className={FIELD}>
-            <span>
-              국가 <span className="text-muted">(선택 안 함 = 전체)</span>
-            </span>
-            <MultiPicker
-              options={countryOpts}
-              value={countries}
-              onChange={setCountries}
-              placeholder="국가 검색 (예: 미국, US, 일본)"
-              emptyHint="전체 국가"
+
+      <div className="flex flex-col gap-5 max-w-[780px]">
+        {/* 메시지 작성 그룹 */}
+        <div className="flex flex-col gap-3">
+          <span className="text-[11px] text-muted uppercase tracking-[0.06em]">메시지 작성</span>
+          <label className={FIELD}>
+            제목
+            <input className={INPUT} value={subject} onChange={(e) => setSubject(e.target.value)} />
+          </label>
+          <label className={FIELD}>
+            발신 표시명 <span className="text-muted">(From 주소는 서버 발신계정 고정)</span>
+            <input
+              className={INPUT}
+              value={fromName}
+              onChange={(e) => setFromName(e.target.value)}
+              placeholder="예: Zenith Asset IR"
             />
-          </div>
-          <div className={FIELD}>
-            <span>
-              업종 <span className="text-muted">(선택 안 함 = 전체)</span>
-            </span>
-            <MultiPicker
-              options={industryOpts}
-              value={industries}
-              onChange={setIndustries}
-              placeholder="업종 검색 (예: 반도체, 미분류)"
-              emptyHint="전체 업종"
+          </label>
+          <label className={FIELD}>
+            본문
+            <textarea
+              className={`${INPUT} text-[13px] resize-y font-sans`}
+              value={bodyText}
+              rows={6}
+              onChange={(e) => setBodyText(e.target.value)}
             />
+          </label>
+        </div>
+
+        {/* 발송 범위 그룹 */}
+        <div className="flex flex-col gap-2">
+          <span className="text-[11px] text-muted uppercase tracking-[0.06em]">발송 범위</span>
+          <div className={CRAWL_TARGET}>
+            <div className={FIELD}>
+              <span>
+                국가 <span className="text-muted">(선택 안 함 = 전체)</span>
+              </span>
+              <MultiPicker
+                options={countryOpts}
+                value={countries}
+                onChange={setCountries}
+                placeholder="국가 검색 (예: 미국, US, 일본)"
+                emptyHint="전체 국가"
+              />
+            </div>
+            <div className={FIELD}>
+              <span>
+                업종 <span className="text-muted">(선택 안 함 = 전체)</span>
+              </span>
+              <MultiPicker
+                options={industryOpts}
+                value={industries}
+                onChange={setIndustries}
+                placeholder="업종 검색 (예: 반도체, 미분류)"
+                emptyHint="전체 업종"
+              />
+            </div>
           </div>
         </div>
+
+        {/* 액션 버튼 */}
         <div className="flex gap-2">
           <button className={BTN} type="button" disabled={busy} onClick={() => void doPreview()}>
             미리보기(수신 N명)
@@ -167,27 +180,83 @@ export function SendSection() {
           </button>
         </div>
       </div>
+
+      {/* 미리보기 결과 — 라벨-값 행으로 스캔 가능하게, dry-run 은 배너로 분리 */}
       {preview && (
-        <p className="text-muted">
-          수신 {preview.recipients}명 · 발신 {preview.sender || "(.env 미설정)"} ·{" "}
-          {preview.enabled ? (
-            `오늘 잔여 ${preview.remaining_today}건`
-          ) : (
-            <>
-              <TriangleAlert size={13} className="inline align-text-bottom" aria-hidden /> 발송
-              비활성(dry-run) — .env LEADCRAWLER_EMAIL_SEND_ENABLED=true 필요
-            </>
+        <div className="mt-4 max-w-[780px] flex flex-col gap-2">
+          {!preview.enabled && (
+            <div className="flex items-start gap-2 border-l-2 border-warn pl-3 py-1 text-[13px] text-warn">
+              <TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden />
+              <span>
+                발송 비활성(dry-run) — 실제로 보내지 않습니다.{" "}
+                <span className="font-mono text-[12px]">LEADCRAWLER_EMAIL_SEND_ENABLED=true</span>{" "}
+                필요
+              </span>
+            </div>
           )}
-          {preview.sample.length > 0 && ` · 예: ${preview.sample.slice(0, 3).join(", ")}…`}
-        </p>
+          <div className="bg-panel border border-line rounded-md px-3 py-2.5 text-[13px] flex flex-col gap-1.5">
+            <div className="flex gap-3">
+              <span className="text-muted w-20 shrink-0">수신</span>
+              <span className="text-ink tabular-nums">{preview.recipients}명</span>
+            </div>
+            <div className="flex gap-3">
+              <span className="text-muted w-20 shrink-0">발신</span>
+              <span className="text-ink">
+                {preview.sender || <span className="text-muted">.env 미설정</span>}
+              </span>
+            </div>
+            {preview.enabled && (
+              <div className="flex gap-3">
+                <span className="text-muted w-20 shrink-0">오늘 잔여</span>
+                <span className="text-ink tabular-nums">{preview.remaining_today}건</span>
+              </div>
+            )}
+            {preview.sample.length > 0 && (
+              <div className="flex gap-3">
+                <span className="text-muted w-20 shrink-0">예시</span>
+                <span className="text-muted [overflow-wrap:anywhere]">
+                  {preview.sample.slice(0, 3).join(", ")}…
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
       )}
+
+      {/* 발송 결과 — 성공/실패/상한초과 카운트를 행으로 분리 */}
       {result && (
-        <p className={result.dry_run ? "text-muted" : ""}>
-          {result.dry_run
-            ? `dry-run: 수신 ${result.recipients}명 (실발송 안 함 — email_send_enabled=true 필요)`
-            : `발송 완료 — 성공 ${result.sent} · 실패 ${result.failed} · 상한초과 ${result.capped} (수신 ${result.recipients})`}
-        </p>
+        <div className="mt-4 max-w-[780px]">
+          {result.dry_run ? (
+            <div className="bg-panel border border-line rounded-md px-3 py-2.5 text-[13px] text-muted">
+              dry-run — 수신 {result.recipients}명 대상 시뮬레이션 (실발송 안 함)
+            </div>
+          ) : (
+            <div className="bg-panel border border-line rounded-md px-3 py-2.5 text-[13px] flex flex-col gap-1.5">
+              <div className="flex gap-3">
+                <span className="text-muted w-20 shrink-0">성공</span>
+                <span className="text-ok-fg tabular-nums">{result.sent}건</span>
+              </div>
+              {result.failed > 0 && (
+                <div className="flex gap-3">
+                  <span className="text-muted w-20 shrink-0">실패</span>
+                  <span className="text-danger-fg tabular-nums">{result.failed}건</span>
+                </div>
+              )}
+              {result.capped > 0 && (
+                <div className="flex gap-3">
+                  <span className="text-muted w-20 shrink-0">상한초과</span>
+                  <span className="text-warn tabular-nums">{result.capped}건</span>
+                </div>
+              )}
+              <div className="flex gap-3">
+                <span className="text-muted w-20 shrink-0">수신</span>
+                <span className="text-ink tabular-nums">{result.recipients}명</span>
+              </div>
+            </div>
+          )}
+        </div>
       )}
+
       {preview && (
         <ConfirmDialog
           open={confirmOpen}
@@ -217,10 +286,10 @@ export function SendSection() {
             </div>
           </div>
           {!preview.enabled && (
-            <p className="m-0 text-[13px] text-muted border border-line rounded-md p-2.5 bg-[rgba(127,127,127,0.06)]">
-              <TriangleAlert size={13} className="inline align-text-bottom mr-1" aria-hidden />
-              발송 비활성(dry-run) — 실제로 보내지 않고 카운트만 반환합니다.
-            </p>
+            <div className="flex items-start gap-2 border-l-2 border-warn pl-3 py-1 text-[13px] text-warn">
+              <TriangleAlert size={13} className="mt-0.5 shrink-0" aria-hidden />
+              <span>발송 비활성(dry-run) — 실제로 보내지 않고 카운트만 반환합니다.</span>
+            </div>
           )}
           {preview.recipients === 0 && (
             <p className="m-0 text-[13px] text-muted">
