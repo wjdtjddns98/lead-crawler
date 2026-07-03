@@ -48,27 +48,21 @@ const MOCK_COUNTRIES: { iso2: string; label: string; aliases: string[] }[] = [
     "br", "bra", "brazil", "brasil", "federative republic of brazil", "브라질"] },
 ];
 
-// 크롤 타깃용 업종 18키 — leadcrawler/sources/industry.py _EN_INDUSTRY 전량(supported_industries()).
-// /admin/industries 전용(크롤 세그먼트 지정용 — #115 이후 큐 필터 옵션과 별개 어휘).
+// 크롤 타깃용 업종 12종 — leadcrawler/sources/industry.py supported_industries() 전량.
+// #143 이후 큐/발송 탭과 같은 택소노미 어휘(코드 매핑이 있는 대분류만 노출, 순서 동일).
 const MOCK_INDUSTRIES: { value: string; label: string; aliases: string[] }[] = [
-  { value: "건설", label: "건설", aliases: ["construction"] },
-  { value: "제조", label: "제조", aliases: ["manufacturing"] },
-  { value: "금융", label: "금융", aliases: ["finance"] },
-  { value: "it", label: "it", aliases: ["it"] },
-  { value: "소프트웨어", label: "소프트웨어", aliases: ["software"] },
-  { value: "바이오", label: "바이오", aliases: ["biotech"] },
-  { value: "제약", label: "제약", aliases: ["pharmaceutical"] },
-  { value: "유통", label: "유통", aliases: ["retail"] },
-  { value: "도소매", label: "도소매", aliases: ["retail"] },
-  { value: "운송", label: "운송", aliases: ["transport"] },
-  { value: "물류", label: "물류", aliases: ["logistics"] },
-  { value: "에너지", label: "에너지", aliases: ["energy"] },
-  { value: "부동산", label: "부동산", aliases: ["real estate"] },
-  { value: "식품", label: "식품", aliases: ["food"] },
-  { value: "화학", label: "화학", aliases: ["chemical"] },
-  { value: "자동차", label: "자동차", aliases: ["automotive"] },
-  { value: "반도체", label: "반도체", aliases: ["semiconductor"] },
-  { value: "통신", label: "통신", aliases: ["telecommunications"] },
+  { value: "반도체·디스플레이", label: "반도체·디스플레이", aliases: ["semiconductor"] },
+  { value: "자동차·모빌리티", label: "자동차·모빌리티", aliases: ["automotive"] },
+  { value: "화학·석유화학", label: "화학·석유화학", aliases: ["chemical"] },
+  { value: "식품·음료", label: "식품·음료", aliases: ["food"] },
+  { value: "제약·바이오", label: "제약·바이오", aliases: ["biotech"] },
+  { value: "건설·엔지니어링", label: "건설·엔지니어링", aliases: ["construction"] },
+  { value: "부동산·개발", label: "부동산·개발", aliases: ["real estate"] },
+  { value: "IT·소프트웨어", label: "IT·소프트웨어", aliases: ["software"] },
+  { value: "통신·네트워크", label: "통신·네트워크", aliases: ["telecommunications"] },
+  { value: "유통·도소매", label: "유통·도소매", aliases: ["retail"] },
+  { value: "물류·운송", label: "물류·운송", aliases: ["transport"] },
+  { value: "에너지·전력", label: "에너지·전력", aliases: ["energy"] },
 ];
 
 // 구분 택소노미 42종 — leadcrawler/sources/taxonomy.py INDUSTRY_TAXONOMY 전량(순서 동일).
