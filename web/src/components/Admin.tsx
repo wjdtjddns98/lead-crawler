@@ -499,6 +499,18 @@ function SendSection() {
   const [result, setResult] = useState<SendResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // 발송 확인 다이얼로그 — 앱에서 가장 위험한 액션이라 OS confirm 대신 수신 N·제목·
+  // dry-run 여부를 보여주는 앱 스타일 다이얼로그를 거친다(SiteExplorer 확정 오버레이 톤).
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  useEffect(() => {
+    if (!confirmOpen || busy) return; // 발송 요청 중에는 Esc 로 닫지 않는다(backdrop 과 동일)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirmOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmOpen, busy]);
 
   useEffect(() => {
     let alive = true;
@@ -533,13 +545,23 @@ function SendSection() {
     }
   };
 
+  // 발송 클릭 → 항상 최신 미리보기를 받아 확인 다이얼로그를 연다. 기존 window.confirm 은
+  // 미리보기 미실행 시 "0건에 발송할까요?"라고 뜨면서 실제론 전량 발송되는 문제가 있었다.
+  const askSend = async () => {
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    try {
+      setPreview(await fetchSendPreview(countries, industries));
+      setConfirmOpen(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const doSend = async () => {
-    const n = preview?.recipients ?? 0;
-    const dryWarn =
-      preview && !preview.enabled
-        ? "\n\n※ 발송 비활성(dry-run): 실제로 보내지 않고 카운트만 반환합니다."
-        : "";
-    if (!window.confirm(`확정큐 ${n}건에 발송할까요?${dryWarn}`)) return;
     setBusy(true);
     setErr(null);
     try {
@@ -557,6 +579,7 @@ function SendSection() {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setConfirmOpen(false);
     }
   };
 
@@ -622,7 +645,7 @@ function SendSection() {
             className={BTN_CONFIRM}
             type="button"
             disabled={busy || !canSend}
-            onClick={() => void doSend()}
+            onClick={() => void askSend()}
           >
             발송
           </button>
@@ -648,6 +671,70 @@ function SendSection() {
             ? `dry-run: 수신 ${result.recipients}명 (실발송 안 함 — email_send_enabled=true 필요)`
             : `발송 완료 — 성공 ${result.sent} · 실패 ${result.failed} · 상한초과 ${result.capped} (수신 ${result.recipients})`}
         </p>
+      )}
+      {confirmOpen && preview && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+          onClick={() => !busy && setConfirmOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="확정큐 이메일 발송 확인"
+            className="bg-panel border border-line rounded-lg p-5 max-w-md w-full flex flex-col gap-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="m-0 text-ink text-sm font-semibold">
+              확정큐 {preview.recipients}건에 발송할까요?
+            </p>
+            <div className="flex flex-col gap-1.5 text-[13px]">
+              <div className="flex gap-2">
+                <span className="text-muted w-20 shrink-0">수신</span>
+                <span className="text-ink tabular-nums">
+                  {preview.recipients}명
+                  {preview.enabled && ` · 오늘 잔여 ${preview.remaining_today}건`}
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <span className="text-muted w-20 shrink-0">제목</span>
+                <span className="text-ink [overflow-wrap:anywhere]">{subject}</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="text-muted w-20 shrink-0">발신 표시명</span>
+                <span className="text-ink">{fromName.trim() || "—"}</span>
+              </div>
+            </div>
+            {!preview.enabled && (
+              <p className="m-0 text-[13px] text-muted border border-line rounded-md p-2.5 bg-[rgba(127,127,127,0.06)]">
+                <TriangleAlert size={13} className="inline align-text-bottom mr-1" aria-hidden />
+                발송 비활성(dry-run) — 실제로 보내지 않고 카운트만 반환합니다.
+              </p>
+            )}
+            {preview.recipients === 0 && (
+              <p className="m-0 text-[13px] text-muted">
+                수신 대상이 없습니다 — 필터를 확인하세요.
+              </p>
+            )}
+            <div className="flex gap-2">
+              <button
+                className={`${BTN_CONFIRM} flex-1`}
+                disabled={busy || preview.recipients === 0}
+                onClick={() => void doSend()}
+              >
+                {busy ? "발송 중…" : preview.enabled ? "발송" : "dry-run 실행"}
+              </button>
+              {/* 위험 액션이라 기본 포커스는 취소에 — Enter 오발송 방지 */}
+              <button
+                className={`${BTN} flex-1`}
+                autoFocus
+                disabled={busy}
+                onClick={() => setConfirmOpen(false)}
+              >
+                취소 (Esc)
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   );
