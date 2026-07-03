@@ -703,6 +703,9 @@ def web(
         None, help="TLS 인증서(PEM) 경로 — 키와 함께 지정하면 HTTPS 로 서빙"
     ),
     ssl_keyfile: str | None = typer.Option(None, help="TLS 개인키(PEM) 경로"),
+    reload: bool = typer.Option(
+        False, "--reload", help="파이썬 코드 변경 시 자동 재시작(내부망/개발용 — 진행 중 크롤은 끊김)"
+    ),
 ) -> None:
     """검증 웹앱(FastAPI)을 띄운다. fastapi/uvicorn extra(`.[api]`) 필요.
 
@@ -727,6 +730,7 @@ def web(
         port=port,
         ssl_certfile=ssl_certfile,
         ssl_keyfile=ssl_keyfile,
+        reload=reload,
     )
 
 

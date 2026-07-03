@@ -24,6 +24,14 @@ def test_web_default_no_ssl(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 0
     assert captured["ssl_certfile"] is None
     assert captured["ssl_keyfile"] is None
+    assert captured["reload"] is False
+
+
+def test_web_reload_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _capture_run(monkeypatch)
+    result = runner.invoke(app, ["web", "--reload"])
+    assert result.exit_code == 0
+    assert captured["reload"] is True
 
 
 def test_web_ssl_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
