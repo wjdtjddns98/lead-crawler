@@ -144,6 +144,10 @@ export interface CrawlJob {
   discovered: number;
   enriched: number;
   saved: number;
+  // 연속(continuous) 모드 — 취소까지 라운드 반복(#132). 카운터는 현재 라운드 기준,
+  // rounds_done 은 완료된 라운드 수.
+  mode: "once" | "continuous";
+  rounds_done: number;
   error: string | null;
   cancel_requested: boolean;
   triggered_by: string | null;
