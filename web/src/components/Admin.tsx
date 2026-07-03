@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  cancelCrawl,
   changeUserRole,
   createUser,
   exportConfirmed,
   fetchAudit,
   fetchCountries,
+  fetchCrawlStatus,
   fetchCrawlTarget,
   fetchIndustries,
   fetchQueueFilters,
@@ -14,10 +16,12 @@ import {
   saveCrawlTarget,
   sendCampaign,
   setUserActive,
+  startCrawl,
   withUnclassified,
 } from "../api";
 import type {
   AuditEntry,
+  CrawlJob,
   CrawlTarget,
   Listed,
   Role,
@@ -25,7 +29,7 @@ import type {
   SendResult,
   UserStats,
 } from "../types";
-import { Download, TriangleAlert } from "lucide-react";
+import { Download, Square, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { MultiPicker, type PickerOption } from "./MultiPicker";
 import { ErrorBox } from "./ErrorBox";
@@ -224,10 +228,18 @@ const LISTED_OPTIONS: { value: Listed; label: string }[] = [
   { value: "unlisted", label: "비상장" },
 ];
 
-// '지금 크롤 실행' UI 는 제거됨(2026-06-30). 백엔드 기능(startCrawl/cancelCrawl/
-// fetchCrawlStatus API·엔드포인트)은 그대로 유지 — 재노출하려면 git 이력에서 복원.
+// 크롤 작업 상태 → 한글 라벨. cancelled 는 UI 액션명(중지)과 워딩을 맞춘다.
+const CRAWL_STATUS_LABEL: Record<CrawlJob["status"], string> = {
+  idle: "대기",
+  running: "진행 중",
+  done: "완료",
+  failed: "실패",
+  cancelled: "중지됨",
+};
 
-// 크롤 실행 — 국가·업종·상장여부·DB적재 타깃을 지정해 크롤을 바로 실행한다.
+// 크롤 실행 — 국가·업종·상장여부·DB적재 타깃을 저장하고 즉시 크롤을 시작한다(#87 제거분
+// 재통합). 타깃 저장을 함께 유지해 일일 스케줄러 타깃과 동기화 — 이후 '다음 크롤 예약'
+// 확장도 이 저장 지점에 붙는다. 진행현황은 3초 폴링, 진행 중에는 '중지'로 협조적 취소.
 function CrawlTargetSection() {
   const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
   const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
@@ -235,8 +247,13 @@ function CrawlTargetSection() {
   const [industries, setIndustries] = useState("");
   const [listed, setListed] = useState<Listed>("unknown");
   const [persist, setPersist] = useState(true);
+  // 연속 크롤(#132) — 중지까지 라운드 반복. 쿼터를 계속 쓰므로 기본 꺼짐(명시적 opt-in).
+  const [continuous, setContinuous] = useState(false);
+  const [job, setJob] = useState<CrawlJob | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false); // 실행/중지 요청 왕복 중(이중 클릭 방지)
+
+  const running = job?.status === "running";
 
   const apply = (t: CrawlTarget) => {
     setCountries(t.countries);
@@ -247,8 +264,9 @@ function CrawlTargetSection() {
 
   useEffect(() => {
     let alive = true;
-    Promise.all([fetchCrawlTarget(), fetchCountries(), fetchIndustries()])
-      .then(([t, countryList, industryList]) => {
+    // 현황도 함께 읽어 새로고침/재방문 시 진행 중인 크롤을 이어서 보여준다.
+    Promise.all([fetchCrawlTarget(), fetchCountries(), fetchIndustries(), fetchCrawlStatus()])
+      .then(([t, countryList, industryList, status]) => {
         if (!alive) return;
         apply(t);
         setCountryOpts(
@@ -262,6 +280,7 @@ function CrawlTargetSection() {
         setIndustryOpts(
           industryList.map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
         );
+        if (status.status !== "idle") setJob(status);
       })
       .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
@@ -269,11 +288,23 @@ function CrawlTargetSection() {
     };
   }, []);
 
-  const save = async (e: React.FormEvent) => {
+  // 진행 중이면 3초마다 현황 폴링. 종료 상태가 되면 인터벌 해제.
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => {
+      fetchCrawlStatus()
+        .then(setJob)
+        .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  const run = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
+    setBusy(true);
     setErr(null);
     try {
+      // 타깃 저장 → 즉시 실행. 저장이 스케줄러 타깃(=다음 크롤)도 갱신한다.
       const saved = await saveCrawlTarget({
         countries: countries.trim(),
         industries: industries.trim(),
@@ -281,12 +312,39 @@ function CrawlTargetSection() {
         persist,
       });
       apply(saved);
-      // 실행 접수 피드백 — 휘발성 정보라 인라인 문구 대신 토스트(자동 소멸).
-      toast.success("크롤 실행 요청 완료");
+      setJob(
+        await startCrawl({
+          countries: countries.trim(),
+          industries: industries.trim(),
+          listed,
+          persist,
+          continuous,
+        }),
+      );
+      // 시작 피드백 — 휘발성 정보라 인라인 문구 대신 토스트(자동 소멸).
+      toast.success("크롤 실행 시작");
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2));
+      // 409(이미 진행 중) 대비 — 현황을 받아 진행 패널·중지 버튼을 노출한다.
+      fetchCrawlStatus()
+        .then((s) => s.status !== "idle" && setJob(s))
+        .catch(() => undefined);
     } finally {
-      setSaving(false);
+      setBusy(false);
+    }
+  };
+
+  const stop = async () => {
+    if (!window.confirm("진행 중인 크롤을 중지할까요? (처리된 분은 보존됩니다)")) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      // 협조적 취소 — 즉시 멈추지 않고 cancel_requested 로 표시, 폴링이 종료를 확인한다.
+      setJob(await cancelCrawl());
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -294,7 +352,7 @@ function CrawlTargetSection() {
     <section>
       <h2 className={SECTION_H2}>크롤 실행</h2>
       {err && <ErrorBox>{err}</ErrorBox>}
-      <form className={CRAWL_TARGET} onSubmit={(e) => void save(e)}>
+      <form className={CRAWL_TARGET} onSubmit={(e) => void run(e)}>
         <div className={FIELD}>
           <span>
             국가 <span className="text-muted">(선택 안 함 = 전체)</span>
@@ -344,12 +402,68 @@ function CrawlTargetSection() {
             />
             DB 적재(검증 큐로)
           </label>
-          <button className={BTN_CONFIRM} type="submit" disabled={saving || !industries.trim()}>
-            {saving ? "실행 중…" : "크롤 실행"}
-          </button>
+          <label className={FIELD_INLINE}>
+            <input
+              type="checkbox"
+              checked={continuous}
+              onChange={(e) => setContinuous(e.target.checked)}
+            />
+            연속 실행(중지까지 반복)
+          </label>
+          <div className="flex gap-2">
+            <button
+              className={BTN_CONFIRM}
+              type="submit"
+              disabled={busy || running || !industries.trim()}
+            >
+              {busy || running ? "실행 중…" : "크롤 실행"}
+            </button>
+            {running && (
+              <button className={BTN_REJECT} type="button" disabled={busy} onClick={() => void stop()}>
+                <span className="inline-flex items-center gap-1">
+                  중지 <Square size={14} aria-hidden />
+                </span>
+              </button>
+            )}
+          </div>
         </div>
       </form>
+      {job && job.status !== "idle" && <CrawlProgress job={job} />}
     </section>
+  );
+}
+
+// 크롤 진행현황 패널 — 상태·세그먼트 진행바·발견/처리/저장 카운터(3초 폴링 반영).
+function CrawlProgress({ job }: { job: CrawlJob }) {
+  const total = job.segments_total || 0;
+  const done = job.segments_done || 0;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const stopping = job.status === "running" && job.cancel_requested;
+  return (
+    <div className="mt-3 p-3 border border-line rounded-md bg-[rgba(127,127,127,0.06)]">
+      <p className="my-1">
+        <strong>상태: {CRAWL_STATUS_LABEL[job.status]}</strong>
+        {/* 연속 모드 — 카운터는 현재 라운드 기준이라 몇 회차인지 함께 보여준다. */}
+        {job.mode === "continuous" && (
+          <span className="text-muted">
+            {" "}
+            · 연속 —{" "}
+            {job.status === "running"
+              ? `라운드 ${job.rounds_done + 1}회차 진행 중`
+              : `라운드 ${job.rounds_done}회 완료`}
+          </span>
+        )}
+        {stopping && <span className="text-muted"> · 중지 요청됨…</span>}
+        {job.triggered_by && <span className="text-muted"> · {job.triggered_by}</span>}
+      </p>
+      <progress className="w-full h-3.5" value={done} max={total || 1} />
+      <p className="text-muted my-1">
+        세그먼트 {done}/{total} ({pct}%) · 발견 {job.discovered} · 처리 {job.enriched} · 저장(실존){" "}
+        {job.saved}
+      </p>
+      {job.error && <ErrorBox>{job.error}</ErrorBox>}
+      {job.finished_at && <p className="text-muted my-1">종료: {fmt(job.finished_at)}</p>}
+    </div>
   );
 }
 

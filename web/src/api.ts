@@ -315,11 +315,13 @@ export async function saveCrawlTarget(t: {
 // --- 직접 크롤(웹에서 즉시 실행 + 진행현황 폴링 + 중지) ----------------
 
 // 폼 입력값으로 즉시 크롤을 시작한다(백그라운드). 이미 진행 중이면 409.
+// continuous=true 면 취소(중지)까지 라운드를 반복하는 연속 크롤(#132).
 export async function startCrawl(t: {
   countries: string;
   industries: string;
   listed: Listed;
   persist: boolean;
+  continuous: boolean;
 }): Promise<CrawlJob> {
   return jsonOrThrow<CrawlJob>(
     await fetch(`${BASE}/admin/crawl`, {
