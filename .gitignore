@@ -51,3 +51,4 @@ certs/
 
 # DB 백업 덤프(로컬 보관, scripts/windows/backup-db.bat 산출물)
 backups/
+.gstack/
