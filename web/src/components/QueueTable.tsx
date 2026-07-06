@@ -116,8 +116,9 @@ interface RowProps {
 const QueueRow = memo(
   function QueueRow({ item, busy, choice, readOnly, onPick, onConfirm, onReject, onOpen }: RowProps) {
     const done = item.status !== "pending";
-    // 읽기 전용이면 pending 행도 처리(라디오·입력) 잠금 — 처리 완료 행과 동일한 표시.
-    const locked = done || readOnly;
+    // confirmed 만 편집 잠금 — rejected 는 재작업(이메일 수정 → 재확정 번복) 가능 상태로
+    // 열어둔다(BE 도 전이 제한 없이 감사기록과 함께 허용). 읽기 전용(브라우즈)은 전부 잠금.
+    const locked = item.status === "confirmed" || readOnly;
     const href = safeHref(item.homepage);
     const formHref = safeHref(item.form);
     return (
@@ -296,15 +297,17 @@ export function QueueTable({
     });
   }, [items, sort]);
 
-  // 행 확정 버튼도 2단계 — 클릭 시 바로 확정하지 않고 확인 모달을 거친다(실수 확정 방지,
-  // SiteExplorer 의 Enter/클릭 확정 오버레이와 동일 단계 수). null 이면 모달 닫힘.
-  const [confirmId, setConfirmId] = useState<string | null>(null);
+  // 행 확정은 2단계 — 클릭 시 바로 확정하지 않고 확인 모달을 거친다(실수 확정 방지,
+  // SiteExplorer 의 Enter/클릭 확정 오버레이와 동일 단계 수). 거부는 pending 이면 1클릭
+  // (#175 — 가볍고 되돌릴 수 있음)이지만, confirmed 행의 거부는 확정 번복(엑셀 추출 대상
+  // 이탈)이라 같은 모달을 거친다. null 이면 모달 닫힘.
+  const [modal, setModal] = useState<{ id: string; action: "confirm" | "reject" } | null>(null);
 
   // 확인 모달 동안 Esc 닫기(window 레벨 — Tab 으로 포커스가 배경에 새도 동작)와 배경
   // 스크롤 잠금(SiteExplorer 와 동일). 닫히면 원복.
   useEffect(() => {
-    if (!confirmId) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setConfirmId(null);
+    if (!modal) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setModal(null);
     window.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -312,7 +315,7 @@ export function QueueTable({
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
     };
-  }, [confirmId]);
+  }, [modal]);
 
   // 사이트 미리보기 창 — 열린 행 id 와 초기 탭(홈/문의폼). 닫히면 null.
   const [open, setOpen] = useState<{ id: string; tab: SiteTab } | null>(null);
@@ -359,10 +362,10 @@ export function QueueTable({
   }
   // 처리·필터 변경으로 항목이 목록에서 빠지면 창도 자연히 닫힌다(find 결과 없음).
   const openItem = open ? items.find((it) => it.id === open.id) : undefined;
-  const confirmItem = confirmId ? items.find((it) => it.id === confirmId) : undefined;
+  const modalItem = modal ? items.find((it) => it.id === modal.id) : undefined;
   // 모달에 보여주고 실제 확정에 쓸 이메일 — 행 버튼과 동일한 우선순위(사용자 선택→서버→첫 후보).
-  const confirmChoice = confirmItem
-    ? (picked[confirmItem.id] ?? confirmItem.selected ?? confirmItem.candidates[0]?.value)?.trim()
+  const modalChoice = modalItem
+    ? (picked[modalItem.id] ?? modalItem.selected ?? modalItem.candidates[0]?.value)?.trim()
     : undefined;
   return (
     <div className="overflow-x-auto">
@@ -414,19 +417,22 @@ export function QueueTable({
               choice={picked[it.id] ?? it.selected ?? it.candidates[0]?.value}
               readOnly={readOnly}
               onPick={onPick}
-              onConfirm={setConfirmId /* 즉시 확정 대신 확인 모달 오픈 */}
-              onReject={onReject}
+              onConfirm={(id) => setModal({ id, action: "confirm" }) /* 즉시 확정 대신 확인 모달 */}
+              // confirmed 행 거부 = 확정 번복 — 확인 모달 경유. pending 거부는 기존대로 1클릭.
+              onReject={(id) =>
+                it.status === "confirmed" ? setModal({ id, action: "reject" }) : void onReject(id)
+              }
               onOpen={onOpen}
             />
           ))}
         </tbody>
       </table>
-      {/* 행 확정 확인 모달 — SiteExplorer 확정 오버레이와 동일 톤. Esc·바깥 클릭=취소,
-          확정 버튼에 autoFocus 라 Enter 로도 확정된다. */}
-      {confirmItem && (
+      {/* 행 확정/번복 거부 확인 모달 — SiteExplorer 확정 오버레이와 동일 톤. Esc·바깥
+          클릭=취소, 실행 버튼에 autoFocus 라 Enter 로도 실행된다. */}
+      {modal && modalItem && (
         <div
           className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
-          onClick={() => setConfirmId(null)}
+          onClick={() => setModal(null)}
         >
           <div
             role="dialog"
@@ -435,28 +441,53 @@ export function QueueTable({
             onClick={(e) => e.stopPropagation()}
           >
             <p className="text-ink text-sm leading-relaxed">
-              <span className="font-semibold">{confirmItem.name}</span> 을(를) 확정하시겠습니까?
-              {confirmChoice && (
-                <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
-                  {confirmChoice}
-                </span>
+              {modal.action === "confirm" ? (
+                <>
+                  <span className="font-semibold">{modalItem.name}</span> 을(를) 확정하시겠습니까?
+                  {modalItem.status === "rejected" && (
+                    <span className="block mt-1 text-muted text-xs">
+                      거부된 항목을 확정으로 번복합니다.
+                    </span>
+                  )}
+                  {modalChoice && (
+                    <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
+                      {modalChoice}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span className="font-semibold">{modalItem.name}</span> 의 확정을 거부로
+                  번복하시겠습니까?
+                  <span className="block mt-1 text-muted text-xs">
+                    엑셀 추출 대상에서 제외됩니다.
+                  </span>
+                </>
               )}
             </p>
             <div className="flex gap-2">
               <button
                 autoFocus
-                className={`${BTN_CONFIRM} flex-1`}
-                // 행 버튼·SiteExplorer 와 동일한 상태 가드 — 모달 열린 새 백그라운드
-                // 갱신으로 이미 처리된 항목이면 중복 확정을 막는다.
-                disabled={busyIds.has(confirmItem.id) || confirmItem.status !== "pending"}
+                className={`${modal.action === "confirm" ? BTN_CONFIRM : BTN_REJECT} flex-1`}
+                // 행 버튼과 동일 기준의 상태 가드 — 모달 열린 사이 백그라운드 갱신으로 상태가
+                // 바뀐 항목의 중복 처리를 막는다(확정 모달은 이미 confirmed, 번복 거부 모달은
+                // confirmed 가 아니게 된 경우). rejected→confirmed 재확정 번복은 허용(BE 동일).
+                disabled={
+                  busyIds.has(modalItem.id) ||
+                  (modal.action === "confirm"
+                    ? modalItem.status === "confirmed"
+                    : modalItem.status !== "confirmed")
+                }
                 onClick={() => {
-                  setConfirmId(null);
-                  void onConfirm(confirmItem.id, confirmChoice || undefined);
+                  setModal(null);
+                  if (modal.action === "confirm")
+                    void onConfirm(modalItem.id, modalChoice || undefined);
+                  else void onReject(modalItem.id);
                 }}
               >
-                확정
+                {modal.action === "confirm" ? "확정" : "거부"}
               </button>
-              <button className={`${BTN} flex-1`} onClick={() => setConfirmId(null)}>
+              <button className={`${BTN} flex-1`} onClick={() => setModal(null)}>
                 취소
               </button>
             </div>
