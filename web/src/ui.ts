@@ -32,6 +32,9 @@ export const LINK_FOCUS =
   "rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " +
   "focus-visible:ring-offset-2 focus-visible:ring-offset-panel";
 
+// 폼 입력·셀렉트 공통 — 폭 변형(min-w)은 호출부가 덧댄다.
+export const INPUT = "bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md";
+
 // 오류 박스 + 빈 상태 안내 + 표 헤더/셀.
 export const ERROR_BOX = "bg-err-bg border border-danger text-err-fg py-2.5 px-3.5 rounded-md mb-3";
 export const EMPTY =

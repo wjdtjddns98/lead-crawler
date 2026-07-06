@@ -83,6 +83,23 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// 공통 GET / POST·PUT 래퍼 — 인증 헤더 동반 + 401/오류 공통 처리 + JSON 파싱.
+// body 를 주면 JSON 으로 직렬화해 보낸다(없으면 Content-Type 도 안 붙임 — 기존 동작 유지).
+async function apiGet<T>(path: string): Promise<T> {
+  return jsonOrThrow<T>(await fetch(`${BASE}${path}`, { headers: authHeaders() }));
+}
+
+async function apiSend<T>(method: "POST" | "PUT", path: string, body?: unknown): Promise<T> {
+  return jsonOrThrow<T>(
+    await fetch(`${BASE}${path}`, {
+      method,
+      headers:
+        body === undefined ? authHeaders() : authHeaders({ "Content-Type": "application/json" }),
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+  );
+}
+
 export async function login(username: string, password: string): Promise<LoginResponse> {
   const res = await fetch(`${BASE}/auth/login`, {
     method: "POST",
@@ -130,65 +147,43 @@ export async function fetchQueue(params: {
   if (params.filter?.industry) q.set("industry", params.filter.industry);
   if (params.filter?.listed) q.set("listed", params.filter.listed);
   if (params.filter?.market) q.set("market", params.filter.market);
-  return jsonOrThrow<QueueResponse>(
-    await fetch(`${BASE}/queue?${q.toString()}`, { headers: authHeaders() }),
-  );
+  return apiGet(`/queue?${q.toString()}`);
 }
 
 // 작업 받기 — 호출 1회 = +30개 추가 배정(선취, 총량 100 상한). 응답은 필터와 무관하게 내 점유
 // 전체. 추가형이라 새로고침·복원 용도로 쓰면 안 됨(그 용도는 fetchMyWork) — "작업 받기" 버튼
 // 클릭 시에만 호출한다. filter(국가·업종·상장)는 신규 배정분에만 적용(빈값=전체).
 export async function claimWork(filter?: ClaimFilter): Promise<ReviewItem[]> {
-  return jsonOrThrow<ReviewItem[]>(
-    await fetch(`${BASE}/queue/claim`, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({
-        country: filter?.country ?? "",
-        industry: filter?.industry ?? "",
-        listed: filter?.listed ?? "",
-      }),
-    }),
-  );
+  return apiSend("POST", "/queue/claim", {
+    country: filter?.country ?? "",
+    industry: filter?.industry ?? "",
+    listed: filter?.listed ?? "",
+  });
 }
 
 // 검증 직원용 필터 옵션(국가+업종) — /admin/* 는 worker 가 403 이므로 비관리자 경로로 받는다.
 export async function fetchQueueFilters(): Promise<QueueFilters> {
-  return jsonOrThrow<QueueFilters>(
-    await fetch(`${BASE}/queue/filters`, { headers: authHeaders() }),
-  );
+  return apiGet("/queue/filters");
 }
 
 // 내 작업분 조회(부작용 없음) — 페이지 로드·새로고침·재로그인 복원·처리 후 목록 갱신용.
 export async function fetchMyWork(): Promise<ReviewItem[]> {
-  return jsonOrThrow<ReviewItem[]>(
-    await fetch(`${BASE}/queue/mine`, { headers: authHeaders() }),
-  );
+  return apiGet("/queue/mine");
 }
 
 // 담당자는 서버가 로그인 사용자로 자동 기록. selected = 사람이 고른 최종 이메일 후보.
 export async function confirmReview(id: string, selected?: string): Promise<ReviewItem> {
-  return jsonOrThrow<ReviewItem>(
-    await fetch(`${BASE}/queue/${id}/confirm`, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ selected: selected ?? null }),
-    }),
-  );
+  return apiSend("POST", `/queue/${id}/confirm`, { selected: selected ?? null });
 }
 
 export async function rejectReview(id: string): Promise<ReviewItem> {
-  return jsonOrThrow<ReviewItem>(
-    await fetch(`${BASE}/queue/${id}/reject`, { method: "POST", headers: authHeaders() }),
-  );
+  return apiSend("POST", `/queue/${id}/reject`);
 }
 
 // --- 관리자 API(role==admin 만 200, 아니면 403) -----------------------
 
 export async function fetchUsers(): Promise<UserStats[]> {
-  return jsonOrThrow<UserStats[]>(
-    await fetch(`${BASE}/admin/users`, { headers: authHeaders() }),
-  );
+  return apiGet("/admin/users");
 }
 
 export async function createUser(
@@ -196,57 +191,32 @@ export async function createUser(
   password: string,
   role: Role,
 ): Promise<UserStats> {
-  return jsonOrThrow<UserStats>(
-    await fetch(`${BASE}/admin/users`, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ username, password, role }),
-    }),
-  );
+  return apiSend("POST", "/admin/users", { username, password, role });
 }
 
 export async function changeUserRole(id: string, role: Role): Promise<UserStats> {
-  return jsonOrThrow<UserStats>(
-    await fetch(`${BASE}/admin/users/${id}/role`, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ role }),
-    }),
-  );
+  return apiSend("POST", `/admin/users/${id}/role`, { role });
 }
 
 export async function setUserActive(id: string, active: boolean): Promise<UserStats> {
-  return jsonOrThrow<UserStats>(
-    await fetch(`${BASE}/admin/users/${id}/active?active=${active}`, {
-      method: "POST",
-      headers: authHeaders(),
-    }),
-  );
+  return apiSend("POST", `/admin/users/${id}/active?active=${active}`);
 }
 
 // 계정의 pending 점유 전부를 풀로 회수한다(영구 배정의 유일한 해제 경로 — 관리자 전용).
 export async function reclaimUser(id: string): Promise<{ reclaimed: number }> {
-  return jsonOrThrow<{ reclaimed: number }>(
-    await fetch(`${BASE}/admin/users/${id}/reclaim`, { method: "POST", headers: authHeaders() }),
-  );
+  return apiSend("POST", `/admin/users/${id}/reclaim`);
 }
 
 export async function fetchAudit(limit = 100): Promise<AuditEntry[]> {
-  return jsonOrThrow<AuditEntry[]>(
-    await fetch(`${BASE}/admin/audit?limit=${limit}`, { headers: authHeaders() }),
-  );
+  return apiGet(`/admin/audit?limit=${limit}`);
 }
 
 export async function fetchCountries(): Promise<CountryOption[]> {
-  return jsonOrThrow<CountryOption[]>(
-    await fetch(`${BASE}/admin/countries`, { headers: authHeaders() }),
-  );
+  return apiGet("/admin/countries");
 }
 
 export async function fetchIndustries(): Promise<IndustryOption[]> {
-  return jsonOrThrow<IndustryOption[]>(
-    await fetch(`${BASE}/admin/industries`, { headers: authHeaders() }),
-  );
+  return apiGet("/admin/industries");
 }
 
 // 업종 '미분류' 필터 옵션 — BE 분류 폴백 저장값(sources/taxonomy.py UNCLASSIFIED)과 동일 토큰.
@@ -271,9 +241,7 @@ export async function fetchSendPreview(country = "", industry = ""): Promise<Sen
   if (country) q.set("country", country);
   if (industry) q.set("industry", industry);
   const qs = q.toString();
-  return jsonOrThrow<SendPreview>(
-    await fetch(`${BASE}/send/preview${qs ? `?${qs}` : ""}`, { headers: authHeaders() }),
-  );
+  return apiGet(`/send/preview${qs ? `?${qs}` : ""}`);
 }
 
 export async function sendCampaign(payload: {
@@ -283,19 +251,11 @@ export async function sendCampaign(payload: {
   country: string;
   industry: string;
 }): Promise<SendResult> {
-  return jsonOrThrow<SendResult>(
-    await fetch(`${BASE}/send`, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(payload),
-    }),
-  );
+  return apiSend("POST", "/send", payload);
 }
 
 export async function fetchCrawlTarget(): Promise<CrawlTarget> {
-  return jsonOrThrow<CrawlTarget>(
-    await fetch(`${BASE}/admin/crawl-target`, { headers: authHeaders() }),
-  );
+  return apiGet("/admin/crawl-target");
 }
 
 export async function saveCrawlTarget(t: {
@@ -304,13 +264,7 @@ export async function saveCrawlTarget(t: {
   listed: Listed;
   persist: boolean;
 }): Promise<CrawlTarget> {
-  return jsonOrThrow<CrawlTarget>(
-    await fetch(`${BASE}/admin/crawl-target`, {
-      method: "PUT",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(t),
-    }),
-  );
+  return apiSend("PUT", "/admin/crawl-target", t);
 }
 
 // --- 직접 크롤(웹에서 즉시 실행 + 진행현황 폴링 + 중지) ----------------
@@ -326,27 +280,17 @@ export async function startCrawl(t: {
   continuous: boolean;
   regions: string;
 }): Promise<CrawlJob> {
-  return jsonOrThrow<CrawlJob>(
-    await fetch(`${BASE}/admin/crawl`, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(t),
-    }),
-  );
+  return apiSend("POST", "/admin/crawl", t);
 }
 
 // 최근 크롤 작업 현황(없으면 status="idle"). 진행 중에는 주기 폴링으로 호출한다.
 export async function fetchCrawlStatus(): Promise<CrawlJob> {
-  return jsonOrThrow<CrawlJob>(
-    await fetch(`${BASE}/admin/crawl`, { headers: authHeaders() }),
-  );
+  return apiGet("/admin/crawl");
 }
 
 // 진행 중 크롤에 취소를 요청한다(협조적 중단). 진행 중이 없으면 404.
 export async function cancelCrawl(): Promise<CrawlJob> {
-  return jsonOrThrow<CrawlJob>(
-    await fetch(`${BASE}/admin/crawl/cancel`, { method: "POST", headers: authHeaders() }),
-  );
+  return apiSend("POST", "/admin/crawl/cancel");
 }
 
 // 확정분 엑셀 다운로드. 인증 헤더가 필요해 평범한 링크 대신 fetch→blob 으로 받아 저장한다.

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { login } from "../api";
+import { errMsg } from "../format";
 import type { Role } from "../types";
 import { BTN } from "../ui";
 import { ErrorBox } from "./ErrorBox";
@@ -35,7 +36,7 @@ export function Login({ onLogin }: { onLogin: (username: string, role: Role) => 
       const { username: who, role } = await login(username.trim(), password);
       onLogin(who, role);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
       const retry = (err as { retryAfter?: number }).retryAfter;
       if (retry && retry > 0) setLockSeconds(retry);
     } finally {
