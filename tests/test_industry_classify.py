@@ -91,6 +91,25 @@ def test_reverse_expanded_uk_sic_codes():
     assert I.industry_from_uk_sic("21100") == "제약·바이오"
 
 
+def test_uk_sic_codes_resolves_taxonomy_and_union():
+    # 택소노미 라벨 '제약·바이오' → 바이오∪제약 코드 합집합(정렬·중복제거).
+    got = I.uk_sic_codes("제약·바이오")
+    assert got == ("21100", "21200", "72110", "72190", "72200")
+    # 기존 키 직접 입력도 동작(하위호환).
+    assert I.uk_sic_codes("자동차") == ("29100", "29201", "29202", "29203", "29310", "29320")
+    # 부동산 5자리 서버 코드(라이브 프로브 200 확인분).
+    assert I.uk_sic_codes("부동산") == ("68100", "68201", "68202", "68209", "68310", "68320")
+    # 영어 별칭·도소매 별칭 — 대응 키와 동일 코드.
+    assert I.uk_sic_codes("pharma") == ("21100", "21200")
+    assert I.uk_sic_codes("도소매") == I.uk_sic_codes("유통")
+
+
+def test_uk_sic_codes_unmapped_returns_none():
+    assert I.uk_sic_codes("전체") is None  # broad
+    assert I.uk_sic_codes("수의학") is None  # 미매핑 자유텍스트
+    assert I.uk_sic_codes("금융") is None  # 모호 대분류(_UK_SIC_CODES 제외)
+
+
 # ── 구분 결정 규칙 ──────────────────────────────────────────────────────────
 def test_is_broad_industry():
     for b in ("", "전체", "ALL", "기타", "미분류", None):

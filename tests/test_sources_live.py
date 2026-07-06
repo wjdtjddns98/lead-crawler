@@ -655,6 +655,38 @@ def test_companies_house_live_parses_active_and_sic() -> None:
     assert dc.canonical_key == "reg:companies_house:01234567"
 
 
+def test_companies_house_live_sends_server_sic_filter_for_mapped_industry() -> None:
+    # 매핑 업종은 서버측 sic_codes 파라미터(콤마 목록)를 보낸다 — 업종별 독립 ES 윈도.
+    settings = Settings(dry_run=False, companies_house_api_key="k", discovery_max_per_source=5)
+    seen: list[dict] = []
+
+    def _json(url: str, params: dict) -> Any:
+        seen.append(params)
+        return {"items": []}  # 즉시 소진(관심사는 params).
+
+    CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="영국", industry="제약·바이오")
+    )
+    assert seen and "sic_codes" in seen[0]
+    sent = set(seen[0]["sic_codes"].split(","))
+    assert sent == {"21100", "21200", "72110", "72190", "72200"}
+
+
+def test_companies_house_live_omits_sic_filter_for_broad() -> None:
+    # broad('전체')는 서버 필터 없이 기존 무필터 페이징(파라미터 미포함).
+    settings = Settings(dry_run=False, companies_house_api_key="k", discovery_max_per_source=5)
+    seen: list[dict] = []
+
+    def _json(url: str, params: dict) -> Any:
+        seen.append(params)
+        return {"items": []}
+
+    CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="영국", industry="전체")
+    )
+    assert seen and "sic_codes" not in seen[0]
+
+
 def test_companies_house_broad_rejects_unmapped_sic() -> None:
     # 신계약(구 '미매핑 업종 → 전량' 폐기): broad 는 SIC 가 택소노미 대분류로 매핑되는
     # 실업종 회사만 채택 — 껍데기 UK 법인 firehose 차단(전체크롤 GB 편중 실사고).
