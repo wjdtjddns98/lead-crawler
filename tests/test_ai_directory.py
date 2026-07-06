@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import sys
 import types
 
@@ -17,10 +18,20 @@ from leadcrawler.sources.ai_directory import (
     AiDirectorySource,
     ClaudeDirectoryExtractor,
     _english_country_name,
+    _is_safe_public_url,
     _parse_companies,
 )
 from leadcrawler.sources.base import Segment
 from leadcrawler.sources.countries import resolve_country
+from leadcrawler.sources.http import Fetcher
+
+
+def _fake_getaddrinfo(ip: str):
+    """socket.getaddrinfo 대체 — 항상 ``ip`` 를 돌린다(네트워크·DNS 없이 SSRF 검증 시뮬)."""
+    def _f(host, *_a, **_k):  # noqa: ARG001
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+    return _f
 
 
 def _s(**over: object) -> Settings:
@@ -40,7 +51,9 @@ class _FakeFetcher:
     def post_json(self, url, *, json=None, params=None, headers=None):  # noqa: A002, ARG002
         return {"organic": self._organic}
 
-    def get_text(self, url, *, params=None, headers=None):  # noqa: ARG002
+    def get_text(  # noqa: ARG002
+        self, url, *, params=None, headers=None, allow_redirects=True, max_bytes=None
+    ):
         self.fetched.append(url)
         return self._pages.get(url, "")
 
@@ -128,6 +141,8 @@ def test_live_no_auth_is_noop() -> None:
 # ── 라이브 경로: 디렉토리 URL → LLM JSON → 후보 ─────────────────────────────
 def _live_source(monkeypatch, reply: str, ledger=None, **over):
     _install_fake_anthropic(monkeypatch, reply=reply)
+    # SERP 링크의 SSRF 검증(getaddrinfo)을 네트워크 없이 공인 IP 로 시뮬(example.com 실 IP).
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("93.184.216.34"))
     organic = [{"link": "https://dir.example.com/list", "title": "Pharma directory"}]
     pages = {"https://dir.example.com/list": "<p>Acme Pharma · Beta Bio</p>"}
     fetcher = _FakeFetcher(organic, pages)
@@ -227,6 +242,100 @@ def test_english_country_name() -> None:
     assert _english_country_name(resolve_country("KR"), "KR") == "Korea"
     assert _english_country_name(resolve_country("US"), "US") == "United States"
     assert _english_country_name(None, "우주국") == "우주국"  # 미등록 → 원문
+
+
+# ── SSRF 방어: URL 검증(getaddrinfo monkeypatch — 네트워크 없이) ──────────────
+def test_is_safe_public_url_accepts_public(monkeypatch) -> None:
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("93.184.216.34"))
+    assert _is_safe_public_url("https://good.example.com/path?q=1")
+    assert _is_safe_public_url("http://good.example.com")
+
+
+def test_is_safe_public_url_rejects_bad_scheme(monkeypatch) -> None:
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("93.184.216.34"))
+    assert not _is_safe_public_url("ftp://good.example.com")
+    assert not _is_safe_public_url("file:///etc/passwd")
+    assert not _is_safe_public_url("javascript:alert(1)")
+    assert not _is_safe_public_url("not a url")
+
+
+def test_is_safe_public_url_rejects_private_and_meta(monkeypatch) -> None:
+    # 사설·루프백·링크로컬(클라우드 메타데이터)·미지정 대역은 거부(내부망 피벗 차단).
+    for ip in ("127.0.0.1", "10.1.2.3", "192.168.0.5", "169.254.169.254", "0.0.0.0"):
+        monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo(ip))
+        assert not _is_safe_public_url("https://sneaky.example.com"), ip
+
+
+def test_is_safe_public_url_rejects_dns_failure(monkeypatch) -> None:
+    def _boom(*_a, **_k):
+        raise socket.gaierror("nxdomain")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _boom)
+    assert not _is_safe_public_url("https://nxdomain.invalid")
+
+
+def test_collect_urls_skips_private_link(monkeypatch) -> None:
+    # 통합: SERP 링크가 사설 IP 로 해석되면 fetch 대상에서 제외돼 산출 0(과금·fetch 없음).
+    src, fetcher = _live_source(monkeypatch, json.dumps([{"name": "A", "domain": "a.com"}]))
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("127.0.0.1"))  # 사설로 전환
+    rows = src.discover(Segment(country="US", industry="제약"))
+    assert rows == []
+    assert fetcher.fetched == []  # 검증 탈락 → 페이지 fetch 자체 안 함
+
+
+# ── max_bytes 스트림 절단(Fetcher, 페이크 httpx client) ───────────────────────
+class _FakeStreamResp:
+    def __init__(self, chunks: list[bytes], encoding: str = "utf-8") -> None:
+        self._chunks = chunks
+        self.encoding = encoding
+        self.status_code = 200
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_bytes(self):
+        yield from self._chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a) -> bool:
+        return False
+
+
+class _FakeHttpClient:
+    def __init__(self, chunks: list[bytes], text: str = "FULLBODY") -> None:
+        self._chunks = chunks
+        self._text = text
+
+    def get(self, url, **_kw):  # noqa: ARG002
+        return types.SimpleNamespace(text=self._text, raise_for_status=lambda: None)
+
+    def stream(self, method, url, **_kw):  # noqa: ARG002
+        return _FakeStreamResp(self._chunks)
+
+
+def test_get_text_max_bytes_truncates() -> None:
+    f = Fetcher(min_interval=0.0)
+    f._client = _FakeHttpClient([b"x" * 1000, b"y" * 1000])  # type: ignore[assignment]
+    out = f.get_text("http://x", max_bytes=1500)
+    assert len(out) == 1500  # 상한에서 절단
+    # 무인자 호출(회귀): max_bytes None → 스트림 아닌 .text 경로 그대로.
+    assert f.get_text("http://x") == "FULLBODY"
+
+
+# ── max_tokens 설정이 extractor→anthropic 으로 전달되는지 ─────────────────────
+def test_max_tokens_setting_passed_through(monkeypatch) -> None:
+    src, _ = _live_source(
+        monkeypatch, json.dumps([{"name": "A", "domain": "a.com"}]),
+        ai_directory_max_tokens=1234,
+    )
+    src.discover(Segment(country="US", industry="제약"))
+    assert _FakeClient.create_calls[0]["max_tokens"] == 1234
+
+
+def test_ai_directory_max_tokens_default() -> None:
+    assert _s().ai_directory_max_tokens == 4096
 
 
 if __name__ == "__main__":

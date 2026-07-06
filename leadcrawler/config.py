@@ -131,6 +131,9 @@ class Settings(BaseSettings):
     ai_directory_model: str = Field(default="claude-haiku-4-5-20251001")
     ai_directory_max_pages: int = Field(default=3, ge=1)  # 세그먼트당 LLM 추출 페이지 상한
     ai_directory_max_calls: int = Field(default=200, ge=0)  # 런당 유료 추출(LLM 콜) 상한(과금 보호)
+    # LLM 추출 응답 토큰 상한. 목록 페이지 수십 개사 JSON 이 2048 에선 중간 절단→그 페이지
+    # 전량 0 수율(그런데 과금됨)이라 넉넉히. 상향은 토큰 과금↑ 이므로 페이지 규모와 절충값.
+    ai_directory_max_tokens: int = Field(default=4096, ge=1)
     # 수집 파이프라인 inline 중복 승격(C5, opt-in) — 정확 dedup 통과한 신규 리드를 기존
     # 원장과 near_dup 대조, 최상위(auto) 티어면 재추출 없이 흡수(제약①). off 면 기존 동작.
     dedup_inline: bool = Field(default=False)

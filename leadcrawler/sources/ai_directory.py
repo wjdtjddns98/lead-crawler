@@ -23,9 +23,12 @@ LLM 1콜로 읽어 수십 개사(회사명+도메인)를 한 번에 뽑는다 �
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
+import socket
 import threading
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ValidationError
 
@@ -57,6 +60,48 @@ _NAME_LIMIT = 200
 _VALID_DOMAIN = re.compile(
     r"^(?=.{4,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
 )
+
+# 디렉토리 페이지 fetch 바디 상한(5MB). 공격자 영향 URL 이 수 GB 바디로 메모리·정규식
+# 스캔을 폭주시키는 것 방어(get_text max_bytes 로 스트림 절단).
+_MAX_PAGE_BYTES = 5_000_000
+
+
+def _is_safe_public_url(url: str) -> bool:
+    """URL 이 공개 인터넷 호스트를 가리키는지 검증한다(SSRF 방어).
+
+    scheme 은 http/https 만 허용하고, hostname 을 실제 해석(getaddrinfo)해 **모든** 해석
+    주소가 공인 대역인지 확인한다 — 사설/루프백/링크로컬(169.254.*=클라우드 메타데이터)/
+    예약/미지정/멀티캐스트 대역이 하나라도 있으면 거부한다(내부망 admin API·메타데이터
+    엔드포인트로의 피벗 차단). 해석 실패(gaierror)나 형식 오류도 거부한다.
+
+    ``_collect_directory_urls`` 의 게이트로 쓰고, 페이지 fetch 는 추가로 리다이렉트 미추적
+    (get_text allow_redirects=False)이라 3xx 피벗도 막힌다.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_unspecified
+            or addr.is_multicast
+        ):
+            return False
+    return True
 
 _PROMPT = (
     "아래 '목록 텍스트'에서 '{industry}' 업종에 해당하는 기업의 (회사명, 웹사이트 도메인)을 "
@@ -128,9 +173,12 @@ def _parse_companies(raw: str) -> list[DirectoryCompany]:
 class ClaudeDirectoryExtractor:
     """Claude 기반 목록→회사 추출기 — 미설치/오류/검증실패 시 빈 목록(graceful).
 
-    유료 호출이므로 :meth:`extract` 직전마다 예산·런당캡을 확인하고, 초과 시 호출 없이 빈
-    목록을 돌린다. 실제 왕복이 일어난 호출만 원장에 적재한다. 런당 카운터는 소스 인스턴스가
-    런 내내 공유(build_sources 1회 생성)하므로 세그먼트를 가로질러 누적된다.
+    유료 호출이므로 :meth:`extract` 직전마다 예산·캡을 확인하고, 초과 시 호출 없이 빈
+    목록을 돌린다. 실제 왕복이 일어난 호출만 원장에 적재한다.
+
+    ``_calls``/``_reserve`` 의 ``max_calls`` 는 **런당·워커당 캡이며 라운드 간 리셋된다**
+    (build_sources 가 run/worker 당 인스턴스를 새로 만들므로) — 하드 일일상한이 아니다.
+    크로스라운드/워커 백스톱은 cost_ledger 월예산(soft cap)이 담당한다.
     """
 
     def __init__(
@@ -155,7 +203,7 @@ class ClaudeDirectoryExtractor:
         self._calls = 0
 
     def _reserve(self) -> bool:
-        """이번 호출을 진행할지 — 런당캡·예산 확인 후 카운터 선점(원자적)."""
+        """이번 호출을 진행할지 — 캡(런당·워커당)·예산 확인 후 카운터 선점(원자적)."""
         with self._lock:
             if self._max_calls and self._calls >= self._max_calls:
                 return False
@@ -199,7 +247,11 @@ class ClaudeDirectoryExtractor:
 
 
 def _english_country_name(country: Country | None, fallback: str) -> str:
-    """국가의 영어 표기(쿼리용) — 별칭 중 첫 소문자-영문(≥4자, 코드/한글 제외). 없으면 원문."""
+    """국가의 영어 표기(쿼리용) — 별칭 중 첫 소문자-영문(≥4자, 코드/한글 제외).
+
+    country 가 None 이면 fallback(원문 국가 문자열), country 는 있으나 영문 별칭이 없으면
+    iso2 를 돌린다.
+    """
     if country is None:
         return fallback
     for alias in country.aliases:
@@ -256,6 +308,7 @@ class AiDirectorySource:
                 auth_token=self._settings.anthropic_auth_token,
                 ledger=self._cost_ledger,
                 max_calls=self._settings.ai_directory_max_calls,
+                max_tokens=self._settings.ai_directory_max_tokens,
             )
         return self._extractor
 
@@ -323,7 +376,8 @@ class AiDirectorySource:
         seen: set[str] = set()
         for url in page_urls:
             try:
-                html = fetcher.get_text(url)
+                # 리다이렉트 미추적(3xx 내부망 피벗 차단) + 바디 상한(초대형 바디 방어).
+                html = fetcher.get_text(url, allow_redirects=False, max_bytes=_MAX_PAGE_BYTES)
             except Exception as exc:  # 페이지 fetch 실패는 그 URL 만 skip(graceful).
                 log.info("ai_directory.page.fetch_error", url=url, err=str(exc))
                 continue
@@ -348,7 +402,13 @@ class AiDirectorySource:
         gl: str,
         max_pages: int,
     ) -> list[str]:
-        """디렉토리 쿼리들로 목록 페이지 URL 을 모은다(dedup, max_pages 까지)."""
+        """디렉토리 쿼리들로 목록 페이지 URL 을 모은다(dedup, max_pages 까지).
+
+        SERP 가 준 링크는 신뢰불가 입력이라 :func:`_is_safe_public_url` 로 SSRF 검증
+        (scheme·공인IP)한 것만 채택한다.
+        """
+        # ponytail: 라운드마다 같은 top-3 URL 을 다시 추출→재과금한다(캡·예산은 있음).
+        # URL 영속 캐시나 SERP start 전진이 필요해지면 추가 — 현재는 opt-in+캡+Haiku 라 blast 작음.
         urls: list[str] = []
         seen: set[str] = set()
         for tmpl in _QUERY_TEMPLATES:
@@ -360,7 +420,7 @@ class AiDirectorySource:
                 if not isinstance(item, dict):
                     continue
                 link = item.get("link")
-                if not isinstance(link, str) or not link.startswith("http") or link in seen:
+                if not isinstance(link, str) or link in seen or not _is_safe_public_url(link):
                     continue
                 seen.add(link)
                 urls.append(link)
