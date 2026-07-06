@@ -102,6 +102,7 @@ class SupportsFetch(Protocol):
     def get_text(
         self, url: str, *, params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        allow_redirects: bool = True, max_bytes: int | None = None,
     ) -> str:
         ...
 
@@ -167,12 +168,42 @@ class Fetcher:
         reraise=True,
     )
     def _get(
-        self, url: str, params: dict[str, Any] | None, headers: dict[str, str] | None
+        self, url: str, params: dict[str, Any] | None, headers: dict[str, str] | None,
+        allow_redirects: bool = True,
     ) -> httpx.Response:
         self._pace(url)
-        resp = self._client.get(url, params=params, headers=headers)
+        resp = self._client.get(
+            url, params=params, headers=headers, follow_redirects=allow_redirects
+        )
         resp.raise_for_status()
         return resp
+
+    @retry(
+        retry=retry_if_exception(_is_retryable),
+        wait=wait_exponential(multiplier=0.5, max=8),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    def _get_text_capped(
+        self, url: str, params: dict[str, Any] | None, headers: dict[str, str] | None,
+        allow_redirects: bool, max_bytes: int,
+    ) -> str:
+        """스트림으로 받아 ``max_bytes`` 초과분에서 중단·decode(초대형 바디 메모리 방어)."""
+        self._pace(url)
+        with self._client.stream(
+            "GET", url, params=params, headers=headers, follow_redirects=allow_redirects
+        ) as resp:
+            resp.raise_for_status()
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in resp.iter_bytes():
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= max_bytes:
+                    break
+            body = b"".join(chunks)[:max_bytes]
+            encoding = resp.encoding or "utf-8"
+        return body.decode(encoding, errors="replace")
 
     @retry(
         retry=retry_if_exception(_is_retryable),
@@ -206,9 +237,18 @@ class Fetcher:
     def get_text(
         self, url: str, *, params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        allow_redirects: bool = True, max_bytes: int | None = None,
     ) -> str:
-        """GET 후 본문 텍스트(HTML)를 반환한다."""
-        return self._get(url, params, headers).text
+        """GET 후 본문 텍스트(HTML)를 반환한다.
+
+        ``allow_redirects=False`` 면 리다이렉트를 따라가지 않는다(SSRF 방어 — 검증한 URL
+        이 3xx 로 내부망으로 피벗되는 것 차단). ``max_bytes`` 를 주면 스트림으로 받아 상한
+        초과분에서 중단·decode 한다(초대형 바디 메모리 적재 방어). 기존 호출자는 기본값
+        (리다이렉트 추적·무제한)이라 회귀 없음.
+        """
+        if max_bytes is None:
+            return self._get(url, params, headers, allow_redirects).text
+        return self._get_text_capped(url, params, headers, allow_redirects, max_bytes)
 
     def post_text(
         self, url: str, *, data: dict[str, Any] | None = None,

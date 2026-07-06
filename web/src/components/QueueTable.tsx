@@ -1,7 +1,7 @@
-import { memo, useCallback, useMemo, useRef, useState, type MouseEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, FileText } from "lucide-react";
 import type { Listed, ReviewItem } from "../types";
-import { BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
+import { BTN, BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
 import { safeHref, tri } from "../format";
 import { CandidateRadios, EmailBadge, StatusBadge } from "./StatusBadge";
 import { SiteExplorer, type SiteTab } from "./SiteExplorer";
@@ -292,6 +292,24 @@ export function QueueTable({
     });
   }, [items, sort]);
 
+  // 행 확정 버튼도 2단계 — 클릭 시 바로 확정하지 않고 확인 모달을 거친다(실수 확정 방지,
+  // SiteExplorer 의 Enter/클릭 확정 오버레이와 동일 단계 수). null 이면 모달 닫힘.
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+
+  // 확인 모달 동안 Esc 닫기(window 레벨 — Tab 으로 포커스가 배경에 새도 동작)와 배경
+  // 스크롤 잠금(SiteExplorer 와 동일). 닫히면 원복.
+  useEffect(() => {
+    if (!confirmId) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setConfirmId(null);
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [confirmId]);
+
   // 사이트 미리보기 창 — 열린 행 id 와 초기 탭(홈/문의폼). 닫히면 null.
   const [open, setOpen] = useState<{ id: string; tab: SiteTab } | null>(null);
   const onOpen = useCallback((id: string, tab: SiteTab) => setOpen({ id, tab }), []);
@@ -337,6 +355,11 @@ export function QueueTable({
   }
   // 처리·필터 변경으로 항목이 목록에서 빠지면 창도 자연히 닫힌다(find 결과 없음).
   const openItem = open ? items.find((it) => it.id === open.id) : undefined;
+  const confirmItem = confirmId ? items.find((it) => it.id === confirmId) : undefined;
+  // 모달에 보여주고 실제 확정에 쓸 이메일 — 행 버튼과 동일한 우선순위(사용자 선택→서버→첫 후보).
+  const confirmChoice = confirmItem
+    ? (picked[confirmItem.id] ?? confirmItem.selected ?? confirmItem.candidates[0]?.value)?.trim()
+    : undefined;
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
@@ -387,13 +410,55 @@ export function QueueTable({
               choice={picked[it.id] ?? it.selected ?? it.candidates[0]?.value}
               readOnly={readOnly}
               onPick={onPick}
-              onConfirm={onConfirm}
+              onConfirm={setConfirmId /* 즉시 확정 대신 확인 모달 오픈 */}
               onReject={onReject}
               onOpen={onOpen}
             />
           ))}
         </tbody>
       </table>
+      {/* 행 확정 확인 모달 — SiteExplorer 확정 오버레이와 동일 톤. Esc·바깥 클릭=취소,
+          확정 버튼에 autoFocus 라 Enter 로도 확정된다. */}
+      {confirmItem && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+          onClick={() => setConfirmId(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="bg-panel border border-line rounded-lg p-5 max-w-sm w-full text-center flex flex-col gap-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-ink text-sm leading-relaxed">
+              <span className="font-semibold">{confirmItem.name}</span> 을(를) 확정하시겠습니까?
+              {confirmChoice && (
+                <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
+                  {confirmChoice}
+                </span>
+              )}
+            </p>
+            <div className="flex gap-2">
+              <button
+                autoFocus
+                className={`${BTN_CONFIRM} flex-1`}
+                // 행 버튼·SiteExplorer 와 동일한 상태 가드 — 모달 열린 새 백그라운드
+                // 갱신으로 이미 처리된 항목이면 중복 확정을 막는다.
+                disabled={busyIds.has(confirmItem.id) || confirmItem.status !== "pending"}
+                onClick={() => {
+                  setConfirmId(null);
+                  void onConfirm(confirmItem.id, confirmChoice || undefined);
+                }}
+              >
+                확정
+              </button>
+              <button className={`${BTN} flex-1`} onClick={() => setConfirmId(null)}>
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {open && openItem && (
         <SiteExplorer
           item={openItem}

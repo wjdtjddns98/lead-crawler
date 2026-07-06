@@ -182,11 +182,6 @@ export function MyWork() {
             ))}
           </select>
         </label>
-        {remaining !== null && (
-          <span className="text-muted text-[13px] tabular-nums">
-            현재 범위에서 받아갈 수 있는 작업 <strong className="text-ink">{remaining}</strong>건
-          </span>
-        )}
       </div>
       {/* FE-3: 필터는 신규 배정에만 적용 — 안내는 팝오버에 숨기지 않고 상시 노출 유지. */}
       <p className="m-0 mb-4 text-muted text-[12px]">
