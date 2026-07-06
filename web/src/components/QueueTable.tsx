@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEven
 import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, FileText, Pencil } from "lucide-react";
 import type { Listed, ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
-import { safeHref, tri } from "../format";
+import { normSiteUrl, safeHref, tri } from "../format";
 import { CandidateRadios, EmailBadge, StatusBadge } from "./StatusBadge";
 import { SiteExplorer, type SiteTab } from "./SiteExplorer";
 
@@ -68,12 +68,6 @@ interface Props {
   // 읽기 전용(브라우즈) — 액션 컬럼·이메일 편집·미리보기 처리 팝업을 숨긴다. worker 의
   // 전체 큐가 해당: 직접 처리는 claim(내 작업) 경유만 — 미점유 항목 동시 처리 충돌 방지.
   readOnly?: boolean;
-}
-
-// 사이트 편집값 정규화 — 스킴 없는 입력(example.com)은 https:// 를 보충한다. 그래도
-// 무효(http(s) 외 스킴·형식 오류)면 null — safeHref 와 동일하게 XSS 스킴을 차단.
-function normSiteUrl(s: string): string | null {
-  return safeHref(s) ?? safeHref(`https://${s}`);
 }
 
 // URL 에서 표시용 호스트(도메인)를 뽑는다(www. 제거). 실패 시 원문.
@@ -551,12 +545,13 @@ export function QueueTable({
                       사이트 → {modalSite}
                     </span>
                   )}
-                  {/* 편집했지만 유효 URL 이 아닌 경우 — 조용히 버리지 않고 미반영을 알린다. */}
+                  {/* 편집했지만 반영될 변경이 없는 경우(무효 URL·정규화 후 원본과 동일)
+                      — 조용히 버리지 않고 미반영을 알린다. */}
                   {modalSiteRaw !== undefined &&
                     !modalSite &&
                     modalSiteRaw !== (modalItem.homepage ?? "") && (
                       <span className="block mt-1 text-xs text-danger-fg">
-                        사이트 수정값이 유효한 URL 이 아니어서 반영되지 않습니다
+                        사이트 수정값이 유효한 변경이 아니어서 반영되지 않습니다
                       </span>
                     )}
                 </>
@@ -606,9 +601,11 @@ export function QueueTable({
           remaining={remaining}
           tab={open.tab}
           choice={picked[openItem.id] ?? openItem.selected ?? openItem.candidates[0]?.value}
+          site={sites[openItem.id]}
           busy={busyIds.has(openItem.id)}
           onTab={(tab) => setOpen({ id: openItem.id, tab })}
           onPick={onPick}
+          onEditSite={onEditSite}
           onConfirm={popupConfirm}
           onReject={popupReject}
           onClose={() => setOpen(null)}
