@@ -5,11 +5,13 @@ name: CI
 #   → 백엔드 PR 은 프론트 빌드를, 프론트 PR 은 백엔드 테스트를 서로 안 기다린다.
 # - 브랜치 보호의 required check 는 **ci-ok 하나만** 건다. ci-ok 는 항상 돌고 관련 잡이
 #   다 통과(또는 해당없음/skip)면 green → path 필터와 required check 충돌(미실행=영구 pending)을 회피.
+# 브랜치 전략(2026-07-03): dev=통합 트렁크(작업 PR 타깃), prod=배포(dev→prod 승격 PR),
+# main=동결. 승격 PR 도 같은 ci-ok 게이트를 통과해야 머지된다.
 on:
   push:
-    branches: [main]
+    branches: [dev, prod]
   pull_request:
-    branches: [main]
+    branches: [dev, prod]
 
 concurrency:
   group: ci-${{ github.ref }}

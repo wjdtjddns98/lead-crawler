@@ -27,7 +27,7 @@ from .base import (
     opt_str,
 )
 from .http import Fetcher, HostRateLimiters, SupportsFetch
-from .industry import industry_from_sic, matches_prefix, sic_prefixes
+from .industry import industry_from_sic, is_broad_industry, matches_prefix, sic_prefixes
 
 log = get_logger("sources.edgar")
 
@@ -104,6 +104,11 @@ class EdgarSource:
         fetcher = self._client()
         cap = self._settings.discovery_max_per_source
         prefixes = sic_prefixes(segment.industry)
+        # 미매핑 **구체** 업종은 수집하지 않는다(등록처 3소스 공통 가드): SIC 필터 불가 →
+        # 전량 통과 → 비-broad 세그먼트 라벨로 오라벨(전체크롤 GB 자동차 70% 과 동일 결함).
+        if prefixes is None and not is_broad_industry(segment.industry):
+            log.info("edgar.skip.unmapped_industry", industry=segment.industry)
+            return []
 
         try:
             universe = _parse_tickers_exchange(fetcher.get_json(_TICKERS_URL))

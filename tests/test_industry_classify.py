@@ -312,6 +312,22 @@ def test_build_lead_classifies_when_unclassified():
     assert clf.calls == 1  # 미분류라 LLM 한번 거침
 
 
+def test_build_lead_skips_classify_when_no_homepage():
+    # 홈페이지 텍스트 없음(도메인·홈 없는 등록처 껍데기 회사) → 이름만 블라인드 분류
+    # 금지(자동차 편중·비용 방지). 미분류 유지 + LLM 호출 0.
+    from leadcrawler.pipeline.run import _build_lead
+
+    enr = _FakeEnricher()
+    enr.last_home_html = None  # fetch 실패·도메인 없음 시뮬레이션
+    clf = _RecordingClassifier("자동차·모빌리티")
+    lead = _build_lead(
+        _dc(UNCLASSIFIED), enricher=enr, existence=_FakeExistence(),
+        email_validator=_FakeValidator(), classifier=clf,
+    )
+    assert lead.company.industry == UNCLASSIFIED
+    assert clf.calls == 0
+
+
 def test_build_lead_classifies_catch_all_label():
     from leadcrawler.pipeline.run import _build_lead
 
