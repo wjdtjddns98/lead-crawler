@@ -177,6 +177,12 @@ class CompaniesHouseSource:
         code_label = next(
             (lbl for c in sic_codes if (lbl := industry_from_uk_sic(c)) is not None), None
         )
+        # 게이팅(broad 전용): 도메인 없는 UK 등록처 껍데기 법인이 이름만으로 하위 LLM
+        # 블라인드 분류되어 오라벨(자동차 편중)+비용 낭비를 만드는 것을 원천 차단 — broad
+        # 수집(prefixes 없음)에선 SIC 가 택소노미 대분류로 명확 매핑되는(=실업종) 회사만
+        # 채택한다. 구체 업종 크롤(prefixes 있음)은 이미 SIC 필터를 통과했으므로 영향 없음.
+        if prefixes is None and code_label is None:
+            return None
         # 풍부필드 — 같은 검색 응답이 이미 주는 값(추가 호출 0): 등기주소.
         roa = item.get("registered_office_address")
         address = region = None

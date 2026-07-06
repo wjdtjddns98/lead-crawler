@@ -153,6 +153,7 @@ def test_companies_house_candidate_parses_address() -> None:
         "company_status": "active",
         "company_number": "01234567",
         "company_name": "UK Ltd",
+        "sic_codes": ["41100"],  # 건설·엔지니어링 — broad 게이트 통과(실업종).
         "registered_office_address": {
             "address_line_1": "1 Main Street",
             "locality": "Manchester",
@@ -163,6 +164,25 @@ def test_companies_house_candidate_parses_address() -> None:
     assert dc is not None
     assert dc.address == "1 Main Street, Manchester, M1 1AA"
     assert dc.region == "Manchester"
+
+
+def test_companies_house_broad_gate_rejects_unmapped_sic() -> None:
+    # 게이팅(broad): SIC 가 택소노미 대분류로 안 잡히는(=미분류행) 껍데기 UK 법인은
+    # 제외 — 이름만 LLM 블라인드 분류로 오라벨(자동차 편중)되는 유입원 차단.
+    src = CompaniesHouseSource(Settings(dry_run=True))
+    seg = Segment(country="GB", industry="전체")
+    base = {"company_status": "active", "company_number": "09999999", "company_name": "Shell Ltd"}
+    # SIC 없음 → 미분류 → broad 에서 reject.
+    assert src._candidate(seg, dict(base), None) is None
+    # 매핑 안 되는 SIC(82990=기타 사업지원) → reject.
+    assert src._candidate(seg, {**base, "sic_codes": ["82990"]}, None) is None
+    # 매핑되는 SIC(41100=건설) → 채택.
+    kept = src._candidate(seg, {**base, "sic_codes": ["41100"]}, None)
+    assert kept is not None and kept.industry == "건설·엔지니어링"
+    # 구체 업종 크롤(prefixes 있음)은 게이트 미적용 — SIC 필터만 통과하면 채택.
+    prefixes = ("82",)
+    got = src._candidate(seg, {**base, "sic_codes": ["82990"]}, prefixes)
+    assert got is not None
 
 
 def test_opencorporates_candidate_parses_address() -> None:
