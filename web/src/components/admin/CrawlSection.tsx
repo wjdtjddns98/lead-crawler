@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   cancelCrawl,
   fetchCountries,
+  fetchCrawlHistory,
   fetchCrawlStatus,
   fetchCrawlTarget,
   fetchIndustries,
@@ -15,7 +16,7 @@ import { errMsg } from "../../format";
 import { toCountryOpts } from "../../filterOptions";
 import { MultiPicker, type PickerOption } from "../MultiPicker";
 import { ErrorBox } from "../ErrorBox";
-import { BTN_CONFIRM, BTN_REJECT } from "../../ui";
+import { BTN_CONFIRM, BTN_REJECT, EMPTY, TD, TH } from "../../ui";
 import { SECTION_H2, FIELD, FIELD_INLINE, INPUT_WIDE, CRAWL_TARGET, fmt } from "./shared";
 import { ConfirmDialog } from "./ConfirmDialog";
 
@@ -186,121 +187,124 @@ export function CrawlTargetSection() {
   const stop = () => setStopDialog(true);
 
   return (
-    <section>
-      <h2 className={SECTION_H2}>크롤 실행</h2>
-      {err && <ErrorBox>{err}</ErrorBox>}
-      <ConfirmDialog
-        open={stopDialog}
-        title="진행 중인 크롤을 중지할까요?"
-        danger
-        confirmLabel="중지"
-        busy={busy}
-        busyLabel="중지 요청 중…"
-        onConfirm={() => void doStop()}
-        onCancel={() => setStopDialog(false)}
-      >
-        <p className="m-0 text-muted text-sm">처리된 분은 보존됩니다</p>
-      </ConfirmDialog>
-      <form className={CRAWL_TARGET} onSubmit={(e) => void run(e)}>
-        <div className={FIELD}>
-          <span>
-            국가 <span className="text-muted">(선택 안 함 = 전체)</span>
-          </span>
-          <MultiPicker
-            options={countryOpts}
-            value={countries}
-            onChange={setCountries}
-            placeholder="국가 검색 (예: 미국, US, 일본)"
-            emptyHint="전체 국가"
-          />
-        </div>
-        <div className={FIELD}>
-          <span>
-            업종 <span className="text-muted">(선택 안 함 = 전체)</span>
-          </span>
-          <MultiPicker
-            options={industryOpts}
-            value={industries}
-            onChange={setIndustries}
-            placeholder="업종 검색 (예: 건설, construction)"
-            emptyHint="전체 업종"
-          />
-        </div>
-        {krInScope && (
+    <>
+      <section>
+        <h2 className={SECTION_H2}>크롤 실행</h2>
+        {err && <ErrorBox>{err}</ErrorBox>}
+        <ConfirmDialog
+          open={stopDialog}
+          title="진행 중인 크롤을 중지할까요?"
+          danger
+          confirmLabel="중지"
+          busy={busy}
+          busyLabel="중지 요청 중…"
+          onConfirm={() => void doStop()}
+          onCancel={() => setStopDialog(false)}
+        >
+          <p className="m-0 text-muted text-sm">처리된 분은 보존됩니다</p>
+        </ConfirmDialog>
+        <form className={CRAWL_TARGET} onSubmit={(e) => void run(e)}>
           <div className={FIELD}>
             <span>
-              지역 <span className="text-muted">(KR 전용 · 선택 시 지역별 검색 팬아웃)</span>
+              국가 <span className="text-muted">(선택 안 함 = 전체)</span>
             </span>
             <MultiPicker
-              options={KR_REGION_OPTS}
-              value={regions}
-              onChange={setRegions}
-              placeholder="지역 검색 (예: 서울, 경기)"
-              emptyHint="지역 팬아웃 없음(기본)"
+              options={countryOpts}
+              value={countries}
+              onChange={setCountries}
+              placeholder="국가 검색 (예: 미국, US, 일본)"
+              emptyHint="전체 국가"
             />
           </div>
-        )}
-        <label className={FIELD}>
-          상장여부
-          <select
-            className={INPUT_WIDE}
-            value={listed}
-            onChange={(e) => setListed(e.target.value as Listed)}
-          >
-            {LISTED_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        {/* DB적재 체크박스는 '저장 시 DB에 넣을지' — 저장 동작의 옵션이라 상장여부(필터)가
-            아니라 크롤 실행 버튼과 한 그룹으로 묶는다. */}
-        <div className="flex flex-col gap-2">
-          <label className={FIELD_INLINE}>
-            <input
-              type="checkbox"
-              checked={persist}
-              onChange={(e) => setPersist(e.target.checked)}
+          <div className={FIELD}>
+            <span>
+              업종 <span className="text-muted">(선택 안 함 = 전체)</span>
+            </span>
+            <MultiPicker
+              options={industryOpts}
+              value={industries}
+              onChange={setIndustries}
+              placeholder="업종 검색 (예: 건설, construction)"
+              emptyHint="전체 업종"
             />
-            DB 적재(검증 큐로)
-          </label>
-          <label className={FIELD_INLINE}>
-            <input
-              type="checkbox"
-              checked={continuous}
-              onChange={(e) => setContinuous(e.target.checked)}
-            />
-            연속 실행(중지까지 반복)
-          </label>
-          <div className="flex gap-2 mt-0.5">
-            <button
-              className={BTN_CONFIRM}
-              type="submit"
-              // 빈 선택은 전 업종 확장에 옵션 목록이 필요 — 미로드 상태만 잠깐 막는다.
-              disabled={busy || running || (!industries.trim() && industryOpts.length === 0)}
+          </div>
+          {krInScope && (
+            <div className={FIELD}>
+              <span>
+                지역 <span className="text-muted">(KR 전용 · 선택 시 지역별 검색 팬아웃)</span>
+              </span>
+              <MultiPicker
+                options={KR_REGION_OPTS}
+                value={regions}
+                onChange={setRegions}
+                placeholder="지역 검색 (예: 서울, 경기)"
+                emptyHint="지역 팬아웃 없음(기본)"
+              />
+            </div>
+          )}
+          <label className={FIELD}>
+            상장여부
+            <select
+              className={INPUT_WIDE}
+              value={listed}
+              onChange={(e) => setListed(e.target.value as Listed)}
             >
-              {busy || running ? "실행 중…" : "크롤 실행"}
-            </button>
-            {running && (
+              {LISTED_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {/* DB적재 체크박스는 '저장 시 DB에 넣을지' — 저장 동작의 옵션이라 상장여부(필터)가
+              아니라 크롤 실행 버튼과 한 그룹으로 묶는다. */}
+          <div className="flex flex-col gap-2">
+            <label className={FIELD_INLINE}>
+              <input
+                type="checkbox"
+                checked={persist}
+                onChange={(e) => setPersist(e.target.checked)}
+              />
+              DB 적재(검증 큐로)
+            </label>
+            <label className={FIELD_INLINE}>
+              <input
+                type="checkbox"
+                checked={continuous}
+                onChange={(e) => setContinuous(e.target.checked)}
+              />
+              연속 실행(중지까지 반복)
+            </label>
+            <div className="flex gap-2 mt-0.5">
               <button
-                className={BTN_REJECT}
-                type="button"
-                // 중지 요청 후엔 비활성 — BE 가 멈출 때까지 running 이 유지되므로 재클릭(다이얼로그
-                // 반복)을 막는다.
-                disabled={busy || job?.cancel_requested}
-                onClick={() => void stop()}
+                className={BTN_CONFIRM}
+                type="submit"
+                // 빈 선택은 전 업종 확장에 옵션 목록이 필요 — 미로드 상태만 잠깐 막는다.
+                disabled={busy || running || (!industries.trim() && industryOpts.length === 0)}
               >
-                <span className="inline-flex items-center gap-1">
-                  중지 <Square size={14} aria-hidden />
-                </span>
+                {busy || running ? "실행 중…" : "크롤 실행"}
               </button>
-            )}
+              {running && (
+                <button
+                  className={BTN_REJECT}
+                  type="button"
+                  // 중지 요청 후엔 비활성 — BE 가 멈출 때까지 running 이 유지되므로 재클릭(다이얼로그
+                  // 반복)을 막는다.
+                  disabled={busy || job?.cancel_requested}
+                  onClick={() => void stop()}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    중지 <Square size={14} aria-hidden />
+                  </span>
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      </form>
-      {job && job.status !== "idle" && <CrawlProgress job={job} />}
-    </section>
+        </form>
+        {job && job.status !== "idle" && <CrawlProgress job={job} />}
+      </section>
+      <CrawlHistory statusKey={job?.status} />
+    </>
   );
 }
 
@@ -351,5 +355,73 @@ function CrawlProgress({ job }: { job: CrawlJob }) {
       {job.error && <ErrorBox>{job.error}</ErrorBox>}
       {job.finished_at && <p className="text-muted text-xs my-1">종료: {fmt(job.finished_at)}</p>}
     </div>
+  );
+}
+
+// 최근 크롤 이력 — 현재 작업 상태 전이(시작·종료)마다 재조회해 새 실행분을 반영한다.
+// BE 목록 API(GET /admin/crawl/history) 미배포 서버에선 로드가 실패하므로, 성공 전(null)엔
+// 섹션 자체를 렌더하지 않아 계약 선반영에도 화면이 깨지지 않는다.
+function CrawlHistory({ statusKey }: { statusKey: CrawlJob["status"] | undefined }) {
+  const [rows, setRows] = useState<CrawlJob[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetchCrawlHistory()
+      // 배열 가드 — mock 폴백·프록시 오응답 등 비배열 200 이 와도 렌더를 깨지 않는다.
+      .then((r) => alive && Array.isArray(r) && setRows(r))
+      .catch(() => undefined); // 미지원(404)·일시 오류 → 기존 표시 유지(최초엔 숨김).
+    return () => {
+      alive = false;
+    };
+  }, [statusKey]);
+
+  if (rows === null) return null;
+  return (
+    <section>
+      <h2 className={SECTION_H2}>최근 크롤 이력</h2>
+      {rows.length === 0 ? (
+        <p className={EMPTY}>기록된 크롤 이력이 없습니다.</p>
+      ) : (
+        <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
+          <thead>
+            <tr>
+              <th className={TH}>시작</th>
+              <th className={TH}>상태</th>
+              <th className={TH}>대상</th>
+              <th className={TH}>발견</th>
+              <th className={TH}>저장(실존)</th>
+              <th className={TH}>실행자</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((j) => (
+              <tr key={j.id}>
+                <td className={`${TD} text-muted whitespace-nowrap tabular-nums`}>
+                  {fmt(j.started_at)}
+                </td>
+                <td className={`${TD} whitespace-nowrap`}>
+                  {CRAWL_STATUS_LABEL[j.status]}
+                  {j.mode === "continuous" && (
+                    <span className="text-muted text-xs"> · 연속 {j.rounds_done}회</span>
+                  )}
+                </td>
+                {/* 업종 CSV 는 전 업종 확장 시 매우 길다 — 한 줄 말줄임 + title 로 전체 노출 */}
+                <td className={`${TD} max-w-[280px]`}>
+                  <span
+                    className="block truncate"
+                    title={`${j.countries || "전체"} · ${j.industries}`}
+                  >
+                    {j.countries || "전체"} · {j.industries}
+                  </span>
+                </td>
+                <td className={`${TD} tabular-nums`}>{j.discovered}</td>
+                <td className={`${TD} tabular-nums`}>{j.saved}</td>
+                <td className={TD}>{j.triggered_by || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }

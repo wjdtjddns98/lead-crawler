@@ -74,7 +74,18 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let detail = `${res.status}`;
     try {
-      detail = (await res.json()).detail ?? detail;
+      const d = (await res.json()).detail;
+      if (Array.isArray(d)) {
+        // FastAPI 422 검증 오류 — detail 이 [{loc, msg}] 배열이라 그대로 두면 [object Object]로 보인다.
+        detail =
+          d
+            .map((e: { loc?: unknown[]; msg?: string }) =>
+              [e.loc?.slice(1).join("."), e.msg].filter(Boolean).join(": "),
+            )
+            .join("; ") || detail;
+      } else if (d != null) {
+        detail = typeof d === "string" ? d : JSON.stringify(d);
+      }
     } catch {
       // 본문이 JSON 이 아니면 상태코드만 노출.
     }
@@ -286,6 +297,11 @@ export async function startCrawl(t: {
 // 최근 크롤 작업 현황(없으면 status="idle"). 진행 중에는 주기 폴링으로 호출한다.
 export async function fetchCrawlStatus(): Promise<CrawlJob> {
   return apiGet("/admin/crawl");
+}
+
+// 최근 크롤 이력(최신순). BE 계약 제안분 — 미배포 서버에선 404 이므로 호출측에서 조용히 숨긴다.
+export async function fetchCrawlHistory(limit = 10): Promise<CrawlJob[]> {
+  return apiGet(`/admin/crawl/history?limit=${limit}`);
 }
 
 // 진행 중 크롤에 취소를 요청한다(협조적 중단). 진행 중이 없으면 404.

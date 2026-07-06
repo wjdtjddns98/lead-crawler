@@ -28,7 +28,13 @@ from .base import (
     opt_str,
 )
 from .http import Fetcher, HostRateLimiters, SupportsFetch
-from .industry import industry_from_uk_sic, is_broad_industry, matches_prefix, uk_sic_prefixes
+from .industry import (
+    industry_from_uk_sic,
+    is_broad_industry,
+    matches_prefix,
+    uk_sic_codes,
+    uk_sic_prefixes,
+)
 
 log = get_logger("sources.companies_house")
 
@@ -120,6 +126,12 @@ class CompaniesHouseSource:
         headers = self._auth_header()
         cap = self._settings.discovery_max_per_source
         prefixes = uk_sic_prefixes(segment.industry)
+        # 서버측 SIC 필터: 매핑 업종은 advanced-search 의 sic_codes 파라미터로 **업종별 독립
+        # ES 윈도**를 연다 — 무필터 전량 페이징이 공용 10k 윈도를 나눠 쓰다 원장 소진으로
+        # 신규 0 이 되던 병목을 우회. 미매핑·broad 는 None → 파라미터 생략(기존 동작).
+        # 커서: 세그먼트 라벨 키 그대로. 서버 필터로 모집단이 바뀌어 구커서 위치 의미는
+        # 달라지지만, #165 윈도 랩(_API_MAX_WINDOW)+소진 0 리셋이 자연 치유하므로 마이그레이션 불요.
+        codes = uk_sic_codes(segment.industry)
         # 미매핑 **구체** 업종(예: '자동차·모빌리티' — _UK_SIC 에 키 없음)은 수집하지 않는다:
         # 등록처가 필터를 못 해 전량 통과되고, 비-broad 라 세그먼트 라벨이 그대로 구분에
         # 실려 **아무 UK 법인이 그 업종으로 오라벨**된다(전체크롤 자동차 70% 편중의 진범).
@@ -150,6 +162,8 @@ class CompaniesHouseSource:
                 "size": min(_PAGE, cap),
                 "start_index": start,
             }
+            if codes:
+                params["sic_codes"] = ",".join(codes)  # 서버측 업종 필터(독립 윈도).
             try:
                 payload = fetcher.get_json(_SEARCH_URL, params=params, headers=headers)
             except Exception as exc:  # 키오류·API오류·네트워크 → 부분결과 보존 후 중단.
