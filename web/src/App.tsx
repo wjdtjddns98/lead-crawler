@@ -2,14 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   confirmReview,
   fetchQueue,
-  fetchQueueFilters,
   getRole,
   getUser,
   logout,
   rejectReview,
   setAuthErrorHandler,
-  withUnclassified,
 } from "./api";
+import { errMsg } from "./format";
+import { LISTED_FILTER_OPTIONS, useQueueFilterOpts } from "./filterOptions";
 import { Admin } from "./components/Admin";
 import { MyWork } from "./components/MyWork";
 import { FilterPopover, pickSummary } from "./components/FilterPopover";
@@ -18,7 +18,7 @@ import { QueueTable } from "./components/QueueTable";
 import { TableSkeleton } from "./components/TableSkeleton";
 import { Login } from "./components/Login";
 import { ChevronLeft, ChevronRight, Settings } from "lucide-react";
-import { BTN, tabCls } from "./ui";
+import { BTN, INPUT, tabCls } from "./ui";
 import { Toaster } from "sonner";
 import { ErrorBox } from "./components/ErrorBox";
 import type { Listed, ReviewItem, ReviewStatus, Role } from "./types";
@@ -26,14 +26,6 @@ import type { Listed, ReviewItem, ReviewStatus, Role } from "./types";
 type Filter = ReviewStatus | "";
 type View = "mine" | "browse" | "admin";
 const PAGE = 50;
-
-// 상장여부 필터 — 빈값=전체 + Listed 3값(MyWork 와 동일).
-const LISTED_OPTIONS: { value: "" | Listed; label: string }[] = [
-  { value: "", label: "전체" },
-  { value: "listed", label: "상장" },
-  { value: "unlisted", label: "비상장" },
-  { value: "unknown", label: "미상" },
-];
 
 // 시장 보드 검색용 한글 별칭 — BE 어휘엔 라벨/별칭이 없어 FE 가 표기만 보강한다.
 const MARKET_ALIASES: Record<string, string[]> = {
@@ -134,9 +126,10 @@ function Workbench({
   const [industry, setIndustry] = useState("");
   const [listed, setListed] = useState<"" | Listed>("");
   const [market, setMarket] = useState("");
-  const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
-  const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
-  const [marketOpts, setMarketOpts] = useState<PickerOption[]>(toMarketOpts(FALLBACK_MARKETS));
+  // 국가·업종·시장 셀렉트 옵션 — worker 접근 가능한 경로로 한 번 로드(실패해도 큐 조회는 가능).
+  const { countryOpts, industryOpts, markets } = useQueueFilterOpts();
+  // 시장 어휘는 BE 계약 확장 대기 — 내려올 때만 폴백을 실측 목록으로 교체.
+  const marketOpts = toMarketOpts(markets.length ? markets : FALLBACK_MARKETS);
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -170,7 +163,7 @@ function Workbench({
       setTotal(res.total);
     } catch (e) {
       if (myReq !== reqRef.current) return;
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       if (myReq === reqRef.current) setLoading(false);
     }
@@ -179,25 +172,6 @@ function Workbench({
   useEffect(() => {
     void load();
   }, [load]);
-
-  // 전체 큐 국가·업종 셀렉트 옵션 — worker 접근 가능한 경로로 한 번 로드.
-  useEffect(() => {
-    fetchQueueFilters()
-      .then((f) => {
-        setCountryOpts(
-          f.countries.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
-        );
-        // '미분류'(분류 실패 폴백값)도 조회 대상 — BE 옵션에 없을 때만 덧붙인다(#115 중복 방지).
-        setIndustryOpts(
-          withUnclassified(f.industries).map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
-        );
-        // 시장 어휘는 BE 계약 확장 대기 — 내려올 때만 폴백을 실측 목록으로 교체.
-        if (f.markets?.length) setMarketOpts(toMarketOpts(f.markets));
-      })
-      .catch(() => {
-        // 옵션 로드 실패해도 큐 조회는 가능 — 픽커만 빈 채로 둔다.
-      });
-  }, []);
 
   // 성공(처리 완료)이면 true — 팝업의 '성공 시에만 다음 행 전진' 판단에 쓰인다.
   const act = async (
@@ -221,7 +195,7 @@ function Workbench({
       setSessionDone((n) => n + 1);
       ok = true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusyIds((prev) => {
         const next = new Set(prev);
@@ -300,14 +274,14 @@ function Workbench({
           <label className="flex items-center gap-1.5 text-muted text-[13px]">
             상장여부
             <select
-              className="bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md"
+              className={INPUT}
               value={listed}
               onChange={(e) => {
                 setListed(e.target.value as "" | Listed);
                 setOffset(0);
               }}
             >
-              {LISTED_OPTIONS.map((o) => (
+              {LISTED_FILTER_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>

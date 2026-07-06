@@ -2,7 +2,8 @@ import { memo, useCallback, useMemo, useRef, useState, type MouseEvent } from "r
 import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, FileText } from "lucide-react";
 import type { Listed, ReviewItem } from "../types";
 import { BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
-import { EmailBadge, StatusBadge } from "./StatusBadge";
+import { safeHref, tri } from "../format";
+import { CandidateRadios, EmailBadge, StatusBadge } from "./StatusBadge";
 import { SiteExplorer, type SiteTab } from "./SiteExplorer";
 
 // 상태별 행 좌측 색 띠(첫 칸에 inset 그림자로 표현) — 한눈에 스캔.
@@ -65,17 +66,6 @@ interface Props {
   readOnly?: boolean;
 }
 
-// 크롤된 신뢰불가 URL 의 스킴을 검증한다 — http(s) 만 허용(javascript:/data: 등 XSS 차단).
-function safeHref(url: string | null): string | null {
-  if (!url) return null;
-  try {
-    const u = new URL(url);
-    return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
-  } catch {
-    return null;
-  }
-}
-
 // URL 에서 표시용 호스트(도메인)를 뽑는다(www. 제거). 실패 시 원문.
 function hostOf(url: string): string {
   try {
@@ -83,12 +73,6 @@ function hostOf(url: string): string {
   } catch {
     return url;
   }
-}
-
-// 불리언/널 3-state 를 O/X/— 로 표시.
-function tri(v: boolean | null): string {
-  if (v === null) return "—";
-  return v ? "O" : "X";
 }
 
 // 사이트 링크 클릭 — 수정키(Ctrl/Cmd/Shift)·가운데 클릭은 브라우저 기본(새 탭)을 살리고,
@@ -148,24 +132,13 @@ const QueueRow = memo(
         <td className={`${TD} ${COL_W[4]} font-mono text-[13px]`}>
           {item.candidates.length > 1 && (
             <div className="flex flex-col gap-1">
-              {item.candidates.map((c) => (
-                <label
-                  key={c.value}
-                  className="flex items-start gap-1.5 cursor-pointer"
-                  title={c.value}
-                >
-                  <input
-                    type="radio"
-                    className="cursor-pointer flex-none mt-0.5"
-                    name={`sel-${item.id}`}
-                    checked={choice === c.value}
-                    disabled={locked}
-                    onChange={() => onPick(item.id, c.value)}
-                  />
-                  <span className="font-mono [overflow-wrap:anywhere]">{c.value}</span>
-                  <EmailBadge status={c.email_status} />
-                </label>
-              ))}
+              <CandidateRadios
+                candidates={item.candidates}
+                name={`sel-${item.id}`}
+                choice={choice}
+                disabled={locked}
+                onPick={(v) => onPick(item.id, v)}
+              />
             </div>
           )}
           {/* 확정 전 이메일 직접 수정/입력 — 후보 선택값을 채우되 사람이 덮어쓸 수 있다.
