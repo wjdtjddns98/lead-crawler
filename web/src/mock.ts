@@ -467,11 +467,13 @@ function setStatus(
   id: string,
   status: ReviewItem["status"],
   selected?: string | null,
+  homepage?: string | null,
 ): ReviewItem | null {
   const it = db.find((x) => x.id === id);
   if (!it) return null;
   it.status = status;
   if (selected !== undefined) it.selected = selected;
+  if (homepage) it.homepage = homepage; // null=변경 없음(FE 확정 계약과 동일)
   it.assignee = "mock-admin";
   it.reviewed_at = new Date().toISOString();
   claimedIds.delete(id); // 처리 완료 — 점유 종료.
@@ -601,12 +603,18 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
   const confirm = path.match(/^\/queue\/([^/]+)\/confirm$/);
   if (confirm && method === "POST") {
     let selected: string | null = null;
+    let homepage: string | null = null;
     try {
-      selected = (JSON.parse(String(init?.body ?? "{}")) as { selected?: string | null }).selected ?? null;
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        selected?: string | null;
+        homepage?: string | null;
+      };
+      selected = body.selected ?? null;
+      homepage = body.homepage ?? null;
     } catch {
       // 본문 없음/파싱 실패 — 선택 없이 확정.
     }
-    const it = setStatus(confirm[1], "confirmed", selected);
+    const it = setStatus(confirm[1], "confirmed", selected, homepage);
     return it ? jsonRes(it) : jsonRes({ detail: "검증 항목을 찾을 수 없습니다" }, 404);
   }
   const reject = path.match(/^\/queue\/([^/]+)\/reject$/);

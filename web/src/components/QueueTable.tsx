@@ -61,12 +61,19 @@ interface Props {
   doneCount: number; // 이번 세션 처리 건수(진행률 바 분자)
   remaining: number; // 남은 작업 건수(호출부 기준 — 내 작업=내 잔여분, 전체큐=필터 반영 total). 분모 = doneCount + remaining
   // 성공(처리 완료) 시 true 를 resolve — 팝업에서 '성공해야 다음 행 전진' 판단에 쓴다.
-  onConfirm: (id: string, selected?: string) => Promise<boolean>;
+  // homepage = 사람이 수정한 사이트 URL(유효 http(s)·원본과 다를 때만, 없으면 undefined).
+  onConfirm: (id: string, selected?: string, homepage?: string) => Promise<boolean>;
   onReject: (id: string) => Promise<boolean>;
   emptyText?: string; // 빈 목록 안내 — 화면 맥락별 문구(생략 시 기본).
   // 읽기 전용(브라우즈) — 액션 컬럼·이메일 편집·미리보기 처리 팝업을 숨긴다. worker 의
   // 전체 큐가 해당: 직접 처리는 claim(내 작업) 경유만 — 미점유 항목 동시 처리 충돌 방지.
   readOnly?: boolean;
+}
+
+// 사이트 편집값 정규화 — 스킴 없는 입력(example.com)은 https:// 를 보충한다. 그래도
+// 무효(http(s) 외 스킴·형식 오류)면 null — safeHref 와 동일하게 XSS 스킴을 차단.
+function normSiteUrl(s: string): string | null {
+  return safeHref(s) ?? safeHref(`https://${s}`);
 }
 
 // URL 에서 표시용 호스트(도메인)를 뽑는다(www. 제거). 실패 시 원문.
@@ -102,8 +109,10 @@ interface RowProps {
   item: ReviewItem;
   busy: boolean;
   choice: string | undefined;
+  site: string | undefined; // 사용자가 편집 중인 사이트 URL(미편집이면 undefined)
   readOnly: boolean; // 역할 고정값(세션 중 불변) — memo 비교에서 제외해도 안전.
   onPick: (id: string, value: string) => void;
+  onEditSite: (id: string, value: string) => void;
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
   onOpen: (id: string, tab: SiteTab) => void;
@@ -114,12 +123,24 @@ interface RowProps {
 // 핸들러를 매 렌더 새로 만들어도 논리는 동일하고, 행은 item 이 바뀔 때 최신 핸들러로
 // 갱신되므로 안전하다(필터 변경 시 item 객체가 새로 와 자연히 재렌더).
 const QueueRow = memo(
-  function QueueRow({ item, busy, choice, readOnly, onPick, onConfirm, onReject, onOpen }: RowProps) {
+  function QueueRow({
+    item,
+    busy,
+    choice,
+    site,
+    readOnly,
+    onPick,
+    onEditSite,
+    onConfirm,
+    onReject,
+    onOpen,
+  }: RowProps) {
     const done = item.status !== "pending";
     // confirmed 만 편집 잠금 — rejected 는 재작업(이메일 수정 → 재확정 번복) 가능 상태로
     // 열어둔다(BE 도 전이 제한 없이 감사기록과 함께 허용). 읽기 전용(브라우즈)은 전부 잠금.
     const locked = item.status === "confirmed" || readOnly;
-    const href = safeHref(item.homepage);
+    // 링크는 편집 중 값을 따른다(무효 입력이면 링크가 사라져 잘못된 URL 임이 바로 보인다).
+    const href = site !== undefined ? normSiteUrl(site.trim()) : safeHref(item.homepage);
     const formHref = safeHref(item.form);
     return (
       <tr className={`hover:bg-white/[0.03] ${done ? "opacity-60" : ""}`}>
@@ -214,6 +235,19 @@ const QueueRow = memo(
               </a>
             </div>
           )}
+          {/* 확정 전 사이트 URL 직접 수정/입력 — 이메일 편집과 동일 패턴(확정 시 함께 반영).
+              사이트 없던(homepage null) 행엔 새 URL 추가도 가능. 읽기 전용은 링크만. */}
+          {!readOnly && (
+            <input
+              className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+              type="url"
+              value={site ?? item.homepage ?? ""}
+              disabled={locked}
+              placeholder="사이트 URL 직접 입력/수정"
+              onChange={(e) => onEditSite(item.id, e.target.value)}
+              title="확정 전 사이트 URL 을 수정하거나 직접 입력할 수 있습니다"
+            />
+          )}
         </td>
         <td className={`${TD} ${COL_W[7]}`}>
           <StatusBadge status={item.status} />
@@ -253,7 +287,10 @@ const QueueRow = memo(
     );
   },
   (prev, next) =>
-    prev.item === next.item && prev.busy === next.busy && prev.choice === next.choice,
+    prev.item === next.item &&
+    prev.busy === next.busy &&
+    prev.choice === next.choice &&
+    prev.site === next.site,
 );
 
 // 검증 큐 표 — 회사/이메일 후보(다중 선택)/메일 검증 신호/상태/액션.
@@ -272,6 +309,23 @@ export function QueueTable({
   const onPick = useCallback((id: string, value: string) => {
     setPicked((p) => ({ ...p, [id]: value }));
   }, []);
+
+  // 행별 사이트 URL 편집값 — 서버 homepage 를 기본값으로, 사용자가 바꾸면 덮어쓴다.
+  const [sites, setSites] = useState<Record<string, string>>({});
+  const onEditSite = useCallback((id: string, value: string) => {
+    setSites((p) => ({ ...p, [id]: value }));
+  }, []);
+  // 확정에 실을 사이트 수정값 — 편집했고, 정규화 후 유효하며, 원본과 다를 때만(그 외 undefined
+  // = 변경 없음). 정규화가 스킴만 보충한 경우(원본과 동일)도 변경 없음으로 취급된다.
+  const editedSite = useCallback(
+    (it: ReviewItem): string | undefined => {
+      const raw = sites[it.id];
+      if (raw === undefined) return undefined;
+      const norm = normSiteUrl(raw.trim());
+      return norm && norm !== it.homepage ? norm : undefined;
+    },
+    [sites],
+  );
 
   // 컬럼 정렬 — 같은 컬럼 재클릭 시 asc↔desc 토글, 3번째 클릭이면 해제(원본 순서 복귀).
   const [sort, setSort] = useState<Sort | null>(null);
@@ -349,8 +403,13 @@ export function QueueTable({
     [],
   );
   const popupConfirm = useCallback(
-    (id: string, selected?: string) => advanceAfter(id, () => onConfirm(id, selected)),
-    [advanceAfter, onConfirm],
+    (id: string, selected?: string) =>
+      advanceAfter(id, () => {
+        // 표에서 편집해 둔 사이트 URL 이 있으면 팝업 확정에도 함께 실린다(편집 유실 방지).
+        const it = itemsRef.current.find((x) => x.id === id);
+        return onConfirm(id, selected, it ? editedSite(it) : undefined);
+      }),
+    [advanceAfter, onConfirm, editedSite],
   );
   const popupReject = useCallback(
     (id: string) => advanceAfter(id, () => onReject(id)),
@@ -367,6 +426,9 @@ export function QueueTable({
   const modalChoice = modalItem
     ? (picked[modalItem.id] ?? modalItem.selected ?? modalItem.candidates[0]?.value)?.trim()
     : undefined;
+  // 확정에 실릴 사이트 수정값(없으면 undefined). raw 는 무효 입력 경고 판단용.
+  const modalSite = modalItem ? editedSite(modalItem) : undefined;
+  const modalSiteRaw = modalItem ? sites[modalItem.id]?.trim() : undefined;
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
@@ -415,8 +477,10 @@ export function QueueTable({
               item={it}
               busy={busyIds.has(it.id)}
               choice={picked[it.id] ?? it.selected ?? it.candidates[0]?.value}
+              site={sites[it.id]}
               readOnly={readOnly}
               onPick={onPick}
+              onEditSite={onEditSite}
               onConfirm={(id) => setModal({ id, action: "confirm" }) /* 즉시 확정 대신 확인 모달 */}
               // confirmed 행 거부 = 확정 번복 — 확인 모달 경유. pending 거부는 기존대로 1클릭.
               onReject={(id) =>
@@ -454,6 +518,19 @@ export function QueueTable({
                       {modalChoice}
                     </span>
                   )}
+                  {modalSite && (
+                    <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
+                      사이트 → {modalSite}
+                    </span>
+                  )}
+                  {/* 편집했지만 유효 URL 이 아닌 경우 — 조용히 버리지 않고 미반영을 알린다. */}
+                  {modalSiteRaw !== undefined &&
+                    !modalSite &&
+                    modalSiteRaw !== (modalItem.homepage ?? "") && (
+                      <span className="block mt-1 text-xs text-danger-fg">
+                        사이트 수정값이 유효한 URL 이 아니어서 반영되지 않습니다
+                      </span>
+                    )}
                 </>
               ) : (
                 <>
@@ -481,7 +558,7 @@ export function QueueTable({
                 onClick={() => {
                   setModal(null);
                   if (modal.action === "confirm")
-                    void onConfirm(modalItem.id, modalChoice || undefined);
+                    void onConfirm(modalItem.id, modalChoice || undefined, modalSite);
                   else void onReject(modalItem.id);
                 }}
               >
