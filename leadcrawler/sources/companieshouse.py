@@ -39,6 +39,12 @@ _PAGE = 100  # 페이지당 size(API 상한은 5000이나 레이트리밋·예�
 # 크게 두되(cap 이 실질 상한), 희소매칭 업종에서 레이트리밋(600 요청/5분)에 걸리지 않게
 # 보수적으로 — _PAGE=100 → 최대 2만 후보 스캔(200 요청 < 5분 윈도 한도).
 _MAX_PAGES = 200
+# advanced-search 의 ES 페이징 윈도: start_index+size ≤ 10,000. 초과 요청은 HTTP 500
+# (실측 2026-07-06: start_index 9900→200, 9999→500). 이 경계를 넘겨 페이징하면 커서가
+# 10000 에 영구 고착돼 매 런 즉시 에러로 0건이 되는 실사고가 있었다 — 경계 도달을
+# '모집단 끝'(빈 페이지)과 동일하게 취급해 0 으로 되감는다.
+# ponytail: 윈도 밖(>10k) 심층 수집은 쿼리 분할(설립일 범위 등)이 필요해지면 추가.
+_API_MAX_WINDOW = 10_000
 
 
 class CompaniesHouseSource:
@@ -129,9 +135,16 @@ class CompaniesHouseSource:
         start = 0
         if self._cursor_store is not None:
             start = max(0, self._cursor_store.get(self.name, segment.label))
+            if start + _PAGE > _API_MAX_WINDOW:
+                # 지난 런들이 API 윈도 끝에 도달(구코드에선 500 고착) — 재검증 사이클 재개.
+                log.info("companies_house.cursor.window_wrap", segment=segment.label, start=start)
+                start = 0
         exhausted = False
         page = 0
         while len(out) < cap and page < _MAX_PAGES:
+            if start + _PAGE > _API_MAX_WINDOW:
+                exhausted = True  # 윈도 끝 — 더 요청하면 500. 모집단 끝(빈 페이지)과 동일 취급.
+                break
             params = {
                 "company_status": "active",  # 제약 ②: 실존 법인만(서버 필터).
                 "size": min(_PAGE, cap),
