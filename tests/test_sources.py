@@ -109,9 +109,9 @@ def test_discover_segment_merges_applicable_sources() -> None:
 
 def test_specific_industry_gates_unfiltered_sources() -> None:
     # 정밀도 우선: 구체 업종(건설) 지정 시 업종 필터를 못 하는 GLEIF/Wikidata 는 빠지고,
-    # 등록처(DART)·검색·업종질의 가능한 OpenCorporates 만 남는다.
+    # 등록처(DART)·검색·업종질의 가능한 OpenCorporates·AI 디렉토리(구체 업종 전용)만 남는다.
     rows = discover_segment(Segment(country="KR", industry="건설"), _dry_settings())
-    assert {r.source for r in rows} == {"dart", "opencorporates", "search"}
+    assert {r.source for r in rows} == {"dart", "opencorporates", "search", "ai_directory"}
 
 
 def test_aggregator_applies_to_resolvable_countries_only() -> None:
@@ -140,9 +140,9 @@ def test_specific_industry_gates_aggregators_not_opencorporates() -> None:
 
 
 def test_unknown_country_routes_to_search_only() -> None:
-    # 미등록 국가는 등록처·집계원 모두 미적용 → 검색 소스로만 폴백.
+    # 미등록 국가는 등록처·집계원 모두 미적용 → 검색·AI 디렉토리(구체 업종 전용)로 폴백.
     rows = discover_segment(Segment(country="Atlantis", industry="제조"), _dry_settings())
-    assert {r.source for r in rows} == {"search"}
+    assert {r.source for r in rows} == {"search", "ai_directory"}
 
 
 def test_region_segment_routes_to_search_only() -> None:
@@ -245,7 +245,7 @@ def test_build_sources_registers_all_adapters() -> None:
     names = {src.name for src in build_sources(_dry_settings())}
     assert names == {
         "edgar", "dart", "companies_house", "pse", "set", "sgx", "idx", "bursa",
-        "hose", "hnx", "gleif", "wikidata", "opencorporates", "search",
+        "hose", "hnx", "gleif", "wikidata", "opencorporates", "search", "ai_directory",
     }
 
 

@@ -170,8 +170,10 @@ function Workbench({
   }, [filter, offset, country, industry, listed, market]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    // 전체 큐 탭에 있을 때만 조회 — 탭 진입·복귀 시 재조회해 내 작업에서 처리한
+    // 확정/거부가 낡은 스냅샷으로 남지 않게 한다(마운트 1회 조회의 stale 문제).
+    if (view === "browse") void load();
+  }, [load, view]);
 
   // 성공(처리 완료)이면 true — 팝업의 '성공 시에만 다음 행 전진' 판단에 쓰인다.
   const act = async (

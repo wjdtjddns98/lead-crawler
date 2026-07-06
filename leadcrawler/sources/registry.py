@@ -25,6 +25,7 @@ from .exchanges import (
     SetSource,
     SgxSource,
 )
+from .ai_directory import AiDirectorySource
 from .gleif import GleifSource
 from .opencorporates import OpenCorporatesSource
 from .search import SearchSource
@@ -68,6 +69,10 @@ def build_sources(
         WikidataSource(settings, rate_limiters=rate_limiters),
         OpenCorporatesSource(settings, rate_limiters=rate_limiters),
         SearchSource(settings, cost_ledger=cost_ledger, rate_limiters=rate_limiters),
+        # AI 디렉토리(dom: 키, 구체 업종 전용 — applies_to 게이팅). 검색과 같은 약한 티어라
+        # 등록처·집계원 뒤에 둔다(도메인 동치 dedup 시 등록처가 첫 등장 우선). cost_ledger 는
+        # 목록추출 LLM(ai_directory) + 디렉토리 URL 수집 Serper 과금 추적용.
+        AiDirectorySource(settings, cost_ledger=cost_ledger, rate_limiters=rate_limiters),
     ]
 
 
