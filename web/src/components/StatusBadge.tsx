@@ -1,4 +1,4 @@
-import type { ReviewStatus } from "../types";
+import type { CandidateInfo, ReviewStatus } from "../types";
 
 const LABEL: Record<ReviewStatus, string> = {
   pending: "대기",
@@ -44,4 +44,39 @@ export function EmailBadge({ status }: { status: string | null }) {
   const cls = EMAIL_CLS[status] ?? "text-muted border-line";
   const label = EMAIL_LABEL[status] ?? status;
   return <span className={`${BADGE} ${cls}`} title={status}>{label}</span>;
+}
+
+// 이메일 후보 라디오 목록 — 큐 행·사이트 탐색 사이드바 공용(같은 표기·같은 뱃지).
+// 선택 상태(choice)와 반영(onPick)은 호출부 몫, name 은 행/모달별 라디오 그룹 구분용.
+export function CandidateRadios({
+  candidates,
+  name,
+  choice,
+  disabled,
+  onPick,
+}: {
+  candidates: CandidateInfo[];
+  name: string;
+  choice: string | undefined;
+  disabled: boolean;
+  onPick: (value: string) => void;
+}) {
+  return (
+    <>
+      {candidates.map((c) => (
+        <label key={c.value} className="flex items-start gap-1.5 cursor-pointer" title={c.value}>
+          <input
+            type="radio"
+            className="cursor-pointer flex-none mt-0.5"
+            name={name}
+            checked={choice === c.value}
+            disabled={disabled}
+            onChange={() => onPick(c.value)}
+          />
+          <span className="font-mono text-[13px] [overflow-wrap:anywhere]">{c.value}</span>
+          <EmailBadge status={c.email_status} />
+        </label>
+      ))}
+    </>
+  );
 }

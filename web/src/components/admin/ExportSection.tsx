@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
-import { exportConfirmed, fetchQueueFilters, withUnclassified } from "../../api";
+import { useState } from "react";
+import { exportConfirmed } from "../../api";
 import { Download } from "lucide-react";
-import { MultiPicker, type PickerOption } from "../MultiPicker";
+import { errMsg } from "../../format";
+import { useQueueFilterOpts } from "../../filterOptions";
+import { MultiPicker } from "../MultiPicker";
 import { ErrorBox } from "../ErrorBox";
 import { BTN_EXPORT } from "../../ui";
 import { SECTION_H2, FIELD, CRAWL_TARGET } from "./shared";
@@ -9,32 +11,13 @@ import { SECTION_H2, FIELD, CRAWL_TARGET } from "./shared";
 // 확정분 엑셀 추출 — 국가/업종을 골라 선택 추출(빈 선택=전체). 전체 추출도 여기서
 // (선택 없이 다운로드). 헤더의 '전체 확정분' 버튼은 중복이라 제거됨(2026-07-02).
 export function ExportSection() {
-  const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
-  const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
   const [countries, setCountries] = useState("");
   const [industries, setIndustries] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    fetchQueueFilters()
-      .then((f) => {
-        if (!alive) return;
-        setCountryOpts(
-          f.countries.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
-        );
-        // 추출 범위 업종도 큐 행 저장 어휘(구분 택소노미+미분류)와 일치해야 매치된다(#115) —
-        // 크롤 타깃용 /admin/industries(18키)가 아니라 /queue/filters 를 출처로 쓴다.
-        setIndustryOpts(
-          withUnclassified(f.industries).map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
-        );
-      })
-      .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
-    return () => {
-      alive = false;
-    };
-  }, []);
+  // 추출 범위 업종도 큐 행 저장 어휘(구분 택소노미+미분류)와 일치해야 매치된다(#115) —
+  // 크롤 타깃용 /admin/industries(18키)가 아니라 /queue/filters 를 출처로 쓴다.
+  const { countryOpts, industryOpts } = useQueueFilterOpts(setErr);
 
   const download = async () => {
     setBusy(true);
@@ -42,7 +25,7 @@ export function ExportSection() {
     try {
       await exportConfirmed(countries, industries);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errMsg(e));
     } finally {
       setBusy(false);
     }
