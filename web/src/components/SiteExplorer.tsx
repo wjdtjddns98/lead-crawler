@@ -121,7 +121,7 @@ export function SiteExplorer({
     };
   }, []);
 
-  // Enter 2단계 확정 — 실수 확정 방지. 1차 Enter: 확인창 표시 / 2차 Enter: 실제 확정.
+  // 2단계 확정(Enter·확정 버튼 클릭 공통) — 실수 확정 방지. 1차: 확인창 표시 / 2차: 실제 확정.
   const [confirming, setConfirming] = useState(false);
 
   const done = item.status !== "pending";
@@ -418,12 +418,13 @@ export function SiteExplorer({
               )}
 
               {/* 확정 / 거부 — 모달 닫기/다음 행 전진은 부모가 처리 성공 시에만 수행한다
-                  (성공만 전진, 실패는 현재 항목·에러 유지). 여기선 처리 요청만 보낸다. */}
+                  (성공만 전진, 실패는 현재 항목·에러 유지). 확정 클릭은 Enter 와 동일하게
+                  확인 오버레이를 먼저 띄운다(실수 확정 방지). */}
               <div className="flex gap-2">
                 <button
                   className={`${BTN_CONFIRM} flex-1`}
                   disabled={busy || item.status === "confirmed"}
-                  onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
+                  onClick={() => setConfirming(true)}
                 >
                   확정 (Enter)
                 </button>
