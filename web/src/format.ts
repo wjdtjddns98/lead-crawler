@@ -16,6 +16,12 @@ export function safeHref(url: string | null): string | null {
   }
 }
 
+// 사이트 편집값 정규화 — 스킴 없는 입력(example.com)은 https:// 를 보충한다. 그래도
+// 무효(http(s) 외 스킴·형식 오류)면 null — safeHref 와 동일하게 XSS 스킴을 차단.
+export function normSiteUrl(s: string): string | null {
+  return safeHref(s) ?? safeHref(`https://${s}`);
+}
+
 // 불리언/널 3-state 를 O/X/— 로 표시.
 export function tri(v: boolean | null): string {
   if (v === null) return "—";
