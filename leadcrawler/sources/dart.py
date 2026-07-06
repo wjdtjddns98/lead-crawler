@@ -44,7 +44,10 @@ _LISTED_CLS = {"Y": "listed", "K": "listed", "N": "listed", "E": "unlisted"}
 _MARKET_CLS = {"Y": "KOSPI", "K": "KOSDAQ", "N": "KONEX"}
 # 업종 필터 시 cap*10 까지 넓게 스캔하되, 후보당 company.json 1 콜이 발생하므로(무료 쿼터
 # 보호) 절대 상한을 둔다 — 예산가드는 Serper 유료검색에만 걸려 무료 등록처는 무방비라서다.
-_SCAN_LIMIT_ABS = 2000
+# 2000→5000 상향(물량): 스캔당 요청 = corpCode 목록 1 + 기업개황 1×후보. 5000 후보 = 5001 요청
+# 으로 OpenDART 일일 쿼터 20,000 의 25%(하루 ~4회 풀스캔 여유). 소요 = 5000 × http_request_delay
+# (기본 0.12s) ≈ 600s(10분)/풀스캔. scan_limit=min(cap*10, ABS) 이라 딥백필로 cap 을 올릴 때 상한.
+_SCAN_LIMIT_ABS = 5000
 
 
 class DartSource:

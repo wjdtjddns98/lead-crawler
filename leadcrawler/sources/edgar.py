@@ -38,7 +38,10 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _EXCHANGES = {"nasdaq", "nyse", "cboe", "otc"}
 # 업종 필터 시 cap*10 까지 넓게 스캔하되, 후보당 submissions.json 1 콜이 발생하므로(SEC
 # 무료 레이트리밋 보호) 절대 상한을 둔다 — 예산가드가 무료 등록처엔 안 걸린다.
-_SCAN_LIMIT_ABS = 2000
+# 2000→10000 상향(물량): SEC 공정접근 정책 = 10 req/s. http_request_delay(기본 0.12s)면 ~8.3
+# req/s 로 정책 이내. 10000 후보 = 10000 요청 ≈ 10000 × 0.12s = 1200s(20분)/풀스캔으로 딥백필
+# 1런에 흡수 가능. scan_limit=min(cap*10, ABS) 이라 cap(기본 500)을 올린 딥백필 런에서 상한 역할.
+_SCAN_LIMIT_ABS = 10000
 
 
 class EdgarSource:
