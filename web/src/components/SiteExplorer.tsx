@@ -121,8 +121,9 @@ export function SiteExplorer({
     };
   }, []);
 
-  // 2단계 확정(Enter·확정 버튼 클릭 공통) — 실수 확정 방지. 1차: 확인창 표시 / 2차: 실제 확정.
-  const [confirming, setConfirming] = useState(false);
+  // 2단계 확인 오버레이(Enter·버튼 클릭 공통) — 실수 방지. "confirm"=확정, "reject"=확정
+  // 번복 거부(confirmed 행 한정 — pending 거부는 기존대로 즉시). false 면 닫힘.
+  const [confirming, setConfirming] = useState<false | "confirm" | "reject">(false);
 
   const done = item.status !== "pending";
   const homeHref = safeHref(item.homepage);
@@ -179,10 +180,11 @@ export function SiteExplorer({
         else onClose();
         return;
       }
-      if (e.key === "Enter" && !done && !busy) {
+      // Enter 확정 — confirmed 만 차단(rejected 는 재확정 번복 허용, 아래 버튼 가드와 동일).
+      if (e.key === "Enter" && item.status !== "confirmed" && !busy) {
         e.preventDefault();
-        if (confirming) doConfirm();
-        else setConfirming(true);
+        if (confirming === "confirm") doConfirm();
+        else if (!confirming) setConfirming("confirm");
         return;
       }
       if (e.key === "Delete" && !done && !busy) {
@@ -202,7 +204,7 @@ export function SiteExplorer({
   // 후보 라디오 클릭은 본래 동작을 살리려 건너뛴다. 이메일 형태가 아니면 건드리지 않는다.
   const emailRef = useRef<HTMLInputElement | null>(null);
   async function pasteFromClipboard(e: MouseEvent) {
-    if (done) return;
+    if (item.status === "confirmed") return; // rejected 는 재작업 가능 — 편집 열림.
     if ((e.target as HTMLElement).closest("input,button,a,label,select,textarea")) return;
     try {
       const text = await navigator.clipboard.readText();
@@ -235,7 +237,7 @@ export function SiteExplorer({
         className="relative bg-panel border border-line rounded-lg w-[92vw] h-[86vh] max-w-[1400px] flex flex-col overflow-hidden focus:outline-none"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Enter 2단계 확정 — 확인 오버레이. 다시 Enter(또는 확정 버튼)로 진짜 확정. */}
+        {/* 2단계 확인 오버레이 — 확정(다시 Enter 또는 버튼)과 확정 번복 거부 공용. */}
         {confirming && (
           <div
             className="absolute inset-0 z-20 bg-black/55 flex items-center justify-center p-4"
@@ -245,19 +247,47 @@ export function SiteExplorer({
               className="bg-panel border border-line rounded-lg p-5 max-w-sm w-full text-center flex flex-col gap-4"
               onClick={(e) => e.stopPropagation()}
             >
-              <p className="text-ink text-sm leading-relaxed">
-                <span className="font-semibold">{item.name}</span> 을(를) 확정하시겠습니까?
-                {choice?.trim() && (
-                  <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
-                    {choice.trim()}
+              {confirming === "confirm" ? (
+                <p className="text-ink text-sm leading-relaxed">
+                  <span className="font-semibold">{item.name}</span> 을(를) 확정하시겠습니까?
+                  {item.status === "rejected" && (
+                    <span className="block mt-1 text-muted text-xs">
+                      거부된 항목을 확정으로 번복합니다.
+                    </span>
+                  )}
+                  {choice?.trim() && (
+                    <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
+                      {choice.trim()}
+                    </span>
+                  )}
+                  <span className="block mt-2 text-muted text-xs">다시 Enter 를 누르면 확정됩니다.</span>
+                </p>
+              ) : (
+                <p className="text-ink text-sm leading-relaxed">
+                  <span className="font-semibold">{item.name}</span> 의 확정을 거부로
+                  번복하시겠습니까?
+                  <span className="block mt-1 text-muted text-xs">
+                    엑셀 추출 대상에서 제외됩니다.
                   </span>
-                )}
-                <span className="block mt-2 text-muted text-xs">다시 Enter 를 누르면 확정됩니다.</span>
-              </p>
+                </p>
+              )}
               <div className="flex gap-2">
-                <button className={`${BTN_CONFIRM} flex-1`} disabled={busy} onClick={doConfirm}>
-                  확정 (Enter)
-                </button>
+                {confirming === "confirm" ? (
+                  <button className={`${BTN_CONFIRM} flex-1`} disabled={busy} onClick={doConfirm}>
+                    확정 (Enter)
+                  </button>
+                ) : (
+                  <button
+                    className={`${BTN_REJECT} flex-1`}
+                    disabled={busy}
+                    onClick={() => {
+                      setConfirming(false);
+                      onReject(item.id);
+                    }}
+                  >
+                    거부
+                  </button>
+                )}
                 <button className={`${BTN} flex-1`} onClick={() => setConfirming(false)}>
                   취소 (Esc)
                 </button>
@@ -360,7 +390,7 @@ export function SiteExplorer({
                   candidates={item.candidates}
                   name={`exp-sel-${item.id}`}
                   choice={choice}
-                  disabled={done}
+                  disabled={item.status === "confirmed"}
                   onPick={(v) => onPick(item.id, v)}
                 />
               </div>
@@ -374,7 +404,7 @@ export function SiteExplorer({
                 className="w-full bg-canvas border border-line text-ink font-mono text-sm py-1.5 px-2 rounded focus:outline-none focus:border-accent disabled:opacity-50"
                 type="email"
                 value={choice ?? ""}
-                disabled={done}
+                disabled={item.status === "confirmed"}
                 placeholder="exploring@company.com"
                 onChange={(e) => onPick(item.id, e.target.value)}
               />
@@ -424,14 +454,17 @@ export function SiteExplorer({
                 <button
                   className={`${BTN_CONFIRM} flex-1`}
                   disabled={busy || item.status === "confirmed"}
-                  onClick={() => setConfirming(true)}
+                  onClick={() => setConfirming("confirm")}
                 >
                   확정 (Enter)
                 </button>
                 <button
                   className={`${BTN_REJECT} flex-1`}
                   disabled={busy || item.status === "rejected"}
-                  onClick={() => onReject(item.id)}
+                  // confirmed 행 거부 = 확정 번복(엑셀 추출 대상 이탈) — 확인 오버레이 경유.
+                  onClick={() =>
+                    item.status === "confirmed" ? setConfirming("reject") : onReject(item.id)
+                  }
                 >
                   거부 (Del)
                 </button>
