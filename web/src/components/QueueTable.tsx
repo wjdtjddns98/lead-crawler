@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, FileText } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, FileText, Pencil } from "lucide-react";
 import type { Listed, ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
 import { safeHref, tri } from "../format";
@@ -109,10 +109,12 @@ interface RowProps {
   item: ReviewItem;
   busy: boolean;
   choice: string | undefined;
-  site: string | undefined; // 사용자가 편집 중인 사이트 URL(미편집이면 undefined)
+  // 사용자가 편집 중인 사이트 URL — undefined 면 편집기 닫힘(기본 한 줄 유지).
+  site: string | undefined;
   readOnly: boolean; // 역할 고정값(세션 중 불변) — memo 비교에서 제외해도 안전.
   onPick: (id: string, value: string) => void;
   onEditSite: (id: string, value: string) => void;
+  onCancelSite: (id: string) => void; // 편집 취소 — 입력을 닫고 원본 링크로 복귀.
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
   onOpen: (id: string, tab: SiteTab) => void;
@@ -131,6 +133,7 @@ const QueueRow = memo(
     readOnly,
     onPick,
     onEditSite,
+    onCancelSite,
     onConfirm,
     onReject,
     onOpen,
@@ -219,6 +222,24 @@ const QueueRow = memo(
           ) : (
             <span className="text-muted">—</span>
           )}
+          {/* 사이트 URL 편집 — 이메일과 달리 링크가 주 기능이고 편집은 예외적 교정이라 상시
+              입력 대신 연필 토글로 연다(기본 한 줄 유지). 사이트 없던 행엔 새 URL 추가도 가능.
+              편집값은 확정 시 함께 반영. 읽기 전용·confirmed 잠금은 연필 자체를 숨긴다. */}
+          {!readOnly && !locked && (
+            <button
+              type="button"
+              className={`${LINK_FOCUS} text-muted hover:text-ink align-middle ml-1.5`}
+              title={site === undefined ? "사이트 URL 수정/입력" : "편집 취소"}
+              onClick={() =>
+                site === undefined
+                  ? onEditSite(item.id, item.homepage ?? "")
+                  : onCancelSite(item.id)
+              }
+            >
+              <Pencil size={12} aria-hidden />
+              <span className="sr-only">사이트 URL 편집</span>
+            </button>
+          )}
           {formHref && (
             <div>
               <a
@@ -235,17 +256,16 @@ const QueueRow = memo(
               </a>
             </div>
           )}
-          {/* 확정 전 사이트 URL 직접 수정/입력 — 이메일 편집과 동일 패턴(확정 시 함께 반영).
-              사이트 없던(homepage null) 행엔 새 URL 추가도 가능. 읽기 전용은 링크만. */}
-          {!readOnly && (
+          {site !== undefined && !locked && !readOnly && (
             <input
-              className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+              autoFocus
+              className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent"
               type="url"
-              value={site ?? item.homepage ?? ""}
-              disabled={locked}
+              value={site}
               placeholder="사이트 URL 직접 입력/수정"
               onChange={(e) => onEditSite(item.id, e.target.value)}
-              title="확정 전 사이트 URL 을 수정하거나 직접 입력할 수 있습니다"
+              onKeyDown={(e) => e.key === "Escape" && onCancelSite(item.id)}
+              title="확정 시 함께 반영됩니다 (Esc: 취소)"
             />
           )}
         </td>
@@ -310,10 +330,17 @@ export function QueueTable({
     setPicked((p) => ({ ...p, [id]: value }));
   }, []);
 
-  // 행별 사이트 URL 편집값 — 서버 homepage 를 기본값으로, 사용자가 바꾸면 덮어쓴다.
+  // 행별 사이트 URL 편집값 — 키 존재 = 편집기 열림(연필 토글). 취소하면 키를 지워 닫는다.
   const [sites, setSites] = useState<Record<string, string>>({});
   const onEditSite = useCallback((id: string, value: string) => {
     setSites((p) => ({ ...p, [id]: value }));
+  }, []);
+  const onCancelSite = useCallback((id: string) => {
+    setSites((p) => {
+      const next = { ...p };
+      delete next[id];
+      return next;
+    });
   }, []);
   // 확정에 실을 사이트 수정값 — 편집했고, 정규화 후 유효하며, 원본과 다를 때만(그 외 undefined
   // = 변경 없음). 정규화가 스킴만 보충한 경우(원본과 동일)도 변경 없음으로 취급된다.
@@ -481,6 +508,7 @@ export function QueueTable({
               readOnly={readOnly}
               onPick={onPick}
               onEditSite={onEditSite}
+              onCancelSite={onCancelSite}
               onConfirm={(id) => setModal({ id, action: "confirm" }) /* 즉시 확정 대신 확인 모달 */}
               // confirmed 행 거부 = 확정 번복 — 확인 모달 경유. pending 거부는 기존대로 1클릭.
               onReject={(id) =>
