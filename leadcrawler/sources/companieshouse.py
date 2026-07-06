@@ -28,7 +28,7 @@ from .base import (
     opt_str,
 )
 from .http import Fetcher, HostRateLimiters, SupportsFetch
-from .industry import industry_from_uk_sic, matches_prefix, uk_sic_prefixes
+from .industry import industry_from_uk_sic, is_broad_industry, matches_prefix, uk_sic_prefixes
 
 log = get_logger("sources.companies_house")
 
@@ -114,6 +114,13 @@ class CompaniesHouseSource:
         headers = self._auth_header()
         cap = self._settings.discovery_max_per_source
         prefixes = uk_sic_prefixes(segment.industry)
+        # 미매핑 **구체** 업종(예: '자동차·모빌리티' — _UK_SIC 에 키 없음)은 수집하지 않는다:
+        # 등록처가 필터를 못 해 전량 통과되고, 비-broad 라 세그먼트 라벨이 그대로 구분에
+        # 실려 **아무 UK 법인이 그 업종으로 오라벨**된다(전체크롤 자동차 70% 편중의 진범).
+        # broad('전체' 등)는 계속 수집하되 _candidate 의 code_label 게이트가 실업종만 남긴다.
+        if prefixes is None and not is_broad_industry(segment.industry):
+            log.info("companies_house.skip.unmapped_industry", industry=segment.industry)
+            return []
 
         out: list[DiscoveredCompany] = []
         # 런 간 커서(딥백필): 지난 런이 멈춘 start_index 부터 이어 페이징한다. _MAX_PAGES

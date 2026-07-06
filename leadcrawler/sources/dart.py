@@ -28,7 +28,7 @@ from .base import (
     opt_str,
 )
 from .http import Fetcher, HostRateLimiters, SupportsFetch
-from .industry import industry_from_ksic, ksic_prefixes, matches_prefix
+from .industry import industry_from_ksic, is_broad_industry, ksic_prefixes, matches_prefix
 
 log = get_logger("sources.dart")
 
@@ -110,6 +110,11 @@ class DartSource:
         key = self._settings.dart_api_key
         cap = self._settings.discovery_max_per_source
         prefixes = ksic_prefixes(segment.industry)
+        # 미매핑 **구체** 업종은 수집하지 않는다(등록처 3소스 공통 가드): KSIC 필터 불가 →
+        # 전량 통과 → 비-broad 세그먼트 라벨로 오라벨(전체크롤 GB 자동차 70% 과 동일 결함).
+        if prefixes is None and not is_broad_industry(segment.industry):
+            log.info("dart.skip.unmapped_industry", industry=segment.industry)
+            return []
 
         try:
             listed = _parse_corp_codes(
