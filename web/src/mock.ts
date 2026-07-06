@@ -2,7 +2,7 @@
 // main.tsx 가 installMock() 을 호출한다. window.fetch 를 가로채 검증 큐 API 를 메모리 상태로 응답하므로
 // api.ts·컴포넌트는 전혀 수정하지 않는다. 상태는 메모리 전용 — 새로고침 시 초기 샘플로 리셋된다.
 // admin 세션을 localStorage 에 시드해 로그인 화면을 건너뛴다. 매칭 안 되는 API 는 빈/스텁으로 응답.
-import type { CandidateInfo, ClaimFilter, Listed, ReviewItem } from "./types";
+import type { AuditEntry, CandidateInfo, ClaimFilter, Listed, ReviewItem } from "./types";
 
 // 영구 배정 계약(PRD-queue-claim-permanent) — claim 1회 = +BATCH 추가, 총량 CAP 상한.
 const BATCH = 30;
@@ -338,6 +338,17 @@ let db: ReviewItem[] = seed();
 // 내(mock 단일 사용자) 점유 id — 처리(확정/거부)하면 점유도 소멸. 새로고침 시 리셋(메모리 전용).
 let claimedIds = new Set<string>();
 
+// 최근 검증 이력 — 확정/거부(setStatus)마다 최신순으로 쌓인다. 초기 2건은 빈 화면 방지용 시드.
+const audit: AuditEntry[] = db.slice(0, 2).map((it, i) => ({
+  id: `audit-seed-${i}`,
+  review_id: it.id,
+  actor_username: "mock-admin",
+  action: i === 0 ? "confirmed" : "rejected",
+  selected: i === 0 ? it.candidates[0]?.value ?? null : null,
+  company_name: it.name,
+  at: new Date(Date.now() - (i + 1) * 3600_000).toISOString(),
+}));
+
 // 크롤 타깃 — GET/PUT /admin/crawl-target 이 공유하는 메모리 상태(BE CrawlTargetInfo 기본값과 동일).
 type CrawlTargetState = {
   countries: string;
@@ -464,6 +475,16 @@ function setStatus(
   it.assignee = "mock-admin";
   it.reviewed_at = new Date().toISOString();
   claimedIds.delete(id); // 처리 완료 — 점유 종료.
+  // 검증 이력 기록 — 관리자 '최근 검증 이력' 표에 즉시 반영(최신이 앞).
+  audit.unshift({
+    id: `audit-${audit.length}-${id}`,
+    review_id: id,
+    actor_username: "mock-admin",
+    action: status,
+    selected: it.selected,
+    company_name: it.name,
+    at: it.reviewed_at,
+  });
   return it;
 }
 
@@ -617,7 +638,8 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     claimedIds = new Set();
     return jsonRes({ reclaimed: n });
   }
-  if (path === "/admin/audit") return jsonRes([]);
+  if (path === "/admin/audit")
+    return jsonRes(audit.slice(0, Number(u.searchParams.get("limit") ?? 100) || 100));
   // 크롤 타깃 픽커 옵션 — BE 와 동일하게 국가/업종 표준 목록 전량(/queue/filters 와 같은 출처).
   if (path === "/admin/countries") return jsonRes(MOCK_COUNTRIES);
   if (path === "/admin/industries") return jsonRes(MOCK_INDUSTRIES);
