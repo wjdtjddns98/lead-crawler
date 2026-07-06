@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, useState, type MouseEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, FileText } from "lucide-react";
 import type { Listed, ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
@@ -296,6 +296,20 @@ export function QueueTable({
   // SiteExplorer 의 Enter/클릭 확정 오버레이와 동일 단계 수). null 이면 모달 닫힘.
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
+  // 확인 모달 동안 Esc 닫기(window 레벨 — Tab 으로 포커스가 배경에 새도 동작)와 배경
+  // 스크롤 잠금(SiteExplorer 와 동일). 닫히면 원복.
+  useEffect(() => {
+    if (!confirmId) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setConfirmId(null);
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [confirmId]);
+
   // 사이트 미리보기 창 — 열린 행 id 와 초기 탭(홈/문의폼). 닫히면 null.
   const [open, setOpen] = useState<{ id: string; tab: SiteTab } | null>(null);
   const onOpen = useCallback((id: string, tab: SiteTab) => setOpen({ id, tab }), []);
@@ -415,7 +429,6 @@ export function QueueTable({
             aria-modal="true"
             className="bg-panel border border-line rounded-lg p-5 max-w-sm w-full text-center flex flex-col gap-4"
             onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => e.key === "Escape" && setConfirmId(null)}
           >
             <p className="text-ink text-sm leading-relaxed">
               <span className="font-semibold">{confirmItem.name}</span> 을(를) 확정하시겠습니까?
@@ -429,7 +442,9 @@ export function QueueTable({
               <button
                 autoFocus
                 className={`${BTN_CONFIRM} flex-1`}
-                disabled={busyIds.has(confirmItem.id)}
+                // 행 버튼·SiteExplorer 와 동일한 상태 가드 — 모달 열린 새 백그라운드
+                // 갱신으로 이미 처리된 항목이면 중복 확정을 막는다.
+                disabled={busyIds.has(confirmItem.id) || confirmItem.status !== "pending"}
                 onClick={() => {
                   setConfirmId(null);
                   void onConfirm(confirmItem.id, confirmChoice || undefined);
