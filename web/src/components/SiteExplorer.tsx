@@ -186,7 +186,8 @@ export function SiteExplorer({
     onConfirm(item.id, choice?.trim() ? choice.trim() : undefined);
   };
 
-  // 키보드: Enter=확정(1차 확인창 → 2차 실제 확정), Esc=확인창 닫기 또는 모달 닫기.
+  // 키보드: Enter=확정(1차 확인창 → 2차 실제 확정), Del=거부(즉시 — 마우스 1클릭과 동일
+  // 단계 수, 되돌림 가능이라 무확인), Esc=확인창 닫기 또는 모달 닫기.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -198,6 +199,14 @@ export function SiteExplorer({
         e.preventDefault();
         if (confirming) doConfirm();
         else setConfirming(true);
+        return;
+      }
+      if (e.key === "Delete" && !done && !busy) {
+        // 입력란 안에서의 Delete 는 텍스트 편집 — 거부로 가로채지 않는다.
+        if ((e.target as HTMLElement).closest("input,textarea")) return;
+        e.preventDefault();
+        setConfirming(false);
+        onReject(item.id);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -443,14 +452,14 @@ export function SiteExplorer({
                   disabled={busy || item.status === "confirmed"}
                   onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
                 >
-                  확정
+                  확정 (Enter)
                 </button>
                 <button
                   className={`${BTN_REJECT} flex-1`}
                   disabled={busy || item.status === "rejected"}
                   onClick={() => onReject(item.id)}
                 >
-                  거부
+                  거부 (Del)
                 </button>
               </div>
             </div>
