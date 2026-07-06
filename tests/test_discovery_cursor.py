@@ -244,6 +244,47 @@ def test_companies_house_continues_from_cursor_and_resets_on_exhaust() -> None:
     assert store.get("companies_house", seg.label) == 0  # 0 리셋(재검증 재개).
 
 
+def test_companies_house_window_stuck_cursor_wraps_to_zero() -> None:
+    # 실사고(2026-07-06): advanced-search 는 start_index+size ≤ 10,000 초과 시 HTTP 500 —
+    # 구코드에선 커서가 10000 에 영구 고착돼 매 런 0건. 윈도 끝 커서는 0 으로 되감아
+    # 재검증 사이클을 재개해야 한다.
+    settings = Settings(dry_run=False, companies_house_api_key="k", discovery_max_per_source=2)
+    starts: list[int] = []
+
+    def _json(url: str, params: dict) -> Any:
+        starts.append(params["start_index"])
+        return {"items": [_ch_item(1), _ch_item(2)]} if params["start_index"] == 0 else {"items": []}
+
+    store = DictStore()
+    seg = Segment(country="GB", industry="전체")
+    store.advance("companies_house", seg.label, 10000)  # 구코드가 남긴 고착 커서.
+    src = CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json), cursor_store=store)
+    out = src.discover(seg)
+    assert starts[0] == 0  # 윈도 끝 커서 → 0 으로 되감아 처음부터 스캔.
+    assert [d.registry_id for d in out] == ["GB000001", "GB000002"]
+    assert store.get("companies_house", seg.label) == 2  # 이후는 평소 커서 전진.
+
+
+def test_companies_house_paging_stops_before_api_window() -> None:
+    # 페이징이 윈도 경계(start+size>10,000)에 닿으면 요청 없이 '모집단 끝'으로 종료 —
+    # 500 을 만들지 않고 커서를 0 으로 리셋한다.
+    settings = Settings(dry_run=False, companies_house_api_key="k", discovery_max_per_source=1000)
+    starts: list[int] = []
+
+    def _json(url: str, params: dict) -> Any:
+        starts.append(params["start_index"])
+        assert params["start_index"] + 100 <= 10000  # 경계 초과 요청은 절대 없어야 한다.
+        return {"items": [_ch_item(i) for i in range(100)]}
+
+    store = DictStore()
+    seg = Segment(country="GB", industry="전체")
+    store.advance("companies_house", seg.label, 9900)  # 마지막 허용 페이지 직전.
+    src = CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json), cursor_store=store)
+    src.discover(seg)
+    assert starts == [9900]  # 9900 한 페이지만 — 10000 요청은 안 나감.
+    assert store.get("companies_house", seg.label) == 0  # 윈도 끝 = 모집단 끝 → 0 리셋.
+
+
 def test_companies_house_dry_run_never_touches_store() -> None:
     src = CompaniesHouseSource(Settings(dry_run=True), cursor_store=BoomStore())
     assert len(src.discover(Segment(country="GB", industry="전체"))) == 2

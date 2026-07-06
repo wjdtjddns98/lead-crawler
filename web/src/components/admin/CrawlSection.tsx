@@ -11,6 +11,8 @@ import {
 import type { CrawlJob, CrawlTarget, Listed } from "../../types";
 import { Square } from "lucide-react";
 import { toast } from "sonner";
+import { errMsg } from "../../format";
+import { toCountryOpts } from "../../filterOptions";
 import { MultiPicker, type PickerOption } from "../MultiPicker";
 import { ErrorBox } from "../ErrorBox";
 import { BTN_CONFIRM, BTN_REJECT } from "../../ui";
@@ -95,23 +97,11 @@ export function CrawlTargetSection() {
     Promise.all([fetchCrawlTarget(), fetchCountries(), fetchIndustries()])
       .then(([t, countryList, industryList]) => {
         if (!alive) return;
-        setCountryOpts(
-          countryList.map((c) => ({
-            value: c.iso2,
-            label: c.label,
-            code: c.iso2,
-            aliases: c.aliases,
-          })),
-        );
-        const iOpts = industryList.map((i) => ({
-          value: i.value,
-          label: i.label,
-          aliases: i.aliases,
-        }));
-        setIndustryOpts(iOpts);
-        apply({ ...t, industries: collapseAllIndustries(t.industries, iOpts) });
+        setCountryOpts(toCountryOpts(countryList));
+        setIndustryOpts(industryList);
+        apply({ ...t, industries: collapseAllIndustries(t.industries, industryList) });
       })
-      .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
+      .catch((e) => alive && setErr(errMsg(e)));
     // 현황은 별도 조회 — 새로고침 시 진행 중이거나 최근 종료된 크롤을 이어서 보여주되,
     // 이 조회가 실패해도 폼(타깃·픽커) 로딩은 살린다(Promise.all 결합 회피).
     fetchCrawlStatus()
@@ -128,7 +118,7 @@ export function CrawlTargetSection() {
     const timer = setInterval(() => {
       fetchCrawlStatus()
         .then(setJob)
-        .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+        .catch((e) => setErr(errMsg(e)));
     }, 3000);
     return () => clearInterval(timer);
   }, [running]);
@@ -161,7 +151,7 @@ export function CrawlTargetSection() {
       // 시작 피드백 — 휘발성 정보라 인라인 문구 대신 토스트(자동 소멸).
       toast.success("크롤 실행 시작");
     } catch (e2) {
-      setErr(e2 instanceof Error ? e2.message : String(e2));
+      setErr(errMsg(e2));
       // 409(이미 진행 중) 대비 — 현황을 받아 진행 패널·중지 버튼으로 복구하고, 복구가
       // 됐으면(=실제로 running) 에러 박스는 걷는다. running 이 아니면(422 등) 에러 유지.
       fetchCrawlStatus()
@@ -184,7 +174,7 @@ export function CrawlTargetSection() {
     try {
       setJob(await cancelCrawl());
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errMsg(e));
     } finally {
       setBusy(false);
       setStopDialog(false);

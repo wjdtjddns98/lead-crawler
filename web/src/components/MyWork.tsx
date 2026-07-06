@@ -1,18 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  claimWork,
-  confirmReview,
-  fetchMyWork,
-  fetchQueue,
-  fetchQueueFilters,
-  rejectReview,
-  withUnclassified,
-} from "../api";
+import { claimWork, confirmReview, fetchMyWork, fetchQueue, rejectReview } from "../api";
+import { errMsg } from "../format";
+import { LISTED_FILTER_OPTIONS, useQueueFilterOpts } from "../filterOptions";
 import { QueueTable } from "./QueueTable";
 import { TableSkeleton } from "./TableSkeleton";
 import { FilterPopover, pickSummary } from "./FilterPopover";
-import { MultiPicker, type PickerOption } from "./MultiPicker";
-import { BTN, EMPTY } from "../ui";
+import { MultiPicker } from "./MultiPicker";
+import { BTN, EMPTY, INPUT } from "../ui";
 import { ErrorBox } from "./ErrorBox";
 import type { ClaimFilter, Listed, ReviewItem } from "../types";
 
@@ -20,16 +14,6 @@ const FILTER_KEY = "lc_claim_filter";
 const EMPTY_FILTER: ClaimFilter = { country: "", industry: "", listed: "" };
 // 한 계정 동시 점유 총량 상한 — BE review_claim_cap 과 동일값(계약: PRD-queue-claim-permanent §4.2).
 const CLAIM_CAP = 100;
-
-// 상장여부 필터 — 빈값=전체 + Listed 3값(크롤타깃과 달리 "전체"는 ""이고 unknown 은 별개 상태).
-const LISTED_OPTIONS: { value: "" | Listed; label: string }[] = [
-  { value: "", label: "전체" },
-  { value: "listed", label: "상장" },
-  { value: "unlisted", label: "비상장" },
-  { value: "unknown", label: "미상" },
-];
-
-const INPUT = "bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md min-w-[120px]";
 
 const LISTED_VALUES = new Set<string>(["listed", "unlisted", "unknown"]);
 
@@ -62,8 +46,8 @@ export function MyWork() {
   const [error, setError] = useState<string | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<ClaimFilter>(loadFilter);
-  const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
-  const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
+  // 작업범위 픽커 옵션 — 로드 실패해도 작업 자체는 가능(셀렉트만 빈 채로).
+  const { countryOpts, industryOpts } = useQueueFilterOpts();
   const [remaining, setRemaining] = useState<number | null>(null);
   // 이번 세션 처리(확정+거부) 건수 — 모달 하단 진행률 바의 분자. '작업 받기'로 새 배치를
   // 받으면 0 으로 리셋.
@@ -94,7 +78,7 @@ export function MyWork() {
         setRemaining(q.total);
         return mine;
       } catch (e) {
-        if (token === reqRef.current) setError(e instanceof Error ? e.message : String(e));
+        if (token === reqRef.current) setError(errMsg(e));
         return null;
       } finally {
         if (token === reqRef.current) setLoading(false);
@@ -113,24 +97,10 @@ export function MyWork() {
     if (mine && mine.length > before) setSessionDone(0);
   };
 
-  // 최초: 필터 옵션 로드 + 내 작업분 복원(추가 배정 없음 — 로그아웃·새로고침해도 그대로).
+  // 최초: 내 작업분 복원(추가 배정 없음 — 로그아웃·새로고침해도 그대로).
   useEffect(() => {
-    fetchQueueFilters()
-      .then((f) => {
-        setCountryOpts(
-          f.countries.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
-        );
-        // '미분류'(분류 실패 폴백값)도 작업범위 대상 — BE 옵션에 없을 때만 덧붙인다(#115 중복 방지).
-        setIndustryOpts(
-          withUnclassified(f.industries).map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
-        );
-      })
-      .catch(() => {
-        // 옵션 로드 실패해도 작업 자체는 가능 — 무시(셀렉트만 빈 채로).
-      });
     void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refresh]);
 
   // 작업범위(픽커) 변경 — 조건만 상태·localStorage 에 저장한다(네트워크 없음). 필터는 '작업
   // 받기'의 신규 배정분에만 적용되고, 이미 받은 작업분은 필터를 바꿔도 그대로 유지된다.
@@ -153,7 +123,7 @@ export function MyWork() {
     } catch (e) {
       // 409(타인 점유 중 — 관리자 회수 후 재배정된 경우)·400(형식 오류) 등 — 메시지 표시.
       // ok=false 라 전진하지 않고, 아래 refresh 가 내 점유가 아닌 항목을 목록에서 걷어낸다.
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusyIds((p) => {
         const n = new Set(p);
@@ -201,11 +171,11 @@ export function MyWork() {
         <label className="flex items-center gap-1.5 text-muted text-[13px]">
           상장여부
           <select
-            className={INPUT}
+            className={`${INPUT} min-w-[120px]`}
             value={filter.listed}
             onChange={(e) => setFilterValue({ ...filter, listed: e.target.value as "" | Listed })}
           >
-            {LISTED_OPTIONS.map((o) => (
+            {LISTED_FILTER_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>

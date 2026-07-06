@@ -1,18 +1,28 @@
-import { useEffect, useState } from "react";
-import { fetchQueueFilters, fetchSendPreview, sendCampaign, withUnclassified } from "../../api";
+import { useState, type ReactNode } from "react";
+import { fetchSendPreview, sendCampaign } from "../../api";
 import type { SendPreview, SendResult } from "../../types";
 import { TriangleAlert } from "lucide-react";
-import { MultiPicker, type PickerOption } from "../MultiPicker";
+import { errMsg } from "../../format";
+import { useQueueFilterOpts } from "../../filterOptions";
+import { MultiPicker } from "../MultiPicker";
 import { ErrorBox } from "../ErrorBox";
-import { BTN, BTN_CONFIRM } from "../../ui";
-import { SECTION_H2, FIELD, CRAWL_TARGET, INPUT } from "./shared";
+import { BTN, BTN_CONFIRM, INPUT } from "../../ui";
+import { SECTION_H2, FIELD, CRAWL_TARGET } from "./shared";
 import { ConfirmDialog } from "./ConfirmDialog";
+
+// 라벨-값 행(미리보기·결과·확인 다이얼로그 공용) — gap 만 호출부가 지정.
+function Row({ label, gap = "gap-3", children }: { label: string; gap?: string; children: ReactNode }) {
+  return (
+    <div className={`flex ${gap}`}>
+      <span className="text-muted w-20 shrink-0">{label}</span>
+      {children}
+    </div>
+  );
+}
 
 // 확정큐 이메일 전체발송 — 제목·본문·발신표시명 직접 입력, 국가/업종 필터. 미리보기로
 // 수신 N명 확인 후 발송. email_send_enabled(.env)가 꺼져 있으면 dry-run(실발송 안 함).
 export function SendSection() {
-  const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
-  const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
   const [countries, setCountries] = useState("");
   const [industries, setIndustries] = useState("");
   const [subject, setSubject] = useState("");
@@ -26,27 +36,9 @@ export function SendSection() {
   // dry-run 여부를 보여주는 앱 스타일 다이얼로그를 거친다(SiteExplorer 확정 오버레이 톤).
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  // Esc 리스너는 ConfirmDialog 내부로 이동(useEffect 제거).
-
-  useEffect(() => {
-    let alive = true;
-    fetchQueueFilters()
-      .then((f) => {
-        if (!alive) return;
-        setCountryOpts(
-          f.countries.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases })),
-        );
-        // 발송 범위 업종은 큐 행 저장 어휘(구분 택소노미+미분류)와 일치해야 매치된다(#115) —
-        // 크롤 타깃용 /admin/industries(18키)가 아니라 /queue/filters 를 출처로 쓴다.
-        setIndustryOpts(
-          withUnclassified(f.industries).map((i) => ({ value: i.value, label: i.label, aliases: i.aliases })),
-        );
-      })
-      .catch((e) => alive && setErr(e instanceof Error ? e.message : String(e)));
-    return () => {
-      alive = false;
-    };
-  }, []);
+  // 발송 범위 업종은 큐 행 저장 어휘(구분 택소노미+미분류)와 일치해야 매치된다(#115) —
+  // 크롤 타깃용 /admin/industries(18키)가 아니라 /queue/filters 를 출처로 쓴다.
+  const { countryOpts, industryOpts } = useQueueFilterOpts(setErr);
 
   const doPreview = async () => {
     setBusy(true);
@@ -55,7 +47,7 @@ export function SendSection() {
     try {
       setPreview(await fetchSendPreview(countries, industries));
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -71,7 +63,7 @@ export function SendSection() {
       setPreview(await fetchSendPreview(countries, industries));
       setConfirmOpen(true);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -92,7 +84,7 @@ export function SendSection() {
       );
       setPreview(null);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errMsg(e));
     } finally {
       setBusy(false);
       setConfirmOpen(false);
@@ -195,29 +187,25 @@ export function SendSection() {
             </div>
           )}
           <div className="bg-panel border border-line rounded-md px-3 py-2.5 text-[13px] flex flex-col gap-1.5">
-            <div className="flex gap-3">
-              <span className="text-muted w-20 shrink-0">수신</span>
+            <Row label="수신">
               <span className="text-ink tabular-nums">{preview.recipients}명</span>
-            </div>
-            <div className="flex gap-3">
-              <span className="text-muted w-20 shrink-0">발신</span>
+            </Row>
+            <Row label="발신">
               <span className="text-ink">
                 {preview.sender || <span className="text-muted">.env 미설정</span>}
               </span>
-            </div>
+            </Row>
             {preview.enabled && (
-              <div className="flex gap-3">
-                <span className="text-muted w-20 shrink-0">오늘 잔여</span>
+              <Row label="오늘 잔여">
                 <span className="text-ink tabular-nums">{preview.remaining_today}건</span>
-              </div>
+              </Row>
             )}
             {preview.sample.length > 0 && (
-              <div className="flex gap-3">
-                <span className="text-muted w-20 shrink-0">예시</span>
+              <Row label="예시">
                 <span className="text-muted [overflow-wrap:anywhere]">
                   {preview.sample.slice(0, 3).join(", ")}…
                 </span>
-              </div>
+              </Row>
             )}
           </div>
         </div>
@@ -232,26 +220,22 @@ export function SendSection() {
             </div>
           ) : (
             <div className="bg-panel border border-line rounded-md px-3 py-2.5 text-[13px] flex flex-col gap-1.5">
-              <div className="flex gap-3">
-                <span className="text-muted w-20 shrink-0">성공</span>
+              <Row label="성공">
                 <span className="text-ok-fg tabular-nums">{result.sent}건</span>
-              </div>
+              </Row>
               {result.failed > 0 && (
-                <div className="flex gap-3">
-                  <span className="text-muted w-20 shrink-0">실패</span>
+                <Row label="실패">
                   <span className="text-danger-fg tabular-nums">{result.failed}건</span>
-                </div>
+                </Row>
               )}
               {result.capped > 0 && (
-                <div className="flex gap-3">
-                  <span className="text-muted w-20 shrink-0">상한초과</span>
+                <Row label="상한초과">
                   <span className="text-warn tabular-nums">{result.capped}건</span>
-                </div>
+                </Row>
               )}
-              <div className="flex gap-3">
-                <span className="text-muted w-20 shrink-0">수신</span>
+              <Row label="수신">
                 <span className="text-ink tabular-nums">{result.recipients}명</span>
-              </div>
+              </Row>
             </div>
           )}
         </div>
@@ -269,21 +253,18 @@ export function SendSection() {
           onCancel={() => setConfirmOpen(false)}
         >
           <div className="flex flex-col gap-1.5 text-[13px]">
-            <div className="flex gap-2">
-              <span className="text-muted w-20 shrink-0">수신</span>
+            <Row label="수신" gap="gap-2">
               <span className="text-ink tabular-nums">
                 {preview.recipients}명
                 {preview.enabled && ` · 오늘 잔여 ${preview.remaining_today}건`}
               </span>
-            </div>
-            <div className="flex gap-2">
-              <span className="text-muted w-20 shrink-0">제목</span>
+            </Row>
+            <Row label="제목" gap="gap-2">
               <span className="text-ink [overflow-wrap:anywhere]">{subject}</span>
-            </div>
-            <div className="flex gap-2">
-              <span className="text-muted w-20 shrink-0">발신 표시명</span>
+            </Row>
+            <Row label="발신 표시명" gap="gap-2">
               <span className="text-ink">{fromName.trim() || "—"}</span>
-            </div>
+            </Row>
           </div>
           {!preview.enabled && (
             <div className="flex items-start gap-2 border-l-2 border-warn pl-3 py-1 text-[13px] text-warn">
