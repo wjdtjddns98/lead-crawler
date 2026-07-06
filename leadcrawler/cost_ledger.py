@@ -44,6 +44,7 @@ DEFAULT_PRICING_KRW: dict[str, int] = {
     "vision": 30,  # Claude Vision 이미지 1장(저가 모델)
     "dedup_llm": 5,  # Claude 중복판정 1쌍(Haiku·짧은 텍스트, 보수적)
     "industry_llm": 5,  # Claude 산업분류 1건(Haiku·짧은 텍스트, 보수적)
+    "ai_directory": 5,  # Claude 디렉토리 목록추출 1페이지(Haiku, 산업분류와 동단가 기준)
     "serper": 2,  # Serper.dev 검색 1쿼리(~$1/1K, 보수적)
 }
 

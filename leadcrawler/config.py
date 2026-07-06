@@ -120,6 +120,17 @@ class Settings(BaseSettings):
     # 벌크 분류가 가능하다(실측 2026-07-01). 종량 API 키를 쓸 땐 Sonnet 으로 올려도 됨.
     industry_llm_model: str = Field(default="claude-haiku-4-5-20251001")
     industry_llm_max_calls: int = Field(default=5000, ge=0)  # 런당 유료 분류 상한(과금 보호)
+
+    # AI 디렉토리 발견 소스(경제성 크롤, opt-in·유료) — 구체 업종 세그먼트에서 업종 협회
+    # 멤버명단·산업 디렉토리 같은 **목록 페이지**를 SERP 로 찾아 LLM 1콜로 수십 개사(회사명+
+    # 도메인)를 한 번에 추출한다(회사당 ~0.1~1원). 검색비는 기존 Serper 원장, LLM 은 페이지당
+    # 1콜. 호출당 과금이라 기본 off + 세그먼트당 페이지 상한 + 런당 콜 상한, 인증(auth_token/
+    # api_key) 없으면 미동작. dry_run 은 네트워크·LLM 없는 결정적 더미.
+    ai_directory_source: bool = Field(default=False)
+    # 추출 모델(기본 Haiku — industry_llm 과 동일 사유: 구독 OAuth 는 Haiku 만 벌크 허용).
+    ai_directory_model: str = Field(default="claude-haiku-4-5-20251001")
+    ai_directory_max_pages: int = Field(default=3, ge=1)  # 세그먼트당 LLM 추출 페이지 상한
+    ai_directory_max_calls: int = Field(default=200, ge=0)  # 런당 유료 추출(LLM 콜) 상한(과금 보호)
     # 수집 파이프라인 inline 중복 승격(C5, opt-in) — 정확 dedup 통과한 신규 리드를 기존
     # 원장과 near_dup 대조, 최상위(auto) 티어면 재추출 없이 흡수(제약①). off 면 기존 동작.
     dedup_inline: bool = Field(default=False)
