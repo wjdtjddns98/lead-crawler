@@ -14,19 +14,20 @@ const STRIPE: Record<ReviewItem["status"], string> = {
 };
 
 // 컬럼 폭(table-auto) — 고정 % 대신 핵심 컬럼만 최소폭을 주고 나머지는 내용 길이에
-// 맞춰 늘어난다. TD 기본이 [overflow-wrap:anywhere] 라 좁아지면 단어 중간에서도 접히므로,
-// 값이 한 줄이어야 읽히는 컬럼(국가·업종·메일·상태 등)은 whitespace-nowrap 으로 잠근다.
-// 업체명만 예외 — 초장문 사명이 표 전체를 밀어내지 않게 셀 안에서 truncate(전문은 title).
-// 액션은 flex(줄바꿈 없음)+min-w 로 버튼이 한 줄에 고정돼 nowrap 이 따로 필요 없다.
+// 맞춰 늘어난다. TD 기본이 [overflow-wrap:anywhere] 라 폭이 부족하면 셀 안에서 접힌다
+// — 내용이 긴 가변 컬럼(국가·업종·메일·사이트·상태)은 nowrap 을 걸지 않아 표가 항상
+// 컨테이너 폭에 맞고 가로 스크롤이 생기지 않는다(뱃지·MX/SMTP 등 토큰 단위는 각자
+// nowrap 이라 단위 사이에서만 줄이 바뀐다). 상장여부만 짧은 고정 어휘라 한 줄로 잠근다.
+// 업체명은 min-w 만 주고 셀 안에서 줄바꿈(전문은 title). 액션은 flex(줄바꿈 없음)+min-w 로 한 줄 고정.
 const COL_W = [
-  "min-w-[120px]", // 업체명(셀 내부 truncate)
-  "whitespace-nowrap", // 국가
-  "whitespace-nowrap", // 업종
+  "min-w-[120px]", // 업체명(셀 내부 줄바꿈)
+  "", // 국가
+  "", // 업종
   "whitespace-nowrap", // 상장여부
   "min-w-[240px]", // 이메일 후보(편집 입력 포함 — 넓게 유지)
-  "whitespace-nowrap", // 메일(뱃지·MX·SMTP 한 줄)
-  "whitespace-nowrap", // 사이트(내용 길이만큼 유동 확장)
-  "whitespace-nowrap", // 상태(뱃지·담당자·시각 한 줄)
+  "", // 메일(뱃지·MX·SMTP — 단위 사이에서만 줄바꿈)
+  "", // 사이트
+  "", // 상태(뱃지는 자체 nowrap — 담당자·시각이 아래로 접힘)
   "min-w-[120px]", // 액션(버튼 2개 가로 고정 — flex 줄바꿈 없음)
 ];
 const HEADERS = ["업체명", "국가", "업종", "상장여부", "이메일 후보", "메일", "사이트", "상태", "액션"];
@@ -121,9 +122,10 @@ const QueueRow = memo(
     const formHref = safeHref(item.form);
     return (
       <tr className={`hover:bg-white/[0.03] ${done ? "opacity-60" : ""}`}>
+        {/* 업체명은 truncate(nowrap) 대신 줄바꿈 — nowrap 이면 긴 사명이 컬럼 최소폭을
+            고정시켜 좁은 화면에서 표가 줄지 못하고 가로 스크롤을 만든다. */}
         <td className={`${TD} ${COL_W[0]} font-semibold ${STRIPE[item.status]}`} title={item.name}>
-          {/* td 의 max-width 는 table-auto 에서 무시되므로 내부 블록에 truncate 적용. */}
-          <span className="block max-w-[220px] truncate">{item.name}</span>
+          {item.name}
         </td>
         <td className={`${TD} ${COL_W[1]}`}>{item.country}</td>
         <td className={`${TD} ${COL_W[2]}`}>{item.industry}</td>
@@ -226,7 +228,9 @@ const QueueRow = memo(
         </td>
         {!readOnly && (
           <td className={`${TD} ${COL_W[8]}`}>
-            <div className="flex gap-1.5">
+            {/* 버튼 라벨은 TD 의 overflow-wrap:anywhere 상속으로 '확/정' 처럼 세로로
+                접힐 수 있어 nowrap 으로 잠근다(액션 셀 한정). */}
+            <div className="flex gap-1.5 whitespace-nowrap">
               <button
                 className={BTN_CONFIRM}
                 disabled={busy || item.status === "confirmed"}
