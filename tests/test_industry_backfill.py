@@ -47,23 +47,27 @@ def _industry(s: Session, key: str) -> str:
 def test_backfill_updates_ambiguous_and_keeps_abstain() -> None:
     """미분류·'기타 제조'만 검토하고, 확신 라벨은 갱신·abstain 은 원래값 유지."""
     s = _session()
-    _add(s, "k1", "한빛 반도체", UNCLASSIFIED)  # 스텁 키워드 → 반도체·디스플레이
-    _add(s, "k2", "Opaque Holdings", UNCLASSIFIED)  # 무키워드 → abstain(미분류 유지)
-    _add(s, "k3", "부산 화장품", "기타 제조")  # catch-all 도 재분류 대상
+    hp = "https://x.example"
+    _add(s, "k1", "한빛 반도체", UNCLASSIFIED, homepage=hp)  # 스텁 키워드 → 반도체·디스플레이
+    _add(s, "k2", "Opaque Holdings", UNCLASSIFIED, homepage=hp)  # 무키워드 → abstain(미분류 유지)
+    _add(s, "k3", "부산 화장품", "기타 제조", homepage=hp)  # catch-all 도 재분류 대상
     _add(s, "k4", "비활성 게임", UNCLASSIFIED, active=False)  # 비활성 → 검토 제외
     _add(s, "k5", "이미 확정", "은행")  # 확신 라벨 → 검토 제외
+    _add(s, "k6", "서울 게임즈", UNCLASSIFIED)  # 홈페이지 없음 → 게이트 스킵(블라인드 분류 금지)
     s.flush()
 
     examined, updated = backfill_industries(
-        s, StubClassifier(), fetch_html=lambda url: None
+        s, StubClassifier(), fetch_html=lambda url: "<p>corporate site</p>"
     )
 
-    assert (examined, updated) == (3, 2)
+    assert (examined, updated) == (4, 2)
     assert _industry(s, "k1") == "반도체·디스플레이"
     assert _industry(s, "k2") == UNCLASSIFIED
     assert _industry(s, "k3") == "화장품·뷰티"
     assert _industry(s, "k4") == UNCLASSIFIED  # 비활성은 손대지 않음
     assert _industry(s, "k5") == "은행"
+    # 이름에 키워드('게임')가 있어도 홈페이지 본문이 없으면 분류하지 않는다(오라벨 원천 차단).
+    assert _industry(s, "k6") == UNCLASSIFIED
 
 
 def test_backfill_uses_homepage_html_as_evidence() -> None:
@@ -88,12 +92,13 @@ def test_backfill_uses_homepage_html_as_evidence() -> None:
 def test_backfill_limit_caps_examined_rows() -> None:
     """--limit 은 검토 건수를 상한한다(소량 시험용) — id 순으로 앞에서 자름."""
     s = _session()
-    _add(s, "a1", "한빛 반도체", UNCLASSIFIED)
-    _add(s, "a2", "서울 게임즈", UNCLASSIFIED)
+    hp = "https://x.example"
+    _add(s, "a1", "한빛 반도체", UNCLASSIFIED, homepage=hp)
+    _add(s, "a2", "서울 게임즈", UNCLASSIFIED, homepage=hp)
     s.flush()
 
     examined, updated = backfill_industries(
-        s, StubClassifier(), fetch_html=lambda url: None, limit=1
+        s, StubClassifier(), fetch_html=lambda url: "<p>corporate site</p>", limit=1
     )
 
     assert (examined, updated) == (1, 1)

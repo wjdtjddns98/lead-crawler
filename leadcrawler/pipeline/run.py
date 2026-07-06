@@ -99,7 +99,10 @@ def _build_lead(
     # **is_active 게이트**: 실존 확인(적재 대상) 회사만 분류한다 — 비활성(도메인 없는 GLEIF
     # 엔티티 등)은 company 테이블에 안 실리므로 분류해도 버려져 LLM 비용만 낭비된다.
     industry = dc.industry
-    if ex.is_active and industry in AMBIGUOUS_LABELS:
+    # **homepage 게이트**: 홈페이지 텍스트가 있어야 신뢰 분류 — 도메인·홈페이지 없는 등록처
+    # 껍데기 회사(CH UK 법인 다수)를 이름만으로 LLM 블라인드 분류하면 오라벨(자동차 편중)+
+    # 비용만 든다 → 홈페이지 없으면 스킵(미분류 유지). last_home_html 은 회사별 초기화됨.
+    if ex.is_active and industry in AMBIGUOUS_LABELS and enricher.last_home_html:
         # 방어: 분류기는 계약상 예외를 안 던지지만(abstain), 만일 던져도 실존 리드를 잃지
         # 않도록 흡수한다(제약② — 배치 catch 로 리드가 통째 드롭되는 것 방지).
         try:
