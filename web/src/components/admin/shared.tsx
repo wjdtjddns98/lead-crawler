@@ -1,5 +1,6 @@
 // 폼 요소 공용 클래스 — 섹션 컨테이너·필드 라벨·입력·셀.
-export const SECTION_H2 = "text-base mt-0 mb-3";
+// h1(text-xl) 한 단계 아래 — 본문(13~14px)과 크기·굵기 양쪽으로 구분해 섹션 스캔성 확보.
+export const SECTION_H2 = "text-lg font-semibold tracking-tight mt-0 mb-3";
 export const FIELD = "flex flex-col gap-1 text-muted text-[13px]";
 export const FIELD_INLINE = "flex flex-row items-center gap-1.5 text-muted text-[13px]";
 export const INPUT = "bg-canvas border border-line text-ink py-[7px] px-2.5 rounded-md";
