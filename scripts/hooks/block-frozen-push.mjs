@@ -13,19 +13,24 @@ process.stdin.on("end", () => {
   } catch {
     process.exit(0); // 파싱 불가면 차단하지 않는다(오탐으로 작업을 막는 게 더 나쁨).
   }
-  if (!/\bgit\b[\s\S]*\bpush\b/.test(cmd)) process.exit(0);
-  // push 뒤 refspec 목적지(dst) 검사 — 'main' / 'HEAD:main' / 'x:prod' 전부 차단.
-  // 플래그 토큰(-u, --force-with-lease 등)은 건너뛴다. --delete 도 main/prod 면 차단.
-  const m = cmd.match(/\bpush\b([\s\S]*)/);
-  const tokens = (m ? m[1] : "").split(/\s+/).filter((t) => t && !t.startsWith("-"));
-  for (const t of tokens) {
-    const dst = t.includes(":") ? t.split(":").pop() : t;
-    if (dst === "main" || dst === "prod") {
-      console.error(
-        `브랜치 전략 위반 차단: '${dst}' 직접 push 금지. ` +
-          "main=동결(읽기 전용)·prod=dev→prod 승격 PR 전용 — 작업은 dev 타깃 PR 로 (CLAUDE.md §협업 워크플로)."
-      );
-      process.exit(2);
+  // 컴파운드 커맨드(&&·;·| 체인)에서 push 가 아닌 구간의 'prod' 토큰(예: gh pr create
+  // --base prod)을 오탐하지 않도록, git push 가 든 세그먼트 안의 토큰만 검사한다.
+  const segments = cmd.split(/&&|\|\||;|\||\n/);
+  for (const seg of segments) {
+    const m = seg.match(/\bgit\b.*\bpush\b(.*)/);
+    if (!m) continue;
+    // push 뒤 refspec 목적지(dst) 검사 — 'main' / 'HEAD:main' / 'x:prod' 전부 차단.
+    // 플래그 토큰(-u, --force-with-lease, --delete 등)은 건너뛴다.
+    const tokens = m[1].split(/\s+/).filter((t) => t && !t.startsWith("-"));
+    for (const t of tokens) {
+      const dst = t.includes(":") ? t.split(":").pop() : t;
+      if (dst === "main" || dst === "prod") {
+        console.error(
+          `브랜치 전략 위반 차단: '${dst}' 직접 push 금지. ` +
+            "main=동결(읽기 전용)·prod=dev→prod 승격 PR 전용 — 작업은 dev 타깃 PR 로 (CLAUDE.md §협업 워크플로)."
+        );
+        process.exit(2);
+      }
     }
   }
   process.exit(0);

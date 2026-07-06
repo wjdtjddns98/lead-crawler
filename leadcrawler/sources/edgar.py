@@ -27,7 +27,7 @@ from .base import (
     opt_str,
 )
 from .http import Fetcher, HostRateLimiters, SupportsFetch
-from .industry import industry_from_sic, matches_prefix, sic_prefixes
+from .industry import industry_from_sic, is_broad_industry, matches_prefix, sic_prefixes
 
 log = get_logger("sources.edgar")
 
@@ -38,7 +38,10 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _EXCHANGES = {"nasdaq", "nyse", "cboe", "otc"}
 # 업종 필터 시 cap*10 까지 넓게 스캔하되, 후보당 submissions.json 1 콜이 발생하므로(SEC
 # 무료 레이트리밋 보호) 절대 상한을 둔다 — 예산가드가 무료 등록처엔 안 걸린다.
-_SCAN_LIMIT_ABS = 2000
+# 2000→10000 상향(물량): SEC 공정접근 정책 = 10 req/s. http_request_delay(기본 0.12s)면 ~8.3
+# req/s 로 정책 이내. 10000 후보 = 10000 요청 ≈ 10000 × 0.12s = 1200s(20분)/풀스캔으로 딥백필
+# 1런에 흡수 가능. scan_limit=min(cap*10, ABS) 이라 cap(기본 500)을 올린 딥백필 런에서 상한 역할.
+_SCAN_LIMIT_ABS = 10000
 
 
 class EdgarSource:
@@ -104,6 +107,11 @@ class EdgarSource:
         fetcher = self._client()
         cap = self._settings.discovery_max_per_source
         prefixes = sic_prefixes(segment.industry)
+        # 미매핑 **구체** 업종은 수집하지 않는다(등록처 3소스 공통 가드): SIC 필터 불가 →
+        # 전량 통과 → 비-broad 세그먼트 라벨로 오라벨(전체크롤 GB 자동차 70% 과 동일 결함).
+        if prefixes is None and not is_broad_industry(segment.industry):
+            log.info("edgar.skip.unmapped_industry", industry=segment.industry)
+            return []
 
         try:
             universe = _parse_tickers_exchange(fetcher.get_json(_TICKERS_URL))

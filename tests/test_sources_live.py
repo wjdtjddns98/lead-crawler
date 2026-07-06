@@ -655,17 +655,71 @@ def test_companies_house_live_parses_active_and_sic() -> None:
     assert dc.canonical_key == "reg:companies_house:01234567"
 
 
-def test_companies_house_no_industry_map_keeps_all_active() -> None:
+def test_companies_house_broad_rejects_unmapped_sic() -> None:
+    # 신계약(구 '미매핑 업종 → 전량' 폐기): broad 는 SIC 가 택소노미 대분류로 매핑되는
+    # 실업종 회사만 채택 — 껍데기 UK 법인 firehose 차단(전체크롤 GB 편중 실사고).
     settings = Settings(dry_run=False, companies_house_api_key="k")
     page = {"items": [
         {"company_number": "1", "company_name": "A Ltd", "company_status": "active",
-         "sic_codes": ["99999"]},
+         "sic_codes": ["99999"]},  # 미매핑 SIC → reject.
+        {"company_number": "2", "company_name": "B Ltd", "company_status": "active",
+         "sic_codes": ["41100"]},  # 건설 매핑 → 채택.
     ]}
     out = CompaniesHouseSource(
         settings, fetcher=FakeFetcher(json=lambda u, p: page if p.get("start_index", 0) == 0
                                       else {"items": []})
-    ).discover(Segment(country="영국", industry="기타"))  # 미매핑 업종 → 전량.
-    assert {d.registry_id for d in out} == {"1"}
+    ).discover(Segment(country="영국", industry="기타"))  # broad 토큰.
+    assert {d.registry_id for d in out} == {"2"}
+
+
+def test_companies_house_unmapped_specific_industry_skips_without_api() -> None:
+    # 미매핑 **구체** 업종(_UK_SIC 에 키 없는 자유텍스트)은 세그먼트 자체를 스킵(API 호출 0) —
+    # 등록처가 필터를 못 해 아무 UK 법인이 세그먼트 라벨로 오라벨되던 진범 차단. 가드 자체는
+    # 존치하되, 자동차·식품·화학·물류가 접두표에 추가돼 이제 매핑되므로 미매핑 자유텍스트로 검증.
+    settings = Settings(dry_run=False, companies_house_api_key="k")
+    calls: list[str] = []
+
+    def _json(url: str, params: dict):
+        calls.append(url)
+        return {"items": []}
+
+    out = CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="영국", industry="수의학")
+    )
+    assert out == [] and calls == []
+
+
+def test_edgar_unmapped_specific_industry_skips_without_api() -> None:
+    # 같은 가드(등록처 3소스 공통): _SIC 에 키 없는 미매핑 자유텍스트 → US 세그먼트 스킵.
+    settings = Settings(dry_run=False, edgar_user_agent="ua")
+    calls: list[str] = []
+
+    def _json(url: str, params: dict):
+        calls.append(url)
+        return {}
+
+    out = EdgarSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="US", industry="수의학")
+    )
+    assert out == [] and calls == []
+
+
+def test_dart_unmapped_specific_industry_skips_without_api() -> None:
+    # 같은 가드: _KSIC 미매핑 자유텍스트 업종 → KR 세그먼트 스킵(전량 오라벨 방지).
+    settings = Settings(dry_run=False, dart_api_key="k")
+    calls: list[str] = []
+
+    def _json(url: str, params: dict):
+        calls.append(url)
+        return {}
+
+    def _data(url: str, params: dict) -> bytes:
+        calls.append(url)
+        return b""
+
+    src = DartSource(settings, fetcher=FakeFetcher(json=_json, data=_data))
+    out = src.discover(Segment(country="KR", industry="수의학"))
+    assert out == [] and calls == []
 
 
 def test_companies_house_no_key_is_noop() -> None:

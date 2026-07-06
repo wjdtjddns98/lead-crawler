@@ -210,7 +210,11 @@ def test_edgar_stale_cursor_beyond_universe_rewinds() -> None:
 
 
 def _ch_item(i: int) -> dict:
-    return {"company_status": "active", "company_number": f"GB{i:06d}", "company_name": f"Ltd {i}"}
+    # sic_codes: broad 게이트(실업종 매핑 필수) 통과용 — 이 테스트의 관심사는 커서 역학.
+    return {
+        "company_status": "active", "company_number": f"GB{i:06d}",
+        "company_name": f"Ltd {i}", "sic_codes": ["41100"],
+    }
 
 
 def test_companies_house_continues_from_cursor_and_resets_on_exhaust() -> None:
