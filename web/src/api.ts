@@ -74,7 +74,18 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let detail = `${res.status}`;
     try {
-      detail = (await res.json()).detail ?? detail;
+      const d = (await res.json()).detail;
+      if (Array.isArray(d)) {
+        // FastAPI 422 검증 오류 — detail 이 [{loc, msg}] 배열이라 그대로 두면 [object Object]로 보인다.
+        detail =
+          d
+            .map((e: { loc?: unknown[]; msg?: string }) =>
+              [e.loc?.slice(1).join("."), e.msg].filter(Boolean).join(": "),
+            )
+            .join("; ") || detail;
+      } else if (d != null) {
+        detail = typeof d === "string" ? d : JSON.stringify(d);
+      }
     } catch {
       // 본문이 JSON 이 아니면 상태코드만 노출.
     }
