@@ -666,6 +666,8 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     };
     return jsonRes(crawlJobInfo(), 202);
   }
+  // 최근 크롤 이력 — mock 은 마지막 작업 1건만 유지하므로 그걸 목록으로 노출(없으면 빈 목록).
+  if (path === "/admin/crawl/history") return jsonRes(crawlJob ? [crawlJobInfo()] : []);
   if (path === "/admin/crawl/cancel" && method === "POST") {
     if (crawlJobInfo().status !== "running")
       return jsonRes({ detail: "진행 중인 크롤이 없습니다" }, 404);

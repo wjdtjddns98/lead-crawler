@@ -288,6 +288,11 @@ export async function fetchCrawlStatus(): Promise<CrawlJob> {
   return apiGet("/admin/crawl");
 }
 
+// 최근 크롤 이력(최신순). BE 계약 제안분 — 미배포 서버에선 404 이므로 호출측에서 조용히 숨긴다.
+export async function fetchCrawlHistory(limit = 10): Promise<CrawlJob[]> {
+  return apiGet(`/admin/crawl/history?limit=${limit}`);
+}
+
 // 진행 중 크롤에 취소를 요청한다(협조적 중단). 진행 중이 없으면 404.
 export async function cancelCrawl(): Promise<CrawlJob> {
   return apiSend("POST", "/admin/crawl/cancel");
