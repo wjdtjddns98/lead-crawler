@@ -9,10 +9,11 @@ import {
   setUserActive,
 } from "../../api";
 import type { AuditEntry, Role, UserStats } from "../../types";
+import { errMsg } from "../../format";
 import { ErrorBox } from "../ErrorBox";
 import { TableSkeleton } from "../TableSkeleton";
-import { BTN, BTN_CONFIRM, BTN_REJECT, EMPTY, TD, TH } from "../../ui";
-import { SECTION_H2, INPUT, fmt } from "./shared";
+import { BTN, BTN_CONFIRM, BTN_REJECT, EMPTY, INPUT, TD, TH } from "../../ui";
+import { SECTION_H2, fmt } from "./shared";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 // 감사 로그 액션 한글 라벨 — reclaim 은 관리자 점유 회수(PRD-queue-claim-permanent §4.6).
@@ -47,7 +48,7 @@ export function AccountsSection() {
       setUsers(u);
       setAudit(a);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setLoading(false);
     }
@@ -64,7 +65,7 @@ export function AccountsSection() {
       await fn();
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   };
 

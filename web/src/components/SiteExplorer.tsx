@@ -2,24 +2,8 @@ import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { AlertTriangle, ExternalLink, X } from "lucide-react";
 import type { ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, tabCls } from "../ui";
-import { EmailBadge } from "./StatusBadge";
-
-// http(s) 만 허용(javascript:/data: 차단) — QueueTable 과 동일 정책(신뢰불가 URL 방어).
-function safeHref(url: string | null): string | null {
-  if (!url) return null;
-  try {
-    const u = new URL(url);
-    return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
-  } catch {
-    return null;
-  }
-}
-
-// 불리언/널 3-state 를 O/X/— 로 표시(QueueTable 과 동일 표기).
-function tri(v: boolean | null): string {
-  if (v === null) return "—";
-  return v ? "O" : "X";
-}
+import { safeHref, tri } from "../format";
+import { CandidateRadios, EmailBadge } from "./StatusBadge";
 
 // 잡텍스트에서 첫 이메일을 뽑는다(끝 구두점 제거). 없으면 null. 팝업에서 줄째 복사해도
 // 이메일만 골라 입력란에 채우기 위함.
@@ -372,24 +356,13 @@ export function SiteExplorer({
             {item.candidates.length > 0 && (
               <div className="flex flex-col gap-1">
                 <span className="text-muted text-xs">이메일 후보</span>
-                {item.candidates.map((c) => (
-                  <label
-                    key={c.value}
-                    className="flex items-start gap-1.5 cursor-pointer"
-                    title={c.value}
-                  >
-                    <input
-                      type="radio"
-                      className="cursor-pointer flex-none mt-0.5"
-                      name={`exp-sel-${item.id}`}
-                      checked={choice === c.value}
-                      disabled={done}
-                      onChange={() => onPick(item.id, c.value)}
-                    />
-                    <span className="font-mono text-[13px] [overflow-wrap:anywhere]">{c.value}</span>
-                    <EmailBadge status={c.email_status} />
-                  </label>
-                ))}
+                <CandidateRadios
+                  candidates={item.candidates}
+                  name={`exp-sel-${item.id}`}
+                  choice={choice}
+                  disabled={done}
+                  onPick={(v) => onPick(item.id, v)}
+                />
               </div>
             )}
 
