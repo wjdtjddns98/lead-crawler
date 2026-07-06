@@ -70,6 +70,27 @@ def test_reverse_sic_and_uk():
         assert all(is_taxonomy_label(lbl) for lbl in tbl)
 
 
+def test_reverse_expanded_sic_codes():
+    # 신규 SIC 접두 대표값 역매핑.
+    assert I.industry_from_sic("3711") == "자동차·모빌리티"  # motor vehicles & car bodies
+    assert I.industry_from_sic("2011") == "식품·음료"  # meat packing
+    assert I.industry_from_sic("2812") == "화학·석유화학"  # alkalies and chlorine
+    assert I.industry_from_sic("4213") == "물류·운송"  # trucking(운송·물류 공통 42, 동일라벨)
+    assert I.industry_from_sic("6512") == "부동산·개발"  # operators of apartment buildings
+    # 동률 검사(283 화학 vs 제약): 283 은 화학 큐레이션에서 제외돼 제약 단독 확정(모호 아님).
+    assert I.industry_from_sic("2834") == "제약·바이오"  # drugs — 화학으로 새지 않음
+    assert I.industry_from_sic("2833") == "제약·바이오"  # medicinal chemicals
+
+
+def test_reverse_expanded_uk_sic_codes():
+    assert I.industry_from_uk_sic("29100") == "자동차·모빌리티"  # motor vehicles
+    assert I.industry_from_uk_sic("10130") == "식품·음료"  # meat products
+    assert I.industry_from_uk_sic("20140") == "화학·석유화학"  # organic basic chemicals
+    assert I.industry_from_uk_sic("50200") == "물류·운송"  # sea freight(49 는 deny 라 50 로 검증)
+    # UK 21(제약)은 화학(20)과 분리 — 21→제약·바이오, 20→화학·석유화학(동률 없음).
+    assert I.industry_from_uk_sic("21100") == "제약·바이오"
+
+
 # ── 구분 결정 규칙 ──────────────────────────────────────────────────────────
 def test_is_broad_industry():
     for b in ("", "전체", "ALL", "기타", "미분류", None):
@@ -310,6 +331,22 @@ def test_build_lead_classifies_when_unclassified():
     )
     assert lead.company.industry == "게임"
     assert clf.calls == 1  # 미분류라 LLM 한번 거침
+
+
+def test_build_lead_skips_classify_when_no_homepage():
+    # 홈페이지 텍스트 없음(도메인·홈 없는 등록처 껍데기 회사) → 이름만 블라인드 분류
+    # 금지(자동차 편중·비용 방지). 미분류 유지 + LLM 호출 0.
+    from leadcrawler.pipeline.run import _build_lead
+
+    enr = _FakeEnricher()
+    enr.last_home_html = None  # fetch 실패·도메인 없음 시뮬레이션
+    clf = _RecordingClassifier("자동차·모빌리티")
+    lead = _build_lead(
+        _dc(UNCLASSIFIED), enricher=enr, existence=_FakeExistence(),
+        email_validator=_FakeValidator(), classifier=clf,
+    )
+    assert lead.company.industry == UNCLASSIFIED
+    assert clf.calls == 0
 
 
 def test_build_lead_classifies_catch_all_label():

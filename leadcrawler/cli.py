@@ -493,8 +493,9 @@ def backfill_industries(
     """'미분류'·catch-all 구분의 실존 회사를 재분류해 갱신한다 — (검토, 갱신) 건수 반환.
 
     파이프라인 유입 시점과 같은 규칙(AMBIGUOUS_LABELS → 분류기, abstain=원래값 유지)을
-    기존 행에 소급 적용한다. 홈페이지가 있으면 ``fetch_html`` 로 본문을 받아 분류 근거를
-    보강한다(없거나 실패하면 이름·도메인만). 닫힌 택소노미 밖 값은 절대 쓰지 않고
+    기존 행에 소급 적용한다. 홈페이지 본문(``fetch_html``)이 있을 때만 분류한다 — 없으면
+    (홈페이지 없음·fetch 실패) 이름만 블라인드 분류(오라벨·과금)하지 않고 스킵한다
+    (파이프라인 홈페이지 게이트와 동일 규칙). 닫힌 택소노미 밖 값은 절대 쓰지 않고
     abstain 은 원래값을 유지하므로 반복 실행해도 안전하다(멱등).
 
     ``commit_every`` 건마다 중간 커밋한다 — 전체 런은 행당 유료 호출이 있어, 중단 시
@@ -520,6 +521,10 @@ def backfill_industries(
     updated = 0
     for i, (company, domain) in enumerate(rows, start=1):
         html = fetch_html(company.homepage) if company.homepage else None
+        # 홈페이지 게이트(파이프라인 run.py 와 동일): 본문 없으면 이름만 블라인드 분류로
+        # 오라벨(자동차 편중)·과금하지 않고 스킵 — 미분류 유지, 다음 실행에서 재시도(멱등).
+        if not html:
+            continue
         # 분류기는 계약상 실패를 abstain(None)으로 흡수한다 — 확신 라벨일 때만 갱신.
         verdict = classifier.classify(company.name, domain, html)
         if verdict.label and verdict.label != company.industry:
@@ -536,8 +541,9 @@ def backfill_industry(
 ) -> None:
     """'미분류'·catch-all 구분으로 남은 기존 회사를 LLM 으로 소급 재분류한다(멱등).
 
-    파이프라인은 유입 시점에만 분류하므로, 그때 보류(abstain — 홈페이지 없음·429 등)된
-    행은 이 명령으로 재시도한다. dry_run/키없음이면 무료 키워드 스텁으로 동작하고,
+    파이프라인은 유입 시점에만 분류하므로, 그때 보류(abstain — fetch 실패·429 등)된
+    행은 이 명령으로 재시도한다. 홈페이지 없는 행은 여기서도 분류하지 않는다(블라인드
+    분류 금지 — 홈페이지가 생기면 그때 재분류). dry_run/키없음이면 무료 키워드 스텁으로 동작하고,
     라이브는 cost_ledger 월예산·런당캡 가드 안에서만 과금 호출한다.
     """
     import httpx

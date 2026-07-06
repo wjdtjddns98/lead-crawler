@@ -42,6 +42,27 @@ def test_old_keys_still_work() -> None:
     assert is_specific_industry("반도체")
 
 
+def test_expanded_labels_resolve_registry_prefixes() -> None:
+    # SIC 확장(자동차·모빌리티): 등록처 가드가 더는 스킵 안 하도록 접두가 풀려야 한다.
+    assert uk_sic_prefixes("자동차·모빌리티") == ("29",)
+    assert sic_prefixes("자동차·모빌리티") == ("371",)
+    # 식품·음료.
+    assert uk_sic_prefixes("식품·음료") == ("10", "11")
+    assert sic_prefixes("식품·음료") == ("20",)
+    # 화학·석유화학: 283(제약) 제외 큐레이션 — 제약 과포함 없이 화학만.
+    assert sic_prefixes("화학·석유화학") == ("281", "282", "284", "285", "286", "287", "289")
+    assert "283" not in sic_prefixes("화학·석유화학")
+    assert uk_sic_prefixes("화학·석유화학") == ("20",)
+    # 물류·운송: 운송∪물류 합집합(라벨은 둘 다 물류·운송로 귀속).
+    assert sic_prefixes("물류·운송") == ("40", "42", "44", "45", "46", "47")
+    assert uk_sic_prefixes("물류·운송") == ("49", "50", "51", "52")
+    # 부동산·개발(US SIC 65).
+    assert sic_prefixes("부동산·개발") == ("65",)
+    # 확장 라벨은 모두 구체 업종으로 판정 → 집계원 게이팅 대상.
+    for lbl in ("자동차·모빌리티", "식품·음료", "화학·석유화학", "물류·운송", "부동산·개발"):
+        assert is_specific_industry(lbl)
+
+
 def test_supported_industries_are_taxonomy_labels() -> None:
     labels = [ko for ko, _ in supported_industries()]
     assert labels
