@@ -111,7 +111,8 @@ function Workbench({
   // 저장된 뷰가 없으면(첫 방문) 역할별 착지 — admin 은 관리 전담이라 콘솔로, 그 외는 내 작업.
   const [view, setViewState] = useState<View>(() => {
     const saved = localStorage.getItem("wb.view") as View | null;
-    if (saved === "browse") return "browse";
+    // 전체 큐는 admin 전용 뷰 — worker 는 저장값이 남아 있어도(권한 강등·계정 교대) 내 작업으로.
+    if (saved === "browse") return isAdmin ? "browse" : "mine";
     if (saved === "admin" && isAdmin) return "admin";
     if (saved === "mine") return "mine";
     return isAdmin ? "admin" : "mine";
@@ -180,14 +181,15 @@ function Workbench({
     id: string,
     kind: "confirm" | "reject",
     selected?: string,
+    homepage?: string,
   ): Promise<boolean> => {
     setBusyIds((prev) => new Set(prev).add(id));
     setError(null);
     let ok = false;
     try {
-      // 담당자는 서버가 로그인 사용자로 자동 기록. 확정 시 사람이 고른 이메일을 보낸다.
+      // 담당자는 서버가 로그인 사용자로 자동 기록. 확정 시 사람이 고른 이메일·사이트 수정값을 보낸다.
       const updated =
-        kind === "confirm" ? await confirmReview(id, selected) : await rejectReview(id);
+        kind === "confirm" ? await confirmReview(id, selected, homepage) : await rejectReview(id);
       // 현재 필터에서 벗어난 항목은 목록에서 빠지므로 재조회, 아니면 제자리 갱신.
       if (filter && updated.status !== filter) {
         await load();
@@ -329,11 +331,9 @@ function Workbench({
           busyIds={busyIds}
           doneCount={sessionDone}
           remaining={total}
-          // 전체 큐 액션은 admin 전용 — worker 는 읽기 전용(진행 확인·검색용). 여기 목록은
-          // 전부 미점유 항목이라 worker 가 직접 처리하면 claim(내 작업) 격리를 우회해
-          // 동시 중복 검토가 나므로, 직접 처리는 '내 작업' 경유만 허용한다.
-          readOnly={!isAdmin}
-          onConfirm={(id, selected) => act(id, "confirm", selected)}
+          // 전체 큐는 admin 전용 뷰(탭 자체가 admin 에게만 노출) — worker 의 직접 처리는
+          // claim(내 작업) 경유만이라 미점유 항목 동시 중복 검토가 원천 차단된다.
+          onConfirm={(id, selected, homepage) => act(id, "confirm", selected, homepage)}
           onReject={(id) => act(id, "reject")}
           // 전체큐는 점유 항목이 서버에서 제외됨 — pending 0 = "받아갈 수 있는 작업 없음".
           emptyText={
@@ -373,26 +373,26 @@ function Workbench({
       <header className="flex items-center justify-between mb-5">
         <h1 className="text-xl font-semibold tracking-tight m-0">검증 워크벤치</h1>
         <div className="flex items-center gap-2.5 text-muted">
-          {/* 작업 뷰(내 작업·전체 큐)와 관리자 콘솔은 위계가 다르다 — 구분선·기어 아이콘으로
-              "플로어를 떠나 콘솔로 간다"를 표시. worker 에겐 구분선째 안 보인다. */}
-          <nav className="flex items-center gap-1 mr-2">
-            <button className={tabCls(view === "mine")} onClick={() => setView("mine")}>
-              내 작업
-            </button>
-            <button className={tabCls(view === "browse")} onClick={() => setView("browse")}>
-              전체 큐
-            </button>
-            {isAdmin && (
-              <>
-                <span className="w-px h-5 bg-line mx-1.5" aria-hidden />
-                <button className={tabCls(view === "admin")} onClick={() => setView("admin")}>
-                  <span className="inline-flex items-center gap-1">
-                    <Settings size={14} aria-hidden /> 관리자
-                  </span>
-                </button>
-              </>
-            )}
-          </nav>
+          {/* 상단 nav 는 admin 전용 — worker 는 뷰가 내 작업 하나뿐이라 탭 하나짜리 nav 는
+              죽은 UI(항상 활성·클릭 무의미)다. 전체 큐는 타인 작업까지 노출되는 admin 관제용이고,
+              worker 의 처리 내역은 내 작업 안의 상태 탭(대기/확정/거부)에서 본다. 작업 뷰와
+              관리자 콘솔의 위계는 구분선·기어 아이콘으로 표시("플로어를 떠나 콘솔로 간다"). */}
+          {isAdmin && (
+            <nav className="flex items-center gap-1 mr-2">
+              <button className={tabCls(view === "mine")} onClick={() => setView("mine")}>
+                내 작업
+              </button>
+              <button className={tabCls(view === "browse")} onClick={() => setView("browse")}>
+                전체 큐
+              </button>
+              <span className="w-px h-5 bg-line mx-1.5" aria-hidden />
+              <button className={tabCls(view === "admin")} onClick={() => setView("admin")}>
+                <span className="inline-flex items-center gap-1">
+                  <Settings size={14} aria-hidden /> 관리자
+                </span>
+              </button>
+            </nav>
+          )}
           <span className="text-muted">
             {user}
             {isAdmin && " · 관리자"}

@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, FileText } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, FileText, Pencil } from "lucide-react";
 import type { Listed, ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
-import { safeHref, tri } from "../format";
+import { normSiteUrl, safeHref, tri } from "../format";
 import { CandidateRadios, EmailBadge, StatusBadge } from "./StatusBadge";
 import { SiteExplorer, type SiteTab } from "./SiteExplorer";
 
@@ -61,12 +61,10 @@ interface Props {
   doneCount: number; // 이번 세션 처리 건수(진행률 바 분자)
   remaining: number; // 남은 작업 건수(호출부 기준 — 내 작업=내 잔여분, 전체큐=필터 반영 total). 분모 = doneCount + remaining
   // 성공(처리 완료) 시 true 를 resolve — 팝업에서 '성공해야 다음 행 전진' 판단에 쓴다.
-  onConfirm: (id: string, selected?: string) => Promise<boolean>;
+  // homepage = 사람이 수정한 사이트 URL(유효 http(s)·원본과 다를 때만, 없으면 undefined).
+  onConfirm: (id: string, selected?: string, homepage?: string) => Promise<boolean>;
   onReject: (id: string) => Promise<boolean>;
   emptyText?: string; // 빈 목록 안내 — 화면 맥락별 문구(생략 시 기본).
-  // 읽기 전용(브라우즈) — 액션 컬럼·이메일 편집·미리보기 처리 팝업을 숨긴다. worker 의
-  // 전체 큐가 해당: 직접 처리는 claim(내 작업) 경유만 — 미점유 항목 동시 처리 충돌 방지.
-  readOnly?: boolean;
 }
 
 // URL 에서 표시용 호스트(도메인)를 뽑는다(www. 제거). 실패 시 원문.
@@ -102,8 +100,11 @@ interface RowProps {
   item: ReviewItem;
   busy: boolean;
   choice: string | undefined;
-  readOnly: boolean; // 역할 고정값(세션 중 불변) — memo 비교에서 제외해도 안전.
+  // 사용자가 편집 중인 사이트 URL — undefined 면 편집기 닫힘(기본 한 줄 유지).
+  site: string | undefined;
   onPick: (id: string, value: string) => void;
+  onEditSite: (id: string, value: string) => void;
+  onCancelSite: (id: string) => void; // 편집 취소 — 입력을 닫고 원본 링크로 복귀.
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
   onOpen: (id: string, tab: SiteTab) => void;
@@ -114,12 +115,24 @@ interface RowProps {
 // 핸들러를 매 렌더 새로 만들어도 논리는 동일하고, 행은 item 이 바뀔 때 최신 핸들러로
 // 갱신되므로 안전하다(필터 변경 시 item 객체가 새로 와 자연히 재렌더).
 const QueueRow = memo(
-  function QueueRow({ item, busy, choice, readOnly, onPick, onConfirm, onReject, onOpen }: RowProps) {
+  function QueueRow({
+    item,
+    busy,
+    choice,
+    site,
+    onPick,
+    onEditSite,
+    onCancelSite,
+    onConfirm,
+    onReject,
+    onOpen,
+  }: RowProps) {
     const done = item.status !== "pending";
     // confirmed 만 편집 잠금 — rejected 는 재작업(이메일 수정 → 재확정 번복) 가능 상태로
-    // 열어둔다(BE 도 전이 제한 없이 감사기록과 함께 허용). 읽기 전용(브라우즈)은 전부 잠금.
-    const locked = item.status === "confirmed" || readOnly;
-    const href = safeHref(item.homepage);
+    // 열어둔다(BE 도 전이 제한 없이 감사기록과 함께 허용).
+    const locked = item.status === "confirmed";
+    // 링크는 편집 중 값을 따른다(무효 입력이면 링크가 사라져 잘못된 URL 임이 바로 보인다).
+    const href = site !== undefined ? normSiteUrl(site.trim()) : safeHref(item.homepage);
     const formHref = safeHref(item.form);
     return (
       <tr className={`hover:bg-white/[0.03] ${done ? "opacity-60" : ""}`}>
@@ -148,26 +161,16 @@ const QueueRow = memo(
             </div>
           )}
           {/* 확정 전 이메일 직접 수정/입력 — 후보 선택값을 채우되 사람이 덮어쓸 수 있다.
-              폼만 있던(후보 0) 행엔 새 이메일 추가도 가능. 읽기 전용(브라우즈)에선 편집처럼
-              보이는 비활성 입력 대신 값을 텍스트로 보여준다(다중 후보는 위 라디오가 표시). */}
-          {readOnly ? (
-            item.candidates.length <= 1 &&
-            (choice ? (
-              <span className="font-mono [overflow-wrap:anywhere]">{choice}</span>
-            ) : (
-              <span className="text-muted">—</span>
-            ))
-          ) : (
-            <input
-              className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
-              type="email"
-              value={choice ?? ""}
-              disabled={locked}
-              placeholder="이메일 직접 입력/수정"
-              onChange={(e) => onPick(item.id, e.target.value)}
-              title="확정 전 이메일을 수정하거나 직접 입력할 수 있습니다"
-            />
-          )}
+              폼만 있던(후보 0) 행엔 새 이메일 추가도 가능. */}
+          <input
+            className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+            type="email"
+            value={choice ?? ""}
+            disabled={locked}
+            placeholder="이메일 직접 입력/수정"
+            onChange={(e) => onPick(item.id, e.target.value)}
+            title="확정 전 이메일을 수정하거나 직접 입력할 수 있습니다"
+          />
         </td>
         <td className={`${TD} ${COL_W[5]} text-xs`}>
           <EmailBadge status={item.email_status} />
@@ -181,15 +184,8 @@ const QueueRow = memo(
               target="_blank"
               rel="noreferrer"
               className={`${LINK_FOCUS} ${item.site_alive ? "text-accent" : "text-muted line-through"}`}
-              title={
-                item.site_alive
-                  ? readOnly
-                    ? "새 탭에서 열기"
-                    : "클릭: 미리보기 창 (Ctrl+클릭: 새 탭)"
-                  : "사이트 미응답"
-              }
-              // 읽기 전용은 처리용 미리보기 창 대신 브라우저 기본(새 탭)으로 연다.
-              onClick={readOnly ? undefined : (e) => openOrTab(e, () => onOpen(item.id, "home"))}
+              title={item.site_alive ? "클릭: 미리보기 창 (Ctrl+클릭: 새 탭)" : "사이트 미응답"}
+              onClick={(e) => openOrTab(e, () => onOpen(item.id, "home"))}
             >
               <span className="inline-flex items-center gap-1">
                 <ExternalLink size={13} className="flex-none" aria-hidden /> {hostOf(href)}
@@ -198,6 +194,24 @@ const QueueRow = memo(
           ) : (
             <span className="text-muted">—</span>
           )}
+          {/* 사이트 URL 편집 — 이메일과 달리 링크가 주 기능이고 편집은 예외적 교정이라 상시
+              입력 대신 연필 토글로 연다(기본 한 줄 유지). 사이트 없던 행엔 새 URL 추가도 가능.
+              편집값은 확정 시 함께 반영. confirmed 잠금은 연필 자체를 숨긴다. */}
+          {!locked && (
+            <button
+              type="button"
+              className={`${LINK_FOCUS} text-muted hover:text-ink align-middle ml-1.5`}
+              title={site === undefined ? "사이트 URL 수정/입력" : "편집 취소"}
+              onClick={() =>
+                site === undefined
+                  ? onEditSite(item.id, item.homepage ?? "")
+                  : onCancelSite(item.id)
+              }
+            >
+              <Pencil size={12} aria-hidden />
+              <span className="sr-only">사이트 URL 편집</span>
+            </button>
+          )}
           {formHref && (
             <div>
               <a
@@ -205,14 +219,26 @@ const QueueRow = memo(
                 target="_blank"
                 rel="noreferrer"
                 className={`${LINK_FOCUS} text-accent`}
-                title={readOnly ? "새 탭에서 열기" : "클릭: 미리보기 창 (Ctrl+클릭: 새 탭)"}
-                onClick={readOnly ? undefined : (e) => openOrTab(e, () => onOpen(item.id, "form"))}
+                title="클릭: 미리보기 창 (Ctrl+클릭: 새 탭)"
+                onClick={(e) => openOrTab(e, () => onOpen(item.id, "form"))}
               >
                 <span className="inline-flex items-center gap-1">
                   <FileText size={13} className="flex-none" aria-hidden /> 문의폼
                 </span>
               </a>
             </div>
+          )}
+          {site !== undefined && !locked && (
+            <input
+              autoFocus
+              className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent"
+              type="url"
+              value={site}
+              placeholder="사이트 URL 직접 입력/수정"
+              onChange={(e) => onEditSite(item.id, e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && onCancelSite(item.id)}
+              title="확정 시 함께 반영됩니다 (Esc: 취소)"
+            />
           )}
         </td>
         <td className={`${TD} ${COL_W[7]}`}>
@@ -227,33 +253,34 @@ const QueueRow = memo(
             </span>
           )}
         </td>
-        {!readOnly && (
-          <td className={`${TD} ${COL_W[8]}`}>
-            {/* 버튼 라벨은 TD 의 overflow-wrap:anywhere 상속으로 '확/정' 처럼 세로로
-                접힐 수 있어 nowrap 으로 잠근다(액션 셀 한정). */}
-            <div className="flex gap-1.5 whitespace-nowrap">
-              <button
-                className={BTN_CONFIRM}
-                disabled={busy || item.status === "confirmed"}
-                onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
-              >
-                확정
-              </button>
-              <button
-                className={BTN_REJECT}
-                disabled={busy || item.status === "rejected"}
-                onClick={() => onReject(item.id)}
-              >
-                거부
-              </button>
-            </div>
-          </td>
-        )}
+        <td className={`${TD} ${COL_W[8]}`}>
+          {/* 버튼 라벨은 TD 의 overflow-wrap:anywhere 상속으로 '확/정' 처럼 세로로
+              접힐 수 있어 nowrap 으로 잠근다(액션 셀 한정). */}
+          <div className="flex gap-1.5 whitespace-nowrap">
+            <button
+              className={BTN_CONFIRM}
+              disabled={busy || item.status === "confirmed"}
+              onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
+            >
+              확정
+            </button>
+            <button
+              className={BTN_REJECT}
+              disabled={busy || item.status === "rejected"}
+              onClick={() => onReject(item.id)}
+            >
+              거부
+            </button>
+          </div>
+        </td>
       </tr>
     );
   },
   (prev, next) =>
-    prev.item === next.item && prev.busy === next.busy && prev.choice === next.choice,
+    prev.item === next.item &&
+    prev.busy === next.busy &&
+    prev.choice === next.choice &&
+    prev.site === next.site,
 );
 
 // 검증 큐 표 — 회사/이메일 후보(다중 선택)/메일 검증 신호/상태/액션.
@@ -265,13 +292,36 @@ export function QueueTable({
   onConfirm,
   onReject,
   emptyText,
-  readOnly = false,
 }: Props) {
   // 행별 선택(라디오) — 서버 selected 를 기본값으로, 사용자가 바꾸면 덮어쓴다.
   const [picked, setPicked] = useState<Record<string, string>>({});
   const onPick = useCallback((id: string, value: string) => {
     setPicked((p) => ({ ...p, [id]: value }));
   }, []);
+
+  // 행별 사이트 URL 편집값 — 키 존재 = 편집기 열림(연필 토글). 취소하면 키를 지워 닫는다.
+  const [sites, setSites] = useState<Record<string, string>>({});
+  const onEditSite = useCallback((id: string, value: string) => {
+    setSites((p) => ({ ...p, [id]: value }));
+  }, []);
+  const onCancelSite = useCallback((id: string) => {
+    setSites((p) => {
+      const next = { ...p };
+      delete next[id];
+      return next;
+    });
+  }, []);
+  // 확정에 실을 사이트 수정값 — 편집했고, 정규화 후 유효하며, 원본과 다를 때만(그 외 undefined
+  // = 변경 없음). 정규화가 스킴만 보충한 경우(원본과 동일)도 변경 없음으로 취급된다.
+  const editedSite = useCallback(
+    (it: ReviewItem): string | undefined => {
+      const raw = sites[it.id];
+      if (raw === undefined) return undefined;
+      const norm = normSiteUrl(raw.trim());
+      return norm && norm !== it.homepage ? norm : undefined;
+    },
+    [sites],
+  );
 
   // 컬럼 정렬 — 같은 컬럼 재클릭 시 asc↔desc 토글, 3번째 클릭이면 해제(원본 순서 복귀).
   const [sort, setSort] = useState<Sort | null>(null);
@@ -349,8 +399,13 @@ export function QueueTable({
     [],
   );
   const popupConfirm = useCallback(
-    (id: string, selected?: string) => advanceAfter(id, () => onConfirm(id, selected)),
-    [advanceAfter, onConfirm],
+    (id: string, selected?: string) =>
+      advanceAfter(id, () => {
+        // 표에서 편집해 둔 사이트 URL 이 있으면 팝업 확정에도 함께 실린다(편집 유실 방지).
+        const it = itemsRef.current.find((x) => x.id === id);
+        return onConfirm(id, selected, it ? editedSite(it) : undefined);
+      }),
+    [advanceAfter, onConfirm, editedSite],
   );
   const popupReject = useCallback(
     (id: string) => advanceAfter(id, () => onReject(id)),
@@ -367,13 +422,15 @@ export function QueueTable({
   const modalChoice = modalItem
     ? (picked[modalItem.id] ?? modalItem.selected ?? modalItem.candidates[0]?.value)?.trim()
     : undefined;
+  // 확정에 실릴 사이트 수정값(없으면 undefined). raw 는 무효 입력 경고 판단용.
+  const modalSite = modalItem ? editedSite(modalItem) : undefined;
+  const modalSiteRaw = modalItem ? sites[modalItem.id]?.trim() : undefined;
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
         <thead>
           <tr>
-            {/* 읽기 전용이면 마지막 '액션' 헤더 제외(행도 액션 셀을 안 그린다). */}
-            {(readOnly ? HEADERS.slice(0, -1) : HEADERS).map((h, i) => {
+            {HEADERS.map((h, i) => {
               const sortable = i in SORT_KEY;
               const active = sort?.col === i;
               return (
@@ -415,8 +472,10 @@ export function QueueTable({
               item={it}
               busy={busyIds.has(it.id)}
               choice={picked[it.id] ?? it.selected ?? it.candidates[0]?.value}
-              readOnly={readOnly}
+              site={sites[it.id]}
               onPick={onPick}
+              onEditSite={onEditSite}
+              onCancelSite={onCancelSite}
               onConfirm={(id) => setModal({ id, action: "confirm" }) /* 즉시 확정 대신 확인 모달 */}
               // confirmed 행 거부 = 확정 번복 — 확인 모달 경유. pending 거부는 기존대로 1클릭.
               onReject={(id) =>
@@ -454,6 +513,20 @@ export function QueueTable({
                       {modalChoice}
                     </span>
                   )}
+                  {modalSite && (
+                    <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
+                      사이트 → {modalSite}
+                    </span>
+                  )}
+                  {/* 편집했지만 반영될 변경이 없는 경우(무효 URL·정규화 후 원본과 동일)
+                      — 조용히 버리지 않고 미반영을 알린다. */}
+                  {modalSiteRaw !== undefined &&
+                    !modalSite &&
+                    modalSiteRaw !== (modalItem.homepage ?? "") && (
+                      <span className="block mt-1 text-xs text-danger-fg">
+                        사이트 수정값이 유효한 변경이 아니어서 반영되지 않습니다
+                      </span>
+                    )}
                 </>
               ) : (
                 <>
@@ -481,7 +554,7 @@ export function QueueTable({
                 onClick={() => {
                   setModal(null);
                   if (modal.action === "confirm")
-                    void onConfirm(modalItem.id, modalChoice || undefined);
+                    void onConfirm(modalItem.id, modalChoice || undefined, modalSite);
                   else void onReject(modalItem.id);
                 }}
               >
@@ -501,9 +574,11 @@ export function QueueTable({
           remaining={remaining}
           tab={open.tab}
           choice={picked[openItem.id] ?? openItem.selected ?? openItem.candidates[0]?.value}
+          site={sites[openItem.id]}
           busy={busyIds.has(openItem.id)}
           onTab={(tab) => setOpen({ id: openItem.id, tab })}
           onPick={onPick}
+          onEditSite={onEditSite}
           onConfirm={popupConfirm}
           onReject={popupReject}
           onClose={() => setOpen(null)}

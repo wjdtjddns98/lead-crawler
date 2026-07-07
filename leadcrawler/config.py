@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # 발견 소스
     edgar_user_agent: str = Field(default="")
     dart_api_key: str = Field(default="")
+    # DART 예비키(선택) — 1번 키가 일일 쿼터(2만/키)를 소진하면 소스가 자동으로 이 키로
+    # 로테이션한다(키별 사용량은 dart_quota 카운터로 분리 집계). 빈값=로테이션 없음.
+    dart_api_key_2: str = Field(default="")
     companies_house_api_key: str = Field(default="")
     opencorporates_api_key: str = Field(default="")
 
@@ -166,6 +169,10 @@ class Settings(BaseSettings):
     # 깊게). 과도한 호출은 target_count 조기종료 + cost_ledger 예산 가드 + 취소로 막는다.
     # 유료 검색(Serper)은 이 캡을 쓰지 않는다 → discovery_search_max_per_segment 로 분리.
     discovery_max_per_source: int = Field(default=500)
+    # DART 일일 호출 예산(KST 리셋, 0=끄기) — OpenDART 일일 쿼터 2만을 KR 12업종 세그먼트가
+    # 라운드 초반에 다 태우면 이후 응답이 전부 020(한도초과)이라 커서만 헛돌던 실사고
+    # (2026-07-07) 방지. 2만보다 낮게 잡아 수동 백필/CLI 몫 여유를 남긴다.
+    dart_daily_call_budget: int = Field(default=15000, ge=0)
     # 유료 검색(SearchSource/Serper)의 세그먼트당 결과 상한 — 무료 캡과 독립(무료를 수천까지
     # 올려도 유료가 끌려가지 않게). Serper 는 page_size=100·1페이지/세그먼트라 ≤100 이면 1콜로
     # 끝난다 → 이 값을 100 밑으로 낮춰도 과금(1콜)은 그대로고 무료 결과만 버리므로 비용 절감엔
@@ -190,9 +197,16 @@ class Settings(BaseSettings):
     # discovery_rate_per_host 로 호스트별 합산 발사율을 억제한다(트레이드오프). dedup·적재는 항상
     # 단일 스레드라 정확성(제약①②)은 동시성과 무관하게 보존된다.
     discovery_workers: int = Field(default=1, ge=1, le=16)
+    # 세그먼트 **내부** 소스 동시성 — 비검색(등록처·집계원·거래소) 소스들의 discover 를
+    # 스레드풀로 동시 실행한다(서로 다른 호스트라 세그먼트 벽시계의 대부분). 1(기본)이면
+    # 현 동작(순차, 회귀 0). 병합·dedup·검색 게이팅은 항상 main 스레드 순차라 정확성
+    # (제약①②·첫 등장 우선)은 동시성과 무관하게 보존된다. discovery_workers(세그먼트 병렬)와
+    # 곱으로 스레드가 늘어나므로(예: 6×8=48) 호스트 합산 발사율은 discovery_rate_per_host 로 억제.
+    discovery_source_workers: int = Field(default=1, ge=1, le=16)
     # 공유 호스트별 초당 요청 상한(병렬 발견의 429 선제 방지) — 워커별 독립 페처가 같은 호스트를
     # 동시에 때려도 합산 발사율을 이 값 이하로 묶는다. 0=무제한(레이트리미터 미적용). 병렬을 켜고
-    # (discovery_workers>1) 호스트가 429 를 던지면 이 값을 낮춰 억제한다. 단일 스레드(=1)에선 무의미.
+    # (discovery_workers>1 또는 discovery_source_workers>1) 호스트가 429 를 던지면 이 값을
+    # 낮춰 억제한다. 둘 다 1(단일 스레드)이면 무의미.
     discovery_rate_per_host: float = Field(default=5.0, ge=0.0)
     # 무키 집계원(GLEIF/Wikidata) 공통 UA. Wikidata WDQS 는 WMF 로봇 정책상 연락처
     # (URL/이메일) 없는 UA 를 403 거부 — 식별 가능한 연락처 URL 필수(2026-06-19 실연동 확인).

@@ -80,11 +80,10 @@ export function CrawlTargetSection() {
 
   const running = job?.status === "running";
 
-  // 지역 픽커는 KR 이 크롤 범위에 있을 때만 노출 — BE 가 무시하는 값(KR 외 국가만 선택)을
-  // 고르게 두면 오해만 남는다. 국가 미선택(=전체)은 KR 포함이므로 보인다. 숨김 중엔 전송도
-  // 빈값으로 비워 잔존 선택이 몰래 나가는 걸 막고, 상태는 유지해 KR 재선택 시 복원한다.
-  const krInScope =
-    !countries.trim() || countries.split(",").some((c) => c.trim().toUpperCase() === "KR");
+  // 지역 픽커는 KR 을 명시 선택했을 때만 노출 — 국가 미선택(=전체)이어도 숨긴다(KR 특화
+  // 옵션이라 명시적 의도가 있을 때만). 숨김 중엔 전송도 빈값으로 비워 잔존 선택이 몰래
+  // 나가는 걸 막고, 상태는 유지해 KR 재선택 시 복원한다.
+  const krInScope = countries.split(",").some((c) => c.trim().toUpperCase() === "KR");
 
   const apply = (t: CrawlTarget) => {
     setCountries(t.countries);
@@ -100,7 +99,10 @@ export function CrawlTargetSection() {
         if (!alive) return;
         setCountryOpts(toCountryOpts(countryList));
         setIndustryOpts(industryList);
-        apply({ ...t, industries: collapseAllIndustries(t.industries, industryList) });
+        // 국가·업종은 비워둠(=전체) — 마지막 저장 타깃을 조용히 재사용하면 사용자가
+        // 실수로 이전 범위로 재크롤하는 사고가 남(#186, 2026-07-06 실사고).
+        setListed(t.listed);
+        setPersist(t.persist);
       })
       .catch((e) => alive && setErr(errMsg(e)));
     // 현황은 별도 조회 — 새로고침 시 진행 중이거나 최근 종료된 크롤을 이어서 보여주되,

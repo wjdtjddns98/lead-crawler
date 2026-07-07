@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { AlertTriangle, ExternalLink, X } from "lucide-react";
 import type { ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, tabCls } from "../ui";
-import { safeHref, tri } from "../format";
+import { normSiteUrl, safeHref, tri } from "../format";
 import { CandidateRadios, EmailBadge } from "./StatusBadge";
 
 // 잡텍스트에서 첫 이메일을 뽑는다(끝 구두점 제거). 없으면 null. 팝업에서 줄째 복사해도
@@ -45,9 +45,13 @@ interface Props {
   remaining: number; // 남은 대기 건수 — 분모 = doneCount + remaining
   tab: SiteTab;
   choice: string | undefined;
+  // 사이트 URL 편집값 — 표(QueueTable)의 sites 맵과 같은 소스(미편집이면 undefined).
+  // 여기서 고치면 표에도 이어져 보이고, 확정 시 부모(popupConfirm)가 함께 싣는다.
+  site: string | undefined;
   busy: boolean;
   onTab: (tab: SiteTab) => void;
   onPick: (id: string, value: string) => void;
+  onEditSite: (id: string, value: string) => void;
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
   onClose: () => void;
@@ -62,9 +66,11 @@ export function SiteExplorer({
   remaining,
   tab,
   choice,
+  site,
   busy,
   onTab,
   onPick,
+  onEditSite,
   onConfirm,
   onReject,
   onClose,
@@ -126,7 +132,19 @@ export function SiteExplorer({
   const [confirming, setConfirming] = useState<false | "confirm" | "reject">(false);
 
   const done = item.status !== "pending";
-  const homeHref = safeHref(item.homepage);
+  // 사이트 편집값 — 정규화 통과분(무효면 null). 원본과 다를 때만 확정에 실리는 변경분이다.
+  const editedHome = site !== undefined ? normSiteUrl(site.trim()) : null;
+  const changedHome = editedHome && editedHome !== item.homepage ? editedHome : undefined;
+  // 프리뷰 적용된 수정 URL — 키 입력마다 팝업이 이동하지 않도록 Enter/blur 시점에만 반영.
+  const [previewHome, setPreviewHome] = useState<string | null>(null);
+  useEffect(() => setPreviewHome(null), [item.id]); // 자동 전진으로 항목이 바뀌면 원복.
+  // blur 용 — 상태만 반영한다(URL 이 실제로 바뀌면 아래 effect 가 팝업을 이동시킨다).
+  // 팝업 포커스는 여기서 하지 않는다 — 확정 버튼 클릭 등 모든 blur 에서 창을 뺏으면 안 됨.
+  const applySitePreview = () => {
+    setPreviewHome(editedHome);
+    if (editedHome) onTab("home");
+  };
+  const homeHref = previewHome ?? safeHref(item.homepage);
   const formHref = safeHref(item.form);
   // 요청 탭에 URL 이 없으면 가능한 다른 쪽으로 폴백 — 탭 하이라이트·iframe 을 한 변수로
   // 묶어 '문의폼 요청했는데 폼 URL 이 없어 홈을 보여주며 탭은 무표시' 같은 불일치를 막는다.
@@ -149,19 +167,36 @@ export function SiteExplorer({
       );
     return win;
   }
-  useEffect(() => {
-    if (!activeHref) return;
-    // 이미 열린 팝업이 있으면 재사용 — window.open(name) 재호출은 features 가 있으면 기존
-    // 창을 새 URL 로 이동시키지 않는 브라우저가 있어(자동 전진 시 빈 창), location 으로 직접
-    // 이동시킨다(교차출처 이동은 허용). 위치는 같은 슬롯이라 유지. 없거나 닫혔으면 새로 연다.
+  // 팝업을 href 로 이동 — 이미 열린 창은 재사용한다. window.open(name) 재호출은 features 가
+  // 있으면 기존 창을 새 URL 로 이동시키지 않는 브라우저가 있어(자동 전진 시 빈 창), location
+  // 으로 직접 이동시킨다(교차출처 이동은 허용). 없거나 닫혔으면 새로 연다.
+  const gotoPopup = (href: string) => {
     const win = popupRef.current;
     if (win && !win.closed) {
-      win.location.href = activeHref;
-      win.focus(); // 자동 전진 시 뒤에 가려진 팝업을 다시 최상단으로.
+      win.location.href = href;
+      win.focus(); // 뒤에 가려진 팝업을 다시 최상단으로.
     } else {
-      popupRef.current = openPopup(activeHref);
+      popupRef.current = openPopup(href);
     }
+  };
+  // 열림·탭 전환·프리뷰 적용으로 activeHref 가 바뀌면 팝업을 따라 이동시킨다.
+  useEffect(() => {
+    if (activeHref) gotoPopup(activeHref);
+    // gotoPopup 은 ref 만 만지는 안정 로직 — activeHref 변화에만 반응하면 충분하다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeHref]);
+  // Enter 전용 — 상태 반영에 더해 팝업을 확실히 이동/재열기/포커스한다. URL 이 그대로면
+  // activeHref 가 안 바뀌어 위 effect 가 안 돌므로('Enter 눌렀는데 무반응'의 원인), 여기서
+  // 직접 민다. 무효 입력은 조용히 무시하지 않고 안내를 띄운다.
+  const gotoEditedSite = () => {
+    if (site !== undefined && site.trim() !== "" && !editedHome) {
+      setNotice("사이트 수정값이 유효한 URL 이 아닙니다 — http(s) 주소를 입력하세요.");
+      return;
+    }
+    applySitePreview();
+    const target = editedHome ?? safeHref(item.homepage);
+    if (target) gotoPopup(target);
+  };
   useEffect(() => () => popupRef.current?.close(), []);
 
   // 실제 확정 — 확인창을 닫고 선택 이메일로 확정한다. 모달 닫기/다음 행 전진은 부모가
@@ -258,6 +293,18 @@ export function SiteExplorer({
                   {choice?.trim() && (
                     <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
                       {choice.trim()}
+                    </span>
+                  )}
+                  {changedHome && (
+                    <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
+                      사이트 → {changedHome}
+                    </span>
+                  )}
+                  {/* 편집했지만 반영될 변경이 없는 경우(무효 URL·정규화 후 원본과 동일)
+                      — 조용히 버리지 않고 미반영을 알린다. */}
+                  {site !== undefined && !changedHome && site.trim() !== (item.homepage ?? "") && (
+                    <span className="block mt-1 text-xs text-danger-fg">
+                      사이트 수정값이 유효한 변경이 아니어서 반영되지 않습니다
                     </span>
                   )}
                   <span className="block mt-2 text-muted text-xs">다시 Enter 를 누르면 확정됩니다.</span>
@@ -416,6 +463,30 @@ export function SiteExplorer({
               <span className="text-muted whitespace-nowrap">MX {tri(item.email_mx)}</span>
               <span className="text-muted whitespace-nowrap">SMTP {tri(item.email_smtp)}</span>
             </div>
+
+            {/* 사이트 URL 직접 입력/수정 — 프리뷰로 '잘못된 사이트'임을 발견한 그 자리에서
+                교정한다(표 왕복 제거). Enter/blur 로 팝업이 수정 URL 로 이동해 눈으로 확인
+                후 확정 가능. 표의 편집 상태(sites)와 같은 소스 — 확정 시 함께 반영된다. */}
+            <label className="flex flex-col gap-1">
+              <span className="text-muted text-xs">사이트 URL(직접 입력/수정 — Enter: 미리보기 이동)</span>
+              <input
+                className="w-full bg-canvas border border-line text-ink font-mono text-sm py-1.5 px-2 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+                type="url"
+                value={site ?? item.homepage ?? ""}
+                disabled={item.status === "confirmed"}
+                placeholder="https://company.com"
+                onChange={(e) => onEditSite(item.id, e.target.value)}
+                onBlur={applySitePreview}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    // 전역 Enter=확정 핸들러로 새지 않게 여기서 소비 — 프리뷰 이동만 한다.
+                    e.preventDefault();
+                    e.stopPropagation();
+                    gotoEditedSite();
+                  }
+                }}
+              />
+            </label>
 
             {/* 하단 클러스터 — 세션 진행률 바 + 확정/거부. mt-auto 로 사이드바 바닥에 고정,
                 버튼과 한 묶음이라 후보가 적어 생기던 죽은 공간을 진행률이 채운다. */}
