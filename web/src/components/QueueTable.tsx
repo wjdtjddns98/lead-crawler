@@ -65,9 +65,6 @@ interface Props {
   onConfirm: (id: string, selected?: string, homepage?: string) => Promise<boolean>;
   onReject: (id: string) => Promise<boolean>;
   emptyText?: string; // 빈 목록 안내 — 화면 맥락별 문구(생략 시 기본).
-  // 읽기 전용(브라우즈) — 액션 컬럼·이메일 편집·미리보기 처리 팝업을 숨긴다. worker 의
-  // 전체 큐가 해당: 직접 처리는 claim(내 작업) 경유만 — 미점유 항목 동시 처리 충돌 방지.
-  readOnly?: boolean;
 }
 
 // URL 에서 표시용 호스트(도메인)를 뽑는다(www. 제거). 실패 시 원문.
@@ -105,7 +102,6 @@ interface RowProps {
   choice: string | undefined;
   // 사용자가 편집 중인 사이트 URL — undefined 면 편집기 닫힘(기본 한 줄 유지).
   site: string | undefined;
-  readOnly: boolean; // 역할 고정값(세션 중 불변) — memo 비교에서 제외해도 안전.
   onPick: (id: string, value: string) => void;
   onEditSite: (id: string, value: string) => void;
   onCancelSite: (id: string) => void; // 편집 취소 — 입력을 닫고 원본 링크로 복귀.
@@ -124,7 +120,6 @@ const QueueRow = memo(
     busy,
     choice,
     site,
-    readOnly,
     onPick,
     onEditSite,
     onCancelSite,
@@ -134,8 +129,8 @@ const QueueRow = memo(
   }: RowProps) {
     const done = item.status !== "pending";
     // confirmed 만 편집 잠금 — rejected 는 재작업(이메일 수정 → 재확정 번복) 가능 상태로
-    // 열어둔다(BE 도 전이 제한 없이 감사기록과 함께 허용). 읽기 전용(브라우즈)은 전부 잠금.
-    const locked = item.status === "confirmed" || readOnly;
+    // 열어둔다(BE 도 전이 제한 없이 감사기록과 함께 허용).
+    const locked = item.status === "confirmed";
     // 링크는 편집 중 값을 따른다(무효 입력이면 링크가 사라져 잘못된 URL 임이 바로 보인다).
     const href = site !== undefined ? normSiteUrl(site.trim()) : safeHref(item.homepage);
     const formHref = safeHref(item.form);
@@ -166,26 +161,16 @@ const QueueRow = memo(
             </div>
           )}
           {/* 확정 전 이메일 직접 수정/입력 — 후보 선택값을 채우되 사람이 덮어쓸 수 있다.
-              폼만 있던(후보 0) 행엔 새 이메일 추가도 가능. 읽기 전용(브라우즈)에선 편집처럼
-              보이는 비활성 입력 대신 값을 텍스트로 보여준다(다중 후보는 위 라디오가 표시). */}
-          {readOnly ? (
-            item.candidates.length <= 1 &&
-            (choice ? (
-              <span className="font-mono [overflow-wrap:anywhere]">{choice}</span>
-            ) : (
-              <span className="text-muted">—</span>
-            ))
-          ) : (
-            <input
-              className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
-              type="email"
-              value={choice ?? ""}
-              disabled={locked}
-              placeholder="이메일 직접 입력/수정"
-              onChange={(e) => onPick(item.id, e.target.value)}
-              title="확정 전 이메일을 수정하거나 직접 입력할 수 있습니다"
-            />
-          )}
+              폼만 있던(후보 0) 행엔 새 이메일 추가도 가능. */}
+          <input
+            className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+            type="email"
+            value={choice ?? ""}
+            disabled={locked}
+            placeholder="이메일 직접 입력/수정"
+            onChange={(e) => onPick(item.id, e.target.value)}
+            title="확정 전 이메일을 수정하거나 직접 입력할 수 있습니다"
+          />
         </td>
         <td className={`${TD} ${COL_W[5]} text-xs`}>
           <EmailBadge status={item.email_status} />
@@ -199,15 +184,8 @@ const QueueRow = memo(
               target="_blank"
               rel="noreferrer"
               className={`${LINK_FOCUS} ${item.site_alive ? "text-accent" : "text-muted line-through"}`}
-              title={
-                item.site_alive
-                  ? readOnly
-                    ? "새 탭에서 열기"
-                    : "클릭: 미리보기 창 (Ctrl+클릭: 새 탭)"
-                  : "사이트 미응답"
-              }
-              // 읽기 전용은 처리용 미리보기 창 대신 브라우저 기본(새 탭)으로 연다.
-              onClick={readOnly ? undefined : (e) => openOrTab(e, () => onOpen(item.id, "home"))}
+              title={item.site_alive ? "클릭: 미리보기 창 (Ctrl+클릭: 새 탭)" : "사이트 미응답"}
+              onClick={(e) => openOrTab(e, () => onOpen(item.id, "home"))}
             >
               <span className="inline-flex items-center gap-1">
                 <ExternalLink size={13} className="flex-none" aria-hidden /> {hostOf(href)}
@@ -218,8 +196,8 @@ const QueueRow = memo(
           )}
           {/* 사이트 URL 편집 — 이메일과 달리 링크가 주 기능이고 편집은 예외적 교정이라 상시
               입력 대신 연필 토글로 연다(기본 한 줄 유지). 사이트 없던 행엔 새 URL 추가도 가능.
-              편집값은 확정 시 함께 반영. 읽기 전용·confirmed 잠금은 연필 자체를 숨긴다. */}
-          {!readOnly && !locked && (
+              편집값은 확정 시 함께 반영. confirmed 잠금은 연필 자체를 숨긴다. */}
+          {!locked && (
             <button
               type="button"
               className={`${LINK_FOCUS} text-muted hover:text-ink align-middle ml-1.5`}
@@ -241,8 +219,8 @@ const QueueRow = memo(
                 target="_blank"
                 rel="noreferrer"
                 className={`${LINK_FOCUS} text-accent`}
-                title={readOnly ? "새 탭에서 열기" : "클릭: 미리보기 창 (Ctrl+클릭: 새 탭)"}
-                onClick={readOnly ? undefined : (e) => openOrTab(e, () => onOpen(item.id, "form"))}
+                title="클릭: 미리보기 창 (Ctrl+클릭: 새 탭)"
+                onClick={(e) => openOrTab(e, () => onOpen(item.id, "form"))}
               >
                 <span className="inline-flex items-center gap-1">
                   <FileText size={13} className="flex-none" aria-hidden /> 문의폼
@@ -250,7 +228,7 @@ const QueueRow = memo(
               </a>
             </div>
           )}
-          {site !== undefined && !locked && !readOnly && (
+          {site !== undefined && !locked && (
             <input
               autoFocus
               className="w-full mt-1 bg-canvas border border-line text-ink font-mono text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent"
@@ -275,28 +253,26 @@ const QueueRow = memo(
             </span>
           )}
         </td>
-        {!readOnly && (
-          <td className={`${TD} ${COL_W[8]}`}>
-            {/* 버튼 라벨은 TD 의 overflow-wrap:anywhere 상속으로 '확/정' 처럼 세로로
-                접힐 수 있어 nowrap 으로 잠근다(액션 셀 한정). */}
-            <div className="flex gap-1.5 whitespace-nowrap">
-              <button
-                className={BTN_CONFIRM}
-                disabled={busy || item.status === "confirmed"}
-                onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
-              >
-                확정
-              </button>
-              <button
-                className={BTN_REJECT}
-                disabled={busy || item.status === "rejected"}
-                onClick={() => onReject(item.id)}
-              >
-                거부
-              </button>
-            </div>
-          </td>
-        )}
+        <td className={`${TD} ${COL_W[8]}`}>
+          {/* 버튼 라벨은 TD 의 overflow-wrap:anywhere 상속으로 '확/정' 처럼 세로로
+              접힐 수 있어 nowrap 으로 잠근다(액션 셀 한정). */}
+          <div className="flex gap-1.5 whitespace-nowrap">
+            <button
+              className={BTN_CONFIRM}
+              disabled={busy || item.status === "confirmed"}
+              onClick={() => onConfirm(item.id, choice?.trim() ? choice.trim() : undefined)}
+            >
+              확정
+            </button>
+            <button
+              className={BTN_REJECT}
+              disabled={busy || item.status === "rejected"}
+              onClick={() => onReject(item.id)}
+            >
+              거부
+            </button>
+          </div>
+        </td>
       </tr>
     );
   },
@@ -316,7 +292,6 @@ export function QueueTable({
   onConfirm,
   onReject,
   emptyText,
-  readOnly = false,
 }: Props) {
   // 행별 선택(라디오) — 서버 selected 를 기본값으로, 사용자가 바꾸면 덮어쓴다.
   const [picked, setPicked] = useState<Record<string, string>>({});
@@ -455,8 +430,7 @@ export function QueueTable({
       <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
         <thead>
           <tr>
-            {/* 읽기 전용이면 마지막 '액션' 헤더 제외(행도 액션 셀을 안 그린다). */}
-            {(readOnly ? HEADERS.slice(0, -1) : HEADERS).map((h, i) => {
+            {HEADERS.map((h, i) => {
               const sortable = i in SORT_KEY;
               const active = sort?.col === i;
               return (
@@ -499,7 +473,6 @@ export function QueueTable({
               busy={busyIds.has(it.id)}
               choice={picked[it.id] ?? it.selected ?? it.candidates[0]?.value}
               site={sites[it.id]}
-              readOnly={readOnly}
               onPick={onPick}
               onEditSite={onEditSite}
               onCancelSite={onCancelSite}

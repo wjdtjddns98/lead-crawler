@@ -178,8 +178,10 @@ export async function fetchQueueFilters(): Promise<QueueFilters> {
 }
 
 // 내 작업분 조회(부작용 없음) — 페이지 로드·새로고침·재로그인 복원·처리 후 목록 갱신용.
-export async function fetchMyWork(): Promise<ReviewItem[]> {
-  return apiGet("/queue/mine");
+// status=confirmed|rejected 면 내 처리 내역(최신 처리 먼저) — BE 계약 확장 제안분.
+// 구서버는 파라미터를 무시하고 pending 점유분을 주므로 호출측이 status 로 한 번 더 거른다.
+export async function fetchMyWork(status?: ReviewStatus): Promise<ReviewItem[]> {
+  return apiGet(`/queue/mine${status ? `?status=${status}` : ""}`);
 }
 
 // 담당자는 서버가 로그인 사용자로 자동 기록. selected = 사람이 고른 최종 이메일 후보.

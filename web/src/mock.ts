@@ -597,8 +597,17 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     return jsonRes(pending().filter((x) => claimedIds.has(x.id)));
   }
   // 내 작업분 조회(부작용 없음) — 몇 번을 불러도 점유 불변.
-  if (path === "/queue/mine" && method === "GET")
+  // status=confirmed|rejected 면 내(mock-admin) 처리 내역, 최신 처리 먼저(계약 확장분과 동일).
+  if (path === "/queue/mine" && method === "GET") {
+    const status = u.searchParams.get("status");
+    if (status === "confirmed" || status === "rejected")
+      return jsonRes(
+        db
+          .filter((x) => x.status === status && x.assignee === "mock-admin")
+          .sort((a, b) => (b.reviewed_at ?? "").localeCompare(a.reviewed_at ?? "")),
+      );
     return jsonRes(pending().filter((x) => claimedIds.has(x.id)));
+  }
 
   const confirm = path.match(/^\/queue\/([^/]+)\/confirm$/);
   if (confirm && method === "POST") {
