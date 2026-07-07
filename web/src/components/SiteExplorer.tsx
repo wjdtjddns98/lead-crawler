@@ -370,19 +370,21 @@ export function SiteExplorer({
             )}
           </div>
           <div className="ml-auto flex items-center gap-2">
-            {/* 사이트가 팝업에서 안 열리거나 잘못된 주소일 때 — 업체명 구글 검색을 같은
-                팝업 창에 띄운다(작업자 수동 구글링 왕복 제거). */}
-            <button
+            {/* 사이트가 팝업에서 안 열리거나 잘못된 주소일 때 — 업체명 구글 검색. 구글은
+                COOP(same-origin-allow-popups) 응답이라 관리 팝업에 띄우면 opener 가 절단돼
+                창 제어권(이동·닫기)을 영구 상실하고, 다음 탐색 때 새 창이 또 열려 팝업이
+                여러 개 쌓인다 — 그래서 팝업이 아닌 새 탭으로 연다(팝업 창 1개 유지). */}
+            <a
               className={BTN}
-              onClick={() =>
-                gotoPopup(`https://www.google.com/search?q=${encodeURIComponent(item.name)}`)
-              }
-              title="업체명으로 구글 검색 (팝업 창)"
+              href={`https://www.google.com/search?q=${encodeURIComponent(item.name)}`}
+              target="_blank"
+              rel="noreferrer"
+              title="업체명으로 구글 검색 (새 탭)"
             >
               <span className="inline-flex items-center gap-1">
                 구글 검색 <Search size={14} aria-hidden />
               </span>
-            </button>
+            </a>
             {activeHref && (
               <a className={BTN} href={activeHref} target="_blank" rel="noreferrer">
                 <span className="inline-flex items-center gap-1">
@@ -408,10 +410,10 @@ export function SiteExplorer({
                   사이트는 별도 팝업 창에서 열립니다. 팝업이 차단됐거나 닫혔다면 아래 버튼으로
                   다시 여세요.
                 </p>
-                <button
-                  className={BTN}
-                  onClick={() => (popupRef.current = openPopup(activeHref))}
-                >
+                {/* gotoPopup 경유 — 살아 있는 팝업은 이동·포커스, 닫혔으면 재열기.
+                    openPopup 직행(window.open+features)은 이미 열린 같은 이름 창을
+                    이동시키지 않는 브라우저가 있어 '눌렀는데 무반응'이 됐다. */}
+                <button className={BTN} onClick={() => gotoPopup(activeHref)}>
                   <span className="inline-flex items-center gap-1">
                     사이트 팝업 열기 <ExternalLink size={14} aria-hidden />
                   </span>
