@@ -66,23 +66,96 @@ def _corp_zip() -> bytes:
 
 # --- DART ---------------------------------------------------------------
 
-def test_dart_live_parses_listed_and_industry() -> None:
-    settings = Settings(dry_run=False, dart_api_key="k", discovery_max_per_source=10)
+class FakeCursorStore:
+    """SupportsCursorStore 더블 — dict 저장(커서·일일예산 카운터 겸용)."""
 
-    def _json(url: str, params: dict) -> Any:
-        assert params["corp_code"] == "00126380"  # 상장사만 상세 조회.
-        return {
+    def __init__(self, initial: dict[tuple[str, str], int] | None = None) -> None:
+        self.data: dict[tuple[str, str], int] = dict(initial or {})
+
+    def get(self, source: str, key: str) -> int:
+        return self.data.get((source, key), 0)
+
+    def advance(self, source: str, key: str, position: int) -> None:
+        self.data[(source, key)] = position
+
+
+def test_dart_live_parses_full_population_listed_and_unlisted() -> None:
+    """상장필터 제거 — 비상장(corp_cls='E')도 후보로 조회·수집된다(스펙: 상장+비상장)."""
+    settings = Settings(dry_run=False, dart_api_key="k", discovery_max_per_source=10)
+    infos = {
+        "00126380": {
             "status": "000", "corp_name": "삼성전자",
             "hm_url": "https://www.samsung.com/sec", "induty_code": "264", "corp_cls": "Y",
-        }
+        },
+        "00999999": {
+            "status": "000", "corp_name": "비상장사",
+            "hm_url": "https://nolisted.co.kr", "induty_code": "264", "corp_cls": "E",
+        },
+    }
+
+    def _json(url: str, params: dict) -> Any:
+        return infos[params["corp_code"]]
 
     src = DartSource(settings, fetcher=FakeFetcher(json=_json, data=lambda u, p: _corp_zip()))
     out = src.discover(Segment(country="KR", industry="반도체"))
-    assert len(out) == 1
-    dc = out[0]
-    assert dc.registry == "dart" and dc.registry_id == "00126380"
-    assert dc.domain == "samsung.com" and dc.listed == "listed"
-    assert dc.canonical_key == "reg:dart:00126380"
+    assert {d.registry_id for d in out} == {"00126380", "00999999"}
+    samsung = next(d for d in out if d.registry_id == "00126380")
+    assert samsung.domain == "samsung.com" and samsung.listed == "listed"
+    assert samsung.canonical_key == "reg:dart:00126380"
+    nolisted = next(d for d in out if d.registry_id == "00999999")
+    assert nolisted.listed == "unlisted"  # corp_cls='E' → 비상장 세분화.
+
+
+def test_dart_fatal_status_aborts_without_cursor_overrun() -> None:
+    """쿼터 고갈(020) 등 치명 status → 즉시 중단, 커서는 미처리 항목 **앞에** 멈춘다.
+
+    치명 항목을 두 번째(정상 1건 처리 후)에 둔다 — 구버그(치명도 skip·continue)는 모집단
+    끝까지 헛돌아 커서가 0 으로 리셋되고, 수정 코드는 1 에 멈추므로 두 동작이 갈린다.
+    """
+    from leadcrawler.sources.dart import _QUOTA_SOURCE, _quota_key
+
+    settings = Settings(dry_run=False, dart_api_key="k")
+    store = FakeCursorStore()
+
+    def _json(url: str, params: dict) -> Any:
+        if params["corp_code"] == "00126380":  # 1번째(정상 처리).
+            return {
+                "status": "000", "corp_name": "삼성전자",
+                "hm_url": "https://www.samsung.com/sec", "induty_code": "264", "corp_cls": "Y",
+            }
+        return {"status": "020", "message": "사용한도를 초과하였습니다."}  # 2번째(치명).
+
+    src = DartSource(
+        settings,
+        fetcher=FakeFetcher(json=_json, data=lambda u, p: _corp_zip()),
+        cursor_store=store,
+    )
+    out = src.discover(Segment(country="KR", industry="반도체"))
+    assert [d.registry_id for d in out] == ["00126380"]  # 치명 이전 수확은 보존.
+    # 커서=1(치명 항목 위치) — 구버그라면 끝 도달(2)→0 리셋이라 이 단언이 잡는다.
+    seg_label = Segment(country="KR", industry="반도체").label
+    assert store.get("dart", seg_label) == 1
+    # 호출량 기록: corpCode 1 + company.json 2(정상+치명) — 카운터는 날짜+키지문별.
+    assert store.get(_QUOTA_SOURCE, _quota_key("k")) == 3
+
+
+def test_dart_daily_budget_exhausted_skips_all_network() -> None:
+    """일일 예산 도달 → 네트워크 0 으로 즉시 스킵(커서·카운터 불변)."""
+    settings = Settings(dry_run=False, dart_api_key="k", dart_daily_call_budget=100)
+
+    def _fail(*a: Any, **k: Any) -> Any:
+        raise AssertionError("예산 소진 시 네트워크 호출이 없어야 한다")
+
+    src = DartSource(
+        settings, fetcher=FakeFetcher(json=_fail, data=_fail), cursor_store=None
+    )
+    # 커서 스토어의 오늘·이 키 카운터를 예산 이상으로 세팅.
+    from leadcrawler.sources.dart import _QUOTA_SOURCE, _quota_key
+
+    store = FakeCursorStore({(_QUOTA_SOURCE, _quota_key("k")): 100})
+    src._cursor_store = store
+    assert src.discover(Segment(country="KR", industry="반도체")) == []
+    assert store.get(_QUOTA_SOURCE, _quota_key("k")) == 100  # 불변.
 
 
 def test_dart_live_industry_filter_excludes_nonmatch() -> None:
@@ -175,7 +248,8 @@ def test_dart_numeric_industry_code_does_not_crash() -> None:
         return {"status": "000", "corp_name": "삼성전자", "induty_code": 264, "corp_cls": "Y"}
 
     src = DartSource(settings, fetcher=FakeFetcher(json=_json, data=lambda u, p: _corp_zip()))
-    assert len(src.discover(Segment(country="KR", industry="반도체"))) == 1
+    # 상장필터 제거 후 더미 모집단 2건(상장1+비상장1) 모두 매칭된다.
+    assert len(src.discover(Segment(country="KR", industry="반도체"))) == 2
 
 
 def test_dart_broken_zip_returns_empty() -> None:
