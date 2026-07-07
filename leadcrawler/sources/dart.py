@@ -6,7 +6,7 @@ dry_run: 네트워크 없이 결정적 더미. 라이브: OpenDART 2-패스
    업종 접두 매칭(KSIC)으로 거른다.
 호출량은 ``discovery_max_per_source``(런당)와 ``dart_daily_call_budget``(일일·키별, KST
 리셋)로 상한한다 — OpenDART 일일 쿼터(2만/키)를 태우면 남은 응답이 전부 020 이라 커서만
-헛돌므로, 키 2개(``dart_api_key``/``dart_api_key_2``)를 로테이션해 소진 키는 즉시 다음
+헛돌므로, 키 최대 3개(``dart_api_key``/``_2``/``_3``)를 로테이션해 소진 키는 즉시 다음
 키로 갈아끼우고(같은 항목부터 재시도) 전 키 소진 시에만 중단/스킵한다.
 키가 하나도 없으면 비활성(no-op).
 """
@@ -140,9 +140,10 @@ class DartSource:
         return self._fetcher
 
     def _api_keys(self) -> list[str]:
-        """설정된 DART 키 목록(1번·2번, 빈값 제외) — 소진 시 순서대로 로테이션."""
+        """설정된 DART 키 목록(1~3번, 빈값 제외) — 소진 시 순서대로 로테이션."""
         s = self._settings
-        return [k.strip() for k in (s.dart_api_key, s.dart_api_key_2) if k.strip()]
+        keys = (s.dart_api_key, s.dart_api_key_2, s.dart_api_key_3)
+        return [k.strip() for k in keys if k.strip()]
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         """실 OpenDART 발견(2-패스 + 업종/캡 필터 + 키 로테이션).
