@@ -225,6 +225,8 @@ def test_companies_house_continues_from_cursor_and_resets_on_exhaust() -> None:
 
     def _json(url: str, params: dict) -> Any:
         starts.append(params["start_index"])
+        if params.get("incorporated_to") != "1979-12-31":
+            return {"items": []}  # 모집단은 slice 0(pre-1980)에만 존재.
         return {"items": pages[params["start_index"]]}
 
     store = DictStore()
@@ -240,7 +242,8 @@ def test_companies_house_continues_from_cursor_and_resets_on_exhaust() -> None:
     assert [d.registry_id for d in out2] == ["GB000003", "GB000004"]
     assert store.get("companies_house", seg.label) == 4
 
-    assert src.discover(seg) == []  # 3런: 빈 페이지 = 모집단 끝.
+    # 3런: 빈 페이지 = slice 0 끝 → 나머지 슬라이스 순회(전부 빈) → 전 소진 0 리셋.
+    assert src.discover(seg) == []
     assert store.get("companies_house", seg.label) == 0  # 0 리셋(재검증 재개).
 
 
@@ -260,14 +263,16 @@ def test_companies_house_window_stuck_cursor_wraps_to_zero() -> None:
     store.advance("companies_house", seg.label, 10000)  # 구코드가 남긴 고착 커서.
     src = CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json), cursor_store=store)
     out = src.discover(seg)
-    assert starts[0] == 0  # 윈도 끝 커서 → 0 으로 되감아 처음부터 스캔.
+    # 슬라이스 인코딩에선 10000 = slice 1 의 start 0 — 어느 쪽이든 고착이 풀리고
+    # 500 유발 없이 start 0 부터 정상 스캔이 재개된다는 원 의도는 동일.
+    assert starts[0] == 0
     assert [d.registry_id for d in out] == ["GB000001", "GB000002"]
-    assert store.get("companies_house", seg.label) == 2  # 이후는 평소 커서 전진.
+    assert store.get("companies_house", seg.label) == 10_000 + 2  # slice 1 에서 커서 전진.
 
 
 def test_companies_house_paging_stops_before_api_window() -> None:
-    # 페이징이 윈도 경계(start+size>10,000)에 닿으면 요청 없이 '모집단 끝'으로 종료 —
-    # 500 을 만들지 않고 커서를 0 으로 리셋한다.
+    # 페이징이 윈도 경계(start+size>10,000)에 닿으면 경계 초과 요청(HTTP 500 유발) 없이
+    # 다음 설립연도 슬라이스로 홉해 이어 스캔한다.
     settings = Settings(dry_run=False, companies_house_api_key="k", discovery_max_per_source=1000)
     starts: list[int] = []
 
@@ -281,8 +286,10 @@ def test_companies_house_paging_stops_before_api_window() -> None:
     store.advance("companies_house", seg.label, 9900)  # 마지막 허용 페이지 직전.
     src = CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json), cursor_store=store)
     src.discover(seg)
-    assert starts == [9900]  # 9900 한 페이지만 — 10000 요청은 안 나감.
-    assert store.get("companies_house", seg.label) == 0  # 윈도 끝 = 모집단 끝 → 0 리셋.
+    # 9900 한 페이지 후 윈도 끝 → slice 1 의 start 0 부터 계속(10000 요청은 안 나감).
+    assert starts[0] == 9900 and starts[1] == 0
+    # cap(1000) 도달: slice 0 에서 100 + slice 1 에서 900 → 커서 = slice1*10000 + 900.
+    assert store.get("companies_house", seg.label) == 10_000 + 900
 
 
 def test_companies_house_dry_run_never_touches_store() -> None:

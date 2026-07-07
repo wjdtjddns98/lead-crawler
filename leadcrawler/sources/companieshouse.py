@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import date
 from typing import Any
 
 from ..config import Settings
@@ -47,10 +48,27 @@ _PAGE = 100  # 페이지당 size(API 상한은 5000이나 레이트리밋·예�
 _MAX_PAGES = 200
 # advanced-search 의 ES 페이징 윈도: start_index+size ≤ 10,000. 초과 요청은 HTTP 500
 # (실측 2026-07-06: start_index 9900→200, 9999→500). 이 경계를 넘겨 페이징하면 커서가
-# 10000 에 영구 고착돼 매 런 즉시 에러로 0건이 되는 실사고가 있었다 — 경계 도달을
-# '모집단 끝'(빈 페이지)과 동일하게 취급해 0 으로 되감는다.
-# ponytail: 윈도 밖(>10k) 심층 수집은 쿼리 분할(설립일 범위 등)이 필요해지면 추가.
+# 10000 에 영구 고착돼 매 런 즉시 에러로 0건이 되는 실사고가 있었다 — 윈도 밖 요청은
+# 절대 보내지 않고 다음 설립연도 슬라이스로 전진한다(_inc_slices).
 _API_MAX_WINDOW = 10_000
+# 설립연도 슬라이스 시작 연도 — 이전 설립분은 pre-1980 캐치올 슬라이스 하나로 커버.
+_SLICE_FIRST_YEAR = 1980
+
+
+def _inc_slices(today: date | None = None) -> list[tuple[str | None, str | None]]:
+    """설립연도 슬라이스(결정적 순서) — 슬라이스마다 독립 ES 10k 윈도가 열린다.
+
+    ``incorporated_from/to``(공식 파라미터)로 모집단을 연 단위로 분할해, 업종당 10k 를
+    넘는 대형 모집단(GB 부동산 461k 실측)도 윈도 제한 없이 전수 접근한다. 구성:
+    pre-1980 캐치올 + 1980~현재 연 단위(최신 연도는 to 없음 — 신규 등록 상시 커버).
+    ponytail: 한 슬라이스 안에서 10k 를 넘는 꼬리는 여전히 접근 불가(현행 '전체 10k' 대비
+    대폭 개선) — 부족하면 분기/월 세분화로 업그레이드.
+    """
+    year = (today or date.today()).year
+    slices: list[tuple[str | None, str | None]] = [(None, f"{_SLICE_FIRST_YEAR - 1}-12-31")]
+    for y in range(_SLICE_FIRST_YEAR, year + 1):
+        slices.append((f"{y}-01-01", f"{y}-12-31" if y < year else None))
+    return slices
 
 
 class CompaniesHouseSource:
@@ -141,27 +159,44 @@ class CompaniesHouseSource:
             return []
 
         out: list[DiscoveredCompany] = []
-        # 런 간 커서(딥백필): 지난 런이 멈춘 start_index 부터 이어 페이징한다. _MAX_PAGES
-        # 캡(레이트리밋 600요청/5분 보호)은 유지 — 커서 영속으로 다음 런이 이어받으므로
-        # 캡을 키울 필요 없이 런을 거듭하며 모집단을 소진한다.
-        start = 0
+        # 런 간 커서(딥백필): position = slice_idx*10000 + start_index 인코딩 — 단일 커서에
+        # 설립연도 슬라이스 축을 추가한다(start<10000 불변 활용, 키·테이블 마이그레이션 0).
+        # 구커서 값(<10000)은 slice 0(pre-1980)으로 자연 해석되고 dedup 이 self-heal 한다.
+        # _MAX_PAGES 캡(레이트리밋 600요청/5분 보호)은 유지 — 커서 영속으로 다음 런이
+        # 이어받으므로 캡을 키울 필요 없이 런을 거듭하며 전 슬라이스를 소진한다.
+        slices = _inc_slices()
+        slice_idx, start = 0, 0
         if self._cursor_store is not None:
-            start = max(0, self._cursor_store.get(self.name, segment.label))
-            if start + _PAGE > _API_MAX_WINDOW:
-                # 지난 런들이 API 윈도 끝에 도달(구코드에선 500 고착) — 재검증 사이클 재개.
-                log.info("companies_house.cursor.window_wrap", segment=segment.label, start=start)
-                start = 0
+            raw = max(0, self._cursor_store.get(self.name, segment.label))
+            slice_idx, start = divmod(raw, _API_MAX_WINDOW)
+            if slice_idx >= len(slices):  # 슬라이스 구성 변경 등 범위 밖 → 처음부터.
+                slice_idx, start = 0, 0
         exhausted = False
         page = 0
         while len(out) < cap and page < _MAX_PAGES:
             if start + _PAGE > _API_MAX_WINDOW:
-                exhausted = True  # 윈도 끝 — 더 요청하면 500. 모집단 끝(빈 페이지)과 동일 취급.
-                break
+                # 슬라이스 윈도 끝 — 더 요청하면 500. 다음 슬라이스로 전진.
+                log.info(
+                    "companies_house.slice.window_wrap",
+                    segment=segment.label,
+                    slice=slice_idx,
+                    start=start,
+                )
+                slice_idx, start = slice_idx + 1, 0
+                if slice_idx >= len(slices):
+                    exhausted = True
+                    break
+                continue
             params = {
                 "company_status": "active",  # 제약 ②: 실존 법인만(서버 필터).
                 "size": min(_PAGE, cap),
                 "start_index": start,
             }
+            inc_from, inc_to = slices[slice_idx]
+            if inc_from:
+                params["incorporated_from"] = inc_from
+            if inc_to:
+                params["incorporated_to"] = inc_to
             if codes:
                 params["sic_codes"] = ",".join(codes)  # 서버측 업종 필터(독립 윈도).
             try:
@@ -169,10 +204,15 @@ class CompaniesHouseSource:
             except Exception as exc:  # 키오류·API오류·네트워크 → 부분결과 보존 후 중단.
                 log.info("companies_house.error", start=start, err=str(exc))
                 break
+            page += 1  # 요청 단위 카운트(빈 슬라이스 요청도 레이트 예산에 포함).
             items = payload.get("items") if isinstance(payload, dict) else None
             if not items:
-                exhausted = True  # 빈 페이지 = 모집단 끝 → 커서 0 리셋(재검증 재개).
-                break
+                # 빈 페이지 = 이 슬라이스 모집단 끝 → 다음 슬라이스로 전진.
+                slice_idx, start = slice_idx + 1, 0
+                if slice_idx >= len(slices):
+                    exhausted = True  # 전 슬라이스 소진 → 커서 0(전 사이클 재검증 재개).
+                    break
+                continue
             for item in items:
                 dc = self._candidate(segment, item, prefixes)
                 if dc is not None:
@@ -182,12 +222,18 @@ class CompaniesHouseSource:
             # ponytail: cap 도달로 페이지 중간에서 끊겨도 start 는 페이지 단위로 전진 —
             # 남은 항목(≤1페이지)은 다음 소진 사이클에 재스캔된다(dedup 이 걸러냄).
             start += len(items)
-            page += 1
         if self._cursor_store is not None:
             if exhausted:
                 log.info("companies_house.cursor.exhausted", segment=segment.label, start=start)
-            self._cursor_store.advance(self.name, segment.label, 0 if exhausted else start)
-        log.info("companies_house.live", segment=segment.label, n=len(out), start=start)
+            self._cursor_store.advance(
+                self.name,
+                segment.label,
+                0 if exhausted else slice_idx * _API_MAX_WINDOW + start,
+            )
+        log.info(
+            "companies_house.live", segment=segment.label, n=len(out),
+            slice=slice_idx, start=start,
+        )
         return out
 
     def _candidate(
