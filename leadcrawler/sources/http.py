@@ -59,9 +59,20 @@ class HostRateLimiters:
     접근을 lock 으로 보호).
     """
 
+    # 호스트별 알려진 공식 한도 — default_rate(전역 discovery_rate_per_host)보다 낮은
+    # 개별 API 한도를 기본 적용한다. CH advanced-search = 600요청/5분 = 2 req/s(전역 8 의
+    # 4배 초과 시 앞단 WAF 가 HTML 403 을 반환하던 실사고 대응, 2026-07-07). 명시 per_host
+    # 오버라이드가 이보다 우선하고, 여기 없는 호스트는 default_rate 로 폴백(for_host).
+    _KNOWN_HOST_RATES: dict[str, float] = {
+        "api.company-information.service.gov.uk": 2.0,
+    }
+
     def __init__(self, default_rate: float, per_host: dict[str, float] | None = None) -> None:
         self._default_rate = default_rate
-        self._per_host = dict(per_host) if per_host else {}
+        merged = dict(self._KNOWN_HOST_RATES)
+        if per_host:
+            merged.update(per_host)  # 명시 오버라이드가 알려진 한도를 이긴다.
+        self._per_host = merged
         self._limiters: dict[str, RateLimiter] = {}
         self._lock = threading.Lock()
 
