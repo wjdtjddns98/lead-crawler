@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import {
   changeUserRole,
   createUser,
@@ -243,38 +244,137 @@ export function AccountsSection() {
         )}
       </section>
 
-      <section>
-        <h2 className={SECTION_H2}>최근 검증 이력</h2>
-        {loading && audit.length === 0 ? (
-          <TableSkeleton rows={5} />
-        ) : audit.length === 0 ? (
-          <p className={EMPTY}>기록된 처리 이력이 없습니다.</p>
-        ) : (
-          <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
-            <thead>
-              <tr>
-                <th className={TH}>시각</th>
-                <th className={TH}>담당자</th>
-                <th className={TH}>액션</th>
-                <th className={TH}>업체</th>
-                <th className={TH}>선택 이메일</th>
-              </tr>
-            </thead>
-            <tbody>
-              {audit.map((a) => (
-                <tr key={a.id}>
-                  <td className={`${TD} text-muted whitespace-nowrap tabular-nums`}>{fmt(a.at)}</td>
-                  <td className={TD}>{a.actor_username || "—"}</td>
-                  <td className={TD}>{ACTION_LABEL[a.action] ?? a.action}</td>
-                  <td className={`${TD} font-semibold`}>{a.company_name || "—"}</td>
-                  <td className={TD}>{a.selected ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
+      <AuditSection audit={audit} loading={loading} />
     </>
+  );
+}
+
+// 한 페이지에 보여줄 이력 건수
+const AUDIT_PAGE = 20;
+
+// 최근 검증 이력 — 담당자·액션·업체명 필터 + 페이지네이션.
+// fetchAudit 이 BE 상한(500건)까지 받아오므로 필터/페이지는 전부 클라이언트에서 계산한다.
+function AuditSection({ audit, loading }: { audit: AuditEntry[]; loading: boolean }) {
+  const [actor, setActor] = useState(""); // ""=전체
+  const [action, setAction] = useState(""); // ""=전체
+  const [q, setQ] = useState(""); // 업체명 부분일치 검색
+  const [page, setPage] = useState(0);
+
+  const actors = [...new Set(audit.map((a) => a.actor_username).filter(Boolean))];
+  const needle = q.trim().toLowerCase();
+  const filtered = audit.filter(
+    (a) =>
+      (!actor || a.actor_username === actor) &&
+      (!action || a.action === action) &&
+      (!needle || (a.company_name || "").toLowerCase().includes(needle)),
+  );
+  const pages = Math.max(1, Math.ceil(filtered.length / AUDIT_PAGE));
+  const cur = Math.min(page, pages - 1); // 필터로 결과가 줄어 페이지가 범위를 벗어나면 마지막 페이지로 보정
+  const rows = filtered.slice(cur * AUDIT_PAGE, (cur + 1) * AUDIT_PAGE);
+
+  // 필터 변경 시 1페이지로 — 이전 페이지 위치는 다른 조건에선 의미가 없다.
+  const applyFilter = (fn: () => void) => {
+    fn();
+    setPage(0);
+  };
+
+  return (
+    <section>
+      <h2 className={SECTION_H2}>최근 검증 이력</h2>
+      {loading && audit.length === 0 ? (
+        <TableSkeleton rows={5} />
+      ) : audit.length === 0 ? (
+        <p className={EMPTY}>기록된 처리 이력이 없습니다.</p>
+      ) : (
+        <>
+          <div className="flex gap-2 mb-3.5 flex-wrap items-center">
+            <select
+              className={INPUT}
+              value={actor}
+              onChange={(e) => applyFilter(() => setActor(e.target.value))}
+              aria-label="담당자 필터"
+            >
+              <option value="">담당자 전체</option>
+              {actors.map((u) => (
+                <option key={u} value={u}>
+                  {u}
+                </option>
+              ))}
+            </select>
+            <select
+              className={INPUT}
+              value={action}
+              onChange={(e) => applyFilter(() => setAction(e.target.value))}
+              aria-label="액션 필터"
+            >
+              <option value="">액션 전체</option>
+              {Object.entries(ACTION_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v}
+                </option>
+              ))}
+            </select>
+            <input
+              className={INPUT}
+              placeholder="업체명 검색"
+              value={q}
+              onChange={(e) => applyFilter(() => setQ(e.target.value))}
+              aria-label="업체명 검색"
+            />
+            <span className="text-muted text-[13px] tabular-nums">총 {filtered.length}건</span>
+          </div>
+          {/* table-fixed: 컬럼 폭을 헤더에서 고정 — 필터로 행 내용이 바뀌어도 폭이 출렁이지 않는다.
+              시각은 nowrap 이라 px 고정, 업체·이메일은 남는 폭을 나눠 갖고 넘치면 truncate. */}
+          {filtered.length === 0 ? (
+            <p className={EMPTY}>조건에 맞는 이력이 없습니다.</p>
+          ) : (
+            <table className="w-full table-fixed border-collapse bg-panel border border-line rounded-lg overflow-hidden">
+              <thead>
+                <tr>
+                  <th className={`${TH} w-48`}>시각</th>
+                  <th className={`${TH} w-[12%]`}>담당자</th>
+                  <th className={`${TH} w-[9%]`}>액션</th>
+                  <th className={TH}>업체</th>
+                  <th className={TH}>선택 이메일</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((a) => (
+                  <tr key={a.id}>
+                    <td className={`${TD} text-muted whitespace-nowrap tabular-nums`}>{fmt(a.at)}</td>
+                    <td className={TD}>{a.actor_username || "—"}</td>
+                    <td className={TD}>{ACTION_LABEL[a.action] ?? a.action}</td>
+                    <td className={`${TD} font-semibold truncate`} title={a.company_name || undefined}>
+                      {a.company_name || "—"}
+                    </td>
+                    <td className={`${TD} truncate`} title={a.selected ?? undefined}>
+                      {a.selected ?? "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {pages > 1 && (
+            <div className="flex items-center gap-4 justify-center mt-3 text-muted">
+              <button className={BTN} disabled={cur === 0} onClick={() => setPage(cur - 1)}>
+                <span className="inline-flex items-center gap-1">
+                  <ChevronLeft size={14} aria-hidden /> 이전
+                </span>
+              </button>
+              <span className="tabular-nums">
+                {cur + 1} / {pages}
+              </span>
+              <button className={BTN} disabled={cur + 1 >= pages} onClick={() => setPage(cur + 1)}>
+                <span className="inline-flex items-center gap-1">
+                  다음 <ChevronRight size={14} aria-hidden />
+                </span>
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

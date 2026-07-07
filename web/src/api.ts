@@ -229,7 +229,9 @@ export async function reclaimUser(id: string): Promise<{ reclaimed: number }> {
   return apiSend("POST", `/admin/users/${id}/reclaim`);
 }
 
-export async function fetchAudit(limit = 100): Promise<AuditEntry[]> {
+// BE 상한(le=500)까지 한 번에 받아 FE 에서 필터·페이지네이션한다.
+// ponytail: BE 에 필터 파라미터가 없어 클라이언트 처리 — 이력이 500건을 넘어 잘리면 BE 계약 확장(offset·필터) 제안.
+export async function fetchAudit(limit = 500): Promise<AuditEntry[]> {
   return apiGet(`/admin/audit?limit=${limit}`);
 }
 

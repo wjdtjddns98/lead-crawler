@@ -338,13 +338,15 @@ let db: ReviewItem[] = seed();
 // 내(mock 단일 사용자) 점유 id — 처리(확정/거부)하면 점유도 소멸. 새로고침 시 리셋(메모리 전용).
 let claimedIds = new Set<string>();
 
-// 최근 검증 이력 — 확정/거부(setStatus)마다 최신순으로 쌓인다. 초기 2건은 빈 화면 방지용 시드.
-const audit: AuditEntry[] = db.slice(0, 2).map((it, i) => ({
+// 최근 검증 이력 — 확정/거부(setStatus)마다 최신순으로 쌓인다.
+// 시드 25건: 담당자·액션을 섞어 관리자 화면의 필터·페이지네이션 동작을 mock 에서 확인할 수 있게.
+const MOCK_AUDIT_ACTORS = ["mock-admin", "worker1", "worker2"];
+const audit: AuditEntry[] = db.slice(0, 25).map((it, i) => ({
   id: `audit-seed-${i}`,
   review_id: it.id,
-  actor_username: "mock-admin",
-  action: i === 0 ? "confirmed" : "rejected",
-  selected: i === 0 ? it.candidates[0]?.value ?? null : null,
+  actor_username: MOCK_AUDIT_ACTORS[i % MOCK_AUDIT_ACTORS.length],
+  action: i % 3 === 0 ? "rejected" : "confirmed",
+  selected: i % 3 === 0 ? null : it.candidates[0]?.value ?? null,
   company_name: it.name,
   at: new Date(Date.now() - (i + 1) * 3600_000).toISOString(),
 }));
