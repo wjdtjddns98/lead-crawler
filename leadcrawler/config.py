@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     # DART 예비키(선택) — 1번 키가 일일 쿼터(2만/키)를 소진하면 소스가 자동으로 이 키로
     # 로테이션한다(키별 사용량은 dart_quota 카운터로 분리 집계). 빈값=로테이션 없음.
     dart_api_key_2: str = Field(default="")
+    dart_api_key_3: str = Field(default="")
     companies_house_api_key: str = Field(default="")
     opencorporates_api_key: str = Field(default="")
 

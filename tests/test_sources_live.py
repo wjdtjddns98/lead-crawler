@@ -171,6 +171,40 @@ def test_dart_rotates_to_secondary_key_on_fatal_status() -> None:
     assert store.get("dart", Segment(country="KR", industry="반도체").label) == 0
 
 
+def test_dart_rotates_to_third_key_when_two_exhausted() -> None:
+    """1·2번 키 모두 소진(020) → 3번 키로 이어 긁는다(키 3개 로테이션)."""
+    from leadcrawler.sources.dart import _QUOTA_SOURCE, _quota_key
+
+    settings = Settings(
+        dry_run=False,
+        dart_api_key="k1",
+        dart_api_key_2="k2",
+        dart_api_key_3="k3",
+        discovery_max_per_source=10,
+    )
+    store = FakeCursorStore()
+
+    def _json(url: str, params: dict) -> Any:
+        if params["crtfc_key"] in ("k1", "k2"):  # 1·2번 키는 죽음.
+            return {"status": "020", "message": "사용한도를 초과하였습니다."}
+        return {
+            "status": "000", "corp_name": "회사",
+            "hm_url": "https://ok.co.kr", "induty_code": "264", "corp_cls": "Y",
+        }
+
+    src = DartSource(
+        settings,
+        fetcher=FakeFetcher(json=_json, data=lambda u, p: _corp_zip()),
+        cursor_store=store,
+    )
+    out = src.discover(Segment(country="KR", industry="반도체"))
+    assert {d.registry_id for d in out} == {"00126380", "00999999"}
+    # k3 로 수확됐고 키별 분리 집계가 3개 키 전부에 남았다.
+    assert store.get(_QUOTA_SOURCE, _quota_key("k3")) == 2
+    assert store.get(_QUOTA_SOURCE, _quota_key("k1")) >= 1
+    assert store.get(_QUOTA_SOURCE, _quota_key("k2")) >= 1
+
+
 def test_dart_daily_budget_exhausted_skips_all_network() -> None:
     """일일 예산 도달 → 네트워크 0 으로 즉시 스킵(커서·카운터 불변)."""
     settings = Settings(dry_run=False, dart_api_key="k", dart_daily_call_budget=100)
