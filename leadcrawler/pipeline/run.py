@@ -55,6 +55,29 @@ log = get_logger("pipeline")
 ProgressCallback = Callable[[dict[str, int]], None]
 
 
+def _interleave_by_country(segments: list[Segment]) -> list[int]:
+    """세그먼트 인덱스를 국가 라운드로빈으로 재배열해 반환한다(병렬 제출 순서 전용).
+
+    국가×업종 곱집합은 국가별로 뭉쳐 있어, 병렬 워커가 첫 웨이브에 같은 국가(=같은
+    등록처 호스트) 세그먼트만 잡으면 호스트 레이트캡을 나눠 쓰며 서로 목을 조른다.
+    KR,US,GB,… 순으로 한 개씩 돌아가며 뽑으면 동시 실행분의 호스트가 분산된다.
+    결과 소비(_consume)는 원래 인덱스 순서라 dedup 결정성엔 영향 없다.
+    """
+    groups: dict[str, list[int]] = {}
+    for i, seg in enumerate(segments):
+        groups.setdefault(seg.country, []).append(i)
+    order: list[int] = []
+    queues = list(groups.values())  # 입력 등장 순서 보존(dict 삽입 순서).
+    while queues:
+        rest = []
+        for q in queues:
+            order.append(q.pop(0))
+            if q:
+                rest.append(q)
+        queues = rest
+    return order
+
+
 def _listed_of(dc: DiscoveredCompany) -> Listed:
     """발견 단계 상장정보 문자열을 :class:`Listed` 로 안전 변환(미상 fallback)."""
     try:
@@ -457,9 +480,10 @@ def run_pipeline(
             results: list[list[DiscoveredCompany] | None] = [None] * len(seg_list)
             try:
                 with ThreadPoolExecutor(max_workers=settings.discovery_workers) as disco_pool:
+                    # 국가 라운드로빈 제출 — 동시 실행분의 등록처 호스트 분산(레이트캡 경합 방지).
                     fut_to_idx = {
-                        disco_pool.submit(_discover_one, seg): i
-                        for i, seg in enumerate(seg_list)
+                        disco_pool.submit(_discover_one, seg_list[i]): i
+                        for i in _interleave_by_country(seg_list)
                     }
                     for fut in as_completed(fut_to_idx):
                         if should_cancel is not None and should_cancel():
