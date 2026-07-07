@@ -6,9 +6,9 @@ import { QueueTable } from "./QueueTable";
 import { TableSkeleton } from "./TableSkeleton";
 import { FilterPopover, pickSummary } from "./FilterPopover";
 import { MultiPicker } from "./MultiPicker";
-import { BTN, EMPTY, INPUT } from "../ui";
+import { BTN, EMPTY, INPUT, tabCls } from "../ui";
 import { ErrorBox } from "./ErrorBox";
-import type { ClaimFilter, Listed, ReviewItem } from "../types";
+import type { ClaimFilter, Listed, ReviewItem, ReviewStatus } from "../types";
 
 const FILTER_KEY = "lc_claim_filter";
 const EMPTY_FILTER: ClaimFilter = { country: "", industry: "", listed: "" };
@@ -16,6 +16,19 @@ const EMPTY_FILTER: ClaimFilter = { country: "", industry: "", listed: "" };
 const CLAIM_CAP = 100;
 
 const LISTED_VALUES = new Set<string>(["listed", "unlisted", "unknown"]);
+
+// 상태 탭 — 대기(내 점유 작업) + 내가 처리한 확정/거부 내역(본인 처리분만, 타인 내역은
+// admin 전체 큐 전용). 내역 행도 QueueTable 의 번복 흐름(확정↔거부)을 그대로 쓸 수 있다.
+const MY_TABS: { value: ReviewStatus; label: string }[] = [
+  { value: "pending", label: "대기" },
+  { value: "confirmed", label: "확정" },
+  { value: "rejected", label: "거부" },
+];
+const TAB_TITLE: Record<ReviewStatus, string> = {
+  pending: "내 작업",
+  confirmed: "내 확정 내역",
+  rejected: "내 거부 내역",
+};
 
 // localStorage 에서 세션 필터 복원(손상/구버전 값은 무시). listed 화이트리스트 외 값은 전체("")로
 // 강등 — 빈 셀렉트 렌더·BE 422 방지.
@@ -55,6 +68,9 @@ export function MyWork() {
   const reqRef = useRef(0); // 최신 요청 토큰 — 버튼 연타 시 뒤늦은 응답을 폐기(경쟁 방지).
   // refresh 가 useCallback([]) 안에서 최신 필터로 잔여 카운트를 조회하도록 ref 로 동행.
   const filterRef = useRef(filter);
+  // 상태 탭 — 대기(작업)/확정/거부 내역. refresh 가 최신 탭을 읽도록 ref 동행(위 filter 와 동일 패턴).
+  const [tab, setTab] = useState<ReviewStatus>("pending");
+  const tabRef = useRef(tab);
 
   // 내 점유 목록(items)과 결과(mine 또는 claim 응답 — 둘 다 내 점유 전체)를 화면에 반영하고
   // "현재 범위 잔여 pending" 카운트를 갱신하는 공통부. 성공 시 반영된 목록을 반환(경쟁 폐기·
@@ -67,15 +83,14 @@ export function MyWork() {
       try {
         const mine = await fetchItems();
         // limit=1 — 카운트(total)만 필요. total 은 미점유 pending 중 필터 반영분(=받아갈 수 있는 수).
-        const q = await fetchQueue({
-          status: "pending",
-          limit: 1,
-          offset: 0,
-          filter: filterRef.current,
-        });
+        // 대기 탭 전용(빈 목록 안내·작업 받기 판단) — 내역 탭에선 불필요 조회를 생략한다.
+        const q =
+          tabRef.current === "pending"
+            ? await fetchQueue({ status: "pending", limit: 1, offset: 0, filter: filterRef.current })
+            : null;
         if (token !== reqRef.current) return null; // 더 최신 요청이 진행 중 — 결과 버림.
         setItems(mine);
-        setRemaining(q.total);
+        if (q) setRemaining(q.total);
         return mine;
       } catch (e) {
         if (token === reqRef.current) setError(errMsg(e));
@@ -87,8 +102,15 @@ export function MyWork() {
     [],
   );
 
-  // 부작용 없는 목록 갱신 — 페이지 로드·재로그인 복원·확정/거부 후. 점유는 절대 안 늘어난다.
-  const refresh = useCallback(() => sync(fetchMyWork), [sync]);
+  // 부작용 없는 목록 갱신 — 페이지 로드·탭 전환·재로그인 복원·확정/거부 후. 점유는 절대 안
+  // 늘어난다. 내역 탭의 status 파라미터는 BE 계약 확장 제안분 — 구서버는 무시하고 pending
+  // 점유분을 반환하므로, status 로 한 번 더 걸러 내역 탭이 빈 목록으로 안전 강등되게 한다.
+  const refresh = useCallback(() => {
+    const t = tabRef.current;
+    return sync(async () =>
+      (await fetchMyWork(t === "pending" ? undefined : t)).filter((x) => x.status === t),
+    );
+  }, [sync]);
   // '작업 받기' 전용 — 현재 필터 조건으로 +30개 추가 배정(응답 = 내 점유 전체).
   // 진행률 세션 리셋은 새 항목이 실제로 들어왔을 때만(풀 고갈·총량 100 도달이면 배정 0 — 유지).
   const claimMore = async () => {
@@ -97,10 +119,19 @@ export function MyWork() {
     if (mine && mine.length > before) setSessionDone(0);
   };
 
-  // 최초: 내 작업분 복원(추가 배정 없음 — 로그아웃·새로고침해도 그대로).
+  // 최초 + 탭 전환 시: 해당 탭 목록 조회(추가 배정 없음 — 로그아웃·새로고침해도 그대로).
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [tab, refresh]);
+
+  // 탭 전환 — 이전 탭 행이 새 탭 라벨 아래 잔상으로 남지 않게 목록·세션 진행률을 비운다.
+  const changeTab = (t: ReviewStatus) => {
+    if (t === tab) return;
+    tabRef.current = t;
+    setTab(t);
+    setItems([]);
+    setSessionDone(0);
+  };
 
   // 작업범위(픽커) 변경 — 조건만 상태·localStorage 에 저장한다(네트워크 없음). 필터는 '작업
   // 받기'의 신규 배정분에만 적용되고, 이미 받은 작업분은 필터를 바꿔도 그대로 유지된다.
@@ -144,75 +175,97 @@ export function MyWork() {
 
   return (
     <>
-      {/* 작업범위(국가·업종·상장) — 팝오버로 접어 한 줄. 트리거에 선택 요약 상시 표시. */}
-      <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-        <span className="text-muted text-[13px]">작업범위</span>
-        <FilterPopover
-          label="국가"
-          summary={pickSummary(filter.country, countryOpts)}
-          active={filter.country !== ""}
-        >
-          <MultiPicker
-            options={countryOpts}
-            value={filter.country}
-            onChange={(csv) => setFilterValue({ ...filter, country: csv })}
-            placeholder="국가 검색 (예: 미국, US, 일본)"
-            emptyHint="전체 국가"
-          />
-        </FilterPopover>
-        <FilterPopover
-          label="업종"
-          summary={pickSummary(filter.industry, industryOpts)}
-          active={filter.industry !== ""}
-        >
-          <MultiPicker
-            options={industryOpts}
-            value={filter.industry}
-            onChange={(csv) => setFilterValue({ ...filter, industry: csv })}
-            placeholder="업종 검색 (예: 반도체, 미분류)"
-            emptyHint="전체 업종"
-          />
-        </FilterPopover>
-        <label className="flex items-center gap-1.5 text-muted text-[13px]">
-          상장여부
-          <select
-            className={`${INPUT} min-w-[120px]`}
-            value={filter.listed}
-            onChange={(e) => setFilterValue({ ...filter, listed: e.target.value as "" | Listed })}
+      {/* 상태 탭 — 대기(받아둔 작업)와 내가 처리한 확정/거부 내역. */}
+      <div className="flex gap-1 mb-4">
+        {MY_TABS.map((t) => (
+          <button
+            key={t.value}
+            className={tabCls(tab === t.value)}
+            onClick={() => changeTab(t.value)}
           >
-            {LISTED_FILTER_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
+            {t.label}
+          </button>
+        ))}
       </div>
-      {/* FE-3: 필터는 신규 배정에만 적용 — 안내는 팝오버에 숨기지 않고 상시 노출 유지. */}
-      <p className="m-0 mb-4 text-muted text-[12px]">
-        작업범위는 <strong className="text-ink font-medium">새로 받아올 작업</strong>에만
-        적용됩니다 — 바꿔도 이미 받은 작업분은 그대로 유지됩니다.
-      </p>
+
+      {/* 작업범위·안내·작업 받기는 대기 탭 전용 — 내역 탭은 조회뿐이라 배정 UI 가 무의미하다. */}
+      {tab === "pending" && (
+        <>
+          {/* 작업범위(국가·업종·상장) — 팝오버로 접어 한 줄. 트리거에 선택 요약 상시 표시. */}
+          <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+            <span className="text-muted text-[13px]">작업범위</span>
+            <FilterPopover
+              label="국가"
+              summary={pickSummary(filter.country, countryOpts)}
+              active={filter.country !== ""}
+            >
+              <MultiPicker
+                options={countryOpts}
+                value={filter.country}
+                onChange={(csv) => setFilterValue({ ...filter, country: csv })}
+                placeholder="국가 검색 (예: 미국, US, 일본)"
+                emptyHint="전체 국가"
+              />
+            </FilterPopover>
+            <FilterPopover
+              label="업종"
+              summary={pickSummary(filter.industry, industryOpts)}
+              active={filter.industry !== ""}
+            >
+              <MultiPicker
+                options={industryOpts}
+                value={filter.industry}
+                onChange={(csv) => setFilterValue({ ...filter, industry: csv })}
+                placeholder="업종 검색 (예: 반도체, 미분류)"
+                emptyHint="전체 업종"
+              />
+            </FilterPopover>
+            <label className="flex items-center gap-1.5 text-muted text-[13px]">
+              상장여부
+              <select
+                className={`${INPUT} min-w-[120px]`}
+                value={filter.listed}
+                onChange={(e) =>
+                  setFilterValue({ ...filter, listed: e.target.value as "" | Listed })
+                }
+              >
+                {LISTED_FILTER_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {/* FE-3: 필터는 신규 배정에만 적용 — 안내는 팝오버에 숨기지 않고 상시 노출 유지. */}
+          <p className="m-0 mb-4 text-muted text-[12px]">
+            작업범위는 <strong className="text-ink font-medium">새로 받아올 작업</strong>에만
+            적용됩니다 — 바꿔도 이미 받은 작업분은 그대로 유지됩니다.
+          </p>
+        </>
+      )}
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
         <p className="text-muted my-2 tabular-nums">
-          내 작업 {items.length}건{loading && " · 불러오는 중…"}
+          {TAB_TITLE[tab]} {items.length}건{loading && " · 불러오는 중…"}
         </p>
         <div className="flex gap-1">
           {/* 추가형(+30) — 자동 호출 금지, 이 버튼만 claim 을 부른다(그 외 갱신은 전부 mine).
               총량 100(CLAIM_CAP) 도달 시 서버가 0건 배정하므로 버튼을 막고 이유를 표시. */}
-          <button
-            className={BTN}
-            onClick={() => void claimMore()}
-            disabled={loading || items.length >= CLAIM_CAP}
-            title={
-              items.length >= CLAIM_CAP
-                ? `동시 점유 상한(${CLAIM_CAP}건)에 도달했습니다 — 받아둔 작업을 먼저 처리하세요`
-                : undefined
-            }
-          >
-            작업 받기 (+30건)
-          </button>
+          {tab === "pending" && (
+            <button
+              className={BTN}
+              onClick={() => void claimMore()}
+              disabled={loading || items.length >= CLAIM_CAP}
+              title={
+                items.length >= CLAIM_CAP
+                  ? `동시 점유 상한(${CLAIM_CAP}건)에 도달했습니다 — 받아둔 작업을 먼저 처리하세요`
+                  : undefined
+              }
+            >
+              작업 받기 (+30건)
+            </button>
+          )}
           <button className={BTN} onClick={() => void refresh()} disabled={loading}>
             새로고침
           </button>
@@ -225,11 +278,13 @@ export function MyWork() {
         <TableSkeleton />
       ) : items.length === 0 ? (
         <p className={EMPTY}>
-          {remaining === 0
-            ? hasFilter
-              ? "받아둔 작업이 없고, 이 범위에 받아갈 작업도 없습니다 — 필터를 넓히거나 해제해 보세요."
-              : "받아둔 작업이 없고, 받아갈 수 있는 작업도 없습니다 — 큐가 비었거나 모두 처리되었습니다."
-            : "받아둔 작업이 없습니다 — '작업 받기'를 눌러 새 작업을 받아오세요."}
+          {tab !== "pending"
+            ? `아직 ${tab === "confirmed" ? "확정" : "거부"}한 내역이 없습니다.`
+            : remaining === 0
+              ? hasFilter
+                ? "받아둔 작업이 없고, 이 범위에 받아갈 작업도 없습니다 — 필터를 넓히거나 해제해 보세요."
+                : "받아둔 작업이 없고, 받아갈 수 있는 작업도 없습니다 — 큐가 비었거나 모두 처리되었습니다."
+              : "받아둔 작업이 없습니다 — '작업 받기'를 눌러 새 작업을 받아오세요."}
         </p>
       ) : (
         <QueueTable
