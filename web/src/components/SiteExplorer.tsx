@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import { AlertTriangle, ExternalLink, X } from "lucide-react";
+import { AlertTriangle, ExternalLink, Search, X } from "lucide-react";
 import type { ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, tabCls } from "../ui";
 import { normSiteUrl, safeHref, tri } from "../format";
@@ -349,18 +349,40 @@ export function SiteExplorer({
             {item.name}
           </span>
           <div className="flex gap-1 ml-2">
+            {/* 탭 전환은 activeHref 변경 → effect 가 팝업을 이동시킨다. 이미 활성인 탭을
+                다시 누르면 activeHref 가 안 바뀌어 effect 가 안 돌므로(팝업을 닫았으면
+                무반응) 직접 팝업을 재열기/포커스한다 — 사이트 입력란 Enter 와 같은 패턴. */}
             {homeHref && (
-              <button className={tabCls(activeTab === "home")} onClick={() => onTab("home")}>
+              <button
+                className={tabCls(activeTab === "home")}
+                onClick={() => (activeTab === "home" ? gotoPopup(homeHref) : onTab("home"))}
+              >
                 홈페이지
               </button>
             )}
             {formHref && (
-              <button className={tabCls(activeTab === "form")} onClick={() => onTab("form")}>
+              <button
+                className={tabCls(activeTab === "form")}
+                onClick={() => (activeTab === "form" ? gotoPopup(formHref) : onTab("form"))}
+              >
                 문의폼
               </button>
             )}
           </div>
           <div className="ml-auto flex items-center gap-2">
+            {/* 사이트가 팝업에서 안 열리거나 잘못된 주소일 때 — 업체명 구글 검색을 같은
+                팝업 창에 띄운다(작업자 수동 구글링 왕복 제거). */}
+            <button
+              className={BTN}
+              onClick={() =>
+                gotoPopup(`https://www.google.com/search?q=${encodeURIComponent(item.name)}`)
+              }
+              title="업체명으로 구글 검색 (팝업 창)"
+            >
+              <span className="inline-flex items-center gap-1">
+                구글 검색 <Search size={14} aria-hidden />
+              </span>
+            </button>
             {activeHref && (
               <a className={BTN} href={activeHref} target="_blank" rel="noreferrer">
                 <span className="inline-flex items-center gap-1">
