@@ -100,7 +100,10 @@ export function CrawlTargetSection() {
         if (!alive) return;
         setCountryOpts(toCountryOpts(countryList));
         setIndustryOpts(industryList);
-        apply({ ...t, industries: collapseAllIndustries(t.industries, industryList) });
+        // 국가·업종은 비워둠(=전체) — 마지막 저장 타깃을 조용히 재사용하면 사용자가
+        // 실수로 이전 범위로 재크롤하는 사고가 남(#186, 2026-07-06 실사고).
+        setListed(t.listed);
+        setPersist(t.persist);
       })
       .catch((e) => alive && setErr(errMsg(e)));
     // 현황은 별도 조회 — 새로고침 시 진행 중이거나 최근 종료된 크롤을 이어서 보여주되,
