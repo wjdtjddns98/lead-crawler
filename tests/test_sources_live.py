@@ -340,21 +340,94 @@ def test_edgar_non_dict_universe_returns_empty() -> None:
 
 
 def test_edgar_numeric_sic_and_non_dict_sub() -> None:
+    # 매핑 업종(반도체)은 SIC 전수 열거 경로 — 숫자 SIC 매칭·non-dict sub 스킵 검증.
     settings = Settings(dry_run=False, edgar_user_agent="ua")
-    tickers = {"fields": ["cik", "name", "ticker", "exchange"],
-               "data": [[1, "A Corp", "A", "Nasdaq"], [2, "B Corp", "B", "Nasdaq"]]}
+
+    def _text(url: str, params: dict) -> str:
+        if params.get("start") == 0:
+            return "<feed><cik>0000000001</cik><cik>0000000002</cik></feed>"
+        return "<feed></feed>"  # 빈 페이지 = 코드 소진.
 
     def _json(url: str, params: dict) -> Any:
-        if "company_tickers_exchange" in url:
-            return tickers
         cik = int(url.split("CIK")[1].split(".")[0])
         if cik == 1:
             return {"name": "A Corp", "sic": 3674, "website": "https://a.com"}  # 숫자 SIC.
         return None  # non-dict → skip.
 
-    src = EdgarSource(settings, fetcher=FakeFetcher(json=_json))
+    src = EdgarSource(settings, fetcher=FakeFetcher(json=_json, text=_text))
     out = src.discover(Segment(country="US", industry="반도체"))
     assert {d.registry_id for d in out} == {"1"}
+
+
+def test_edgar_sic_full_enumerates_unlisted_filers() -> None:
+    """매핑 업종 → browse-edgar SIC 전수 열거: 비상장(티커 없음) 파일러가 unlisted 로 수집."""
+    settings = Settings(dry_run=False, edgar_user_agent="ua")
+    store = FakeCursorStore()
+
+    def _text(url: str, params: dict) -> str:
+        assert params["SIC"] == "3674" and params["output"] == "atom"
+        if params["start"] == 0:
+            return "<feed><cik>0000000001</cik><cik>0000000002</cik></feed>"
+        return "<feed></feed>"
+
+    subs = {
+        1: {"name": "Private Semi LLC", "sic": "3674", "website": "https://psemi.com"},
+        2: {"name": "Big Semi Inc", "sic": "3674", "website": "https://bigsemi.com",
+            "tickers": ["BSMI"], "exchanges": ["Nasdaq"]},
+    }
+
+    def _json(url: str, params: dict) -> Any:
+        return subs[int(url.split("CIK")[1].split(".")[0])]
+
+    src = EdgarSource(settings, fetcher=FakeFetcher(json=_json, text=_text), cursor_store=store)
+    out = src.discover(Segment(country="US", industry="반도체"))
+    assert {d.registry_id for d in out} == {"1", "2"}
+    private = next(d for d in out if d.registry_id == "1")
+    assert private.listed == "unlisted" and private.domain == "psemi.com"  # 티커 없음=비상장.
+    public = next(d for d in out if d.registry_id == "2")
+    assert public.listed == "listed" and public.market == "NASDAQ"
+    # 코드 소진 → 코드 커서 0 리셋, 한 바퀴 완료 → 포인터 0.
+    assert store.data[("edgar", "US/반도체/unknown#sic3674")] == 0
+    assert store.data[("edgar", "US/반도체/unknown#sicptr")] == 0
+
+
+def test_edgar_sic_full_cursor_resumes_and_wraps() -> None:
+    """cap 도달 시 코드 커서 페이지 단위 전진 + 포인터 유지, 다음 런이 이어받아 소진."""
+    settings = Settings(
+        dry_run=False, edgar_user_agent="ua", discovery_max_per_source=1
+    )
+    store = FakeCursorStore()
+    starts: list[int] = []
+
+    def _text(url: str, params: dict) -> str:
+        starts.append(params["start"])
+        if params["start"] == 0:
+            return "<feed><cik>1</cik><cik>2</cik></feed>"
+        return "<feed></feed>"
+
+    def _json(url: str, params: dict) -> Any:
+        return {"name": "X Corp", "sic": "3674"}
+
+    src = EdgarSource(settings, fetcher=FakeFetcher(json=_json, text=_text), cursor_store=store)
+    out = src.discover(Segment(country="US", industry="반도체"))
+    assert len(out) == 1  # cap=1 로 페이지 중간 중단.
+    assert store.data[("edgar", "US/반도체/unknown#sic3674")] == 2  # 페이지 단위 전진.
+    assert store.data[("edgar", "US/반도체/unknown#sicptr")] == 0  # 멈춘 코드에서 재개.
+    # 다음 런: start=2 부터 → 빈 페이지 → 소진 0 리셋(재검증 사이클).
+    assert src.discover(Segment(country="US", industry="반도체")) == []
+    assert starts[-1] == 2
+    assert store.data[("edgar", "US/반도체/unknown#sic3674")] == 0
+
+
+def test_edgar_sic_full_broken_atom_is_graceful() -> None:
+    # browse-edgar 실패 → 크래시 없이 빈 결과(부분결과 보존 규약).
+    settings = Settings(dry_run=False, edgar_user_agent="ua")
+
+    def _text(url: str, params: dict) -> str:
+        raise RuntimeError("boom")
+
+    src = EdgarSource(settings, fetcher=FakeFetcher(json=lambda u, p: {}, text=_text))
+    assert src.discover(Segment(country="US", industry="반도체")) == []
 
 
 def test_search_empty_and_non_dict_items() -> None:
@@ -781,9 +854,15 @@ def test_companies_house_live_parses_active_and_sic() -> None:
         ]
     }
 
+    served: list[bool] = []
+
     def _json(url: str, params: dict) -> Any:
-        # start_index 0 에 데이터, 이후는 빈 목록(페이징 종료).
-        return page if params.get("start_index", 0) == 0 else {"items": []}
+        # 첫 요청에만 데이터, 이후는 빈 목록 — 실 API 에선 회사가 단일 설립연도
+        # 슬라이스에만 속하므로(설립일은 하나) 슬라이스 순회가 같은 페이지를 재서빙하지 않는다.
+        if not served:
+            served.append(True)
+            return page
+        return {"items": []}
 
     out = CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json)).discover(
         Segment(country="영국", industry="건설")
@@ -837,10 +916,17 @@ def test_companies_house_broad_rejects_unmapped_sic() -> None:
         {"company_number": "2", "company_name": "B Ltd", "company_status": "active",
          "sic_codes": ["41100"]},  # 건설 매핑 → 채택.
     ]}
-    out = CompaniesHouseSource(
-        settings, fetcher=FakeFetcher(json=lambda u, p: page if p.get("start_index", 0) == 0
-                                      else {"items": []})
-    ).discover(Segment(country="영국", industry="기타"))  # broad 토큰.
+    served: list[bool] = []
+
+    def _json(url: str, params: dict) -> Any:
+        if not served:  # 첫 요청에만 데이터(슬라이스 순회 재서빙 방지 — 설립일은 하나).
+            served.append(True)
+            return page
+        return {"items": []}
+
+    out = CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="영국", industry="기타")
+    )  # broad 토큰.
     assert {d.registry_id for d in out} == {"2"}
 
 
@@ -892,6 +978,88 @@ def test_dart_unmapped_specific_industry_skips_without_api() -> None:
     src = DartSource(settings, fetcher=FakeFetcher(json=_json, data=_data))
     out = src.discover(Segment(country="KR", industry="수의학"))
     assert out == [] and calls == []
+
+
+def test_companies_house_sends_incorporation_slices_and_wraps() -> None:
+    """설립연도 슬라이스: 빈 페이지마다 다음 슬라이스 전진, 전 소진 시 커서 0 랩."""
+    settings = Settings(dry_run=False, companies_house_api_key="k", discovery_max_per_source=5)
+    store = FakeCursorStore()
+    seen: list[dict] = []
+
+    def _json(url: str, params: dict) -> Any:
+        seen.append(dict(params))
+        return {"items": []}
+
+    CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json), cursor_store=store).discover(
+        Segment(country="영국", industry="건설")
+    )
+    # slice 0 = pre-1980 캐치올(to 만), slice 1 = 1980(양쪽), 마지막 = 현재 연도(from 만).
+    assert "incorporated_from" not in seen[0]
+    assert seen[0]["incorporated_to"] == "1979-12-31"
+    assert seen[1]["incorporated_from"] == "1980-01-01"
+    assert seen[1]["incorporated_to"] == "1980-12-31"
+    assert "incorporated_to" not in seen[-1]
+    # 전 슬라이스 소진 → 커서 0(전 사이클 재검증 재개).
+    assert store.data[("companies_house", "영국/건설/unknown")] == 0
+
+
+def test_companies_house_cursor_encodes_slice_and_resumes() -> None:
+    """커서 = slice_idx*10000 + start 인코딩 왕복 — 다음 런이 같은 슬라이스·위치 재개."""
+    settings = Settings(dry_run=False, companies_house_api_key="k", discovery_max_per_source=1)
+    # slice 2(=1981년) start 300 에서 재개하도록 사전 커서 주입.
+    store = FakeCursorStore({("companies_house", "영국/건설/unknown"): 2 * 10_000 + 300})
+    seen: list[dict] = []
+    page = {"items": [{"company_number": "1", "company_name": "A Ltd",
+                       "company_status": "active", "sic_codes": ["41100"]}]}
+
+    def _json(url: str, params: dict) -> Any:
+        seen.append(dict(params))
+        return page
+
+    out = CompaniesHouseSource(
+        settings, fetcher=FakeFetcher(json=_json), cursor_store=store
+    ).discover(Segment(country="영국", industry="건설"))
+    assert seen[0]["start_index"] == 300
+    assert seen[0]["incorporated_from"] == "1981-01-01"
+    assert seen[0]["incorporated_to"] == "1981-12-31"
+    assert len(out) == 1  # cap=1 즉시 충족.
+    # 같은 슬라이스에서 페이지 단위 전진(300+1건).
+    assert store.data[("companies_house", "영국/건설/unknown")] == 2 * 10_000 + 301
+
+
+def test_companies_house_window_edge_hops_to_next_slice() -> None:
+    """슬라이스 윈도 경계(start+_PAGE>10k) → 500 유발 요청 없이 다음 슬라이스로 홉."""
+    settings = Settings(dry_run=False, companies_house_api_key="k", discovery_max_per_source=5)
+    store = FakeCursorStore({("companies_house", "영국/건설/unknown"): 9_950})  # slice 0 끝.
+    seen: list[dict] = []
+
+    def _json(url: str, params: dict) -> Any:
+        seen.append(dict(params))
+        assert params["start_index"] + params["size"] <= 10_000  # 경계 불침범(HTTP 500 방지).
+        return {"items": []}
+
+    CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json), cursor_store=store).discover(
+        Segment(country="영국", industry="건설")
+    )
+    # 첫 요청부터 slice 1(1980)로 홉(9950+100 > 10000).
+    assert seen[0]["incorporated_from"] == "1980-01-01" and seen[0]["start_index"] == 0
+
+
+def test_companies_house_legacy_cursor_reads_as_slice_zero() -> None:
+    """구커서 값(<10000)은 slice 0(pre-1980) 위치로 자연 해석 — 마이그레이션 없음."""
+    settings = Settings(dry_run=False, companies_house_api_key="k", discovery_max_per_source=5)
+    store = FakeCursorStore({("companies_house", "영국/건설/unknown"): 500})
+    seen: list[dict] = []
+
+    def _json(url: str, params: dict) -> Any:
+        seen.append(dict(params))
+        return {"items": []}
+
+    CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json), cursor_store=store).discover(
+        Segment(country="영국", industry="건설")
+    )
+    assert seen[0]["start_index"] == 500
+    assert seen[0]["incorporated_to"] == "1979-12-31"  # slice 0.
 
 
 def test_companies_house_no_key_is_noop() -> None:
