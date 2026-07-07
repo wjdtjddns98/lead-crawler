@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # 발견 소스
     edgar_user_agent: str = Field(default="")
     dart_api_key: str = Field(default="")
+    # DART 예비키(선택) — 1번 키가 일일 쿼터(2만/키)를 소진하면 소스가 자동으로 이 키로
+    # 로테이션한다(키별 사용량은 dart_quota 카운터로 분리 집계). 빈값=로테이션 없음.
+    dart_api_key_2: str = Field(default="")
     companies_house_api_key: str = Field(default="")
     opencorporates_api_key: str = Field(default="")
 
@@ -166,6 +169,10 @@ class Settings(BaseSettings):
     # 깊게). 과도한 호출은 target_count 조기종료 + cost_ledger 예산 가드 + 취소로 막는다.
     # 유료 검색(Serper)은 이 캡을 쓰지 않는다 → discovery_search_max_per_segment 로 분리.
     discovery_max_per_source: int = Field(default=500)
+    # DART 일일 호출 예산(KST 리셋, 0=끄기) — OpenDART 일일 쿼터 2만을 KR 12업종 세그먼트가
+    # 라운드 초반에 다 태우면 이후 응답이 전부 020(한도초과)이라 커서만 헛돌던 실사고
+    # (2026-07-07) 방지. 2만보다 낮게 잡아 수동 백필/CLI 몫 여유를 남긴다.
+    dart_daily_call_budget: int = Field(default=15000, ge=0)
     # 유료 검색(SearchSource/Serper)의 세그먼트당 결과 상한 — 무료 캡과 독립(무료를 수천까지
     # 올려도 유료가 끌려가지 않게). Serper 는 page_size=100·1페이지/세그먼트라 ≤100 이면 1콜로
     # 끝난다 → 이 값을 100 밑으로 낮춰도 과금(1콜)은 그대로고 무료 결과만 버리므로 비용 절감엔
