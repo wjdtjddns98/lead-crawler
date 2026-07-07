@@ -6,7 +6,7 @@ import { QueueTable } from "./QueueTable";
 import { TableSkeleton } from "./TableSkeleton";
 import { FilterPopover, pickSummary } from "./FilterPopover";
 import { MultiPicker } from "./MultiPicker";
-import { BTN, EMPTY, INPUT, tabCls } from "../ui";
+import { BTN, BTN_EXPORT, EMPTY, INPUT, tabCls } from "../ui";
 import { ErrorBox } from "./ErrorBox";
 import type { ClaimFilter, Listed, ReviewItem, ReviewStatus } from "../types";
 
@@ -253,8 +253,10 @@ export function MyWork() {
           {/* 추가형(+30) — 자동 호출 금지, 이 버튼만 claim 을 부른다(그 외 갱신은 전부 mine).
               총량 100(CLAIM_CAP) 도달 시 서버가 0건 배정하므로 버튼을 막고 이유를 표시. */}
           {tab === "pending" && (
+            /* 대기 탭의 주 액션 — 새로고침(보조)과 무게가 같으면 빈 큐에서 다음 행동이 안 보인다.
+               accent 변형으로 한 단계 띄운다(확정/거부 의미색과 겹치지 않는 BTN_EXPORT 재사용). */
             <button
-              className={BTN}
+              className={BTN_EXPORT}
               onClick={() => void claimMore()}
               disabled={loading || items.length >= CLAIM_CAP}
               title={
