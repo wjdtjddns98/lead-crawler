@@ -78,6 +78,24 @@ def test_host_rate_limiters_per_host_override() -> None:
     assert hrl.for_host("slow.example")._min_interval == 1.0 / 1000.0
 
 
+def test_host_rate_limiters_ch_known_cap_below_default() -> None:
+    """CH 호스트는 전역 default 가 높아도 알려진 한도(2 req/s)로 캡된다(앞단 403 방지)."""
+    hrl = HostRateLimiters(default_rate=8.0)  # 전역 8/s.
+    ch = hrl.for_host("api.company-information.service.gov.uk")
+    assert ch._min_interval == 1.0 / 2.0  # 2 req/s 로 캡.
+    assert hrl.for_host("data.sec.gov")._min_interval == 1.0 / 8.0  # 그 외는 default.
+
+
+def test_host_rate_limiters_explicit_override_beats_known_cap() -> None:
+    """명시 per_host 오버라이드가 알려진 한도보다 우선한다."""
+    hrl = HostRateLimiters(
+        default_rate=8.0,
+        per_host={"api.company-information.service.gov.uk": 1.0},
+    )
+    ch = hrl.for_host("api.company-information.service.gov.uk")
+    assert ch._min_interval == 1.0 / 1.0  # 알려진 2 가 아니라 명시 1 이 이긴다.
+
+
 class _SpyLimiter:
     def __init__(self, events: list) -> None:
         self._events = events
