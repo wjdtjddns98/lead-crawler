@@ -295,11 +295,22 @@ def run_pipeline(
     disco_sources: list = []  # finally 가 항상 참조할 수 있게 try 전 바인딩(빌드 실패 시 no-op).
     try:
         # 순차 발견(discovery_workers<=1): 발견 소스를 런 시작에 1회만 빌드해 모든 세그먼트에
-        # 재사용한다(세그먼트마다 재생성·httpx 누수 제거 + keep-alive 연결 재사용). 발견 루프는
-        # 단일 스레드라 공유 안전. 병렬(>1)이면 워커별 독립 sources 를 _discover_one 에서 따로
-        # 빌드하므로 여기선 빌드하지 않는다(공유 Fetcher throttle 경쟁 회피).
+        # 재사용한다(세그먼트마다 재생성·httpx 누수 제거 + keep-alive 연결 재사용). 세그먼트 간
+        # 발견 루프는 단일 스레드라 공유 안전(세그먼트 내부 소스병렬(discovery_source_workers)은
+        # 소스 인스턴스당 스레드 1개만 쓰므로 여전히 안전). 병렬(>1)이면 워커별 독립 sources 를
+        # _discover_one 에서 따로 빌드하므로 여기선 빌드하지 않는다(공유 Fetcher throttle 경쟁 회피).
         if settings.discovery_workers <= 1:
-            disco_sources = build_sources(settings, cost_ledger, cursor_store=cursor_store)
+            # 소스병렬(discovery_source_workers>1)이면 세그먼트 순차라도 소스들이 동시에
+            # 나가므로, 공유 호스트 레이트리미터를 주입해 합산 발사율을 억제한다(세그먼트
+            # 병렬 분기와 동일 배선). 소스병렬도 꺼져 있으면 None(기존 동작, 회귀 0).
+            seq_limiters = (
+                HostRateLimiters(default_rate=settings.discovery_rate_per_host)
+                if settings.discovery_source_workers > 1
+                else None
+            )
+            disco_sources = build_sources(
+                settings, cost_ledger, rate_limiters=seq_limiters, cursor_store=cursor_store
+            )
         if session is not None:
             seen |= load_seen_keys(session)
             seen_domains |= load_seen_domains(session)
