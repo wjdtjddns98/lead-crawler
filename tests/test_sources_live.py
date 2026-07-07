@@ -139,6 +139,38 @@ def test_dart_fatal_status_aborts_without_cursor_overrun() -> None:
     assert store.get(_QUOTA_SOURCE, _quota_key("k")) == 3
 
 
+def test_dart_rotates_to_secondary_key_on_fatal_status() -> None:
+    """1번 키 쿼터 소진(020) → 2번 키로 갈아끼워 **같은 항목부터** 이어 긁는다."""
+    from leadcrawler.sources.dart import _QUOTA_SOURCE, _quota_key
+
+    settings = Settings(
+        dry_run=False, dart_api_key="k1", dart_api_key_2="k2", discovery_max_per_source=10
+    )
+    store = FakeCursorStore()
+
+    def _json(url: str, params: dict) -> Any:
+        if params["crtfc_key"] == "k1":  # 1번 키는 죽음.
+            return {"status": "020", "message": "사용한도를 초과하였습니다."}
+        return {
+            "status": "000", "corp_name": "회사",
+            "hm_url": "https://ok.co.kr", "induty_code": "264", "corp_cls": "Y",
+        }
+
+    src = DartSource(
+        settings,
+        fetcher=FakeFetcher(json=_json, data=lambda u, p: _corp_zip()),
+        cursor_store=store,
+    )
+    out = src.discover(Segment(country="KR", industry="반도체"))
+    # 020 맞은 첫 항목도 2번 키 재시도로 수확 — 모집단 2건 전부 수집.
+    assert {d.registry_id for d in out} == {"00126380", "00999999"}
+    # 키별 분리 집계: k1=corpCode 1+치명 1, k2=재시도 1+다음 항목 1.
+    assert store.get(_QUOTA_SOURCE, _quota_key("k1")) == 2
+    assert store.get(_QUOTA_SOURCE, _quota_key("k2")) == 2
+    # 전 항목 처리 완료 → 모집단 끝 도달 0 리셋(정상 소진 — 헛전진 아님).
+    assert store.get("dart", Segment(country="KR", industry="반도체").label) == 0
+
+
 def test_dart_daily_budget_exhausted_skips_all_network() -> None:
     """일일 예산 도달 → 네트워크 0 으로 즉시 스킵(커서·카운터 불변)."""
     settings = Settings(dry_run=False, dart_api_key="k", dart_daily_call_budget=100)
