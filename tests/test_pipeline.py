@@ -176,6 +176,12 @@ def test_should_cancel_midway_preserves_processed(monkeypatch) -> None:
         calls["n"] += 1
         return calls["n"] > 2
 
-    leads = run_pipeline([Segment(country="KR", industry="건설")], should_cancel=_cancel)
+    # 명시 설정으로 밀폐 — 취소콜 순서(①②③)는 순차(workers=1) 경로 전제라, 로컬 .env 의
+    # LEADCRAWLER_DISCOVERY_WORKERS 값에 흔들리지 않게 고정한다.
+    leads = run_pipeline(
+        [Segment(country="KR", industry="건설")],
+        settings=Settings(dry_run=True, discovery_workers=1),
+        should_cancel=_cancel,
+    )
     assert len(leads) == 1
     assert leads[0].company.canonical_key == "dom:a.com"
