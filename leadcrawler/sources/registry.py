@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from ..config import Settings, get_settings
 from ..cost_ledger import SupportsCostLedger
 from ..logging import get_logger
@@ -117,23 +119,49 @@ def discover_segment(
     ``sources`` 가 주어지면 그 인스턴스를 재사용한다(파이프라인이 런 시작에 1회 빌드해
     모든 세그먼트에 넘김 — 세그먼트마다 Fetcher 재생성·httpx 누수를 막고 keep-alive
     연결을 재사용). 미지정 시 매 호출 build_sources(직접/테스트 호출 하위호환).
-    발견 루프는 단일 스레드라(파이프라인 main 스레드) 소스 공유에 경합이 없다.
+
+    동시성: ``discovery_source_workers > 1`` 이면 **비검색(무료) 소스들의 discover 만**
+    스레드풀로 동시에 실행한다(등록처·집계원은 서로 다른 호스트라 세그먼트 병목의 대부분).
+    병합·dedup·검색 게이팅(①②)은 결과 수집 후 항상 main 스레드에서 src_list 우선순위
+    순서대로 수행하므로, '첫 등장 우선' dedup 과 무료-우선 검색 스킵 판단은 순차 실행과
+    결정적으로 동일하다. 검색 소스는 무료 결과(free_new·도메인 주입)에 의존하므로 병렬
+    대상에서 제외하고 병합 시점에 순차 호출한다. 소스 인스턴스는 스레드당 1개만 쓰이고,
+    스레드 간 공유 자원(HostRateLimiters·DbCursorStore)은 스레드 안전이다.
     """
     settings = settings or get_settings()
     src_list = sources if sources is not None else build_sources(settings, cost_ledger)
     skip_ge = settings.search_skip_if_free_ge
+    # 지역 세그먼트(KR 팬아웃)는 검색 전용 — 등록처·집계원·거래소는 주소로 열거하지
+    # 않으므로 지역마다 같은 스캔을 반복하면 쿼터 낭비 + 커서(label 키) 파편화만 남는다.
+    # 그 소스들은 지역 없는 기본 세그먼트에서 1회만 돈다.
+    applicable = [
+        src
+        for src in src_list
+        if (segment.region is None or isinstance(src, SearchSource)) and src.applies_to(segment)
+    ]
+    free_srcs = [src for src in applicable if not isinstance(src, SearchSource)]
+    workers = min(settings.discovery_source_workers, len(free_srcs))
+    found_by_src: dict[int, list[DiscoveredCompany]] = {}
+    if workers > 1:
+        log.info(
+            "sources.parallel", segment=segment.label, workers=workers, sources=len(free_srcs)
+        )
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="src") as pool:
+            futures = {id(src): pool.submit(src.discover, segment) for src in free_srcs}
+        # with 종료 = 전 소스 완료 대기. 예외는 병합 진입 전에 그대로 전파(세그먼트 실패 —
+        # 부분 결과로 조용히 진행하지 않는다). 단 순차와 달리 형제 소스들은 이미 끝까지
+        # 돈 뒤라, 실패 세그먼트도 형제 소스 비용은 이미 쓴 상태다(병렬의 본질적 비용 비대칭).
+        # 주의: SearchSource *뒤*의 무료 소스(AI 디렉토리)도 여기서 선실행되므로, 월예산
+        # 경계에서 유료 소스 간 예산게이트 평가 순서가 순차와 다를 수 있다(opt-in 트레이드오프).
+        found_by_src = {key: fut.result() for key, fut in futures.items()}
+    # workers<=1 이면 선실행하지 않는다 — 병합 루프가 원래 위치에서 지연 호출해 호출 순서까지
+    # 순차 원형과 동일(회귀 0). 특히 검색 뒤에 오는 유료 소스(AI 디렉토리)의 예산게이트
+    # 평가 순서가 보존된다.
     out: list[DiscoveredCompany] = []
     seen_keys: set[str] = set()
     seg_domains: set[str] = set()  # 이번 세그먼트 내부 dedup 도메인.
     free_new = 0  # 무료(비검색) 소스가 이 세그먼트에서 찾은 글로벌-신규 수(② 스킵 판단).
-    for src in src_list:
-        # 지역 세그먼트(KR 팬아웃)는 검색 전용 — 등록처·집계원·거래소는 주소로 열거하지
-        # 않으므로 지역마다 같은 스캔을 반복하면 쿼터 낭비 + 커서(label 키) 파편화만 남는다.
-        # 그 소스들은 지역 없는 기본 세그먼트에서 1회만 돈다.
-        if segment.region is not None and not isinstance(src, SearchSource):
-            continue
-        if not src.applies_to(segment):
-            continue
+    for src in applicable:
         if isinstance(src, SearchSource):
             # ② 무료 소스가 이미 충분히 커버 → 유료 검색 호출 자체 스킵(Serper 1콜/세그먼트 절감).
             if skip_ge > 0 and free_new >= skip_ge:
@@ -142,7 +170,9 @@ def discover_segment(
             # ① 글로벌 + 이번 세그먼트 무료소스 도메인을 seen 으로 주입(중복 도메인 비과금).
             inject = (seen_domains | seg_domains) if seen_domains is not None else seg_domains
             found = src.discover(segment, seen=inject)
-        else:
+        elif id(src) in found_by_src:  # 병렬 선실행분.
+            found = found_by_src[id(src)]
+        else:  # 순차(workers<=1) — 원래 루프 위치에서 지연 호출(호출 순서 원형 보존).
             found = src.discover(segment)
         log.info("source.discover", source=src.name, segment=segment.label, n=len(found))
         for dc in found:
