@@ -197,9 +197,16 @@ class Settings(BaseSettings):
     # discovery_rate_per_host 로 호스트별 합산 발사율을 억제한다(트레이드오프). dedup·적재는 항상
     # 단일 스레드라 정확성(제약①②)은 동시성과 무관하게 보존된다.
     discovery_workers: int = Field(default=1, ge=1, le=16)
+    # 세그먼트 **내부** 소스 동시성 — 비검색(등록처·집계원·거래소) 소스들의 discover 를
+    # 스레드풀로 동시 실행한다(서로 다른 호스트라 세그먼트 벽시계의 대부분). 1(기본)이면
+    # 현 동작(순차, 회귀 0). 병합·dedup·검색 게이팅은 항상 main 스레드 순차라 정확성
+    # (제약①②·첫 등장 우선)은 동시성과 무관하게 보존된다. discovery_workers(세그먼트 병렬)와
+    # 곱으로 스레드가 늘어나므로(예: 6×8=48) 호스트 합산 발사율은 discovery_rate_per_host 로 억제.
+    discovery_source_workers: int = Field(default=1, ge=1, le=16)
     # 공유 호스트별 초당 요청 상한(병렬 발견의 429 선제 방지) — 워커별 독립 페처가 같은 호스트를
     # 동시에 때려도 합산 발사율을 이 값 이하로 묶는다. 0=무제한(레이트리미터 미적용). 병렬을 켜고
-    # (discovery_workers>1) 호스트가 429 를 던지면 이 값을 낮춰 억제한다. 단일 스레드(=1)에선 무의미.
+    # (discovery_workers>1 또는 discovery_source_workers>1) 호스트가 429 를 던지면 이 값을
+    # 낮춰 억제한다. 둘 다 1(단일 스레드)이면 무의미.
     discovery_rate_per_host: float = Field(default=5.0, ge=0.0)
     # 무키 집계원(GLEIF/Wikidata) 공통 UA. Wikidata WDQS 는 WMF 로봇 정책상 연락처
     # (URL/이메일) 없는 UA 를 403 거부 — 식별 가능한 연락처 URL 필수(2026-06-19 실연동 확인).
