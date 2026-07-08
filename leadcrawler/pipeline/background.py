@@ -334,16 +334,27 @@ def _finalize(
 
 
 # --- 워치독 --------------------------------------------------------------
-# running 잡의 하트비트(updated_at)가 멎으면 스레드 소멸로 보고 죽은 잡을 정리·재기동한다.
-# 크롤 스레드가 except 로 못 잡는 경로(BaseException·OS 강제소멸)로 죽어 status='running'
-# 으로 박제되고 24시간 방치되던 실사고(2026-07-08) 방어. 서버 프로세스당 1개만 돈다.
+# running 잡인데 그 잡의 실행 스레드(crawl-<id>)가 이 프로세스에 없으면 스레드 소멸로 보고
+# 죽은 잡을 정리·재기동한다. 크롤 스레드가 except 로 못 잡는 경로(BaseException·OS 강제소멸)로
+# 죽어 status='running' 박제되고 24시간 방치되던 실사고(2026-07-08, py-spy 로 스레드 소멸
+# 실측) 방어. **DB 하트비트가 아니라 인프로세스 스레드 생존으로 판정** — 워치독과 크롤이 같은
+# uvicorn 프로세스라 스레드 생존은 결정적으로 관측 가능하다. 병렬 발견 단계(무-emit 윈도)가
+# 300s 넘게 길어도 살아있는 크롤을 오탐 reap 하지 않는다(DB-하트비트 방식의 치명 오탐 회피).
+# 서버 프로세스당 1개만 돈다. 서버 재시작(크로스 프로세스)으로 남은 잔재도 새 프로세스엔
+# 스레드가 없으니 동일하게 정리·재기동된다.
 _watchdog_started = False
 _watchdog_lock = threading.Lock()
 
 
+def _crawl_thread_alive(job_id: str) -> bool:
+    """이 프로세스에 job_id 를 도는 크롤 실행 스레드(_spawn_thread 명명)가 살아있는지."""
+    name = f"crawl-{job_id}"
+    return any(t.name == name and t.is_alive() for t in threading.enumerate())
+
+
 def start_watchdog(settings: Settings) -> bool:
     """워치독 데몬 스레드를 1회 시작한다(중복 시작·비활성·dry_run 은 no-op). True=시작함."""
-    if settings.crawl_watchdog_stale_sec <= 0 or settings.dry_run:
+    if not settings.crawl_watchdog_enabled or settings.dry_run:
         return False
     global _watchdog_started
     with _watchdog_lock:
@@ -353,52 +364,75 @@ def start_watchdog(settings: Settings) -> bool:
     threading.Thread(
         target=_watchdog_loop, args=(settings,), name="crawl-watchdog", daemon=True
     ).start()
-    log.info("crawl_watchdog.start", stale_sec=settings.crawl_watchdog_stale_sec)
+    log.info("crawl_watchdog.start", interval_sec=settings.crawl_watchdog_interval_sec)
     return True
 
 
 def _watchdog_loop(settings: Settings) -> None:
-    """interval 마다 _watchdog_tick — tick 예외는 삼켜 워치독 자체는 죽지 않는다."""
+    """interval 마다 _watchdog_tick — tick 예외는 삼켜 워치독 자체는 죽지 않는다.
+
+    ``misses`` 는 job_id 별 연속 스레드-부재 횟수(grace 판정용) — 루프가 유지한다.
+    """
+    misses: dict[str, int] = {}
     while True:
         time.sleep(settings.crawl_watchdog_interval_sec)
         try:
-            _watchdog_tick(settings)
+            _watchdog_tick(settings, misses=misses)
         except Exception as exc:  # 워치독은 절대 죽으면 안 된다(자기 자신은 감시 불가).
             log.warning("crawl_watchdog.tick_failed", err=str(exc))
 
 
-def _watchdog_tick(settings: Settings, *, runner: JobRunner | None = None) -> bool:
-    """running 잡의 하트비트를 검사해 정지분을 정리·재기동한다. True=수확(reap)함.
+def _watchdog_tick(
+    settings: Settings,
+    *,
+    runner: JobRunner | None = None,
+    misses: dict[str, int] | None = None,
+    alive_check: Callable[[str], bool] | None = None,
+) -> bool:
+    """running 잡의 실행 스레드 생존을 검사해 소멸분을 정리·재기동한다. True=수확(reap)함.
 
-    ``runner`` 는 재기동 경로를 테스트에서 동기 실행으로 주입하기 위한 통로(기본=데몬 스레드).
+    ``runner``=재기동을 테스트에서 동기 실행으로 주입. ``misses``=연속 부재 카운터(grace).
+    ``alive_check``=스레드 생존 판정 주입(테스트용, 기본 :func:`_crawl_thread_alive`).
     """
     global _running
+    is_alive = alive_check or _crawl_thread_alive
     sm = get_sessionmaker(settings)
     session = sm()
     try:
         row = active_crawl_job(session)
         if row is None:
             return False
-        # SQLite 는 naive datetime 을 돌려준다(PG 는 tz-aware) — UTC 로 간주해 aware 화.
-        updated = row.updated_at
-        if updated.tzinfo is None:
-            updated = updated.replace(tzinfo=timezone.utc)
-        stale = (_now() - updated).total_seconds()
-        if stale <= settings.crawl_watchdog_stale_sec:
-            return False  # 살아있음(하트비트 최근) — 정상 pause 도 여기서 통과.
         snap = crawl_job_dict(row)  # 세션 닫히기 전에 재기동 파라미터를 스냅샷.
-        fail_running_jobs(session, f"워치독: 하트비트 {int(stale)}s 정지 — 스레드 소멸 감지")
+    finally:
+        session.close()
+    job_id = str(snap["id"])
+    if is_alive(job_id):
+        if misses is not None:
+            misses.pop(job_id, None)  # 살아있음 — 미스 카운터 리셋.
+        return False
+    # 스레드 부재 — create_crawl_job 과 thread.start() 사이 마이크로갭 오탐을 grace 로 흡수:
+    # 연속 grace_misses 회 부재해야 소멸 확정(정상 기동 중인 잡을 잘못 reap 하지 않는다).
+    if misses is not None:
+        misses[job_id] = misses.get(job_id, 0) + 1
+        if misses[job_id] < settings.crawl_watchdog_grace_misses:
+            return False
+        misses.pop(job_id, None)
+    session = sm()
+    try:
+        fail_running_jobs(session, "워치독: 실행 스레드 소멸 감지(status=running 박제 정리)")
         session.commit()
     finally:
         session.close()
-    # 좀비가 finally 를 못 타고 죽었으면 _running=True 로 가드를 점유 중이다(재기동 시 CrawlBusy).
-    # 하트비트가 stale 을 넘겼다 = 스레드는 죽음 확정이므로 가드를 강제 해제한다.
+    # 스레드가 finally 를 못 타고 죽었으면 _running=True 로 가드를 점유 중이다(재기동 시 CrawlBusy).
+    # 스레드 부재가 확정됐으므로 가드를 강제 해제한다.
     with _guard:
         _running = False
-    job_id = str(snap["id"])
-    log.warning("crawl_watchdog.reaped", job=job_id, stale_sec=int(stale), mode=snap.get("mode"))
+    log.warning("crawl_watchdog.reaped", job=job_id, mode=snap.get("mode"))
     if snap.get("mode") == MODE_CONTINUOUS:
         try:
+            # ponytail: regions 는 crawl_job 행에 미저장(background.py create 주석)이라 재기동 시
+            # 복원 불가 — 지역 팬아웃 크롤은 비-region 으로 재개된다. 지역 크롤 재기동이 필요해지면
+            # CrawlJobRow 에 regions 저장·복원 추가.
             trigger_crawl_job(
                 settings,
                 countries=str(snap.get("countries") or ""),
