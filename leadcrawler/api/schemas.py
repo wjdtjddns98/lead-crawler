@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -75,9 +76,25 @@ class ClaimRequest(BaseModel):
 
 
 class ConfirmRequest(BaseModel):
-    """확정 요청 본문 — 사람이 고른 최종 이메일 후보(선택)."""
+    """확정 요청 본문 — 사람이 고른 최종 이메일 후보(선택) + 홈페이지 수정값(선택).
+
+    ``homepage`` 는 신뢰불가 입력(사람이 직접 입력하는 URL)이라 스킴(http/https)·호스트
+    존재를 형식 검증한다 — 실패 시 FastAPI 가 422. ``None`` = 변경 없음(하위호환),
+    빈 문자열("")도 형식 위반이라 422 로 거부된다.
+    """
 
     selected: str | None = None
+    homepage: str | None = None
+
+    @field_validator("homepage")
+    @classmethod
+    def _validate_homepage(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        parsed = urlparse(v)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("올바른 홈페이지 URL 이 아닙니다(http/https, 호스트 필요)")
+        return v
 
 
 class LoginRequest(BaseModel):

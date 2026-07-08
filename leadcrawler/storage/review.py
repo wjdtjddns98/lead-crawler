@@ -380,15 +380,18 @@ def set_review_status(
     assignee: str | None = None,
     assignee_id: str | None = None,
     selected: str | None = None,
+    homepage: str | None = None,
     now: datetime | None = None,
 ) -> dict | None:
     """큐 항목 상태(확정/거부/보류)와 선택 후보를 갱신하고 감사 이력을 적재한다.
 
     없으면 None, 잘못된 상태면 ValueError. ``selected`` 가 주어지면 후보 목록에 있어야
-    하며(아니면 ValueError), 확정/거부 시 사람이 고른 최종 이메일을 기록한다. 처리자
-    (assignee/assignee_id)와 시각(reviewed_at)을 큐 행에 남기고, 변경 1건마다
-    :class:`ReviewAuditRow` 를 append 해 책임추적 이력을 보존한다. 점유는 영구 귀속이라
-    **타인이 점유한 항목이면 시간 경과와 무관하게** :class:`ReviewConflict`.
+    하며(아니면 ValueError), 확정/거부 시 사람이 고른 최종 이메일을 기록한다. ``homepage``
+    가 주어지면(#185) 회사(CompanyRow)의 홈페이지를 갱신한다 — URL 형식 검증은 상위
+    (API 스키마) 책임이라 여기선 값을 그대로 반영한다. 처리자(assignee/assignee_id)와
+    시각(reviewed_at)을 큐 행에 남기고, 변경 1건마다 :class:`ReviewAuditRow` 를 append 해
+    책임추적 이력을 보존한다(홈페이지 변경 전/후 값도 같은 행에 기록). 점유는 영구
+    귀속이라 **타인이 점유한 항목이면 시간 경과와 무관하게** :class:`ReviewConflict`.
     """
     if status not in _VALID_STATUSES:
         raise ValueError(f"허용되지 않은 상태: {status}")
@@ -405,6 +408,13 @@ def set_review_status(
             raise ValueError(f"후보에 없는 선택: {selected}")
         rq.selected = selected
         rq.selected_by_human = True  # 사람 명시 선택 — 이후 재크롤에서 보존.
+    homepage_before = homepage_after = None
+    if homepage is not None:
+        company = session.get(CompanyRow, rq.company_id)
+        if company is not None:
+            homepage_before = company.homepage
+            company.homepage = homepage
+            homepage_after = homepage
     rq.status = status
     if status in (CONFIRMED, REJECTED):
         # 종료 상태로 가면 점유는 무의미 — 정리(귀속은 assignee/reviewed_at 가 보존).
@@ -426,6 +436,8 @@ def set_review_status(
                 actor_username=assignee or "",
                 action=status,
                 selected=rq.selected,
+                homepage_before=homepage_before,
+                homepage_after=homepage_after,
                 at=when,
             )
         )
