@@ -40,6 +40,7 @@ from ..storage.review import (
     get_review,
     list_markets,
     list_regions,
+    my_history,
     my_work,
     query_reviews,
     set_review_status,
@@ -195,11 +196,23 @@ def create_app() -> FastAPI:
 
     @app.get("/queue/mine", response_model=list[ReviewItem])
     def my_queue(
+        status: ReviewStatus | None = Query(
+            default=None, description="생략=내 점유(pending). confirmed/rejected=처리 이력"
+        ),
+        limit: int = Query(default=200, ge=1, le=200, description="이력 조회 시 최근 N건"),
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> list[ReviewItem]:
-        """내 점유 작업분 조회 — 부작용 없음(새로고침·재로그인 복원용, 추가 점유는 claim)."""
-        return [ReviewItem(**it) for it in my_work(db, user.id)]
+        """내 작업분 조회 — 부작용 없음(새로고침·재로그인 복원용, 추가 점유는 claim).
+
+        ``status`` 생략(또는 ``pending``)은 기존 동작(내 점유 pending 전체) 그대로다.
+        ``confirmed``/``rejected`` 는 내가 처리한 해당 상태 이력을 ``reviewed_at``
+        최신순으로 최근 ``limit``(기본 200)건 반환한다(#191).
+        """
+        if status is None or status is ReviewStatus.PENDING:
+            return [ReviewItem(**it) for it in my_work(db, user.id)]
+        items = my_history(db, user.id, status=status.value, limit=limit)
+        return [ReviewItem(**it) for it in items]
 
     @app.get("/queue/{review_id}", response_model=ReviewItem)
     def get_queue_item(

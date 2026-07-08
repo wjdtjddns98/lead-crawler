@@ -515,14 +515,41 @@ def _my_claimed_rows(
     return [(rq, company) for rq, company in rows]
 
 
-def my_work(session: Session, user_id: str) -> list[dict]:
-    """내 점유 작업분 DTO 목록 — 부작용 없는 조회(새로고침·재로그인 복원용)."""
-    current = _my_claimed_rows(session, user_id)
-    ids = [c.id for _, c in current]
+def _rows_to_dtos(
+    session: Session, rows: Sequence[tuple[ReviewQueueRow, CompanyRow]]
+) -> list[dict]:
+    """(rq, company) 행 목록 → API DTO dict 목록(신호/폼/상장여부 배치 조회 공통 경로)."""
+    ids = [c.id for _, c in rows]
     signals = _email_signals_by_value(session, ids)
     forms = _forms_by_company(session, ids)
-    listed_map = _listed_by_company(session, [company for _, company in current])
-    return [_to_dict(rq, company, signals, forms, listed_map) for rq, company in current]
+    listed_map = _listed_by_company(session, [company for _, company in rows])
+    return [_to_dict(rq, company, signals, forms, listed_map) for rq, company in rows]
+
+
+def my_work(session: Session, user_id: str) -> list[dict]:
+    """내 점유 작업분 DTO 목록 — 부작용 없는 조회(새로고침·재로그인 복원용)."""
+    return _rows_to_dtos(session, _my_claimed_rows(session, user_id))
+
+
+def my_history(
+    session: Session, user_id: str, *, status: str, limit: int = 200
+) -> list[dict]:
+    """내가 처리한(확정/거부) 이력 DTO 목록 — ``reviewed_at`` 최신순 최근 ``limit``건.
+
+    처리 완료 항목은 :func:`set_review_status` 가 ``claimed_by`` 를 정리하므로(점유는
+    종료 상태에서 무의미) 이력 매칭은 점유가 아니라 ``assignee_id``(마지막 처리자)로
+    한다. #191: ``GET /queue/mine?status=confirmed|rejected``.
+    """
+    stmt = (
+        select(ReviewQueueRow, CompanyRow)
+        .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
+        .where(ReviewQueueRow.assignee_id == user_id)
+        .where(ReviewQueueRow.status == status)
+        .order_by(ReviewQueueRow.reviewed_at.desc())
+        .limit(limit)
+    )
+    rows = session.execute(stmt).all()
+    return _rows_to_dtos(session, [(rq, company) for rq, company in rows])
 
 
 def claim_work(
