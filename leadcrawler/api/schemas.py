@@ -84,7 +84,7 @@ class ConfirmRequest(BaseModel):
     """
 
     selected: str | None = None
-    homepage: str | None = None
+    homepage: str | None = Field(default=None, max_length=512)
 
     @field_validator("homepage")
     @classmethod

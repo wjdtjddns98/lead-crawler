@@ -218,7 +218,10 @@ def test_confirm_homepage_null_no_change(client: TestClient) -> None:
     assert r.json()["homepage"] == "https://acme.com"
 
 
-@pytest.mark.parametrize("bad_homepage", ["", "not-a-url", "ftp://acme.com", "javascript:alert(1)"])
+@pytest.mark.parametrize(
+    "bad_homepage",
+    ["", "not-a-url", "ftp://acme.com", "javascript:alert(1)", "https://" + "a" * 600 + ".com"],
+)
 def test_confirm_invalid_homepage_422(client: TestClient, bad_homepage: str) -> None:
     # 신뢰불가 입력(homepage) — 스킴 http/https 형식 위반은 422.
     rid = client.get("/queue").json()["items"][0]["id"]
