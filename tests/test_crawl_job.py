@@ -290,3 +290,96 @@ def test_trigger_spawn_failure_resets_guard(settings) -> None:
     assert is_crawl_running() is False  # 가드 복구됨 — 후속 크롤 가능.
     with session_scope(settings) as db:
         assert latest_crawl_job(db).status == "failed"
+
+
+# --- 워치독 --------------------------------------------------------------
+
+
+def _age_heartbeat(settings, job_id: str, seconds: int) -> None:
+    """잡의 updated_at 을 과거로 밀어 하트비트 정지를 시뮬레이션한다."""
+    from datetime import timedelta
+
+    with session_scope(settings) as db:
+        row = get_crawl_job(db, job_id)
+        row.updated_at = bg._now() - timedelta(seconds=seconds)
+
+
+def test_watchdog_reaps_and_restarts_continuous(settings) -> None:
+    # 하트비트 정지한 continuous 잡 → failed 정리 + 같은 파라미터로 재기동(runner 주입).
+    bg._running = False
+    with session_scope(settings) as db:
+        row = create_crawl_job(
+            db, countries="KR", industries="건설", listed="unknown",
+            persist=True, segments_total=1, triggered_by="x", mode="continuous",
+        )
+        dead = row.id
+    _age_heartbeat(settings, dead, 600)  # stale_sec(300) 초과.
+
+    restarts: list[bool] = []
+
+    def _capture(_s, _jid, _segs, _persist, _target, continuous) -> None:
+        restarts.append(continuous)
+
+    assert bg._watchdog_tick(settings, runner=_capture) is True
+    assert restarts == [True]  # continuous 재기동됨.
+    with session_scope(settings) as db:
+        assert get_crawl_job(db, dead).status == "failed"
+        # 새 running 잡(재기동)이 존재하고 워치독 트리거로 기록됨.
+        alive = active_crawl_job(db)
+        assert alive is not None and alive.id != dead and alive.triggered_by == "watchdog"
+    assert is_crawl_running() is True  # 재기동이 가드를 다시 점유.
+
+
+def test_watchdog_ignores_fresh_heartbeat(settings) -> None:
+    # 하트비트가 최근(정상 진행·pause)이면 건드리지 않는다.
+    bg._running = True
+    with session_scope(settings) as db:
+        row = create_crawl_job(
+            db, countries="KR", industries="건설", listed="unknown",
+            persist=True, segments_total=1, triggered_by="x", mode="continuous",
+        )
+        jid = row.id  # updated_at=now(생성 직후).
+
+    def _capture(*_a, **_k) -> None:
+        raise AssertionError("재기동되면 안 됨")
+
+    assert bg._watchdog_tick(settings, runner=_capture) is False
+    with session_scope(settings) as db:
+        assert get_crawl_job(db, jid).status == "running"  # 그대로.
+
+
+def test_watchdog_reaps_once_mode_without_restart(settings) -> None:
+    # once 모드 좀비는 정리만 하고 재기동하지 않는다(continuous 아님).
+    bg._running = False
+    with session_scope(settings) as db:
+        row = create_crawl_job(
+            db, countries="KR", industries="건설", listed="unknown",
+            persist=True, segments_total=1, triggered_by="x", mode="once",
+        )
+        dead = row.id
+    _age_heartbeat(settings, dead, 600)
+
+    def _capture(*_a, **_k) -> None:
+        raise AssertionError("once 는 재기동 안 함")
+
+    assert bg._watchdog_tick(settings, runner=_capture) is True
+    with session_scope(settings) as db:
+        assert get_crawl_job(db, dead).status == "failed"
+        assert active_crawl_job(db) is None  # 재기동 없음 → running 0.
+    assert is_crawl_running() is False  # 좀비 가드 강제 해제.
+
+
+def test_watchdog_noop_when_no_active_job(settings) -> None:
+    bg._running = False
+    assert bg._watchdog_tick(settings) is False
+
+
+def test_start_watchdog_noop_on_dry_run_and_disabled(settings, monkeypatch) -> None:
+    bg._watchdog_started = False
+    # dry_run 기본 True → no-op.
+    assert bg.start_watchdog(settings) is False
+    # 비활성(stale_sec=0) 도 no-op.
+    monkeypatch.setattr(settings, "dry_run", False)
+    monkeypatch.setattr(settings, "crawl_watchdog_stale_sec", 0)
+    assert bg.start_watchdog(settings) is False
+    assert bg._watchdog_started is False

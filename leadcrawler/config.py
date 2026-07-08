@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     crawl_max_segments: int = Field(default=500, ge=1)
     # 연속(continuous) 크롤 — 라운드 사이 휴지(초). 휴지 중에도 취소 폴링이 돌아 즉시 멈춘다.
     crawl_loop_pause_sec: int = Field(default=60, ge=0)
+    # 크롤 워치독 — running 잡의 updated_at(하트비트)이 이만큼 정지하면 스레드 소멸로 간주해
+    # 죽은 잡을 failed 로 정리하고 continuous 였으면 재기동한다(24/7 self-heal). 스레드가
+    # except 로 못 잡는 경로(BaseException·OS 강제소멸)로 죽어 status='running' 박제되던
+    # 실사고(2026-07-08) 방어. 0=비활성. 정상 pause(crawl_loop_pause_sec)보다 넉넉히 커야 오탐 없음.
+    crawl_watchdog_stale_sec: int = Field(default=300, ge=0)
+    crawl_watchdog_interval_sec: int = Field(default=60, ge=1)
 
     # 이메일 보강/검증
     hunter_api_key: str = Field(default="")

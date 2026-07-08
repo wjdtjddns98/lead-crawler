@@ -34,6 +34,7 @@ from ..storage.crawl_job import (
     FAILED,
     MODE_CONTINUOUS,
     MODE_ONCE,
+    active_crawl_job,
     create_crawl_job,
     crawl_job_dict,
     fail_running_jobs,
@@ -330,3 +331,85 @@ def _finalize(
         log.warning("crawl_job.finalize_failed", job=job_id, err=str(exc))
     finally:
         session.close()
+
+
+# --- 워치독 --------------------------------------------------------------
+# running 잡의 하트비트(updated_at)가 멎으면 스레드 소멸로 보고 죽은 잡을 정리·재기동한다.
+# 크롤 스레드가 except 로 못 잡는 경로(BaseException·OS 강제소멸)로 죽어 status='running'
+# 으로 박제되고 24시간 방치되던 실사고(2026-07-08) 방어. 서버 프로세스당 1개만 돈다.
+_watchdog_started = False
+_watchdog_lock = threading.Lock()
+
+
+def start_watchdog(settings: Settings) -> bool:
+    """워치독 데몬 스레드를 1회 시작한다(중복 시작·비활성·dry_run 은 no-op). True=시작함."""
+    if settings.crawl_watchdog_stale_sec <= 0 or settings.dry_run:
+        return False
+    global _watchdog_started
+    with _watchdog_lock:
+        if _watchdog_started:
+            return False
+        _watchdog_started = True
+    threading.Thread(
+        target=_watchdog_loop, args=(settings,), name="crawl-watchdog", daemon=True
+    ).start()
+    log.info("crawl_watchdog.start", stale_sec=settings.crawl_watchdog_stale_sec)
+    return True
+
+
+def _watchdog_loop(settings: Settings) -> None:
+    """interval 마다 _watchdog_tick — tick 예외는 삼켜 워치독 자체는 죽지 않는다."""
+    while True:
+        time.sleep(settings.crawl_watchdog_interval_sec)
+        try:
+            _watchdog_tick(settings)
+        except Exception as exc:  # 워치독은 절대 죽으면 안 된다(자기 자신은 감시 불가).
+            log.warning("crawl_watchdog.tick_failed", err=str(exc))
+
+
+def _watchdog_tick(settings: Settings, *, runner: JobRunner | None = None) -> bool:
+    """running 잡의 하트비트를 검사해 정지분을 정리·재기동한다. True=수확(reap)함.
+
+    ``runner`` 는 재기동 경로를 테스트에서 동기 실행으로 주입하기 위한 통로(기본=데몬 스레드).
+    """
+    global _running
+    sm = get_sessionmaker(settings)
+    session = sm()
+    try:
+        row = active_crawl_job(session)
+        if row is None:
+            return False
+        # SQLite 는 naive datetime 을 돌려준다(PG 는 tz-aware) — UTC 로 간주해 aware 화.
+        updated = row.updated_at
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        stale = (_now() - updated).total_seconds()
+        if stale <= settings.crawl_watchdog_stale_sec:
+            return False  # 살아있음(하트비트 최근) — 정상 pause 도 여기서 통과.
+        snap = crawl_job_dict(row)  # 세션 닫히기 전에 재기동 파라미터를 스냅샷.
+        fail_running_jobs(session, f"워치독: 하트비트 {int(stale)}s 정지 — 스레드 소멸 감지")
+        session.commit()
+    finally:
+        session.close()
+    # 좀비가 finally 를 못 타고 죽었으면 _running=True 로 가드를 점유 중이다(재기동 시 CrawlBusy).
+    # 하트비트가 stale 을 넘겼다 = 스레드는 죽음 확정이므로 가드를 강제 해제한다.
+    with _guard:
+        _running = False
+    job_id = str(snap["id"])
+    log.warning("crawl_watchdog.reaped", job=job_id, stale_sec=int(stale), mode=snap.get("mode"))
+    if snap.get("mode") == MODE_CONTINUOUS:
+        try:
+            trigger_crawl_job(
+                settings,
+                countries=str(snap.get("countries") or ""),
+                industries=str(snap.get("industries") or ""),
+                listed=str(snap.get("listed") or "unknown"),
+                persist=bool(snap.get("persist", True)),
+                triggered_by="watchdog",
+                continuous=True,
+                runner=runner,
+            )
+            log.info("crawl_watchdog.restarted", prev=job_id)
+        except Exception as exc:  # 재기동 실패해도 정리는 유효(다음 tick·수동 트리거가 이어감).
+            log.warning("crawl_watchdog.restart_failed", prev=job_id, err=str(exc))
+    return True
