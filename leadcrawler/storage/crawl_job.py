@@ -119,6 +119,17 @@ def latest_crawl_job(session: Session) -> CrawlJobRow | None:
     ).first()
 
 
+def recent_crawl_jobs(session: Session, limit: int = 20) -> list[CrawlJobRow]:
+    """최근 크롤 작업 목록(최신순, 관리자 이력 화면용). id 보조정렬로 결정적."""
+    return list(
+        session.scalars(
+            select(CrawlJobRow)
+            .order_by(CrawlJobRow.started_at.desc(), CrawlJobRow.id.desc())
+            .limit(limit)
+        )
+    )
+
+
 def active_crawl_job(session: Session) -> CrawlJobRow | None:
     """진행 중(running) 작업 1건(동시 1건 가드·취소 대상). id 보조정렬로 결정적."""
     return session.scalars(
