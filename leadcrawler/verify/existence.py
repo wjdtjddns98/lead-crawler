@@ -2,11 +2,12 @@
 
 신호를 **다중화**해 단일 HTTP HEAD 의존을 줄인다:
 - 도메인 DNS 생존(A/MX 레코드 존재) — 사이트가 잠깐 죽어도 도메인 생존을 포착,
-- 홈페이지 HTTP 200 — 실제 서비스 생존,
-- (opt-in seam) 등록처 active 신호 — EDGAR/DART/GLEIF 등 공식 등록처가 active/최근
-  공시로 보고하면 가장 강한 신호로 우선한다(주입형, 미주입이면 미사용).
+- 홈페이지 HTTP 200 — 실제 서비스 생존(**admit 기준**),
+- (opt-in seam) 등록처 active 신호 — EDGAR/DART/GLEIF/CH 등 공식 등록처 신호. active 는
+  admit override 가 **아니라** confidence 보강으로만 쓰고(등록만 되고 사이트 죽은 휴면·셸
+  법인은 IR 연락처 불가라 제외), defunct 만 하드 reject 한다(주입형, 미주입이면 미사용).
 
-판정은 위 신호를 **등급화 confidence** 로 합성한다(둘 다=높음, 하나=중간, 없음=비실존).
+판정은 위 신호를 **등급화 confidence** 로 합성한다(admit=site_alive, active/DNS 는 보강).
 모든 프로브는 주입 가능(테스트는 네트워크 없이 가짜 프로브로 분기 검증). dry_run 에서는
 네트워크 없이 도메인 유무로 결정적 판정한다.
 """
@@ -258,27 +259,28 @@ class ExistenceVerifier:
                 site_alive = False
         dns_alive = self._dns().resolves(domain) if domain else False
 
-        # 등록처 active 신호(주입 시) — 가장 강한 신호로 우선한다.
+        # 등록처 신호(주입 시) — active 는 confidence 보강, defunct 만 하드 reject(제약 ②).
         registry_active = (
             self._registry_checker.is_active(registry, registry_id)
             if self._registry_checker is not None
             else None
         )
-        if registry_active is True:
-            result = ExistenceResult(is_active=True, site_alive=site_alive, confidence=0.9)
-        elif registry_active is False:
+        if registry_active is False:
             # 등록처가 defunct 로 보고 — 사이트가 살아있어도 실존 아님(제약 ②). 높은 신뢰.
             result = ExistenceResult(is_active=False, site_alive=site_alive, confidence=0.9)
         else:
-            # 등록처 신호 없음 → **HTTP 서비스 생존을 admit 기준**으로 한다(제약 ②: 현 시점
-            # 실존). DNS 는 단독 admit 신호가 아니라(parked domain 도 해석됨) 살아있는 사이트를
-            # 보강하는 confidence 신호로만 쓴다 — DNS-only 는 비실존으로 보수 처리.
-            if site_alive and dns_alive:
+            # admit 기준은 **HTTP 서비스 생존**이다(제약 ②: active + 도메인 생존 둘 다). 등록처
+            # active 는 admit override 가 아니라 confidence 보강 신호로만 쓴다 — 등록은 됐지만
+            # 사이트가 죽은·406·파킹인 법인(예: CH 휴면·셸)은 IR 연락처를 못 뽑아 큐에서 제외한다.
+            # DNS 도 단독 admit 신호 아님(parked 도 해석됨) — 살아있는 사이트를 보강만 한다.
+            if site_alive and registry_active is True:
+                confidence = 0.9  # HTTP 생존 + 등록처 active — 최강 실존.
+            elif site_alive and dns_alive:
                 confidence = 0.85  # HTTP+DNS 일치 — 강한 실존.
             elif site_alive:
                 confidence = 0.7  # HTTP 만 — 서비스 생존(DNS 조회 실패/누락).
             else:
-                confidence = 0.0  # 사이트 미생존(DNS 만 있어도 admit 안 함).
+                confidence = 0.0  # 사이트 미생존(등록처 active·DNS 있어도 admit 안 함).
             result = ExistenceResult(
                 is_active=site_alive, site_alive=site_alive, confidence=confidence
             )

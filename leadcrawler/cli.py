@@ -487,6 +487,57 @@ def enqueue() -> None:
         session.close()
 
 
+@app.command("purge-dead-sites")
+def purge_dead_sites(
+    apply: bool = typer.Option(False, "--apply", help="실제 반영(미지정=드라이런 카운트만)"),
+) -> None:
+    """사이트 미생존(site_alive=False)인데 저장된 회사를 비활성화하고 대기 큐에서 뺀다.
+
+    구 동작(등록처 active override)으로 새어 들어온 죽은·406·파킹 사이트 회사를 새 게이트
+    (제약 ②: active + 도메인 생존)에 맞춰 정리한다. ``is_active=False`` 로 내려(재-enqueue
+    방지) 대기(pending) 검증 큐 행을 제거한다 — 확정·거부분은 감사 위해 보존. 멱등.
+    """
+    from sqlalchemy import delete, func, select, update
+
+    from .schema import CompanyRow, ReviewQueueRow
+    from .storage.db import get_sessionmaker
+
+    configure_logging()
+    session = get_sessionmaker(get_settings())()
+    try:
+        dead_q = select(CompanyRow.id).where(
+            CompanyRow.site_alive.is_(False), CompanyRow.is_active.is_(True)
+        )
+        n_comp = session.scalar(select(func.count()).select_from(dead_q.subquery())) or 0
+        n_pending = (
+            session.scalar(
+                select(func.count())
+                .select_from(ReviewQueueRow)
+                .where(ReviewQueueRow.company_id.in_(dead_q), ReviewQueueRow.status == "pending")
+            )
+            or 0
+        )
+        typer.echo(f"대상: 사이트死 회사 {n_comp:,}곳 / 대기 큐 {n_pending:,}건")
+        if not apply:
+            typer.echo("드라이런(미반영) — 실제 반영하려면 --apply")
+            return
+        # 큐 행 삭제를 먼저(dead_q 가 is_active=True 를 참조) → 그 다음 회사 비활성화.
+        session.execute(
+            delete(ReviewQueueRow).where(
+                ReviewQueueRow.company_id.in_(dead_q), ReviewQueueRow.status == "pending"
+            )
+        )
+        session.execute(
+            update(CompanyRow)
+            .where(CompanyRow.site_alive.is_(False), CompanyRow.is_active.is_(True))
+            .values(is_active=False)
+        )
+        session.commit()
+        typer.echo(f"정리 완료: {n_comp:,}곳 비활성화 + 대기 큐 {n_pending:,}건 제거")
+    finally:
+        session.close()
+
+
 def backfill_industries(
     session, classifier, *, fetch_html, limit: int = 0, commit_every: int = 50
 ) -> tuple[int, int]:
