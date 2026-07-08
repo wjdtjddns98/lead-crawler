@@ -183,12 +183,19 @@ def test_no_domain_inactive() -> None:
     assert not r.is_active and r.confidence == 0.0  # 도메인 없으면 프로브 미시도.
 
 
-# --- 등록처 active 신호 우선 ------------------------------------------
+# --- 등록처 active = confidence 보강만(admit override 아님, 제약 ②) ----------
 
-def test_registry_active_overrides_dead_site() -> None:
-    # 등록처가 active 면 사이트·DNS 가 죽어도 실존으로 본다.
+def test_registry_active_does_not_admit_dead_site() -> None:
+    # 등록처 active 여도 사이트가 죽으면 실존 아님 — admit 은 site_alive 필수(제약 ②:
+    # active + 도메인 생존). 등록만 되고 사이트 죽은·406·파킹 CH 휴면·셸을 큐에서 제외한다.
     r = _verify(site=False, dns=False, reg=True)
-    assert r.is_active and r.confidence == 0.9
+    assert not r.is_active and r.confidence == 0.0
+
+
+def test_registry_active_boosts_confidence_on_live_site() -> None:
+    # 등록처 active + 사이트 생존 = 최강 실존(0.9). active 는 admit 이 아니라 confidence 보강.
+    r = _verify(site=True, dns=False, reg=True)
+    assert r.is_active and r.site_alive and r.confidence == 0.9
 
 
 def test_registry_defunct_overrides_live_site() -> None:
