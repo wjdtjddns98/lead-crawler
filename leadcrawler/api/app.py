@@ -325,6 +325,11 @@ def create_app() -> FastAPI:
 
         app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")
 
+    # 24/7 크롤 워치독 — 하트비트 정지한 좀비 잡을 정리·재기동한다(비활성·dry_run 은 no-op).
+    from ..pipeline.background import start_watchdog
+
+    start_watchdog(get_settings())
+
     return app
 
 
