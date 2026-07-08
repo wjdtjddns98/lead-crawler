@@ -185,6 +185,50 @@ def test_confirm_missing_404(client: TestClient) -> None:
     assert client.post("/queue/r_missing/confirm").status_code == 404
 
 
+def test_confirm_with_homepage_update(client: TestClient) -> None:
+    # #185: confirm 본문에 homepage 를 실으면 회사 홈페이지가 갱신되고 응답에 반영된다.
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(
+        f"/queue/{rid}/confirm", json={"homepage": "https://corrected.example.com/"}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "confirmed"
+    assert body["homepage"] == "https://corrected.example.com/"
+    # 감사 이력에 변경 전/후 값이 남아야 한다(기존 audit 헬퍼 재사용 — set_review_status).
+    from sqlalchemy import select
+
+    from leadcrawler.config import get_settings
+    from leadcrawler.schema import ReviewAuditRow
+    from leadcrawler.storage.db import session_scope
+
+    with session_scope(get_settings()) as s:
+        row = s.scalars(
+            select(ReviewAuditRow).where(ReviewAuditRow.review_id == rid)
+        ).one()
+        assert row.homepage_before == "https://acme.com"
+        assert row.homepage_after == "https://corrected.example.com/"
+
+
+def test_confirm_homepage_null_no_change(client: TestClient) -> None:
+    # homepage 생략/None = 변경 없음(하위호환) — 기존 값 그대로 응답.
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"selected": "ir@acme.com"})
+    assert r.status_code == 200
+    assert r.json()["homepage"] == "https://acme.com"
+
+
+@pytest.mark.parametrize(
+    "bad_homepage",
+    ["", "not-a-url", "ftp://acme.com", "javascript:alert(1)", "https://" + "a" * 600 + ".com"],
+)
+def test_confirm_invalid_homepage_422(client: TestClient, bad_homepage: str) -> None:
+    # 신뢰불가 입력(homepage) — 스킴 http/https 형식 위반은 422.
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"homepage": bad_homepage})
+    assert r.status_code == 422
+
+
 def test_invalid_status_422(client: TestClient) -> None:
     # 허용되지 않은 상태 필터는 FastAPI 가 422 로 거부(조용한 빈 결과 방지).
     assert client.get("/queue", params={"status": "bogus"}).status_code == 422

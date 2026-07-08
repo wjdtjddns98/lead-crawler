@@ -224,6 +224,8 @@ def create_app() -> FastAPI:
 
         ``selected`` 가 기존 후보에 없는 값이면 사람이 직접 입력/수정한 이메일로 보고
         연락처+후보로 등록한 뒤 확정한다(오타 교정·이메일 추가). 형식 오류는 400.
+        ``homepage``(#185) 가 주어지면(``None``=변경 없음) 회사 홈페이지를 갱신한다 —
+        URL 형식은 ``ConfirmRequest`` 가 이미 검증했으므로(무효면 422) 여기선 그대로 전달.
         """
         selected = body.selected if body else None
         if selected and selected.strip():
@@ -234,7 +236,8 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
             selected = None
-        return _set_status(db, review_id, CONFIRMED, user, selected=selected)
+        homepage = body.homepage if body else None
+        return _set_status(db, review_id, CONFIRMED, user, selected=selected, homepage=homepage)
 
     @app.post("/queue/{review_id}/reject", response_model=ReviewItem)
     def reject(
@@ -339,7 +342,13 @@ def _split_csv(value: str) -> list[str]:
 
 
 def _set_status(
-    db: Session, review_id: str, status: str, actor: UserRow, *, selected: str | None = None
+    db: Session,
+    review_id: str,
+    status: str,
+    actor: UserRow,
+    *,
+    selected: str | None = None,
+    homepage: str | None = None,
 ) -> ReviewItem:
     """상태 변경 공통 — 담당자=로그인 사용자. 404/후보밖 400/타인점유 409 + 감사기록."""
     try:
@@ -350,6 +359,7 @@ def _set_status(
             assignee=actor.username,
             assignee_id=actor.id,
             selected=selected,
+            homepage=homepage,
         )
     except ReviewConflict as exc:  # 타인이 점유 중 → 409(영구 배정 — 시간 경과 무관).
         raise HTTPException(status_code=409, detail=str(exc)) from exc
