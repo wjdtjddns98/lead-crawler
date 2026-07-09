@@ -1154,3 +1154,29 @@ def test_opencorporates_unknown_country_is_noop() -> None:
     settings = Settings(dry_run=False, opencorporates_api_key="k")
     src = OpenCorporatesSource(settings, fetcher=FakeFetcher(json=lambda u, p: _oc_page([])))
     assert src.discover(Segment(country="Atlantis", industry="제조")) == []
+
+
+def test_kr_search_routes_to_naver() -> None:
+    # KR 세그먼트는 네이버(무료·KR네이티브)로, 비-KR 은 글로벌(Serper)로 라우팅한다.
+    from leadcrawler.config import Settings
+    from leadcrawler.sources.search import SearchSource
+
+    s = Settings(
+        dry_run=False, naver_client_id="cid", naver_client_secret="sec", serper_api_key="k"
+    )
+    src = SearchSource(s)
+    kr = src._provider_for(Segment(country="KR", industry="반도체"))
+    us = src._provider_for(Segment(country="US", industry="반도체"))
+    assert kr is not None and kr.name == "naver"
+    assert us is not None and us.name == "serper"
+
+
+def test_kr_search_falls_back_to_global_without_naver_keys() -> None:
+    # 네이버 무키면 KR 도 글로벌(Serper)로 폴백(회귀 0).
+    from leadcrawler.config import Settings
+    from leadcrawler.sources.search import SearchSource
+
+    s = Settings(dry_run=False, naver_client_id="", naver_client_secret="", serper_api_key="k")
+    src = SearchSource(s)
+    kr = src._provider_for(Segment(country="KR", industry="반도체"))
+    assert kr is not None and kr.name == "serper"
