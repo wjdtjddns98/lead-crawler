@@ -87,6 +87,49 @@ def db_upgrade(revision: str = typer.Argument("head", help="목표 리비전")) 
     typer.echo(f"DB 마이그레이션 적용 완료: {revision}")
 
 
+@app.command("fill-emails")
+def fill_emails(
+    loop: bool = typer.Option(False, "--loop", help="상시 consumer — 취소 전까지 배치 반복"),
+    batch: int = typer.Option(200, help="배치당 최대 회사 수(쿼리 LIMIT)"),
+    workers: int = typer.Option(6, help="enrich 병렬(헤드리스 경합 방지 위해 발견보다 낮게)"),
+    interval: float = typer.Option(30.0, help="--loop: 대상 부족/소진 시 폴링 대기(초)"),
+    min_queue: int = typer.Option(20, help="--loop: 대상이 이 수 이상 쌓이면 배치 처리(그 전엔 대기)"),
+) -> None:
+    """큐의 '실존·무이메일' 회사에 이메일을 배치 병렬로 채운다(발견 producer 의 consumer).
+
+    발견 크롤(discovery_only)이 회사+홈페이지를 빠르게 큐에 쌓으면, 이 소비자가 무이메일
+    회사를 배치로 잡아 헤드리스/OCR 까지 돌려 이메일을 채운다. 멱등(채워지면 대상에서 이탈).
+    ``--loop`` 면 취소(Ctrl-C) 전까지 상시 구동한다.
+    """
+    import time
+
+    from .pipeline.fill import count_targets, fill_batch
+    from .storage.db import get_sessionmaker
+
+    configure_logging()
+    settings = get_settings()
+    if settings.dry_run:
+        typer.echo("DRY_RUN=true — 채우기 무의미(더미 반환). 중단.")
+        raise typer.Exit(1)
+    sm = get_sessionmaker(settings)
+
+    if not loop:
+        processed, emails = fill_batch(settings, sm, limit=batch, workers=workers)
+        typer.echo(f"[fill] 처리 {processed}, 신규이메일 {emails}")
+        return
+
+    typer.echo(f"[fill] 상시 consumer 시작 (batch={batch} workers={workers} min_queue={min_queue})")
+    while True:  # 취소 = Ctrl-C / 프로세스 종료.
+        pending = count_targets(sm)
+        if pending < min_queue:  # 임계 미만 → 더 쌓일 때까지 대기(배치 효율).
+            time.sleep(interval)
+            continue
+        processed, emails = fill_batch(settings, sm, limit=batch, workers=workers)
+        typer.echo(f"[fill] 배치 처리 {processed}, 신규이메일 {emails}, 대기 {pending}")
+        if processed == 0:  # 대상 있었으나 다 실패/이탈 → 폭주 방지 대기.
+            time.sleep(interval)
+
+
 @app.command("import-existing")
 def import_existing(
     path: str = typer.Argument(..., help="기존 엑셀/CSV 경로(파일 또는 디렉터리)"),
