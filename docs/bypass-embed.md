@@ -14,7 +14,7 @@
 
 ## 활성화
 ```bash
-pip install -e ".[bypass]"           # curl_cffi 격자 등 설치
+uv sync --extra bypass               # curl_cffi 격자 등 설치
 export LEADCRAWLER_ENABLE_BYPASS=true # SET/Bursa 우회 시도
 ```
 

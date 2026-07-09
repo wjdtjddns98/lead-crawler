@@ -1,7 +1,7 @@
 """OCR — 이미지로 노출된(스팸회피) 이메일을 텍스트로 추출.
 
 Tesseract(pytesseract + Pillow)는 **선택적 의존성**(extra ``ocr`` —
-``pip install lead-crawler[ocr]`` + 시스템 tesseract 바이너리). 미설치/실패해도
+``uv sync --extra ocr`` + 시스템 tesseract 바이너리). 미설치/실패해도
 ``image_to_text`` 는 빈 문자열을 돌려줄 뿐 파이프라인을 깨지 않는다(보강 폴백).
 비용 0(로컬). dry_run 은 이 경로를 타지 않으며 라이브에서 ``enrich_ocr`` 켤 때만 동작.
 

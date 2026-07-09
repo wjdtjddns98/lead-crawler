@@ -1,6 +1,6 @@
 """헤드리스 렌더링 — 정적 추출로 이메일을 못 찾은 기업의 JS 렌더 페이지 보강.
 
-Playwright 는 **선택적 의존성**(extra ``crawl`` — ``pip install lead-crawler[crawl]`` +
+Playwright 는 **선택적 의존성**(extra ``crawl`` — ``uv sync --extra crawl`` +
 ``playwright install chromium``)이다. 미설치/실패해도 렌더러는
 ``None`` 을 돌려줄 뿐 파이프라인을 깨지 않는다(보강은 정적 결과로 폴백). dry_run 은
 이 경로를 타지 않으며(결정적), 라이브에서도 ``enrich_headless`` 를 켤 때만 동작한다.

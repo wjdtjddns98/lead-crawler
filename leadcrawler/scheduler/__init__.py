@@ -128,7 +128,7 @@ def start_scheduler(settings: Settings | None = None) -> None:
         from apscheduler.triggers.cron import CronTrigger
     except ModuleNotFoundError as exc:  # 선택적 extra 미설치 — 우발 기동 방지
         raise RuntimeError(
-            "APScheduler 가 없습니다. `pip install -e .[schedule]` 로 설치하세요."
+            "APScheduler 가 없습니다. `uv sync --extra schedule` 로 설치하세요."
         ) from exc
 
     scheduler = BlockingScheduler(timezone="UTC")
