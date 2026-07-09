@@ -37,6 +37,7 @@ class PlaywrightRenderer:
         self._timeout = timeout
         self._pw = None
         self._browser = None
+        self._context = None
         self._unavailable = False  # 미설치/기동실패 시 재시도 안 함.
 
     def _ensure(self) -> bool:
@@ -50,6 +51,9 @@ class PlaywrightRenderer:
 
             self._pw = sync_playwright().start()
             self._browser = self._pw.chromium.launch(headless=True)
+            # 자체서명·호스트불일치 인증서 사이트(KR 영세기업 다수)도 렌더 — 공개 페이지만
+            # 읽고 시크릿을 안 보내므로 안전. ignore 안 하면 goto 가 ERR_CERT 로 죽어 이메일 유실.
+            self._context = self._browser.new_context(ignore_https_errors=True)
             return True
         except Exception as exc:  # 미설치(ImportError)·브라우저 미설치·기동실패.
             log.info("headless.unavailable", err=str(exc))
@@ -62,7 +66,7 @@ class PlaywrightRenderer:
             return None
         page = None
         try:
-            page = self._browser.new_page()
+            page = self._context.new_page()
             # networkidle 은 폴링/소켓 사이트에서 타임아웃까지 행되기 쉬워 권장 안 됨 →
             # domcontentloaded 로 DOM 확보(JS 주입 mailto/폼 추출엔 충분).
             page.goto(url, timeout=int(self._timeout * 1000), wait_until="domcontentloaded")
@@ -79,11 +83,12 @@ class PlaywrightRenderer:
 
     def close(self) -> None:
         """브라우저·Playwright 를 정리한다(커넥션 누수 방지)."""
-        for obj, method in ((self._browser, "close"), (self._pw, "stop")):
+        for obj, method in ((self._context, "close"), (self._browser, "close"), (self._pw, "stop")):
             if obj is not None:
                 try:
                     getattr(obj, method)()
                 except Exception:  # 정리 실패는 무시(베스트에포트).
                     pass
+        self._context = None
         self._browser = None
         self._pw = None
