@@ -773,7 +773,7 @@ def web(
         import uvicorn
     except ModuleNotFoundError as exc:
         raise typer.BadParameter(
-            "uvicorn 이 없습니다. `pip install -e .[api]` 로 설치하세요."
+            "uvicorn 이 없습니다. `uv sync --extra api` 로 설치하세요."
         ) from exc
 
     if (ssl_certfile is None) != (ssl_keyfile is None):
