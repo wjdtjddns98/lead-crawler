@@ -9,6 +9,7 @@ dry_run 에서는 모든 단계가 네트워크 없이 결정적으로 동작한
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
@@ -58,6 +59,12 @@ ProgressCallback = Callable[[dict[str, int]], None]
 # 하기 위한 관측 훅. 프로덕션은 None → 호출부의 None 체크 한 번뿐(no-op). 배리어(전량 선제출)
 # 경로였다면 이 값이 window 를 초과했을 것이라 EP1 회귀를 잡는다. 테스트가 monkeypatch 로 설정.
 _WINDOW_OBSERVER: Callable[[int], None] | None = None
+
+# ponytail: 스테이지 병목 계측 관측 훅(테스트 단정용, 프로덕션 None→no-op). 런 종료 시 발견/추출
+# worker-초 합계·straggler(최장 발견 세그먼트) 요약 dict 을 받는다. sub-segment chunking(후속
+# 대형작업)이 "discovery 가 진짜 병목이고 straggler 가 있을 때만" 값어치라, 그 결정을 라이브
+# 데이터로 게이팅하기 위한 계측. 요약은 항상 log.info('crawl.stage_timing') 으로도 남는다.
+_TIMING_OBSERVER: Callable[[dict[str, object]], None] | None = None
 
 
 def _interleave_by_country(segments: list[Segment]) -> list[int]:
@@ -256,16 +263,23 @@ def run_pipeline(
     _tl = threading.local()
     _created: list[object] = []  # 워커별 생성 인스턴스(종료 시 close).
     _created_lock = threading.Lock()
+    # 스테이지 병목 계측(관측용, 정확성 무관). 발견 = 세그먼트별 (라벨, 초, 회사수), 추출 =
+    # _build_lead 별 초. list.append 는 GIL-원자라 병렬 워커에서도 안전(락 불필요).
+    disco_durations: list[tuple[str, float, int]] = []
+    enrich_durations: list[float] = []
 
     def _process_one(dc: DiscoveredCompany) -> CompanyLead:
         if pool is None:  # 순차 — 공유 인스턴스(메인 스레드 단독 실행, 기존 경로와 동일).
-            return _build_lead(
+            t0 = time.monotonic()
+            lead = _build_lead(
                 dc,
                 enricher=enricher,
                 existence=existence,
                 email_validator=email_validator,
                 classifier=classifier,
             )
+            enrich_durations.append(time.monotonic() - t0)
+            return lead
         w = getattr(_tl, "trio", None)
         if w is None:  # 워커 스레드당 독립 인스턴스 1회 생성. registry_checker 까지 워커별로
             # 따로 만들어 공유 Fetcher 의 throttle(self._last) 경쟁을 없앤다(아키텍트 MAJOR).
@@ -278,9 +292,12 @@ def run_pipeline(
             with _created_lock:
                 _created.extend([enr, exi, val, *([rc] if rc is not None else [])])
         enr, exi, val = w
-        return _build_lead(
+        t0 = time.monotonic()
+        lead = _build_lead(
             dc, enricher=enr, existence=exi, email_validator=val, classifier=classifier
         )
+        enrich_durations.append(time.monotonic() - t0)
+        return lead
 
     leads: list[CompanyLead] = []
     pending: list[DiscoveredCompany] = []  # 배치 — 메인 dedup 통과분, 풀로 동시 처리.
@@ -417,15 +434,16 @@ def run_pipeline(
                 if should_cancel is not None and should_cancel():
                     cancelled = True
                     break
-                _consume(
-                    discover_segment(
-                        segment,
-                        settings,
-                        cost_ledger=cost_ledger,
-                        sources=disco_sources,
-                        seen_domains=seen_domains,  # 글로벌 dedup 시드 주입(제약①·②).
-                    )
+                _t0 = time.monotonic()
+                found = discover_segment(
+                    segment,
+                    settings,
+                    cost_ledger=cost_ledger,
+                    sources=disco_sources,
+                    seen_domains=seen_domains,  # 글로벌 dedup 시드 주입(제약①·②).
                 )
+                disco_durations.append((segment.label, time.monotonic() - _t0, len(found)))
+                _consume(found)
                 if cancelled or _target_hit():
                     break  # 취소 또는 목표 도달 → 남은 세그먼트는 돌지 않고 종료.
                 progress["segments_done"] += 1
@@ -471,7 +489,8 @@ def run_pipeline(
                     with disco_created_lock:
                         disco_created.append(ws)
                 try:
-                    return list(
+                    _t0 = time.monotonic()
+                    found = list(
                         discover_segment(
                             segment,
                             settings,
@@ -480,6 +499,10 @@ def run_pipeline(
                             seen_domains=seen_domains_snapshot,
                         )
                     )
+                    disco_durations.append(
+                        (segment.label, time.monotonic() - _t0, len(found))
+                    )
+                    return found
                 except Exception as exc:  # 한 세그먼트 발견 실패 → 그 세그먼트만 빈 결과로 격리
                     # (전체 런 중단·기적재 유실 방지 — 순차의 건별 보존과 동등한 blast-radius).
                     log.warning("pipeline.discover.error", segment=segment.label, err=str(exc))
@@ -534,6 +557,27 @@ def run_pipeline(
         close_sources(disco_sources)  # 발견 소스 httpx 클라이언트 정리(런당 1회).
         if session is not None:
             session.close()
+    # 스테이지 병목 요약(관측용) — 발견 vs 추출 worker-초 + straggler. chunking 후속의 게이트
+    # 데이터: enrich 가 지배적이면 chunking(발견 병렬화)은 헛일, discovery 가 크고 한 세그먼트에
+    # 몰려 있으면(share 高) 값어치. dry_run 은 시간이 미미해 상대 비교만 의미.
+    if disco_durations or enrich_durations:
+        disco_sec = sum(d for _, d, _ in disco_durations)
+        enrich_sec = sum(enrich_durations)
+        straggler = max(disco_durations, key=lambda x: x[1], default=("", 0.0, 0))
+        summary: dict[str, object] = {
+            "discovery_worker_sec": round(disco_sec, 2),
+            "enrich_worker_sec": round(enrich_sec, 2),
+            "segments": len(disco_durations),
+            "companies": sum(n for _, _, n in disco_durations),
+            "straggler_seg": straggler[0],
+            "straggler_sec": round(straggler[1], 2),
+            "straggler_share": round(straggler[1] / disco_sec, 2) if disco_sec else 0.0,
+            "max_seg_companies": max((n for _, _, n in disco_durations), default=0),
+            "bottleneck": "enrich" if enrich_sec > disco_sec else "discovery",
+        }
+        log.info("crawl.stage_timing", **summary)
+        if _TIMING_OBSERVER is not None:
+            _TIMING_OBSERVER(summary)
     return leads
 
 
