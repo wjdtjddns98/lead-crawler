@@ -31,6 +31,7 @@ from ..storage.crawl_job import (
     active_crawl_job,
     crawl_job_dict,
     latest_crawl_job,
+    recent_crawl_jobs,
     request_cancel,
 )
 from ..storage.crawl_target import get_crawl_target, set_crawl_target
@@ -284,6 +285,15 @@ def register_admin(
         if row is None:
             return CrawlJobInfo()  # 작업 이력 없음 → idle.
         return CrawlJobInfo(**crawl_job_dict(row))
+
+    @app.get("/admin/crawl/history", response_model=list[CrawlJobInfo])
+    def crawl_history(
+        limit: int = Query(default=20, ge=1, le=100),
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> list[CrawlJobInfo]:
+        """최근 크롤 작업 이력(최신순, 최대 limit 건)."""
+        return [CrawlJobInfo(**crawl_job_dict(row)) for row in recent_crawl_jobs(db, limit)]
 
     @app.post("/admin/crawl/cancel", response_model=CrawlJobInfo)
     def cancel_crawl(

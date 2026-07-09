@@ -217,6 +217,9 @@ class ReviewAuditRow(Base):
     actor_username: Mapped[str] = mapped_column(String(64), default="", server_default=text("''"))
     action: Mapped[str] = mapped_column(String(16))  # confirmed | rejected
     selected: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    # 홈페이지 수정(#185) 변경 전/후 값 — 둘 다 NULL 이면 이 처리에 홈페이지 변경 없음.
+    homepage_before: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    homepage_after: Mapped[str | None] = mapped_column(String(512), nullable=True)
     at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now(), index=True
     )

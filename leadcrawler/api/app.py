@@ -40,6 +40,7 @@ from ..storage.review import (
     get_review,
     list_markets,
     list_regions,
+    my_history,
     my_work,
     query_reviews,
     set_review_status,
@@ -195,11 +196,23 @@ def create_app() -> FastAPI:
 
     @app.get("/queue/mine", response_model=list[ReviewItem])
     def my_queue(
+        status: ReviewStatus | None = Query(
+            default=None, description="생략=내 점유(pending). confirmed/rejected=처리 이력"
+        ),
+        limit: int = Query(default=200, ge=1, le=200, description="이력 조회 시 최근 N건"),
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> list[ReviewItem]:
-        """내 점유 작업분 조회 — 부작용 없음(새로고침·재로그인 복원용, 추가 점유는 claim)."""
-        return [ReviewItem(**it) for it in my_work(db, user.id)]
+        """내 작업분 조회 — 부작용 없음(새로고침·재로그인 복원용, 추가 점유는 claim).
+
+        ``status`` 생략(또는 ``pending``)은 기존 동작(내 점유 pending 전체) 그대로다.
+        ``confirmed``/``rejected`` 는 내가 처리한 해당 상태 이력을 ``reviewed_at``
+        최신순으로 최근 ``limit``(기본 200)건 반환한다(#191).
+        """
+        if status is None or status is ReviewStatus.PENDING:
+            return [ReviewItem(**it) for it in my_work(db, user.id)]
+        items = my_history(db, user.id, status=status.value, limit=limit)
+        return [ReviewItem(**it) for it in items]
 
     @app.get("/queue/{review_id}", response_model=ReviewItem)
     def get_queue_item(
@@ -224,6 +237,8 @@ def create_app() -> FastAPI:
 
         ``selected`` 가 기존 후보에 없는 값이면 사람이 직접 입력/수정한 이메일로 보고
         연락처+후보로 등록한 뒤 확정한다(오타 교정·이메일 추가). 형식 오류는 400.
+        ``homepage``(#185) 가 주어지면(``None``=변경 없음) 회사 홈페이지를 갱신한다 —
+        URL 형식은 ``ConfirmRequest`` 가 이미 검증했으므로(무효면 422) 여기선 그대로 전달.
         """
         selected = body.selected if body else None
         if selected and selected.strip():
@@ -234,7 +249,8 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
             selected = None
-        return _set_status(db, review_id, CONFIRMED, user, selected=selected)
+        homepage = body.homepage if body else None
+        return _set_status(db, review_id, CONFIRMED, user, selected=selected, homepage=homepage)
 
     @app.post("/queue/{review_id}/reject", response_model=ReviewItem)
     def reject(
@@ -325,6 +341,11 @@ def create_app() -> FastAPI:
 
         app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")
 
+    # 24/7 크롤 워치독 — 하트비트 정지한 좀비 잡을 정리·재기동한다(비활성·dry_run 은 no-op).
+    from ..pipeline.background import start_watchdog
+
+    start_watchdog(get_settings())
+
     return app
 
 
@@ -334,7 +355,13 @@ def _split_csv(value: str) -> list[str]:
 
 
 def _set_status(
-    db: Session, review_id: str, status: str, actor: UserRow, *, selected: str | None = None
+    db: Session,
+    review_id: str,
+    status: str,
+    actor: UserRow,
+    *,
+    selected: str | None = None,
+    homepage: str | None = None,
 ) -> ReviewItem:
     """상태 변경 공통 — 담당자=로그인 사용자. 404/후보밖 400/타인점유 409 + 감사기록."""
     try:
@@ -345,6 +372,7 @@ def _set_status(
             assignee=actor.username,
             assignee_id=actor.id,
             selected=selected,
+            homepage=homepage,
         )
     except ReviewConflict as exc:  # 타인이 점유 중 → 409(영구 배정 — 시간 경과 무관).
         raise HTTPException(status_code=409, detail=str(exc)) from exc

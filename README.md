@@ -30,12 +30,18 @@ web/         React(Vite) 프론트 → Vercel
 
 ## 개발
 
+의존성 관리는 [uv](https://docs.astral.sh/uv/). `uv sync` 가 `.venv` 생성·의존성 설치·
+프로젝트(editable)·dev 그룹까지 한 번에 처리한다(락파일 `uv.lock` 기준 재현).
+
 ```bash
-python -m venv .venv && .venv/Scripts/activate    # Windows
-pip install -e ".[dev]"
-ruff check .
-pytest -q
+uv sync                 # .venv + 런타임 + dev 그룹(pytest·ruff·mypy) 설치
+uv run ruff check .
+uv run pytest -q
 ```
+
+기능 extra 는 필요할 때 추가한다: `uv sync --extra api` (FastAPI 웹앱),
+`--extra db`(psycopg), `--extra crawl`(headless), `--extra ocr`, `--all-extras`(전부).
+운영 설치는 dev 제외: `uv sync --no-dev --extra api --extra db`.
 
 ## 데이터베이스
 
@@ -43,8 +49,8 @@ pytest -q
 
 ```bash
 docker compose up -d            # 로컬 PostgreSQL 기동
-pip install -e ".[db]"          # psycopg 드라이버
-leadcrawler db-upgrade          # = alembic upgrade head
+uv sync --extra db              # psycopg 드라이버
+uv run leadcrawler db-upgrade   # = alembic upgrade head
 # 스키마 변경 시: alembic revision --autogenerate -m "변경요약"
 ```
 

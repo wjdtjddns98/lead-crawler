@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import ssl
 import threading
 import time
 from typing import Any, Protocol, runtime_checkable
@@ -21,6 +22,23 @@ log = get_logger("sources.http")
 
 # 일시적 네트워크 오류 + 재시도 가치 있는 상태코드(429/5xx)만 재시도. 그 외 4xx 는 즉시 실패.
 _RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def _is_ssl_error(exc: BaseException) -> bool:
+    """예외 사슬에 TLS 인증서 검증 실패(자체서명·호스트불일치)가 있는지 판정한다.
+
+    httpx 는 SSL 오류를 ``ConnectError`` 로 감싸고 원인(``__cause__``)에 ``ssl.SSLError`` 를
+    둔다 — 사슬을 훑어 판별한다. verify=False 폴백을 걸 요청을 이걸로만 좁힌다(그 외
+    네트워크 오류엔 폴백하지 않음).
+    """
+    seen: set[int] = set()
+    e: BaseException | None = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(e):
+            return True
+        e = e.__cause__ or e.__context__
+    return False
 
 
 class RateLimiter:
@@ -59,9 +77,20 @@ class HostRateLimiters:
     접근을 lock 으로 보호).
     """
 
+    # 호스트별 알려진 공식 한도 — default_rate(전역 discovery_rate_per_host)보다 낮은
+    # 개별 API 한도를 기본 적용한다. CH advanced-search = 600요청/5분 = 2 req/s(전역 8 의
+    # 4배 초과 시 앞단 WAF 가 HTML 403 을 반환하던 실사고 대응, 2026-07-07). 명시 per_host
+    # 오버라이드가 이보다 우선하고, 여기 없는 호스트는 default_rate 로 폴백(for_host).
+    _KNOWN_HOST_RATES: dict[str, float] = {
+        "api.company-information.service.gov.uk": 2.0,
+    }
+
     def __init__(self, default_rate: float, per_host: dict[str, float] | None = None) -> None:
         self._default_rate = default_rate
-        self._per_host = dict(per_host) if per_host else {}
+        merged = dict(self._KNOWN_HOST_RATES)
+        if per_host:
+            merged.update(per_host)  # 명시 오버라이드가 알려진 한도를 이긴다.
+        self._per_host = merged
         self._limiters: dict[str, RateLimiter] = {}
         self._lock = threading.Lock()
 
@@ -137,7 +166,23 @@ class Fetcher:
         # 페처(워커별)의 합산 초당 요청을 호스트 한도 이하로 묶는다. None 이면 기존 동작(회귀 0).
         self._rate_limiters = rate_limiters
         headers = {"User-Agent": user_agent} if user_agent else {}
+        self._headers = headers
         self._client = httpx.Client(timeout=timeout, headers=headers, follow_redirects=True)
+        # 인증서 깨진 사이트용 폴백(verify=False) — SSL 검증 실패 요청에만 lazy 생성해 재시도.
+        self._insecure_client: httpx.Client | None = None
+
+    def _insecure(self) -> httpx.Client:
+        """verify=False 폴백 클라이언트(lazy). 자체서명·호스트불일치 인증서 사이트 전용.
+
+        공개 마케팅 페이지만 GET 하고 자격증명·시크릿을 안 보내 MITM 위험이 낮다. 검증
+        클라이언트가 SSL 오류를 낸 요청에만 쓰여 대다수 요청은 검증을 유지한다.
+        """
+        if self._insecure_client is None:
+            self._insecure_client = httpx.Client(
+                timeout=self._timeout, headers=self._headers,
+                follow_redirects=True, verify=False,
+            )
+        return self._insecure_client
 
     def _throttle(self) -> None:
         """직전 요청과의 간격이 ``min_interval`` 미만이면 대기한다."""
@@ -172,9 +217,16 @@ class Fetcher:
         allow_redirects: bool = True,
     ) -> httpx.Response:
         self._pace(url)
-        resp = self._client.get(
-            url, params=params, headers=headers, follow_redirects=allow_redirects
-        )
+        try:
+            resp = self._client.get(
+                url, params=params, headers=headers, follow_redirects=allow_redirects
+            )
+        except httpx.ConnectError as exc:  # 인증서 검증 실패면 verify=False 로 1회 폴백.
+            if not _is_ssl_error(exc):
+                raise
+            resp = self._insecure().get(
+                url, params=params, headers=headers, follow_redirects=allow_redirects
+            )
         resp.raise_for_status()
         return resp
 
@@ -189,21 +241,29 @@ class Fetcher:
         allow_redirects: bool, max_bytes: int,
     ) -> str:
         """스트림으로 받아 ``max_bytes`` 초과분에서 중단·decode(초대형 바디 메모리 방어)."""
+        def _read(client: httpx.Client) -> str:
+            with client.stream(
+                "GET", url, params=params, headers=headers, follow_redirects=allow_redirects
+            ) as resp:
+                resp.raise_for_status()
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in resp.iter_bytes():
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= max_bytes:
+                        break
+                body = b"".join(chunks)[:max_bytes]
+                encoding = resp.encoding or "utf-8"
+            return body.decode(encoding, errors="replace")
+
         self._pace(url)
-        with self._client.stream(
-            "GET", url, params=params, headers=headers, follow_redirects=allow_redirects
-        ) as resp:
-            resp.raise_for_status()
-            chunks: list[bytes] = []
-            total = 0
-            for chunk in resp.iter_bytes():
-                chunks.append(chunk)
-                total += len(chunk)
-                if total >= max_bytes:
-                    break
-            body = b"".join(chunks)[:max_bytes]
-            encoding = resp.encoding or "utf-8"
-        return body.decode(encoding, errors="replace")
+        try:
+            return _read(self._client)
+        except httpx.ConnectError as exc:  # 인증서 검증 실패면 verify=False 로 1회 폴백.
+            if not _is_ssl_error(exc):
+                raise
+            return _read(self._insecure())
 
     @retry(
         retry=retry_if_exception(_is_retryable),
@@ -266,3 +326,5 @@ class Fetcher:
 
     def close(self) -> None:
         self._client.close()
+        if self._insecure_client is not None:
+            self._insecure_client.close()

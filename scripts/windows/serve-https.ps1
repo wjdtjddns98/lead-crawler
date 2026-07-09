@@ -38,7 +38,7 @@ foreach ($v in @(".venv", "venv")) {
     $p = Join-Path $root "$v\Scripts\python.exe"
     if (Test-Path $p) { $python = $p; break }
 }
-if (-not $python) { Write-Error "venv not found ($root\.venv) - run: python -m venv .venv; pip install -e .[api,db]" }
+if (-not $python) { Write-Error "venv not found ($root\.venv) - run: uv sync --extra api --extra db" }
 
 if (-not (Test-Path (Join-Path $root "web\dist\index.html"))) {
     Write-Host "note: web\dist not found - UI will 404 at / (build once: cd web; npm install; npm run build)"

@@ -290,3 +290,109 @@ def test_trigger_spawn_failure_resets_guard(settings) -> None:
     assert is_crawl_running() is False  # 가드 복구됨 — 후속 크롤 가능.
     with session_scope(settings) as db:
         assert latest_crawl_job(db).status == "failed"
+
+
+# --- 워치독 --------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_watchdog_globals():
+    """전역 _running·_watchdog_started 를 테스트마다 스냅샷·복원(순서 의존·누수 차단)."""
+    run0, started0 = bg._running, bg._watchdog_started
+    bg._running, bg._watchdog_started = False, False
+    yield
+    bg._running, bg._watchdog_started = run0, started0
+
+
+_DEAD = lambda _jid: False  # 스레드 부재(소멸) 시뮬.  # noqa: E731
+_ALIVE = lambda _jid: True  # 스레드 생존 시뮬.  # noqa: E731
+
+
+def _make_continuous(settings, mode: str = "continuous") -> str:
+    with session_scope(settings) as db:
+        row = create_crawl_job(
+            db, countries="KR", industries="건설", listed="unknown",
+            persist=True, segments_total=1, triggered_by="x", mode=mode,
+        )
+        return row.id
+
+
+def test_watchdog_reaps_dead_thread_and_restarts_continuous(settings, monkeypatch) -> None:
+    # 실행 스레드 소멸(부재) → failed 정리 + 같은 파라미터로 재기동(runner 주입).
+    monkeypatch.setattr(settings, "crawl_watchdog_grace_misses", 1)  # 즉시 reap(grace 없음).
+    dead = _make_continuous(settings)
+    restarts: list[bool] = []
+
+    def _capture(_s, _jid, _segs, _persist, _target, continuous) -> None:
+        restarts.append(continuous)
+
+    assert bg._watchdog_tick(
+        settings, runner=_capture, misses={}, alive_check=_DEAD
+    ) is True
+    assert restarts == [True]  # continuous 재기동됨.
+    with session_scope(settings) as db:
+        assert get_crawl_job(db, dead).status == "failed"
+        alive = active_crawl_job(db)
+        assert alive is not None and alive.id != dead and alive.triggered_by == "watchdog"
+    assert is_crawl_running() is True  # 재기동이 가드를 다시 점유.
+
+
+def test_watchdog_ignores_live_thread_during_slow_discovery(settings) -> None:
+    # 핵심 오탐 방지: 스레드가 살아있으면(긴 병렬 발견 무-emit 윈도 포함) 절대 reap 안 함.
+    jid = _make_continuous(settings)
+
+    def _capture(*_a, **_k) -> None:
+        raise AssertionError("살아있는 스레드를 reap 하면 안 됨")
+
+    assert bg._watchdog_tick(
+        settings, runner=_capture, misses={}, alive_check=_ALIVE
+    ) is False
+    with session_scope(settings) as db:
+        assert get_crawl_job(db, jid).status == "running"  # 그대로.
+
+
+def test_watchdog_grace_defers_first_miss(settings, monkeypatch) -> None:
+    # grace_misses=2: 첫 부재는 유예(create/start 마이크로갭 오탐 방지), 둘째에 reap.
+    monkeypatch.setattr(settings, "crawl_watchdog_grace_misses", 2)
+    jid = _make_continuous(settings)
+    misses: dict[str, int] = {}
+    noop = lambda *a: None  # noqa: E731
+    # 1회차: 유예(reap 안 함).
+    assert bg._watchdog_tick(settings, misses=misses, alive_check=_DEAD, runner=noop) is False
+    with session_scope(settings) as db:
+        assert get_crawl_job(db, jid).status == "running"
+    # 2회차: grace 도달 → reap.
+    assert bg._watchdog_tick(settings, misses=misses, alive_check=_DEAD, runner=noop) is True
+    with session_scope(settings) as db:
+        assert get_crawl_job(db, jid).status == "failed"
+
+
+def test_watchdog_reaps_once_mode_without_restart(settings, monkeypatch) -> None:
+    # once 모드 소멸분은 정리만 하고 재기동하지 않는다(continuous 아님).
+    monkeypatch.setattr(settings, "crawl_watchdog_grace_misses", 1)
+    dead = _make_continuous(settings, mode="once")
+
+    def _capture(*_a, **_k) -> None:
+        raise AssertionError("once 는 재기동 안 함")
+
+    assert bg._watchdog_tick(
+        settings, runner=_capture, misses={}, alive_check=_DEAD
+    ) is True
+    with session_scope(settings) as db:
+        assert get_crawl_job(db, dead).status == "failed"
+        assert active_crawl_job(db) is None  # 재기동 없음 → running 0.
+    assert is_crawl_running() is False  # 좀비 가드 강제 해제.
+
+
+def test_watchdog_noop_when_no_active_job(settings) -> None:
+    assert bg._watchdog_tick(settings, misses={}, alive_check=_DEAD) is False
+
+
+def test_start_watchdog_noop_on_dry_run_and_disabled(settings, monkeypatch) -> None:
+    # dry_run 기본 True → no-op.
+    assert bg.start_watchdog(settings) is False
+    # 비활성(enabled=False) 도 no-op.
+    monkeypatch.setattr(settings, "dry_run", False)
+    monkeypatch.setattr(settings, "crawl_watchdog_enabled", False)
+    assert bg.start_watchdog(settings) is False
+    assert bg._watchdog_started is False

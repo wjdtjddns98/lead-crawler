@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from leadcrawler.config import Settings
-from leadcrawler.verify.existence import ExistenceVerifier
+from leadcrawler.verify.existence import (
+    DnsProbe,
+    ExistenceVerifier,
+    _host_variants,
+)
 
 
 class _Site:
@@ -183,12 +187,19 @@ def test_no_domain_inactive() -> None:
     assert not r.is_active and r.confidence == 0.0  # 도메인 없으면 프로브 미시도.
 
 
-# --- 등록처 active 신호 우선 ------------------------------------------
+# --- 등록처 active = confidence 보강만(admit override 아님, 제약 ②) ----------
 
-def test_registry_active_overrides_dead_site() -> None:
-    # 등록처가 active 면 사이트·DNS 가 죽어도 실존으로 본다.
+def test_registry_active_does_not_admit_dead_site() -> None:
+    # 등록처 active 여도 사이트가 죽으면 실존 아님 — admit 은 site_alive 필수(제약 ②:
+    # active + 도메인 생존). 등록만 되고 사이트 죽은·406·파킹 CH 휴면·셸을 큐에서 제외한다.
     r = _verify(site=False, dns=False, reg=True)
-    assert r.is_active and r.confidence == 0.9
+    assert not r.is_active and r.confidence == 0.0
+
+
+def test_registry_active_boosts_confidence_on_live_site() -> None:
+    # 등록처 active + 사이트 생존 = 최강 실존(0.9). active 는 admit 이 아니라 confidence 보강.
+    r = _verify(site=True, dns=False, reg=True)
+    assert r.is_active and r.site_alive and r.confidence == 0.9
 
 
 def test_registry_defunct_overrides_live_site() -> None:
@@ -495,3 +506,43 @@ def test_verifier_close_propagates_to_render_probe() -> None:
     v = ExistenceVerifier(Settings(dry_run=False, verify_headless=True), render_probe=render)
     v.close()  # close() 는 주입된 프로브를 순회 정리(네트워크 불필요).
     assert render.closed is True
+
+
+# --- www-only 사이트 구제(bare 실패 시 www. 프로브) -----------------------
+
+def test_host_variants_adds_www() -> None:
+    assert _host_variants("acme.co.kr") == ("acme.co.kr", "www.acme.co.kr")
+    assert _host_variants("www.acme.co.kr") == ("www.acme.co.kr",)  # 이미 www 면 하나만.
+
+
+def test_head_ok_falls_back_to_www(monkeypatch) -> None:
+    """bare 도메인은 연결 실패, www 는 200 → head_ok True(www-only 사이트 구제)."""
+    import httpx
+
+    tried: list[str] = []
+
+    class _Resp:
+        status_code = 200
+
+    def fake_head(url, **_kw):
+        tried.append(url)
+        if "www." not in url:
+            raise httpx.ConnectError("no A record on bare")
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "head", fake_head)
+    assert HttpSiteProbe().head_ok("acme.co.kr") is True
+    assert any("www.acme.co.kr" in u for u in tried)  # www 변형을 실제로 시도했다.
+
+
+def test_dns_resolves_falls_back_to_www(monkeypatch) -> None:
+    """bare 는 A·MX 없음, www 에만 A → resolves True."""
+    import dns.resolver
+
+    def fake_resolve(host, rtype):
+        if host.startswith("www.") and rtype == "A":
+            return ["1.2.3.4"]
+        raise dns.resolver.NXDOMAIN()
+
+    monkeypatch.setattr(dns.resolver, "resolve", fake_resolve)
+    assert DnsProbe().resolves("acme.co.kr") is True

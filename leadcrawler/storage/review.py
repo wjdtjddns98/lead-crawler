@@ -380,15 +380,18 @@ def set_review_status(
     assignee: str | None = None,
     assignee_id: str | None = None,
     selected: str | None = None,
+    homepage: str | None = None,
     now: datetime | None = None,
 ) -> dict | None:
     """큐 항목 상태(확정/거부/보류)와 선택 후보를 갱신하고 감사 이력을 적재한다.
 
     없으면 None, 잘못된 상태면 ValueError. ``selected`` 가 주어지면 후보 목록에 있어야
-    하며(아니면 ValueError), 확정/거부 시 사람이 고른 최종 이메일을 기록한다. 처리자
-    (assignee/assignee_id)와 시각(reviewed_at)을 큐 행에 남기고, 변경 1건마다
-    :class:`ReviewAuditRow` 를 append 해 책임추적 이력을 보존한다. 점유는 영구 귀속이라
-    **타인이 점유한 항목이면 시간 경과와 무관하게** :class:`ReviewConflict`.
+    하며(아니면 ValueError), 확정/거부 시 사람이 고른 최종 이메일을 기록한다. ``homepage``
+    가 주어지면(#185) 회사(CompanyRow)의 홈페이지를 갱신한다 — URL 형식 검증은 상위
+    (API 스키마) 책임이라 여기선 값을 그대로 반영한다. 처리자(assignee/assignee_id)와
+    시각(reviewed_at)을 큐 행에 남기고, 변경 1건마다 :class:`ReviewAuditRow` 를 append 해
+    책임추적 이력을 보존한다(홈페이지 변경 전/후 값도 같은 행에 기록). 점유는 영구
+    귀속이라 **타인이 점유한 항목이면 시간 경과와 무관하게** :class:`ReviewConflict`.
     """
     if status not in _VALID_STATUSES:
         raise ValueError(f"허용되지 않은 상태: {status}")
@@ -405,6 +408,13 @@ def set_review_status(
             raise ValueError(f"후보에 없는 선택: {selected}")
         rq.selected = selected
         rq.selected_by_human = True  # 사람 명시 선택 — 이후 재크롤에서 보존.
+    homepage_before = homepage_after = None
+    if homepage is not None:
+        company = session.get(CompanyRow, rq.company_id)
+        if company is not None:
+            homepage_before = company.homepage
+            company.homepage = homepage
+            homepage_after = homepage
     rq.status = status
     if status in (CONFIRMED, REJECTED):
         # 종료 상태로 가면 점유는 무의미 — 정리(귀속은 assignee/reviewed_at 가 보존).
@@ -426,6 +436,8 @@ def set_review_status(
                 actor_username=assignee or "",
                 action=status,
                 selected=rq.selected,
+                homepage_before=homepage_before,
+                homepage_after=homepage_after,
                 at=when,
             )
         )
@@ -503,14 +515,41 @@ def _my_claimed_rows(
     return [(rq, company) for rq, company in rows]
 
 
-def my_work(session: Session, user_id: str) -> list[dict]:
-    """내 점유 작업분 DTO 목록 — 부작용 없는 조회(새로고침·재로그인 복원용)."""
-    current = _my_claimed_rows(session, user_id)
-    ids = [c.id for _, c in current]
+def _rows_to_dtos(
+    session: Session, rows: Sequence[tuple[ReviewQueueRow, CompanyRow]]
+) -> list[dict]:
+    """(rq, company) 행 목록 → API DTO dict 목록(신호/폼/상장여부 배치 조회 공통 경로)."""
+    ids = [c.id for _, c in rows]
     signals = _email_signals_by_value(session, ids)
     forms = _forms_by_company(session, ids)
-    listed_map = _listed_by_company(session, [company for _, company in current])
-    return [_to_dict(rq, company, signals, forms, listed_map) for rq, company in current]
+    listed_map = _listed_by_company(session, [company for _, company in rows])
+    return [_to_dict(rq, company, signals, forms, listed_map) for rq, company in rows]
+
+
+def my_work(session: Session, user_id: str) -> list[dict]:
+    """내 점유 작업분 DTO 목록 — 부작용 없는 조회(새로고침·재로그인 복원용)."""
+    return _rows_to_dtos(session, _my_claimed_rows(session, user_id))
+
+
+def my_history(
+    session: Session, user_id: str, *, status: str, limit: int = 200
+) -> list[dict]:
+    """내가 처리한(확정/거부) 이력 DTO 목록 — ``reviewed_at`` 최신순 최근 ``limit``건.
+
+    처리 완료 항목은 :func:`set_review_status` 가 ``claimed_by`` 를 정리하므로(점유는
+    종료 상태에서 무의미) 이력 매칭은 점유가 아니라 ``assignee_id``(마지막 처리자)로
+    한다. #191: ``GET /queue/mine?status=confirmed|rejected``.
+    """
+    stmt = (
+        select(ReviewQueueRow, CompanyRow)
+        .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
+        .where(ReviewQueueRow.assignee_id == user_id)
+        .where(ReviewQueueRow.status == status)
+        .order_by(ReviewQueueRow.reviewed_at.desc())
+        .limit(limit)
+    )
+    rows = session.execute(stmt).all()
+    return _rows_to_dtos(session, [(rq, company) for rq, company in rows])
 
 
 def claim_work(

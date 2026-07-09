@@ -185,9 +185,110 @@ def test_confirm_missing_404(client: TestClient) -> None:
     assert client.post("/queue/r_missing/confirm").status_code == 404
 
 
+def test_confirm_with_homepage_update(client: TestClient) -> None:
+    # #185: confirm 본문에 homepage 를 실으면 회사 홈페이지가 갱신되고 응답에 반영된다.
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(
+        f"/queue/{rid}/confirm", json={"homepage": "https://corrected.example.com/"}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "confirmed"
+    assert body["homepage"] == "https://corrected.example.com/"
+    # 감사 이력에 변경 전/후 값이 남아야 한다(기존 audit 헬퍼 재사용 — set_review_status).
+    from sqlalchemy import select
+
+    from leadcrawler.config import get_settings
+    from leadcrawler.schema import ReviewAuditRow
+    from leadcrawler.storage.db import session_scope
+
+    with session_scope(get_settings()) as s:
+        row = s.scalars(
+            select(ReviewAuditRow).where(ReviewAuditRow.review_id == rid)
+        ).one()
+        assert row.homepage_before == "https://acme.com"
+        assert row.homepage_after == "https://corrected.example.com/"
+
+
+def test_confirm_homepage_null_no_change(client: TestClient) -> None:
+    # homepage 생략/None = 변경 없음(하위호환) — 기존 값 그대로 응답.
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"selected": "ir@acme.com"})
+    assert r.status_code == 200
+    assert r.json()["homepage"] == "https://acme.com"
+
+
+@pytest.mark.parametrize(
+    "bad_homepage",
+    ["", "not-a-url", "ftp://acme.com", "javascript:alert(1)", "https://" + "a" * 600 + ".com"],
+)
+def test_confirm_invalid_homepage_422(client: TestClient, bad_homepage: str) -> None:
+    # 신뢰불가 입력(homepage) — 스킴 http/https 형식 위반은 422.
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"homepage": bad_homepage})
+    assert r.status_code == 422
+
+
 def test_invalid_status_422(client: TestClient) -> None:
     # 허용되지 않은 상태 필터는 FastAPI 가 422 로 거부(조용한 빈 결과 방지).
     assert client.get("/queue", params={"status": "bogus"}).status_code == 422
+
+
+# --- #191: GET /queue/mine status 필터(처리 이력) -----------------------
+
+def test_mine_no_status_is_unchanged(client: TestClient) -> None:
+    """status 생략 = 기존 동작(내 점유 pending) — 하위호환."""
+    claimed = client.post("/queue/claim").json()
+    mine = client.get("/queue/mine").json()
+    assert {it["id"] for it in mine} == {it["id"] for it in claimed}
+    assert all(it["status"] == "pending" for it in mine)
+
+
+def test_mine_status_confirmed_returns_my_history(client: TestClient) -> None:
+    rid = client.get("/queue").json()["items"][0]["id"]
+    client.post(f"/queue/{rid}/confirm")
+    # 확정 후엔 기본(pending) 조회에서 빠지고, status=confirmed 이력에 나타난다.
+    assert client.get("/queue/mine").json() == []
+    hist = client.get("/queue/mine", params={"status": "confirmed"}).json()
+    assert [it["id"] for it in hist] == [rid]
+    assert hist[0]["status"] == "confirmed"
+
+
+def test_mine_status_rejected_returns_my_history(client: TestClient) -> None:
+    rid = client.get("/queue").json()["items"][0]["id"]
+    client.post(f"/queue/{rid}/reject")
+    hist = client.get("/queue/mine", params={"status": "rejected"}).json()
+    assert [it["id"] for it in hist] == [rid]
+    assert client.get("/queue/mine", params={"status": "confirmed"}).json() == []
+
+
+def test_mine_status_confirmed_ordered_by_reviewed_at_desc(worker_client: TestClient) -> None:
+    """여러 건 확정 시 최신순(reviewed_at desc)."""
+    items = worker_client.post("/queue/claim").json()
+    ordered_ids = [it["id"] for it in items]
+    for rid in ordered_ids:  # 순서대로 확정 → reviewed_at 오름차순 생성.
+        assert worker_client.post(f"/queue/{rid}/confirm").status_code == 200
+    hist = worker_client.get("/queue/mine", params={"status": "confirmed"}).json()
+    assert [it["id"] for it in hist] == list(reversed(ordered_ids))
+
+
+def test_mine_status_other_users_history_not_included(worker_client: TestClient) -> None:
+    """타인이 확정한 항목은 내 이력에 안 뜬다(assignee_id 매칭)."""
+    items = worker_client.post("/queue/claim").json()
+    for it in items:
+        worker_client.post(f"/queue/{it['id']}/confirm")
+    other = worker_client.post(
+        "/auth/login", json={"username": _ADMIN, "password": _PW}
+    ).json()
+    admin_client = worker_client
+    prior_auth = admin_client.headers["Authorization"]
+    admin_client.headers.update({"Authorization": f"Bearer {other['token']}"})
+    assert admin_client.get("/queue/mine", params={"status": "confirmed"}).json() == []
+    admin_client.headers.update({"Authorization": prior_auth})
+
+
+def test_mine_invalid_status_422(client: TestClient) -> None:
+    assert client.get("/queue/mine", params={"status": "bogus"}).status_code == 422
 
 
 # --- 작업범위 필터(Filtered Claim) — US-5 라우트/스키마 -------------------

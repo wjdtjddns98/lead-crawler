@@ -416,6 +416,28 @@ def test_crawl_busy_returns_409(admin: TestClient, monkeypatch) -> None:
     assert r.status_code == 409
 
 
+def test_worker_cannot_read_crawl_history(worker: TestClient) -> None:
+    assert worker.get("/admin/crawl/history").status_code == 403
+
+
+def test_crawl_history_empty_when_no_job(admin: TestClient) -> None:
+    assert admin.get("/admin/crawl/history").json() == []
+
+
+def test_crawl_history_lists_recent_first_and_respects_limit(
+    admin: TestClient, _sync_crawl
+) -> None:
+    # 최신순 정렬 + limit 반영(기본 20, 여기선 1로 좁혀 개수 확인).
+    for _ in range(3):
+        admin.post("/admin/crawl", json={"industries": "건설", "countries": "KR"})
+    full = admin.get("/admin/crawl/history").json()
+    assert len(full) == 3
+    assert full[0]["status"] == "done"
+    limited = admin.get("/admin/crawl/history", params={"limit": 1}).json()
+    assert len(limited) == 1
+    assert limited[0]["id"] == full[0]["id"]
+
+
 def _uid(client: TestClient, username: str) -> str:
     rows = client.get("/admin/users").json()
     return next(r["id"] for r in rows if r["username"] == username)

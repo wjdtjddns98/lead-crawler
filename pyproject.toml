@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
 
 [project]
 name = "lead-crawler"
@@ -25,7 +25,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 무거운 런타임 의존성(헤드리스/OCR/DB드라이버/웹/AI)은 단계적으로 설치.
+# 무거운 런타임 의존성(헤드리스/OCR/DB드라이버/웹/AI)은 단계적으로 설치하는 퍼블리시 피처
+# extras. dev 는 패키지 피처가 아니라 로컬 개발 전용이라 [dependency-groups] 로 분리한다(PEP 735).
 crawl = ["playwright>=1.44"]
 ocr = ["pytesseract>=0.3.10", "Pillow>=10.0"]
 ai = ["anthropic>=0.40"]
@@ -34,6 +35,13 @@ db = ["psycopg[binary]>=3.1"]
 bypass = ["curl_cffi>=0.6", "beautifulsoup4>=4.12", "pyyaml>=6.0"]
 api = ["fastapi>=0.110", "uvicorn>=0.29"]
 schedule = ["apscheduler>=3.10"]
+
+[project.scripts]
+leadcrawler = "leadcrawler.cli:app"
+
+# 개발 전용 의존성(테스트·린트·타입체크) — 배포 wheel 에 안 실리는 PEP 735 그룹.
+# `uv sync` 가 기본으로 설치한다(운영 설치는 `uv sync --no-dev`).
+[dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -41,8 +49,14 @@ dev = [
     "mypy>=1.10",
 ]
 
-[project.scripts]
-leadcrawler = "leadcrawler.cli:app"
+[tool.uv]
+# 재현성: 잠긴 uv.lock 과 어긋나면 실패시켜 조용한 드리프트를 막는다(CI 는 --locked 로 강제).
+required-version = ">=0.11"
+
+[tool.uv.build-backend]
+# 플랫 레이아웃(src/ 없이 리포 루트에 leadcrawler/ 패키지) — uv_build 기본(src)에서 재지정.
+module-name = "leadcrawler"
+module-root = ""
 
 [tool.ruff]
 line-length = 100
@@ -53,6 +67,3 @@ extend-exclude = ["leadcrawler/sources/_bypass/engine"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-
-[tool.hatch.build.targets.wheel]
-packages = ["leadcrawler"]

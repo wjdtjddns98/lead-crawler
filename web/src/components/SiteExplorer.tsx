@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import { AlertTriangle, ExternalLink, X } from "lucide-react";
+import { AlertTriangle, ExternalLink, Search, X } from "lucide-react";
 import type { ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, tabCls } from "../ui";
 import { normSiteUrl, safeHref, tri } from "../format";
@@ -349,18 +349,42 @@ export function SiteExplorer({
             {item.name}
           </span>
           <div className="flex gap-1 ml-2">
+            {/* 탭 전환은 activeHref 변경 → effect 가 팝업을 이동시킨다. 이미 활성인 탭을
+                다시 누르면 activeHref 가 안 바뀌어 effect 가 안 돌므로(팝업을 닫았으면
+                무반응) 직접 팝업을 재열기/포커스한다 — 사이트 입력란 Enter 와 같은 패턴. */}
             {homeHref && (
-              <button className={tabCls(activeTab === "home")} onClick={() => onTab("home")}>
+              <button
+                className={tabCls(activeTab === "home")}
+                onClick={() => (activeTab === "home" ? gotoPopup(homeHref) : onTab("home"))}
+              >
                 홈페이지
               </button>
             )}
             {formHref && (
-              <button className={tabCls(activeTab === "form")} onClick={() => onTab("form")}>
+              <button
+                className={tabCls(activeTab === "form")}
+                onClick={() => (activeTab === "form" ? gotoPopup(formHref) : onTab("form"))}
+              >
                 문의폼
               </button>
             )}
           </div>
           <div className="ml-auto flex items-center gap-2">
+            {/* 사이트가 팝업에서 안 열리거나 잘못된 주소일 때 — 업체명 구글 검색. 구글은
+                COOP(same-origin-allow-popups) 응답이라 관리 팝업에 띄우면 opener 가 절단돼
+                창 제어권(이동·닫기)을 영구 상실하고, 다음 탐색 때 새 창이 또 열려 팝업이
+                여러 개 쌓인다 — 그래서 팝업이 아닌 새 탭으로 연다(팝업 창 1개 유지). */}
+            <a
+              className={BTN}
+              href={`https://www.google.com/search?q=${encodeURIComponent(item.name)}`}
+              target="_blank"
+              rel="noreferrer"
+              title="업체명으로 구글 검색 (새 탭)"
+            >
+              <span className="inline-flex items-center gap-1">
+                구글 검색 <Search size={14} aria-hidden />
+              </span>
+            </a>
             {activeHref && (
               <a className={BTN} href={activeHref} target="_blank" rel="noreferrer">
                 <span className="inline-flex items-center gap-1">
@@ -386,10 +410,10 @@ export function SiteExplorer({
                   사이트는 별도 팝업 창에서 열립니다. 팝업이 차단됐거나 닫혔다면 아래 버튼으로
                   다시 여세요.
                 </p>
-                <button
-                  className={BTN}
-                  onClick={() => (popupRef.current = openPopup(activeHref))}
-                >
+                {/* gotoPopup 경유 — 살아 있는 팝업은 이동·포커스, 닫혔으면 재열기.
+                    openPopup 직행(window.open+features)은 이미 열린 같은 이름 창을
+                    이동시키지 않는 브라우저가 있어 '눌렀는데 무반응'이 됐다. */}
+                <button className={BTN} onClick={() => gotoPopup(activeHref)}>
                   <span className="inline-flex items-center gap-1">
                     사이트 팝업 열기 <ExternalLink size={14} aria-hidden />
                   </span>

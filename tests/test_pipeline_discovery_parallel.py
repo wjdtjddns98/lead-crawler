@@ -110,3 +110,26 @@ def test_parallel_discovery_isolates_segment_failure(monkeypatch) -> None:
     countries = {ld.company.country for ld in leads}
     assert "US" not in countries  # 실패한 US 세그먼트는 격리(빈 결과) → 적재 0.
     assert "KR" in countries  # 다른 세그먼트는 정상 적재.
+
+
+def test_interleave_by_country_round_robin() -> None:
+    """국가 라운드로빈 재배열 — 같은 국가(=같은 등록처 호스트)가 연속으로 몰리지 않는다."""
+    from leadcrawler.pipeline.run import _interleave_by_country
+
+    segs = [
+        Segment(country="KR", industry="반도체"),
+        Segment(country="KR", industry="자동차"),
+        Segment(country="KR", industry="화학"),
+        Segment(country="US", industry="반도체"),
+        Segment(country="US", industry="자동차"),
+        Segment(country="GB", industry="반도체"),
+    ]
+    order = _interleave_by_country(segs)
+    # 전 인덱스가 정확히 1번씩(순열) — 누락·중복 없이 전부 제출된다.
+    assert sorted(order) == list(range(len(segs)))
+    # KR,US,GB,KR,US,KR 순 — 첫 웨이브가 서로 다른 국가로 분산된다.
+    assert [segs[i].country for i in order] == ["KR", "US", "GB", "KR", "US", "KR"]
+    # 단일 국가면 원 순서 그대로(무해).
+    only_kr = segs[:3]
+    assert _interleave_by_country(only_kr) == [0, 1, 2]
+    assert _interleave_by_country([]) == []
