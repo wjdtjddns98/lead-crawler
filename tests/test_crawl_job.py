@@ -474,3 +474,36 @@ def test_normal_crawl_does_not_spawn_consumer(settings, monkeypatch) -> None:
         with bg._guard:
             bg._running = False
     assert calls["consumer"] == 0
+
+
+def test_continuous_rounds_accumulate_counters(settings, monkeypatch) -> None:
+    # 연속모드 카운터 누계 — run_pipeline 이 라운드마다 0에서 시작한 counts 를 emit 해도
+    # crawl_job 에는 라운드 합(마지막 라운드만 아님)으로 기록돼야 한다.
+    small = settings.model_copy(update={"crawl_loop_pause_sec": 0})
+    with session_scope(small) as db:
+        jid = create_crawl_job(
+            db, countries="KR", industries="건설", listed="unknown",
+            persist=False, segments_total=1, triggered_by="x", mode="continuous",
+        ).id
+    rounds = [
+        {"segments_total": 1, "segments_done": 1, "discovered": 5, "enriched": 4, "saved": 3},
+        {"segments_total": 1, "segments_done": 1, "discovered": 2, "enriched": 2, "saved": 1},
+    ]
+    calls = {"n": 0}
+
+    def _fake_pipeline(*_a, **k):
+        i = calls["n"]
+        calls["n"] += 1
+        k["on_progress"](dict(rounds[i]))  # 그 라운드분(0에서 시작) emit.
+        if calls["n"] >= 2:
+            with session_scope(small) as db:
+                request_cancel(db, jid)
+        return []
+
+    monkeypatch.setattr(bg, "run_pipeline", _fake_pipeline)
+    bg.run_crawl_job(small, jid, [], persist=False, continuous=True)
+    with session_scope(small) as db:
+        d = crawl_job_dict(get_crawl_job(db, jid))
+    # 누계: discovered 5+2=7, enriched 4+2=6, saved 3+1=4 (마지막 라운드만이면 2/2/1).
+    assert d["discovered"] == 7 and d["enriched"] == 6 and d["saved"] == 4
+    assert d["rounds_done"] == 2
