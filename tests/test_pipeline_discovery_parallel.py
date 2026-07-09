@@ -29,11 +29,15 @@ _SEGMENTS = [
 
 
 def test_parallel_discovery_matches_sequential() -> None:
-    """discovery_workers=4 산출이 =1 과 dedup·내용·순서까지 완전히 동일(결정성)."""
+    """discovery_workers=4 산출이 =1 과 dedup·내용까지 동일(집합 동치).
+
+    스트리밍은 _consume 순서가 완료순서라 leads 순서는 순차와 달라질 수 있다(결정성 변경) —
+    순서에 민감하지 않게 정렬 비교로, 발견·저장된 회사 **집합**이 동일함만 단정한다(제약①②).
+    """
     seq = run_pipeline(_SEGMENTS, settings=Settings(dry_run=True, discovery_workers=1))
     par = run_pipeline(_SEGMENTS, settings=Settings(dry_run=True, discovery_workers=4))
     assert seq  # 비어있지 않음(실제로 발견·처리됨).
-    assert _shape(seq) == _shape(par)
+    assert sorted(_shape(seq)) == sorted(_shape(par))
 
 
 def test_parallel_discovery_progress_counts_match() -> None:
@@ -110,6 +114,63 @@ def test_parallel_discovery_isolates_segment_failure(monkeypatch) -> None:
     countries = {ld.company.country for ld in leads}
     assert "US" not in countries  # 실패한 US 세그먼트는 격리(빈 결과) → 적재 0.
     assert "KR" in countries  # 다른 세그먼트는 정상 적재.
+
+
+def test_parallel_discovery_no_double_extract_regardless_of_order(monkeypatch) -> None:
+    """완료순서가 입력순서와 반대여도 교차세그먼트 중복회사는 1번만 추출된다(제약①).
+
+    스트리밍은 완료순서로 _consume 하므로 뒤 세그먼트가 먼저 완료될 수 있다. 그래도 dedup
+    (단일스레드 _consume 의 seen/seen_domains)이 canonical_key/도메인 동치를 한 번만
+    통과시켜야 한다(이중추출 = 같은 회사 2번 저장 없음).
+    """
+    import time
+
+    from leadcrawler.pipeline import run as run_mod
+    from leadcrawler.sources.base import DiscoveredCompany
+
+    # 세그먼트 둘이 **같은 회사**(같은 canonical_key/도메인)를 발견하도록 구성.
+    shared = DiscoveredCompany(
+        canonical_key="dom:shared.example",
+        name="공유기업",
+        country="KR",
+        industry="건설",
+        domain="shared.example",
+        source="dummy",
+    )
+
+    def fake_discover(segment, settings, **kw):
+        # 먼저 제출되는 세그먼트(sleep)가 늦게 완료 → 완료순서를 입력순서와 역전시킨다.
+        if segment.industry == "slow":
+            time.sleep(0.05)
+        return [shared]
+
+    monkeypatch.setattr(run_mod, "discover_segment", fake_discover)
+    segs = [Segment(country="KR", industry="slow"), Segment(country="KR", industry="fast")]
+    leads = run_pipeline(segs, settings=Settings(dry_run=True, discovery_workers=4))
+    keys = [ld.company.canonical_key for ld in leads]
+    assert keys.count("dom:shared.example") == 1  # 완료순서 무관 — 이중추출 없음.
+
+
+def test_parallel_discovery_bounded_window(monkeypatch) -> None:
+    """in-flight(제출−소비) 세그먼트 수가 window(=discovery_workers*2) 이하로 유지된다(EP1).
+
+    옛 배리어(전량 선제출)였다면 in-flight 가 세그먼트 총수(=12)까지 치솟아 이 상한을 깬다 —
+    즉 이 테스트는 미소비 발견결과의 무한누적(메모리 스파이크)을 회귀로 잡는다.
+    """
+    from leadcrawler.pipeline import run as run_mod
+
+    peak = 0
+
+    def observe(n: int) -> None:
+        nonlocal peak
+        peak = max(peak, n)
+
+    monkeypatch.setattr(run_mod, "_WINDOW_OBSERVER", observe)
+    workers = 2
+    industries = ["건설", "금융", "제조", "전체"]
+    segs = [Segment(country="KR", industry=industries[i % 4]) for i in range(12)]
+    run_pipeline(segs, settings=Settings(dry_run=True, discovery_workers=workers))
+    assert 0 < peak <= workers * 2  # window 상한 준수(배리어면 peak==12 로 실패).
 
 
 def test_interleave_by_country_round_robin() -> None:
