@@ -20,7 +20,7 @@ from .base import DiscoveredCompany, Segment, build_company
 from .countries import resolve_country
 from .http import HostRateLimiters, SupportsFetch
 from .industry import industry_search_terms
-from .search_provider import SearchProvider, build_search_provider
+from .search_provider import SearchProvider, build_naver_provider, build_search_provider
 
 log = get_logger("sources.search")
 
@@ -114,6 +114,8 @@ class SearchSource:
         self._cost_ledger = cost_ledger
         self._rate_limiters = rate_limiters
         self._provider: SearchProvider | None = None
+        self._naver: SearchProvider | None = None
+        self._naver_built = False  # None 이 '무키'라 '미생성'과 구분하는 플래그.
 
     def applies_to(self, segment: Segment) -> bool:  # noqa: ARG002 — 전 세그먼트 적용
         """검색 발견은 모든 세그먼트에 적용된다."""
@@ -130,6 +132,29 @@ class SearchSource:
             )
         return self._provider
 
+    def _naver_provider(self) -> SearchProvider | None:
+        # 지연 생성 — 키(client id/secret) 없으면 None. build_naver_provider 가 게이팅.
+        if not self._naver_built:
+            self._naver = build_naver_provider(
+                self._settings, fetcher=self._fetcher, rate_limiters=self._rate_limiters
+            )
+            self._naver_built = True
+        return self._naver
+
+    def _provider_for(self, segment: Segment) -> SearchProvider | None:
+        """세그먼트에 맞는 검색 공급자 — KR 은 네이버(무료 25k/일·KR 네이티브) 우선.
+
+        글로벌 SERP(Serper/CSE)는 KR 중소기업 커버리지가 약하고 Serper 는 유료(크레딧
+        소진 위험)라, KR 발견은 네이버 웹검색으로 라우팅한다. 네이버 무키거나 비-KR 이면
+        글로벌 공급자로 폴백(회귀 0 — 기존 국가는 그대로).
+        """
+        country = resolve_country(segment.country)
+        if country and country.iso2 == "KR":
+            naver = self._naver_provider()
+            if naver is not None:
+                return naver
+        return self._get_provider()
+
     def discover(
         self, segment: Segment, *, seen: set[str] | None = None
     ) -> list[DiscoveredCompany]:
@@ -141,7 +166,7 @@ class SearchSource:
         """
         if self._settings.dry_run:
             return self._dry(segment)
-        provider = self._get_provider()
+        provider = self._provider_for(segment)
         if provider is None:
             if self._settings.bing_api_key:
                 log.info("search.skip.bing_retired")  # Bing API 폐기(410).
