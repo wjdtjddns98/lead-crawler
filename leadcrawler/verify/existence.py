@@ -121,6 +121,17 @@ class SupportsRegistryActive(Protocol):
         ...
 
 
+def _host_variants(domain: str) -> tuple[str, ...]:
+    """프로브할 호스트 변형 — bare + ``www.`` (www 에만 A레코드/웹서버가 있는 사이트 구제).
+
+    이미 www. 로 시작하면 그대로 하나만. enrich 의 home fetch www 폴백과 대칭이라 실존
+    프로브가 bare 만 보고 www-only 사이트를 죽었다고 오탐(=리드손실)하는 것을 막는다.
+    """
+    if domain.startswith("www."):
+        return (domain,)
+    return (domain, f"www.{domain}")
+
+
 class HttpSiteProbe:
     """httpx 기반 실 HTTP HEAD 프로버(graceful — 오류 시 False)."""
 
@@ -128,14 +139,18 @@ class HttpSiteProbe:
         self._timeout = timeout
 
     def head_ok(self, domain: str) -> bool:
+        # bare + www. 변형을 순차 프로브 — www-only 사이트 구제(_host_variants).
+        return any(self._host_ok(host) for host in _host_variants(domain))
+
+    def _host_ok(self, host: str) -> bool:
         import httpx
 
         for scheme in ("https", "http"):
-            url = f"{scheme}://{domain}"
+            url = f"{scheme}://{host}"
             try:
                 resp = httpx.head(url, timeout=self._timeout, follow_redirects=True)
             except Exception as exc:  # 연결 실패·타임아웃 등 → 다음 스킴.
-                log.debug("existence.http.fail", domain=domain, scheme=scheme, err=str(exc))
+                log.debug("existence.http.fail", domain=host, scheme=scheme, err=str(exc))
                 continue
             # B2: HEAD 차단(405/501 미지원, 403 WAF/안티봇)이면 GET 폴백 — 살아있는데 HEAD 만
             # 막힌 사이트의 오탐(false-negative=리드손실)을 줄인다. GET 도 죽음/파킹이면 그대로 탈락.
@@ -171,13 +186,15 @@ class DnsProbe:
         import dns.resolver
 
         # dnspython 은 레코드 없으면 NoAnswer/NXDOMAIN 을 raise → 성공 호출 자체가 존재 증거.
-        for rtype in ("A", "MX"):
-            try:
-                dns.resolver.resolve(domain, rtype)
-                return True
-            except Exception as exc:  # NoAnswer·NXDOMAIN·타임아웃 → 다음 레코드.
-                log.debug("existence.dns.fail", domain=domain, rtype=rtype, err=str(exc))
-                continue
+        # bare 에 A 가 없고 www 에만 있는 사이트도 실존으로 인정(www-only 구제, HTTP 프로브와 대칭).
+        for host in _host_variants(domain):
+            for rtype in ("A", "MX"):
+                try:
+                    dns.resolver.resolve(host, rtype)
+                    return True
+                except Exception as exc:  # NoAnswer·NXDOMAIN·타임아웃 → 다음.
+                    log.debug("existence.dns.fail", domain=host, rtype=rtype, err=str(exc))
+                    continue
         return False
 
 

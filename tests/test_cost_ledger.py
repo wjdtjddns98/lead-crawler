@@ -168,6 +168,20 @@ class _FetchEmpty:
         return b""
 
 
+class _NoRender:
+    """SupportsRender 더블 — 항상 None(헤드리스 보강 없음, 네트워크·브라우저 없음).
+
+    playwright 설치 여부와 무관하게 헤드리스 escalation 을 결정적으로 무력화한다 —
+    미주입 시 Enricher 가 실 PlaywrightRenderer 를 만들어 실네트워크를 타는 것 방지.
+    """
+
+    def render(self, url):  # noqa: ANN001, ARG002
+        return None
+
+    def close(self):
+        pass
+
+
 class _FakeFinder:
     """SupportsEmailFinder 더블 — 호출 카운트, 이메일 0건 반환."""
 
@@ -216,7 +230,9 @@ def test_enricher_records_email_api_cost() -> None:
     s = Settings(dry_run=False, enrich_email_api=True, monthly_budget_krw=10_000)
     led = CostLedger(s, now=_at(2026, 6))
     finder = _FakeFinder()
-    Enricher(s, fetcher=_FetchEmpty(), email_finders=[finder], cost_ledger=led).enrich(_dc())
+    Enricher(
+        s, fetcher=_FetchEmpty(), renderer=_NoRender(), email_finders=[finder], cost_ledger=led
+    ).enrich(_dc())
     assert finder.calls == 1  # 정적 0건 → 유료 호출 진입.
     assert led.month_total_krw() == 50  # hunter 1회 과금.
 
