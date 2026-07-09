@@ -24,9 +24,12 @@ from ..config import Settings
 from ..dedup import normalize_domain
 from ..logging import get_logger
 from .base import (
+    Chunk,
+    ChunkFinalize,
     DiscoveredCompany,
     Segment,
     SupportsCursorStore,
+    _noop_finalize,
     advance_cursor,
     build_company,
     cursor_offset,
@@ -56,6 +59,11 @@ _MARKET_CLS = {"Y": "KOSPI", "K": "KOSDAQ", "N": "KONEX"}
 # KR 12업종 세그먼트 × 5000 = 6만 > 일일 쿼터 2만이라 런당 상한만으론 부족 — 일일 예산
 # (dart_daily_call_budget)이 라운드 전체를 묶는다(2026-07-07 쿼터 소진 실사고).
 _SCAN_LIMIT_ABS = 5000
+
+# 청킹 단위 — discover_chunks 가 현 스캔 window 를 이 호출수(company.json)만큼씩 나눠 순수
+# _scan_range 워커 N개로 만든다. 소스풀이 이 청크들을 동시에 돌려 큰 세그먼트(DART)가 유휴
+# 슬롯을 점유한다(라이브 프로빙: 순차 3.3/s → 동시 스트림이 레버). 커서/쿼터는 finalize 1회.
+_CHUNK_SCAN = 500
 
 # 런 전체를 즉시 중단해야 하는 OpenDART status — 키 문제(010/011/012)·쿼터 소진(020)·
 # 시스템 점검(800)·키 만료(901). 이후 응답도 전부 같은 코드라 계속 돌면 커서만 헛전진한다.
@@ -140,9 +148,9 @@ class DartSource:
         return self._fetcher
 
     def _api_keys(self) -> list[str]:
-        """설정된 DART 키 목록(1~3번, 빈값 제외) — 소진 시 순서대로 로테이션."""
+        """설정된 DART 키 목록(1~4번, 빈값 제외) — 소진 시 순서대로 로테이션."""
         s = self._settings
-        keys = (s.dart_api_key, s.dart_api_key_2, s.dart_api_key_3)
+        keys = (s.dart_api_key, s.dart_api_key_2, s.dart_api_key_3, s.dart_api_key_4)
         return [k.strip() for k in keys if k.strip()]
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
@@ -253,32 +261,7 @@ class DartSource:
                 continue
             if not matches_prefix(info.get("induty_code"), prefixes):
                 continue
-            out.append(
-                build_company(
-                    source=self.name,
-                    segment=Segment(
-                        country=segment.country,
-                        industry=segment.industry,
-                        listed=_LISTED_CLS.get(info.get("corp_cls", ""), "unknown"),
-                    ),
-                    name=info.get("corp_name") or corp_name,
-                    domain=normalize_domain(info.get("hm_url")),
-                    registry="dart",
-                    registry_id=corp_code,
-                    # broad 검색 시 구분을 대분류로 복원(KSIC induty_code). 구체 검색이면
-                    # resolve 가 세그먼트 업종을 그대로 써 이 값은 무시된다.
-                    industry_code_label=industry_from_ksic(info.get("induty_code")),
-                    # 풍부필드 — 같은 응답이 이미 주는 값(추가 호출 0). region 은
-                    # build_company 가 adres 에서 시/도로 파생한다.
-                    address=opt_str(info.get("adres")),
-                    reg_no=opt_str(info.get("bizr_no")),
-                    ticker=opt_str(info.get("stock_code")),
-                    phone=opt_str(info.get("phn_no")),
-                    ir_url=opt_str(info.get("ir_url")),
-                    name_eng=opt_str(info.get("corp_name_eng")),
-                    market=_MARKET_CLS.get(info.get("corp_cls", "")),
-                )
-            )
+            out.append(self._company_from_info(segment, corp_code, corp_name, info))
             if len(out) >= cap:
                 break
         advance_cursor(self._cursor_store, self.name, segment, offset + scanned, len(corps))
@@ -299,6 +282,217 @@ class DartSource:
                 continue
             used = self._cursor_store.get(_QUOTA_SOURCE, _quota_key(key))
             self._cursor_store.advance(_QUOTA_SOURCE, _quota_key(key), used + calls)
+
+    def _company_from_info(
+        self, segment: Segment, corp_code: str, corp_name: str, info: dict
+    ) -> DiscoveredCompany:
+        """company.json 응답(info)을 DiscoveredCompany 로 매핑(순수, _live·_scan_range 공유)."""
+        return build_company(
+            source=self.name,
+            segment=Segment(
+                country=segment.country,
+                industry=segment.industry,
+                listed=_LISTED_CLS.get(info.get("corp_cls", ""), "unknown"),
+            ),
+            name=info.get("corp_name") or corp_name,
+            domain=normalize_domain(info.get("hm_url")),
+            registry="dart",
+            registry_id=corp_code,
+            # broad 검색 시 구분을 대분류로 복원(KSIC induty_code). 구체 검색이면
+            # resolve 가 세그먼트 업종을 그대로 써 이 값은 무시된다.
+            industry_code_label=industry_from_ksic(info.get("induty_code")),
+            # 풍부필드 — 같은 응답이 이미 주는 값(추가 호출 0). region 은
+            # build_company 가 adres 에서 시/도로 파생한다.
+            address=opt_str(info.get("adres")),
+            reg_no=opt_str(info.get("bizr_no")),
+            ticker=opt_str(info.get("stock_code")),
+            phone=opt_str(info.get("phn_no")),
+            ir_url=opt_str(info.get("ir_url")),
+            name_eng=opt_str(info.get("corp_name_eng")),
+            market=_MARKET_CLS.get(info.get("corp_cls", "")),
+        )
+
+    def _fetch_corps(self, key: str) -> tuple[list[tuple[str, str]] | None, str | None]:
+        """corpCode.xml(ZIP) 1콜 → (corps, api_status). 세그먼트당 1회(fetch-once).
+
+        성공 시 (corps, None). ZIP 이 깨졌거나 쿼터 XML(020 등)이면 (None, status) 로
+        치명 여부 판정을 호출자에게 넘긴다(키 로테이션 or 중단)."""
+        raw = b""
+        try:
+            raw = self._client().get_bytes(_CORP_CODE_URL, params={"crtfc_key": key})
+            return _parse_corp_codes(raw), None
+        except Exception as exc:  # 깨진 ZIP/에러 XML → 전체 크래시 대신 status 로 진단.
+            api_status = _sniff_status(raw)
+            log.info("dart.corpcode.error", err=str(exc), api_status=api_status)
+            return None, api_status
+
+    def _scan_range(
+        self,
+        segment: Segment,
+        corps: list[tuple[str, str]],
+        prefixes: tuple[str, ...] | None,
+        start: int,
+        end: int,
+        key: str,
+    ) -> tuple[list[DiscoveredCompany], int, int]:
+        """순수 구간 스캔 — corps[start:end] company.json 을 긁어 회사 반환.
+
+        **커서·쿼터·seen 을 절대 쓰지 않는다**(오케스트레이터가 finalize 에서 확정, 제약 ①).
+        단일 키로 돌고(청크 병렬이라 키 교차 로테이션 없음), 020/치명 status 를 만나면 자기
+        구간을 조기중단해 (companies, stopped_at, calls) 를 반환한다 — stopped_at=미처리 항목
+        앞(다음 런 재스캔), calls=이번 구간이 실제로 쓴 company.json 호출수(쿼터 정확 집계).
+
+        ponytail: cap(discovery_max_per_source) 미적용 — 순수워커라 "전역 cap 매칭 도달 시
+        조기중단"을 못 한다(크로스청크 공유 카운터 필요). 구간 전량을 스캔하므로 고밀도 좁은
+        업종에서 최대 scan_limit/cap 배 company.json 콜(총량은 일일예산 클램프가 상한). 출력
+        크기는 finalize 가 cap 으로 trim. 업그레이드=크로스청크 atomic 매칭카운터+early-stop(후속).
+        """
+        fetcher = self._client()
+        out: list[DiscoveredCompany] = []
+        calls = 0
+        i = start
+        while i < end:
+            corp_code, corp_name = corps[i]
+            calls += 1
+            try:
+                info = fetcher.get_json(
+                    _COMPANY_URL, params={"crtfc_key": key, "corp_code": corp_code}
+                )
+            except Exception as exc:  # 개별 실패는 건너뛴다(배치 보호).
+                log.info("dart.company.error", corp_code=corp_code, err=str(exc))
+                i += 1
+                continue
+            status = info.get("status") if isinstance(info, dict) else None
+            if status in _FATAL_STATUS:
+                # 쿼터/키 치명 — 이후도 전부 같은 코드라 조기중단, 미처리 항목 앞에 정지.
+                log.info(
+                    "dart.fatal_status", api_status=status, segment=segment.label, rotated=False
+                )
+                return out, i, calls
+            i += 1
+            if not isinstance(info, dict) or status != "000":
+                continue
+            if not matches_prefix(info.get("induty_code"), prefixes):
+                continue
+            out.append(self._company_from_info(segment, corp_code, corp_name, info))
+        return out, end, calls
+
+    def discover_chunks(self, segment: Segment) -> tuple[list[Chunk], ChunkFinalize]:
+        """발견 seam(registry 소유 소스풀이 호출) — corpCode 1회 fetch 후 현 frontier 부터
+        스캔 window 를 _CHUNK_SCAN 단위 N구간으로 나눠 순수 _scan_range 콜러블 N개 + finalize
+        를 반환한다. finalize(메인스레드 1회)가 커서(min-contiguous-frontier)·쿼터를 확정한다.
+
+        dry_run·무키·미매핑 업종은 청킹 안 함(기존 discover 경로/빈 결과 위임, 회귀 0)."""
+        if self._settings.dry_run:
+            return [lambda: self._dry(segment)], _noop_finalize
+        keys = self._api_keys()
+        if not keys:
+            log.info("dart.skip.no_key")
+            return [], _noop_finalize
+        prefixes = ksic_prefixes(segment.industry)
+        if prefixes is None and not is_broad_industry(segment.industry):
+            log.info("dart.skip.unmapped_industry", industry=segment.industry)
+            return [], _noop_finalize
+
+        # 키별 일일 예산 스냅샷(메인스레드 1회). 병렬 세그먼트에선 used0 를 독립으로 읽어
+        # 초과구독될 수 있으나(중간 020), min-contiguous-frontier advance 로 자가치유(재스캔).
+        budget = self._settings.dart_daily_call_budget
+        used0 = {
+            k: (self._cursor_store.get(_QUOTA_SOURCE, _quota_key(k)) if self._cursor_store else 0)
+            for k in keys
+        }
+        live_keys = [k for k in keys if not budget or used0[k] < budget]
+        if not live_keys:
+            log.info("dart.skip.daily_budget", budget=budget, keys=len(keys))
+            return [], _noop_finalize
+
+        # corpCode.xml fetch-once(치명 시 키 로테이션). fetch 호출도 쿼터에 반영.
+        fetch_spent: dict[str, int] = {}
+        corps: list[tuple[str, str]] | None = None
+        rotate = list(live_keys)
+        while corps is None and rotate:
+            fkey = rotate[0]
+            fetch_spent[fkey] = fetch_spent.get(fkey, 0) + 1
+            corps, status = self._fetch_corps(fkey)
+            if corps is None:
+                if status in _FATAL_STATUS:
+                    rotate.pop(0)
+                    if rotate:
+                        log.info("dart.rotate_key", stage="corpcode", api_status=status)
+                        continue
+                self._flush_quota(fetch_spent)
+                return [], _noop_finalize
+        if not corps:
+            self._flush_quota(fetch_spent)
+            return [], _noop_finalize
+
+        cap = self._settings.discovery_max_per_source
+        scan_limit = cap if prefixes is None else min(cap * 10, _SCAN_LIMIT_ABS)
+        if budget:  # 전 키 합산 잔여예산 안으로(라운드 후반 헛스캔 방지, used0 스냅샷 기준).
+            remaining = sum(max(budget - used0[k], 0) for k in live_keys)
+            scan_limit = min(scan_limit, remaining)
+        offset = cursor_offset(self._cursor_store, self.name, segment, len(corps))
+        window_end = min(offset + scan_limit, len(corps))
+        if window_end <= offset:  # 예산/모집단 소진 — 스캔할 구간 없음(커서 불변).
+            self._flush_quota(fetch_spent)
+            return [], _noop_finalize
+
+        # window 를 _CHUNK_SCAN 단위 구간으로 분할(잔여<chunk 면 1청크, 0 없음). 각 구간에
+        # 키를 라운드로빈 배정(일일예산을 키들에 분산; per-second 는 IP별이라 무의미).
+        states: list[dict] = []
+        chunks: list[Chunk] = []
+        for ci, cstart in enumerate(range(offset, window_end, _CHUNK_SCAN)):
+            cend = min(cstart + _CHUNK_SCAN, window_end)
+            ckey = live_keys[ci % len(live_keys)]
+            st = {"key": ckey, "start": cstart, "end": cend, "stopped_at": cstart, "calls": 0}
+            states.append(st)
+
+            def _run(st: dict = st) -> list[DiscoveredCompany]:  # st=st: 늦은바인딩 방지.
+                comps, stopped_at, calls = self._scan_range(
+                    segment, corps, prefixes, st["start"], st["end"], st["key"]
+                )
+                st["stopped_at"] = stopped_at
+                st["calls"] = calls
+                return comps
+
+            chunks.append(_run)
+
+        def _finalize(results: list[list[DiscoveredCompany]]) -> None:
+            # 커서 = frontier + 완주 prefix 의 최소 연속값(중간청크 조기정지 뒤 완주청크를
+            # 건너뛰지 않게 — gap 스킵 0). 미완 구간은 다음 런이 재스캔(base.py 커서 계약).
+            new_pos = offset
+            for st in states:
+                if st["stopped_at"] >= st["end"]:
+                    new_pos = st["end"]
+                else:
+                    new_pos = st["stopped_at"]
+                    break
+            advance_cursor(self._cursor_store, self.name, segment, new_pos, len(corps))
+            spent = dict(fetch_spent)
+            for st in states:
+                spent[st["key"]] = spent.get(st["key"], 0) + st["calls"]
+            self._flush_quota(spent)
+            # cap trim(출력계약 복원): 청크 순수워커는 크로스청크 전역 cap early-stop 을 못 해
+            # (_scan_range ponytail 주석) 구간 전량을 스캔한다 → 병합 output 을 cap 으로 잘라
+            # _live 와 동일 크기(corp 오름차순 첫 cap개, 결정적)로 맞춘다. results(=청크별 산출,
+            # offset 오름차순)를 제자리 수정하면 registry 가 이 뒤 flatten 할 때 반영된다.
+            cap = self._settings.discovery_max_per_source
+            if cap:
+                remaining = cap
+                for chunk_out in results:
+                    if remaining <= 0:
+                        chunk_out.clear()
+                    elif len(chunk_out) > remaining:
+                        del chunk_out[remaining:]
+                        remaining = 0
+                    else:
+                        remaining -= len(chunk_out)
+            log.info(
+                "dart.chunked", segment=segment.label,
+                chunks=len(states), offset=offset, frontier=new_pos,
+            )
+
+        return chunks, _finalize
 
 
 def _parse_corp_codes(zip_bytes: bytes) -> list[tuple[str, str]]:

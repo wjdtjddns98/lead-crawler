@@ -13,7 +13,13 @@ from ..config import Settings, get_settings
 from ..cost_ledger import SupportsCostLedger
 from ..logging import get_logger
 from ..dedup import normalize_domain
-from .base import DiscoveredCompany, DiscoverySource, Segment, SupportsCursorStore
+from .base import (
+    DiscoveredCompany,
+    DiscoverySource,
+    Segment,
+    SupportsCursorStore,
+    discovery_chunks,
+)
 from .http import HostRateLimiters
 from .companieshouse import CompaniesHouseSource
 from .dart import DartSource
@@ -120,13 +126,17 @@ def discover_segment(
     모든 세그먼트에 넘김 — 세그먼트마다 Fetcher 재생성·httpx 누수를 막고 keep-alive
     연결을 재사용). 미지정 시 매 호출 build_sources(직접/테스트 호출 하위호환).
 
-    동시성: ``discovery_source_workers > 1`` 이면 **비검색(무료) 소스들의 discover 만**
-    스레드풀로 동시에 실행한다(등록처·집계원은 서로 다른 호스트라 세그먼트 병목의 대부분).
-    병합·dedup·검색 게이팅(①②)은 결과 수집 후 항상 main 스레드에서 src_list 우선순위
-    순서대로 수행하므로, '첫 등장 우선' dedup 과 무료-우선 검색 스킵 판단은 순차 실행과
-    결정적으로 동일하다. 검색 소스는 무료 결과(free_new·도메인 주입)에 의존하므로 병렬
-    대상에서 제외하고 병합 시점에 순차 호출한다. 소스 인스턴스는 스레드당 1개만 쓰이고,
-    스레드 간 공유 자원(HostRateLimiters·DbCursorStore)은 스레드 안전이다.
+    동시성: ``discovery_source_workers > 1`` 이면 **비검색(무료) 소스들의 발견을 청크로**
+    스레드풀에서 동시에 실행한다(등록처·집계원은 서로 다른 호스트라 세그먼트 병목의 대부분).
+    각 소스의 :func:`base.discovery_chunks` 로 얻은 청크(DART 만 window 를 N구간 분할, 그 외
+    1청크=전체)를 전 소스에 걸쳐 flatten 해 하나의 풀에 제출하므로, 큰 세그먼트(DART)가
+    형제 소스가 비운 유휴 슬롯까지 점유한다. 병합·dedup·검색 게이팅(①②)·소스별 finalize
+    (커서/쿼터)는 결과 수집 후 항상 main 스레드에서 src_list 우선순위 순서대로 수행하므로,
+    '첫 등장 우선' dedup 과 무료-우선 검색 스킵 판단은 순차 실행과 결정적으로 동일하다.
+    검색 소스는 무료 결과(free_new·도메인 주입)에 의존하므로 병렬 대상에서 제외하고 병합
+    시점에 순차 호출한다. **단일 소스 인스턴스가 자기 청크 스레드 여럿에 공유되지만, 청크
+    워커(_scan_range 등)는 순수(seen/커서/쿼터 미변형)라 안전**하고, 스레드 간 공유 자원
+    (HostRateLimiters·DbCursorStore)은 스레드 안전이다.
     """
     settings = settings or get_settings()
     src_list = sources if sources is not None else build_sources(settings, cost_ledger)
@@ -143,17 +153,40 @@ def discover_segment(
     workers = min(settings.discovery_source_workers, len(free_srcs))
     found_by_src: dict[int, list[DiscoveredCompany]] = {}
     if workers > 1:
+        # 각 소스의 (청크 콜러블, finalize) 를 얻어(DART 만 window 를 N구간 분할, 그 외 1청크=
+        # 전체) 전 소스 청크를 하나의 소스풀에 flatten 제출한다 — 큰 세그먼트(DART)가 형제
+        # 소스가 비운 유휴 슬롯까지 점유해 워커 놀림을 없앤다(제약 ①: 청크워커는 순수,
+        # seen/커서/쿼터 미변형 — 병합·finalize 는 아래 메인스레드 단독).
+        plans = [(src, *discovery_chunks(src, segment)) for src in free_srcs]
+        tasks = [
+            (id(src), ci, chunk)
+            for src, chunks, _fin in plans
+            for ci, chunk in enumerate(chunks)
+        ]
+        per_src: dict[int, list[list[DiscoveredCompany]]] = {
+            id(src): [[] for _ in chunks] for src, chunks, _fin in plans
+        }
+        pool_workers = min(settings.discovery_source_workers, len(tasks))
         log.info(
-            "sources.parallel", segment=segment.label, workers=workers, sources=len(free_srcs)
+            "sources.parallel", segment=segment.label,
+            workers=pool_workers, sources=len(free_srcs), chunks=len(tasks),
         )
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="src") as pool:
-            futures = {id(src): pool.submit(src.discover, segment) for src in free_srcs}
-        # with 종료 = 전 소스 완료 대기. 예외는 병합 진입 전에 그대로 전파(세그먼트 실패 —
-        # 부분 결과로 조용히 진행하지 않는다). 단 순차와 달리 형제 소스들은 이미 끝까지
-        # 돈 뒤라, 실패 세그먼트도 형제 소스 비용은 이미 쓴 상태다(병렬의 본질적 비용 비대칭).
-        # 주의: SearchSource *뒤*의 무료 소스(AI 디렉토리)도 여기서 선실행되므로, 월예산
-        # 경계에서 유료 소스 간 예산게이트 평가 순서가 순차와 다를 수 있다(opt-in 트레이드오프).
-        found_by_src = {key: fut.result() for key, fut in futures.items()}
+        if tasks:
+            with ThreadPoolExecutor(
+                max_workers=pool_workers, thread_name_prefix="src"
+            ) as pool:
+                futures = {pool.submit(chunk): (sid, ci) for sid, ci, chunk in tasks}
+            # with 종료 = 전 청크 완료 대기. 예외는 병합 진입 전에 그대로 전파(세그먼트 실패 —
+            # 부분 결과로 조용히 진행하지 않는다). 형제 소스들은 이미 끝까지 돈 뒤라 실패
+            # 세그먼트도 형제 비용은 쓴 상태(병렬 비용 비대칭). SearchSource *뒤* 무료 소스
+            # (AI 디렉토리)도 선실행되므로 월예산 경계에서 예산게이트 순서가 순차와 다를 수 있음.
+            for fut, (sid, ci) in futures.items():
+                per_src[sid][ci] = fut.result()
+        # finalize(메인스레드 1회, 청크 순서대로) → 커서/쿼터 확정. 그 뒤 소스별로 flatten.
+        for src, chunks, finalize in plans:
+            results = per_src[id(src)]
+            finalize(results)
+            found_by_src[id(src)] = [c for chunk_out in results for c in chunk_out]
     # workers<=1 이면 선실행하지 않는다 — 병합 루프가 원래 위치에서 지연 호출해 호출 순서까지
     # 순차 원형과 동일(회귀 0). 특히 검색 뒤에 오는 유료 소스(AI 디렉토리)의 예산게이트
     # 평가 순서가 보존된다.
