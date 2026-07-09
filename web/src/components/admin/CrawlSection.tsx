@@ -315,7 +315,8 @@ function CrawlProgress({ job }: { job: CrawlJob }) {
   const total = job.segments_total || 0;
   const done = job.segments_done || 0;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-  const stopping = job.status === "running" && job.cancel_requested;
+  const running = job.status === "running";
+  const stopping = running && job.cancel_requested;
   return (
     <div className="mt-3 p-3 border border-line rounded-md bg-panel">
       {/* 상태 헤더 — 주요 상태 강조(text-ink), 보조 정보(연속·중지요청·트리거)는 muted */}
@@ -337,15 +338,20 @@ function CrawlProgress({ job }: { job: CrawlJob }) {
         {stopping && <span className="text-muted text-xs">· 중지 요청됨…</span>}
         {job.triggered_by && <span className="text-muted text-xs">· {job.triggered_by}</span>}
       </div>
-      {/* 진행바 — bg-line 트랙 + bg-ok 채움. 기존 토큰만 사용 */}
+      {/* 진행바 — 실행 중엔 실제 진행률(너무 느려 티 안 남) 대신 흐르는 애니메이션으로
+         '작동 중'만 표시. 그 외 상태는 실제 진행률 width 로 고정. bg-line 트랙 + bg-ok 채움. */}
       <div
         className="w-full h-1.5 rounded-full bg-line my-2 overflow-hidden"
         role="progressbar"
-        aria-valuenow={pct}
+        aria-valuenow={running ? undefined : pct}
         aria-valuemin={0}
         aria-valuemax={100}
       >
-        <div className="h-full bg-ok rounded-full transition-[width]" style={{ width: `${pct}%` }} />
+        {running ? (
+          <div className="h-full bg-ok rounded-full crawl-bar-indeterminate" />
+        ) : (
+          <div className="h-full bg-ok rounded-full transition-[width]" style={{ width: `${pct}%` }} />
+        )}
       </div>
       {/* 카운터 — tabular-nums 으로 숫자 흔들림 방지, 항목별 gap 으로 가독성 확보 */}
       <div className="flex flex-wrap gap-x-4 text-muted text-xs tabular-nums my-1">
