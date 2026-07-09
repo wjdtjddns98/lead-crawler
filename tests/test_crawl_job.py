@@ -440,3 +440,37 @@ def test_discovery_only_default_keeps_escalation(settings) -> None:
         with bg._guard:
             bg._running = False
     assert seen["s"].enrich_headless is True and seen["s"].enrich_ocr is True
+
+
+def test_discovery_only_spawns_email_consumer(settings, monkeypatch) -> None:
+    # discovery_only 크롤(실 스폰경로) → 발견 스레드 + 이메일 consumer 스레드 둘 다 스폰.
+    live = settings.model_copy(update={"dry_run": False})
+    calls = {"crawl": 0, "consumer": 0}
+    monkeypatch.setattr(bg, "_spawn_thread", lambda *a, **k: calls.__setitem__("crawl", calls["crawl"] + 1))
+    monkeypatch.setattr(bg, "_spawn_consumer_thread", lambda *a, **k: calls.__setitem__("consumer", calls["consumer"] + 1))
+    try:
+        trigger_crawl_job(
+            live, countries="KR", industries="건설", listed="unknown",
+            persist=False, triggered_by="x", discovery_only=True,
+        )
+    finally:
+        with bg._guard:
+            bg._running = False
+    assert calls["crawl"] == 1 and calls["consumer"] == 1
+
+
+def test_normal_crawl_does_not_spawn_consumer(settings, monkeypatch) -> None:
+    # discovery_only=False(인라인) → consumer 미스폰(인라인이 이미 이메일 채움).
+    live = settings.model_copy(update={"dry_run": False})
+    calls = {"consumer": 0}
+    monkeypatch.setattr(bg, "_spawn_thread", lambda *a, **k: None)
+    monkeypatch.setattr(bg, "_spawn_consumer_thread", lambda *a, **k: calls.__setitem__("consumer", calls["consumer"] + 1))
+    try:
+        trigger_crawl_job(
+            live, countries="KR", industries="건설", listed="unknown",
+            persist=False, triggered_by="x", discovery_only=False,
+        )
+    finally:
+        with bg._guard:
+            bg._running = False
+    assert calls["consumer"] == 0

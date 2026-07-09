@@ -159,6 +159,10 @@ def trigger_crawl_job(
     )
     try:
         (runner or _spawn_thread)(settings, job_id, segments, persist, target_count, continuous)
+        # discovery_only 크롤은 이메일을 미루므로, 같은 트리거로 채우기 consumer 를 병행 스폰한다
+        # (웹앱 '크롤 실행' 한 번 = 발견+이메일 병렬). runner 주입(테스트)·dry_run 은 스폰 안 함.
+        if discovery_only and runner is None and not settings.dry_run:
+            _spawn_consumer_thread(settings, job_id)
     except Exception as exc:  # 스레드 spawn 실패 — 가드 누수 방지 + 작업을 failed 로.
         log.warning("crawl_job.spawn_failed", job=job_id, err=str(exc))
         _finalize(get_sessionmaker(settings), job_id, status=FAILED, error=f"실행 시작 실패: {exc}")
@@ -180,6 +184,47 @@ def _spawn_thread(
         daemon=True,
     )
     thread.start()
+
+
+# 이메일 채우기 consumer(companion) 상수 — 발견 스레드와 경합하지 않게 보수적.
+_FILL_MIN_QUEUE = 20   # 무이메일 대상이 이 수 이상일 때만 배치(그 전엔 대기 — 배치 효율).
+_FILL_BATCH = 200      # 배치당 최대 회사 수.
+_FILL_IDLE_SEC = 15.0  # 대상 부족/실패 시 폴링 대기.
+
+
+def _spawn_consumer_thread(settings: Settings, job_id: str) -> None:
+    """발견 크롤과 병행하는 이메일 채우기 consumer 데몬을 띄운다(discovery_only 크롤 전용).
+
+    발견(producer)이 회사+홈페이지를 큐에 쌓는 동안, 이 consumer 가 '실존·무이메일' 회사를
+    배치 병렬로 잡아 헤드리스/OCR 로 이메일을 채운다. 크롤 잡 생명주기에 결속 — 크롤이
+    취소되거나(``is_cancel_requested``) 더 이상 active 가 아니면 함께 종료한다. 워커는 발견보다
+    낮게(헤드리스 경합 방지). 웹앱 '크롤 실행' 한 번으로 발견+이메일이 병렬로 돈다.
+    """
+    def _run() -> None:
+        from .fill import count_targets, fill_batch  # 지연 import(순환 회피).
+
+        sm = get_sessionmaker(settings)
+        workers = max(2, settings.enrich_workers // 3)  # 발견 16 → consumer ~5(경합 방지).
+        log.info("consumer.start", job=job_id, workers=workers)
+        while not _read_cancel(sm, job_id):
+            session = sm()  # 크롤이 끝났으면(active 아님/다른 잡) consumer 도 종료.
+            try:
+                active = active_crawl_job(session)
+            finally:
+                session.close()
+            if active is None or active.id != job_id:
+                break
+            if count_targets(sm) < _FILL_MIN_QUEUE:  # 임계 미만 → 더 쌓일 때까지 대기.
+                time.sleep(_FILL_IDLE_SEC)
+                continue
+            try:
+                fill_batch(settings, sm, limit=_FILL_BATCH, workers=workers)
+            except Exception as exc:  # 배치 실패가 consumer 를 안 죽이게(폭주 방지 대기).
+                log.info("consumer.batch.error", job=job_id, err=str(exc))
+                time.sleep(_FILL_IDLE_SEC)
+        log.info("consumer.stop", job=job_id)
+
+    threading.Thread(target=_run, name=f"fill-{job_id}", daemon=True).start()
 
 
 def run_crawl_job(
