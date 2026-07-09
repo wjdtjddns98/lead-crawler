@@ -81,8 +81,12 @@ class HostRateLimiters:
     # 개별 API 한도를 기본 적용한다. CH advanced-search = 600요청/5분 = 2 req/s(전역 8 의
     # 4배 초과 시 앞단 WAF 가 HTML 403 을 반환하던 실사고 대응, 2026-07-07). 명시 per_host
     # 오버라이드가 이보다 우선하고, 여기 없는 호스트는 default_rate 로 폴백(for_host).
+    # OpenDART = IP당 1000요청/분 ≈ 16/s(2026-07-09 프로빙: 3키 동시8=14.4/s clean, per-IP).
+    # 전역 default_rate(discovery_rate_per_host) 아래에 자체조임되던 DART 청크 스캔을 12/s 로
+    # 상향(지속부하 미검증이라 16 아래 보수). 전역값은 안 건드림(다른 등록처 호스트까지 오름).
     _KNOWN_HOST_RATES: dict[str, float] = {
         "api.company-information.service.gov.uk": 2.0,
+        "opendart.fss.or.kr": 12.0,
     }
 
     def __init__(self, default_rate: float, per_host: dict[str, float] | None = None) -> None:

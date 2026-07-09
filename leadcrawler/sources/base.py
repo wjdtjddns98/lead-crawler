@@ -6,7 +6,9 @@ dry_run 에서는 :class:`DummySource` 가 네트워크 없이 결정적 후보�
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from collections.abc import Set as AbstractSet
+from functools import partial
 from typing import Protocol
 
 from pydantic import BaseModel, Field
@@ -80,6 +82,31 @@ class DiscoverySource(Protocol):
     def discover(self, segment: Segment) -> list[DiscoveredCompany]:
         """세그먼트에 해당하는 기업 목록을 반환한다."""
         ...
+
+
+# 발견 청킹 seam(source-agnostic) — 큰 세그먼트(DART)를 순수 구간 워커 N개로 나눠 소스풀이
+# 유휴 슬롯까지 동시에 점유하게 한다. 부작용(커서·쿼터·dedup)은 전부 오케스트레이터
+# (registry.discover_segment 메인스레드)로 몰아 청크워커는 순수하게 유지한다(제약 ①).
+Chunk = Callable[[], list["DiscoveredCompany"]]
+ChunkFinalize = Callable[[list[list["DiscoveredCompany"]]], None]
+
+
+def _noop_finalize(results: list[list[DiscoveredCompany]]) -> None:  # noqa: ARG001
+    """기본 finalize — 비청킹 소스는 병합 뒤 후처리가 없다(커서/쿼터 훅 없음)."""
+
+
+def discovery_chunks(src: DiscoverySource, segment: Segment) -> tuple[list[Chunk], ChunkFinalize]:
+    """소스의 발견을 (청크 콜러블 목록, finalize 훅)으로 얻는다.
+
+    소스가 ``discover_chunks`` 를 구현하면 위임하고(DART 만 window 를 N구간으로 분할),
+    아니면 기본=[전체 1청크]·finalize no-op 을 반환한다 — 비청킹 소스 회귀 0. registry 는
+    전 소스 청크를 flatten 해 소스풀에 동시 제출하고, 수집 후 메인스레드에서 소스별
+    finalize(자기 청크결과)를 호출한다(커서/쿼터 확정).
+    """
+    override = getattr(src, "discover_chunks", None)
+    if override is not None:
+        return override(segment)
+    return [partial(src.discover, segment)], _noop_finalize
 
 
 class SupportsCursorStore(Protocol):
