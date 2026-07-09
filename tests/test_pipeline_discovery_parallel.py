@@ -173,6 +173,55 @@ def test_parallel_discovery_bounded_window(monkeypatch) -> None:
     assert 0 < peak <= workers * 2  # window 상한 준수(배리어면 peak==12 로 실패).
 
 
+def test_stage_timing_observer_fires() -> None:
+    """런 종료 시 스테이지 병목 요약이 관측 훅으로 1회 전달된다(발견/추출 worker-초·straggler).
+
+    chunking 후속의 게이트 데이터 — 요약 dict 에 세그먼트 수·회사 수·병목 분류가 담긴다.
+    """
+    from leadcrawler.pipeline import run as run_mod
+
+    seen: list[dict] = []
+    run_mod._TIMING_OBSERVER = seen.append  # type: ignore[attr-defined]
+    try:
+        run_pipeline(_SEGMENTS, settings=Settings(dry_run=True, discovery_workers=4))
+    finally:
+        run_mod._TIMING_OBSERVER = None  # 전역 훅 원복(다른 테스트 오염 방지).
+
+    assert len(seen) == 1  # 런당 정확히 1회.
+    s = seen[0]
+    assert s["segments"] == len(_SEGMENTS)
+    assert s["companies"] > 0  # dry_run 더미가 발견됨.
+    assert s["bottleneck"] in {"discovery", "enrich"}
+    assert s["discovery_worker_sec"] >= 0 and s["enrich_worker_sec"] >= 0
+    assert 0.0 <= s["straggler_share"] <= 1.0
+
+
+def test_stage_timing_identifies_straggler(monkeypatch) -> None:
+    """한 세그먼트 발견이 유독 오래 걸리면 straggler 로 지목된다(chunking 대상 식별).
+
+    발견 시간이 한 세그먼트에 몰리면(share 高) sub-segment chunking 이 값어치라는 신호.
+    """
+    import time
+
+    from leadcrawler.pipeline import run as run_mod
+
+    real = run_mod.discover_segment
+
+    def slow_one(segment, settings, **kw):
+        if segment.industry == "건설":  # 이 세그먼트만 느리게(straggler 유발).
+            time.sleep(0.05)
+        return real(segment, settings, **kw)
+
+    monkeypatch.setattr(run_mod, "discover_segment", slow_one)
+    seen: list[dict] = []
+    monkeypatch.setattr(run_mod, "_TIMING_OBSERVER", seen.append)
+    run_pipeline(_SEGMENTS, settings=Settings(dry_run=True, discovery_workers=4))
+
+    assert len(seen) == 1
+    assert seen[0]["straggler_seg"].startswith("KR/건설")  # 느린 세그먼트가 straggler.
+    assert seen[0]["straggler_share"] > 0.5  # 발견 시간의 과반이 이 세그먼트에 몰림.
+
+
 def test_interleave_by_country_round_robin() -> None:
     """국가 라운드로빈 재배열 — 같은 국가(=같은 등록처 호스트)가 연속으로 몰리지 않는다."""
     from leadcrawler.pipeline.run import _interleave_by_country
