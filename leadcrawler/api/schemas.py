@@ -273,6 +273,10 @@ class CrawlJobRequest(BaseModel):
     # KR 지역별 검색 팬아웃 — 'all'=17개 시/도 전부, 또는 쉼표구분('서울,경기').
     # KR 세그먼트에만 적용(다른 국가는 무시), 빈값(기본)=팬아웃 없음.
     regions: str = Field(default="", max_length=512)
+    # 발견 모드 — True 면 비싼 이메일 escalation(헤드리스·OCR·이메일API·Vision)을 끄고
+    # static 만으로 빠르게 발견·site_alive·큐적재만 한다(불필요 렌더 호출 절감). 무이메일
+    # 회사는 별도 채우기 패스(backfill_reenrich)가 나중에 헤드리스/OCR 로 이메일을 채운다.
+    discovery_only: bool = False
 
     @field_validator("industries", mode="before")
     @classmethod
