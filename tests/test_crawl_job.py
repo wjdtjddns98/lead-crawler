@@ -396,3 +396,47 @@ def test_start_watchdog_noop_on_dry_run_and_disabled(settings, monkeypatch) -> N
     monkeypatch.setattr(settings, "crawl_watchdog_enabled", False)
     assert bg.start_watchdog(settings) is False
     assert bg._watchdog_started is False
+
+
+def test_discovery_only_disables_email_escalation(settings) -> None:
+    # discovery_only=True → 비싼 escalation(헤드리스·OCR·이메일API·Vision) 전부 꺼진 settings 로
+    # 파이프라인 실행(static 만 인라인, 무이메일은 별도 채우기 패스가 담당).
+    on = settings.model_copy(update={
+        "enrich_headless": True, "enrich_ocr": True,
+        "enrich_email_api": True, "enrich_vision": True,
+    })
+    seen: dict[str, object] = {}
+
+    def _capture(s, _jid, _segs, _persist, _target, _continuous) -> None:
+        seen["s"] = s
+
+    try:
+        trigger_crawl_job(
+            on, countries="KR", industries="건설", listed="unknown",
+            persist=False, triggered_by="x", runner=_capture, discovery_only=True,
+        )
+    finally:
+        with bg._guard:
+            bg._running = False
+    s = seen["s"]
+    assert s.enrich_headless is False and s.enrich_ocr is False
+    assert s.enrich_email_api is False and s.enrich_vision is False
+
+
+def test_discovery_only_default_keeps_escalation(settings) -> None:
+    # 기본(discovery_only=False) → 입력 settings 의 escalation 플래그를 그대로 둔다(회귀 0).
+    on = settings.model_copy(update={"enrich_headless": True, "enrich_ocr": True})
+    seen: dict[str, object] = {}
+
+    def _capture(s, _jid, _segs, _persist, _target, _continuous) -> None:
+        seen["s"] = s
+
+    try:
+        trigger_crawl_job(
+            on, countries="KR", industries="건설", listed="unknown",
+            persist=False, triggered_by="x", runner=_capture,
+        )
+    finally:
+        with bg._guard:
+            bg._running = False
+    assert seen["s"].enrich_headless is True and seen["s"].enrich_ocr is True

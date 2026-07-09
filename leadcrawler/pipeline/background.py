@@ -93,6 +93,7 @@ def trigger_crawl_job(
     target_count: int = 0,
     continuous: bool = False,
     regions: str = "",
+    discovery_only: bool = False,
 ) -> dict[str, object]:
     """크롤 작업을 만들고 백그라운드 실행을 시작한다 — 작업 스냅샷(dict) 반환.
 
@@ -103,6 +104,13 @@ def trigger_crawl_job(
     (KR 외 국가는 무시 — :func:`generate_segments`). crawl_job 행에는 따로 기록하지 않는다.
     """
     global _running
+    # 발견 모드 — 비싼 이메일 escalation(헤드리스·OCR·이메일API·Vision)을 꺼 static 만으로
+    # 빠르게 발견·큐적재. 무이메일 회사는 별도 채우기 패스가 나중에 채운다(2단계 분리).
+    if discovery_only:
+        settings = settings.model_copy(update={
+            "enrich_headless": False, "enrich_ocr": False,
+            "enrich_email_api": False, "enrich_vision": False,
+        })
     inds = [s for s in industries.split(",") if s.strip()]
     ctys = [s for s in countries.split(",") if s.strip()] or None
     segments = generate_segments(

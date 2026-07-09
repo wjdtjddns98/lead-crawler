@@ -268,6 +268,7 @@ def register_admin(
                 target_count=body.target_count,
                 continuous=body.continuous,
                 regions=body.regions,
+                discovery_only=body.discovery_only,
             )
         except CrawlBusy as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
