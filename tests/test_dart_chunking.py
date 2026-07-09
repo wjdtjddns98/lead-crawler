@@ -117,6 +117,35 @@ def test_ep2_chunk_union_equals_nonchunk_and_disjoint() -> None:
     assert len(set(chunk_fetcher.company_codes)) == cap
 
 
+def test_ep2gap_dense_narrow_industry_trims_output_to_cap() -> None:
+    """고밀도 좁은 업종(scan_limit=cap*10=5000, 10청크): 청크경로 output == cap(>cap 아님),
+    _live 와 동일(corp 오름차순 첫 cap개). 콜수는 문서화된 한계(구간 전량 스캔)라 cap 초과 허용."""
+    from leadcrawler.sources.dart import _SCAN_LIMIT_ABS
+
+    corps_n = _SCAN_LIMIT_ABS  # window = min(cap*10, ABS) = 5000.
+    cap = 500  # scan_limit = min(500*10, 5000) = 5000 → 10 청크.
+    seg = Segment(country="KR", industry="반도체")  # 매핑 좁은 업종(KSIC 26x).
+
+    def _match(code: str) -> dict:
+        # 전부 반도체(induty 264) 매칭 = 고밀도 → _live 는 cap 에서 조기중단.
+        return {
+            "status": "000", "corp_name": f"회사{code}",
+            "hm_url": "", "induty_code": "264", "corp_cls": "Y",
+        }
+
+    base = DartSource(_settings(cap), fetcher=CountingFetcher(corps_n, on_company=_match))
+    baseline = [d.registry_id for d in base.discover(seg)]
+    assert len(baseline) == cap  # _live: len(out) >= cap 조기중단.
+
+    fetcher = CountingFetcher(corps_n, on_company=_match)
+    src = DartSource(_settings(cap), fetcher=fetcher, cursor_store=FakeCursorStore())
+    ids = [d.registry_id for d in _run_chunks(src, seg)]
+    assert len(ids) == cap  # 청크경로도 cap 으로 trim(>cap 아님) — 출력계약 복원.
+    assert ids == baseline  # corp 오름차순 첫 cap개 — _live 와 동일(결정적).
+    # 문서화된 한계: 순수워커라 구간 전량 스캔 → company.json 콜수는 cap 초과(scan_limit=5000).
+    assert len(fetcher.company_codes) > cap
+
+
 def test_ep3a_all_chunks_complete_advances_cursor_by_window() -> None:
     """전청크 완주 → 커서가 window(=cap) 만큼 1회 전진(다음 런 frontier 이어감)."""
     corps_n = 5 * _CHUNK_SCAN

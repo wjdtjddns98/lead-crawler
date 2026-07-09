@@ -341,6 +341,11 @@ class DartSource:
         단일 키로 돌고(청크 병렬이라 키 교차 로테이션 없음), 020/치명 status 를 만나면 자기
         구간을 조기중단해 (companies, stopped_at, calls) 를 반환한다 — stopped_at=미처리 항목
         앞(다음 런 재스캔), calls=이번 구간이 실제로 쓴 company.json 호출수(쿼터 정확 집계).
+
+        ponytail: cap(discovery_max_per_source) 미적용 — 순수워커라 "전역 cap 매칭 도달 시
+        조기중단"을 못 한다(크로스청크 공유 카운터 필요). 구간 전량을 스캔하므로 고밀도 좁은
+        업종에서 최대 scan_limit/cap 배 company.json 콜(총량은 일일예산 클램프가 상한). 출력
+        크기는 finalize 가 cap 으로 trim. 업그레이드=크로스청크 atomic 매칭카운터+early-stop(후속).
         """
         fetcher = self._client()
         out: list[DiscoveredCompany] = []
@@ -452,7 +457,7 @@ class DartSource:
 
             chunks.append(_run)
 
-        def _finalize(results: list[list[DiscoveredCompany]]) -> None:  # noqa: ARG001
+        def _finalize(results: list[list[DiscoveredCompany]]) -> None:
             # 커서 = frontier + 완주 prefix 의 최소 연속값(중간청크 조기정지 뒤 완주청크를
             # 건너뛰지 않게 — gap 스킵 0). 미완 구간은 다음 런이 재스캔(base.py 커서 계약).
             new_pos = offset
@@ -467,6 +472,21 @@ class DartSource:
             for st in states:
                 spent[st["key"]] = spent.get(st["key"], 0) + st["calls"]
             self._flush_quota(spent)
+            # cap trim(출력계약 복원): 청크 순수워커는 크로스청크 전역 cap early-stop 을 못 해
+            # (_scan_range ponytail 주석) 구간 전량을 스캔한다 → 병합 output 을 cap 으로 잘라
+            # _live 와 동일 크기(corp 오름차순 첫 cap개, 결정적)로 맞춘다. results(=청크별 산출,
+            # offset 오름차순)를 제자리 수정하면 registry 가 이 뒤 flatten 할 때 반영된다.
+            cap = self._settings.discovery_max_per_source
+            if cap:
+                remaining = cap
+                for chunk_out in results:
+                    if remaining <= 0:
+                        chunk_out.clear()
+                    elif len(chunk_out) > remaining:
+                        del chunk_out[remaining:]
+                        remaining = 0
+                    else:
+                        remaining -= len(chunk_out)
             log.info(
                 "dart.chunked", segment=segment.label,
                 chunks=len(states), offset=offset, frontier=new_pos,

@@ -126,13 +126,17 @@ def discover_segment(
     모든 세그먼트에 넘김 — 세그먼트마다 Fetcher 재생성·httpx 누수를 막고 keep-alive
     연결을 재사용). 미지정 시 매 호출 build_sources(직접/테스트 호출 하위호환).
 
-    동시성: ``discovery_source_workers > 1`` 이면 **비검색(무료) 소스들의 discover 만**
-    스레드풀로 동시에 실행한다(등록처·집계원은 서로 다른 호스트라 세그먼트 병목의 대부분).
-    병합·dedup·검색 게이팅(①②)은 결과 수집 후 항상 main 스레드에서 src_list 우선순위
-    순서대로 수행하므로, '첫 등장 우선' dedup 과 무료-우선 검색 스킵 판단은 순차 실행과
-    결정적으로 동일하다. 검색 소스는 무료 결과(free_new·도메인 주입)에 의존하므로 병렬
-    대상에서 제외하고 병합 시점에 순차 호출한다. 소스 인스턴스는 스레드당 1개만 쓰이고,
-    스레드 간 공유 자원(HostRateLimiters·DbCursorStore)은 스레드 안전이다.
+    동시성: ``discovery_source_workers > 1`` 이면 **비검색(무료) 소스들의 발견을 청크로**
+    스레드풀에서 동시에 실행한다(등록처·집계원은 서로 다른 호스트라 세그먼트 병목의 대부분).
+    각 소스의 :func:`base.discovery_chunks` 로 얻은 청크(DART 만 window 를 N구간 분할, 그 외
+    1청크=전체)를 전 소스에 걸쳐 flatten 해 하나의 풀에 제출하므로, 큰 세그먼트(DART)가
+    형제 소스가 비운 유휴 슬롯까지 점유한다. 병합·dedup·검색 게이팅(①②)·소스별 finalize
+    (커서/쿼터)는 결과 수집 후 항상 main 스레드에서 src_list 우선순위 순서대로 수행하므로,
+    '첫 등장 우선' dedup 과 무료-우선 검색 스킵 판단은 순차 실행과 결정적으로 동일하다.
+    검색 소스는 무료 결과(free_new·도메인 주입)에 의존하므로 병렬 대상에서 제외하고 병합
+    시점에 순차 호출한다. **단일 소스 인스턴스가 자기 청크 스레드 여럿에 공유되지만, 청크
+    워커(_scan_range 등)는 순수(seen/커서/쿼터 미변형)라 안전**하고, 스레드 간 공유 자원
+    (HostRateLimiters·DbCursorStore)은 스레드 안전이다.
     """
     settings = settings or get_settings()
     src_list = sources if sources is not None else build_sources(settings, cost_ledger)
