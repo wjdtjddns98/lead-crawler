@@ -240,15 +240,28 @@ def run_crawl_job(
     """
     global _running
     sm = get_sessionmaker(settings)
-    # 카운터 throttle 상태 — 마지막 DB 반영 시각과 가장 최근 카운터(종료 후 강제 확정용).
-    state: dict[str, object] = {"last": 0.0, "counts": None}
+    # 카운터 throttle 상태 — 마지막 DB 반영 시각·최근 누계 카운터·현 라운드 원시값.
+    # base = 완료된 라운드들의 discovered/enriched/saved 누계(연속 크롤에서 마지막 라운드만
+    # 보이던 버그 수정 — 라운드마다 run_pipeline 이 counts 를 0 으로 새로 시작하므로 여기서 합산).
+    state: dict[str, object] = {"last": 0.0, "counts": None, "round": None}
+    base = {"discovered": 0, "enriched": 0, "saved": 0}
+
+    def _cumulative(counts: dict[str, int]) -> dict[str, int]:
+        # discovered/enriched/saved 는 완료 라운드 합(base)+현 라운드분(누계). segments_* 는
+        # 현 라운드값 그대로(진행바는 라운드 단위). saved=실존 저장=전체큐 적재분이라 누계가
+        # 곧 '전체큐에 적재한 총수'.
+        merged = dict(counts)
+        for k in base:
+            merged[k] = base[k] + int(counts.get(k, 0))
+        return merged
 
     def _on_progress(counts: dict[str, int]) -> None:
-        state["counts"] = counts
+        state["round"] = counts  # 현 라운드 원시값(라운드 종료 후 base 에 접기용).
+        state["counts"] = _cumulative(counts)
         now = time.monotonic()
         if now - float(state["last"]) >= _PROGRESS_THROTTLE_SEC:
             state["last"] = now
-            _write_progress(sm, job_id, counts)
+            _write_progress(sm, job_id, state["counts"])  # type: ignore[arg-type]
 
     try:
         rounds = 0
@@ -264,6 +277,11 @@ def run_crawl_job(
             rounds += 1
             if state["counts"] is not None:  # throttle 로 누락된 최종 카운터를 확정 기록.
                 _write_progress(sm, job_id, state["counts"])  # type: ignore[arg-type]
+            rc = state.get("round")  # 이 라운드 원시 카운터를 base 에 접어 다음 라운드가 누계로 이어감.
+            if isinstance(rc, dict):
+                for k in base:
+                    base[k] += int(rc.get(k, 0))
+                state["round"] = None
             _write_rounds(sm, job_id, rounds)
             if _read_cancel(sm, job_id):  # 라운드 중 취소 관측 → 즉시 종료(연속 포함).
                 _finalize(sm, job_id, status=CANCELLED)
