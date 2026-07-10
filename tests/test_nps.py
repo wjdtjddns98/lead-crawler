@@ -302,3 +302,50 @@ def test_dart_cache_join_attaches_fields_and_reg_key(tmp_path) -> None:
     assert hit.listed == "listed" and hit.market == "KOSDAQ"
     miss = by_name["무연고상사"]
     assert miss.domain is None and miss.canonical_key.startswith("name:")
+
+
+def test_relink_cli_moves_name_key_to_reg_key(tmp_path, monkeypatch) -> None:
+    """nps-relink-dart: 기존 name: 원장 행이 캐시 정밀 매치로 reg: 키에 재연결(리뷰 H1)."""
+    from sqlalchemy import select as sa_select
+    from typer.testing import CliRunner
+
+    from leadcrawler import config as config_mod
+    from leadcrawler.cli import app
+    from leadcrawler.dedup import canonical_key
+    from leadcrawler.schema import DiscoveredCompanyRow
+    from leadcrawler.sources.dart import _FetchedCorp
+    from leadcrawler.storage.dart_cache import DbDartCorpCache
+
+    db_url = f"sqlite:///{tmp_path}/relink.db"
+    s = Settings(database_url=db_url, dry_run=True)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    ingest_nps_csv(sm, _csv(tmp_path, _rows()[:1]))  # 대형화학(주), bizno 123456.
+    DbDartCorpCache(sm).put_many([
+        _FetchedCorp(
+            "00012345", "주식회사 대형화학", "000",
+            {"status": "000", "corp_name": "주식회사 대형화학",
+             "bizr_no": "1234567890", "hm_url": "http://bigchem.co.kr"},
+        ),
+    ])
+    old_key = canonical_key(name="대형화학(주)", country="KR")
+    with sm() as session:
+        session.add(
+            DiscoveredCompanyRow(
+                canonical_key=old_key, name="대형화학(주)", country="KR",
+                industry="화학·석유화학", source="nps",
+            )
+        )
+        session.commit()
+
+    # CLI 는 get_settings()(캐시)를 쓰므로 env 주입 + 캐시 무효화로 이 DB 를 보게 한다.
+    monkeypatch.setenv("LEADCRAWLER_DATABASE_URL", db_url)
+    config_mod.get_settings.cache_clear()
+    try:
+        result = CliRunner().invoke(app, ["nps-relink-dart"])
+    finally:
+        config_mod.get_settings.cache_clear()  # 다른 테스트 오염 방지.
+    assert result.exit_code == 0, result.output
+    with sm() as session:
+        keys = list(session.scalars(sa_select(DiscoveredCompanyRow.canonical_key)))
+    assert keys == ["reg:dart:00012345"]

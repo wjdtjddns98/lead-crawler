@@ -362,6 +362,87 @@ def dart_cache_fill(
     typer.echo(f"적재 {filled:,} · 오류 {errors:,} · 이번 호출 {spent_this:,} (재개 가능 — 미스만 재시도)")
 
 
+@app.command("nps-relink-dart")
+def nps_relink_dart(
+    dry: bool = typer.Option(False, "--dry", help="변경 없이 대상만 보고"),
+) -> None:
+    """기존 NPS name: 원장 행을 DART 캐시 조인으로 reg: 키에 재연결한다(제약① 정합).
+
+    조인(#231)이 켜지기 **전에** NPS 가 name: 키로 적재한 행은, 캐시가 채워진 뒤
+    같은 회사가 reg:dart: 키로 재발견되며 재추출된다(적대 리뷰 H1) — 이 커맨드가
+    같은 정밀 매치(사업자번호 앞6+정규화명)로 키를 선제 재연결해 그 창을 닫는다.
+    reg: 키가 이미 원장에 있으면 보존·보고만(과거 중복 — dedup-report 대상).
+    ``dart-cache-fill`` 완료 후 1회 실행."""
+    from sqlalchemy import text as _text
+
+    from .dedup import canonical_key as _ckey, normalize_name as _norm
+    from .schema import DiscoveredCompanyRow
+    from .storage.dart_cache import DbDartCorpCache
+    from .storage.db import get_sessionmaker
+
+    sm = get_sessionmaker()
+    cache = DbDartCorpCache(sm)
+    cols = [c.name for c in DiscoveredCompanyRow.__table__.columns]
+    tail = [c for c in cols if c != "canonical_key"]
+    copy_sql = _text(
+        f"insert into discovered_company (canonical_key, {', '.join(tail)}) "
+        f"select :new, {', '.join(tail)} from discovered_company where canonical_key = :old"
+    )
+
+    relinked = conflicted = nomatch = 0
+    with sm() as s:
+        rows = s.execute(
+            _text(
+                "select dc.canonical_key, dc.name, dc.country, nw.bizno_prefix "
+                "from discovered_company dc "
+                "join nps_workplace nw on nw.name = dc.name and not nw.pending "
+                "where dc.source = 'nps' and dc.canonical_key like 'name:%'"
+            )
+        ).fetchall()
+    targets = {(r.canonical_key): r for r in rows}  # 동명 다지점은 1행(정밀 매치가 거름).
+    pairs = [
+        ((r.bizno_prefix or "")[:6], _norm(r.name)[:255]) for r in targets.values()
+    ]
+    matches = cache.find_matches([p for p in pairs if p[0] and p[1]])
+    with sm() as s:
+        for old_key, r in targets.items():
+            hit = matches.get(((r.bizno_prefix or "")[:6], _norm(r.name)[:255]))
+            if hit is None:
+                nomatch += 1
+                continue
+            new_key = _ckey(
+                registry="dart", registry_id=hit.corp_code, domain=None,
+                name=r.name, country=r.country,
+            )
+            exists = s.execute(
+                _text("select 1 from discovered_company where canonical_key=:k"),
+                {"k": new_key},
+            ).first()
+            if exists:
+                conflicted += 1
+                typer.echo(f"충돌(보존): {old_key} → {new_key}")
+                continue
+            if dry:
+                relinked += 1
+                continue
+            # PK 교체는 copy→FK전환→delete (company FK 가 즉시검사라 in-place 불가).
+            s.execute(copy_sql, {"new": new_key, "old": old_key})
+            s.execute(
+                _text("update company set canonical_key=:new where canonical_key=:old"),
+                {"new": new_key, "old": old_key},
+            )
+            s.execute(
+                _text("delete from discovered_company where canonical_key=:old"),
+                {"old": old_key},
+            )
+            relinked += 1
+        s.commit()
+    typer.echo(
+        f"{'(dry) ' if dry else ''}재연결 {relinked:,} · 충돌보존 {conflicted:,}"
+        f" · 캐시매치없음 {nomatch:,} / 대상 {len(targets):,}"
+    )
+
+
 @app.command("nps-map-industries")
 def nps_map_industries() -> None:
     """스냅샷의 업종코드(~1.6천)를 택소노미 42로 통합 매핑한다(3층 — 코드 단위 1회).
