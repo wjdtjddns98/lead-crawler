@@ -17,8 +17,18 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..dedup import normalize_name
 from ..logging import get_logger
 from ..schema import DartCorpCacheRow
+
+
+def _bizno_of(info: dict[str, Any] | None) -> str | None:
+    """company.json 의 사업자등록번호(bizr_no)를 숫자만 10자리로 정규화(없으면 None)."""
+    if not info:
+        return None
+    raw = str(info.get("bizr_no") or "")
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return digits[:10] or None
 
 log = get_logger("storage.dart_cache")
 
@@ -80,6 +90,68 @@ class DbDartCorpCache:
             log.info("dart_cache.get.error", n=len(corp_codes), err=str(exc))
             return {}
 
+    def find_matches(
+        self, pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], CachedCorp]:
+        """(사업자번호 앞6자리, 정규화명) 쌍 벌크 룩업 — NPS×DART 무쿼터 enrich 조인.
+
+        정밀도 우선: **둘 다** 일치해야 매치(동명 이사·유사 사업자번호 오결합 방지 —
+        false-merge 는 제약① 방향으로 위험해 이름 단독 매치는 하지 않는다).
+        반환 dict 키 = 입력 쌍. 실패는 빈 dict(조인은 최적화 — 없으면 기존 경로).
+        """
+        want = {(p, n) for p, n in pairs if p and n}
+        if not want:
+            return {}
+        try:
+            out: dict[tuple[str, str], CachedCorp] = {}
+            norms = list({n for _, n in want})
+            with self._factory() as session:
+                for i in range(0, len(norms), _BATCH):
+                    rows = session.scalars(
+                        select(DartCorpCacheRow)
+                        .where(DartCorpCacheRow.name_norm.in_(norms[i : i + _BATCH]))
+                        .where(DartCorpCacheRow.status == "000")
+                        # tie-break 고정(리뷰 M4) — 동일 (bizno6, name_norm) 이 여러 corp 면
+                        # corp_code 최소값으로 결정적 선택(런/스냅샷 간 키 플립 방지).
+                        .order_by(DartCorpCacheRow.corp_code.asc())
+                    ).all()
+                    for row in rows:
+                        if not row.bizno or not row.name_norm:
+                            continue
+                        key = (row.bizno[:6], row.name_norm)
+                        if key in want and key not in out:
+                            out[key] = _row_to_cached(row)
+            return out
+        except Exception as exc:
+            log.info("dart_cache.match.error", n=len(pairs), err=str(exc))
+            return {}
+
+    def backfill_join_cols(self) -> int:
+        """기존 캐시 행의 bizno/name_norm 을 저장된 info 에서 재계산한다(API 콜 0).
+
+        조인 컬럼 도입 이전에 적재된 행 대상 일회성 — dart-cache-fill CLI 가 호출.
+        """
+        updated = 0
+        try:
+            with self._factory() as session:
+                rows = session.scalars(
+                    select(DartCorpCacheRow)
+                    .where(DartCorpCacheRow.name_norm.is_(None))
+                    .where(DartCorpCacheRow.status == "000")
+                ).all()
+                for row in rows:
+                    cached = _row_to_cached(row)
+                    row.bizno = _bizno_of(cached.info)
+                    name_for_norm = (
+                        (cached.info.get("corp_name") if cached.info else None) or row.corp_name
+                    )
+                    row.name_norm = normalize_name(str(name_for_norm))[:255] or None
+                    updated += 1
+                session.commit()
+        except Exception as exc:
+            log.info("dart_cache.backfill.error", err=str(exc))
+        return updated
+
     def put_many(self, entries: list[CachedCorp]) -> None:
         """벌크 업서트(멱등) — 같은 corp_code 는 최신 응답으로 덮는다. best-effort."""
         if not entries:
@@ -105,6 +177,11 @@ class DbDartCorpCache:
                         row.status = e.status[:8]
                         row.induty_code = induty
                         row.info = info_json
+                        row.bizno = _bizno_of(e.info)
+                        name_for_norm = (
+                            (e.info.get("corp_name") if e.info else None) or e.corp_name
+                        )
+                        row.name_norm = normalize_name(str(name_for_norm))[:255] or None
                         row.fetched_at = now
                     session.commit()
             except Exception as exc:

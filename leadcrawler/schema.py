@@ -271,6 +271,10 @@ class DartCorpCacheRow(Base):
     status: Mapped[str] = mapped_column(String(8), default="", server_default=text("''"))
     induty_code: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     info: Mapped[str | None] = mapped_column(Text, nullable=True)  # company.json 원문(JSON).
+    # 조인 키(info 에서 추출·인덱스) — NPS 등 타 소스 발견분에 DART 필드(홈페이지·
+    # 사업자번호·상장)를 무쿼터로 부착하기 위한 룩업: 사업자번호 + 정규화 회사명.
+    bizno: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
+    name_norm: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )

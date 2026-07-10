@@ -91,6 +91,7 @@ def build_sources(
             nps_store=nps_store,
             cursor_store=cursor_store,
             rate_limiters=rate_limiters,
+            dart_cache=dart_corp_cache,
         ),
         # KR 지역검색(무료) — 업종 키워드로 살아있는 업체 직접 발견(순도·저장전환 高).
         # 집계원 뒤·검색 앞: name: 키 신뢰도는 낮지만 link(도메인) 동봉분은 dom: 키.
