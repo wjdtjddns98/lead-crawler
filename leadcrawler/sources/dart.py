@@ -17,7 +17,9 @@ import hashlib
 import io
 import re
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any, Protocol
 from xml.etree import ElementTree
 
 from ..config import Settings
@@ -44,6 +46,13 @@ log = get_logger("sources.dart")
 _KR = {"kr", "kor", "korea", "south korea", "대한민국", "한국"}
 _CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
 _COMPANY_URL = "https://opendart.fss.or.kr/api/company.json"
+_LIST_URL = "https://opendart.fss.or.kr/api/list.json"
+# 최근공시 우선 레인 — "최근에 공시한 = 지금 살아있는" 기업을 커서 순번과 무관하게 매 런
+# 선두에서 스캔한다(corpCode 명부는 폐업·소멸 법인이 안 지워져 커서 구간의 실존 순도가
+# 낮다 — 2026-07-10 실측: 도메인보유 25%·그중 사망 다수). 7일×3페이지(최대 300 corp),
+# 인스턴스당 하루 1회 조회(메모) + corp 캐시가 있으면 재스캔은 0콜.
+_RECENT_DAYS = 7
+_RECENT_PAGES = 3
 # 상장 시장 구분(corp_cls): 유가증권(Y)/코스닥(K)/코넥스(N)=상장, 기타법인(E)=비상장.
 # 주의: corpCode.xml 은 상장폐지 기업도 stock_code 를 유지한다(2026-07-02 실측 —
 # corp_cls='E' + stock_code 잔존, 예: 한빛네트). 즉 E 는 '한때 상장·현재 비상장' 포함
@@ -75,6 +84,29 @@ _QUOTA_SOURCE = "dart_quota"
 _KST = timezone(timedelta(hours=9))
 
 
+class SupportsCorpCache(Protocol):
+    """corp 캐시 저장소 계약(구현: storage.dart_cache.DbDartCorpCache).
+
+    get_many 는 corp_code→객체(속성: corp_code/corp_name/status/info) dict,
+    put_many 는 같은 속성의 객체 목록을 받는다(덕타이핑 — 소스층은 storage 미의존).
+    구현은 실패를 삼켜야 한다(읽기실패=빈 dict=미스, 쓰기실패=무시).
+    """
+
+    def get_many(self, corp_codes: list[str]) -> dict[str, Any]: ...
+
+    def put_many(self, entries: list[Any]) -> None: ...
+
+
+@dataclass(slots=True)
+class _FetchedCorp:
+    """이번 스캔에서 새로 조회한 corp — finalize 가 캐시에 업서트할 원료."""
+
+    corp_code: str
+    corp_name: str
+    status: str
+    info: dict[str, Any] | None  # status='000' 정상건만 원문 보존.
+
+
 def _kst_today() -> str:
     """KST 기준 오늘 날짜 키(YYYY-MM-DD) — OpenDART 일일 쿼터 리셋 주기와 정렬."""
     return datetime.now(_KST).strftime("%Y-%m-%d")
@@ -103,12 +135,16 @@ class DartSource:
         fetcher: SupportsFetch | None = None,
         rate_limiters: HostRateLimiters | None = None,
         cursor_store: SupportsCursorStore | None = None,
+        corp_cache: SupportsCorpCache | None = None,
     ) -> None:
         self._settings = settings
         self._count = count
         self._fetcher = fetcher
         self._rate_limiters = rate_limiters
         self._cursor_store = cursor_store
+        # corp 업종 캐시(주입 시) — company.json 을 corp 당 평생 1회만 조회.
+        # 캐시 전에는 업종 세그먼트 수만큼(12배) 같은 corp 를 반복 조회했다(2026-07-10 실측).
+        self._corp_cache = corp_cache
 
     def applies_to(self, segment: Segment) -> bool:
         """한국 세그먼트에 적용된다(상장여부 게이팅은 라이브에서 corp_cls 로)."""
@@ -223,16 +259,33 @@ class DartSource:
         offset = cursor_offset(self._cursor_store, self.name, segment, len(corps))
         entries = corps[offset : offset + scan_limit]
         scanned = 0  # 처리 완료(성공·개별실패 포함) 항목 수 — 커서 전진량.
+        # corp 캐시(주입 시) — 히트는 API 0콜, 새 응답은 fetched 로 모아 끝에 업서트.
+        cached: dict[str, Any] = {}
+        if self._corp_cache is not None:
+            cached = self._corp_cache.get_many([code for code, _ in entries])
+        fetched: list[_FetchedCorp] = []
 
         out: list[DiscoveredCompany] = []
         while scanned < len(entries):
+            corp_code, corp_name = entries[scanned]
+            hit = cached.get(corp_code)
+            if hit is not None:  # 캐시 히트 — 쿼터·키 소모 없음.
+                scanned += 1
+                cinfo = hit.info
+                if hit.status != "000" or not isinstance(cinfo, dict):
+                    continue
+                if not matches_prefix(cinfo.get("induty_code"), prefixes):
+                    continue
+                out.append(self._company_from_info(segment, corp_code, corp_name, cinfo))
+                if len(out) >= cap:
+                    break
+                continue
             # 현재 키의 예산이 런 중 바닥나면 선제 로테이션(020 맞기 전에).
             if budget and used0[key] + spent.get(key, 0) >= budget:
                 dead.add(key)
                 key = _pick_key()  # type: ignore[assignment]
                 if key is None:
                     break  # 전 키 소진 — 커서는 미처리 항목 앞에 정지.
-            corp_code, corp_name = entries[scanned]
             spent[key] = spent.get(key, 0) + 1
             try:
                 info = fetcher.get_json(
@@ -257,6 +310,12 @@ class DartSource:
                 key = nxt
                 continue
             scanned += 1
+            if isinstance(info, dict) and status:
+                fetched.append(
+                    _FetchedCorp(
+                        corp_code, corp_name, str(status), info if status == "000" else None
+                    )
+                )
             if not isinstance(info, dict) or status != "000":
                 continue
             if not matches_prefix(info.get("induty_code"), prefixes):
@@ -265,6 +324,8 @@ class DartSource:
             if len(out) >= cap:
                 break
         advance_cursor(self._cursor_store, self.name, segment, offset + scanned, len(corps))
+        if self._corp_cache is not None and fetched:
+            self._corp_cache.put_many(fetched)
         self._flush_quota(spent)
         log.info("dart.live", segment=segment.label, n=len(out), offset=offset, scanned=scanned)
         return out
@@ -272,16 +333,21 @@ class DartSource:
     def _flush_quota(self, spent: dict[str, int]) -> None:
         """이번 런의 키별 사용 호출량을 누적 기록한다(커서 스토어 재사용, best-effort).
 
-        ponytail: read-modify-write 라 병렬 세그먼트에선 과소집계 가능 — 예산 기본값이
-        실쿼터(2만) 대비 여유(1.5만)라 허용. 정확 집계가 필요해지면 SQL increment 로.
+        스토어가 ``increment`` 를 주면 원자 가감(음수=환불 허용), 아니면 구식
+        read-modify-write 폴백 — 병렬 세그먼트 flush 가 서로를 덮어 카운터가
+        오염되던 실사고(2026-07-10, 예산 20k 대비 10만+ 기록→DART 하루 잠김) 대응.
         """
         if self._cursor_store is None:
             return
+        inc = getattr(self._cursor_store, "increment", None)
         for key, calls in spent.items():
-            if calls <= 0:
+            if calls == 0:
                 continue
-            used = self._cursor_store.get(_QUOTA_SOURCE, _quota_key(key))
-            self._cursor_store.advance(_QUOTA_SOURCE, _quota_key(key), used + calls)
+            if inc is not None:
+                inc(_QUOTA_SOURCE, _quota_key(key), calls)
+            elif calls > 0:  # 폴백은 가산만(환불 미지원 — 예약도 안 하므로 일관).
+                used = self._cursor_store.get(_QUOTA_SOURCE, _quota_key(key))
+                self._cursor_store.advance(_QUOTA_SOURCE, _quota_key(key), used + calls)
 
     def _company_from_info(
         self, segment: Segment, corp_code: str, corp_name: str, info: dict
@@ -312,6 +378,48 @@ class DartSource:
             market=_MARKET_CLS.get(info.get("corp_cls", "")),
         )
 
+    def _recent_filed_pairs(self, key: str, spent: dict[str, int]) -> list[tuple[str, str]]:
+        """최근 _RECENT_DAYS 일 공시 기업 (corp_code, corp_name) — 살아있는 기업 우선 레인.
+
+        list.json 페이지당 100건 × 최대 _RECENT_PAGES. 실패·비정상 status 는 그 자리까지의
+        부분 결과(빈 목록 허용 — 우선 레인은 최적화일 뿐 정확성 무관). KST 날짜 단위로
+        인스턴스에 메모해 세그먼트마다 재조회하지 않는다. 호출수는 spent 에 가산(쿼터 집계).
+        """
+        today = _kst_today()
+        memo: tuple[str, list[tuple[str, str]]] | None = getattr(self, "_recent_memo", None)
+        if memo is not None and memo[0] == today:
+            return memo[1]
+        fetcher = self._client()
+        now = datetime.now(_KST)
+        params_base = {
+            "crtfc_key": key,
+            "bgn_de": (now - timedelta(days=_RECENT_DAYS)).strftime("%Y%m%d"),
+            "end_de": now.strftime("%Y%m%d"),
+            "page_count": 100,
+        }
+        pairs: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for page in range(1, _RECENT_PAGES + 1):
+            spent[key] = spent.get(key, 0) + 1
+            try:
+                data = fetcher.get_json(_LIST_URL, params={**params_base, "page_no": page})
+            except Exception as exc:  # 우선 레인은 best-effort — 실패 시 부분/빈 결과.
+                log.info("dart.recent.error", page=page, err=str(exc))
+                break
+            if not isinstance(data, dict) or data.get("status") != "000":
+                break
+            items = data.get("list") or []
+            for it in items:
+                code = str(it.get("corp_code") or "").strip()
+                if code and code not in seen:
+                    seen.add(code)
+                    pairs.append((code, str(it.get("corp_name") or "")))
+            if len(items) < 100:
+                break  # 마지막 페이지.
+        self._recent_memo = (today, pairs)
+        log.info("dart.recent", n=len(pairs), days=_RECENT_DAYS)
+        return pairs
+
     def _fetch_corps(self, key: str) -> tuple[list[tuple[str, str]] | None, str | None]:
         """corpCode.xml(ZIP) 1콜 → (corps, api_status). 세그먼트당 1회(fetch-once).
 
@@ -334,13 +442,16 @@ class DartSource:
         start: int,
         end: int,
         key: str,
-    ) -> tuple[list[DiscoveredCompany], int, int]:
-        """순수 구간 스캔 — corps[start:end] company.json 을 긁어 회사 반환.
+    ) -> tuple[list[DiscoveredCompany], int, int, list[_FetchedCorp]]:
+        """순수 구간 스캔 — corps[start:end] 를 **캐시-우선**으로 훑어 회사 반환.
 
-        **커서·쿼터·seen 을 절대 쓰지 않는다**(오케스트레이터가 finalize 에서 확정, 제약 ①).
+        캐시 히트는 API 0콜로 캐시 원문에서 바로 매칭·emit 하고, 미스만 company.json 을
+        호출한다(새 응답은 fetched 로 반환 — finalize 가 메인스레드에서 캐시에 업서트).
+        **커서·쿼터·seen·캐시쓰기를 절대 하지 않는다**(오케스트레이터가 finalize 에서
+        확정, 제약 ① — 캐시 '읽기'는 세션 독립 벌크조회라 순수성 무해).
         단일 키로 돌고(청크 병렬이라 키 교차 로테이션 없음), 020/치명 status 를 만나면 자기
-        구간을 조기중단해 (companies, stopped_at, calls) 를 반환한다 — stopped_at=미처리 항목
-        앞(다음 런 재스캔), calls=이번 구간이 실제로 쓴 company.json 호출수(쿼터 정확 집계).
+        구간을 조기중단해 (companies, stopped_at, calls, fetched) 를 반환한다 —
+        stopped_at=미처리 항목 앞(다음 런 재스캔), calls=실제 HTTP 호출수(쿼터 정확 집계).
 
         ponytail: cap(discovery_max_per_source) 미적용 — 순수워커라 "전역 cap 매칭 도달 시
         조기중단"을 못 한다(크로스청크 공유 카운터 필요). 구간 전량을 스캔하므로 고밀도 좁은
@@ -348,34 +459,58 @@ class DartSource:
         크기는 finalize 가 cap 으로 trim. 업그레이드=크로스청크 atomic 매칭카운터+early-stop(후속).
         """
         fetcher = self._client()
+        cached: dict[str, Any] = {}
+        if self._corp_cache is not None:
+            cached = self._corp_cache.get_many([corps[i][0] for i in range(start, end)])
         out: list[DiscoveredCompany] = []
+        fetched: list[_FetchedCorp] = []
         calls = 0
         i = start
         while i < end:
             corp_code, corp_name = corps[i]
+            hit = cached.get(corp_code)
+            if hit is not None:
+                # 캐시 히트 — API 0콜. 비정상 status(013 등)는 '데이터 없음'이 캐시된 것.
+                i += 1
+                info = hit.info
+                if hit.status != "000" or not isinstance(info, dict):
+                    continue
+                if not matches_prefix(info.get("induty_code"), prefixes):
+                    continue
+                out.append(self._company_from_info(segment, corp_code, corp_name, info))
+                continue
             calls += 1
             try:
                 info = fetcher.get_json(
                     _COMPANY_URL, params={"crtfc_key": key, "corp_code": corp_code}
                 )
-            except Exception as exc:  # 개별 실패는 건너뛴다(배치 보호).
+            except Exception as exc:  # 개별 실패는 건너뛴다(배치 보호). 캐시 안 함(일시 오류).
                 log.info("dart.company.error", corp_code=corp_code, err=str(exc))
                 i += 1
                 continue
             status = info.get("status") if isinstance(info, dict) else None
             if status in _FATAL_STATUS:
                 # 쿼터/키 치명 — 이후도 전부 같은 코드라 조기중단, 미처리 항목 앞에 정지.
+                # 캐시 안 함(키/쿼터의 일시 상태 — corp 의 사실이 아님).
                 log.info(
                     "dart.fatal_status", api_status=status, segment=segment.label, rotated=False
                 )
-                return out, i, calls
+                return out, i, calls, fetched
             i += 1
+            if isinstance(info, dict) and status:
+                # 정상(000)=원문 보존, 비치명 비정상(013 데이터없음 등)=status 만 기록해
+                # 다음 스캔의 재조회를 막는다(corp 당 평생 1콜).
+                fetched.append(
+                    _FetchedCorp(
+                        corp_code, corp_name, str(status), info if status == "000" else None
+                    )
+                )
             if not isinstance(info, dict) or status != "000":
                 continue
             if not matches_prefix(info.get("induty_code"), prefixes):
                 continue
             out.append(self._company_from_info(segment, corp_code, corp_name, info))
-        return out, end, calls
+        return out, end, calls, fetched
 
     def discover_chunks(self, segment: Segment) -> tuple[list[Chunk], ChunkFinalize]:
         """발견 seam(registry 소유 소스풀이 호출) — corpCode 1회 fetch 후 현 frontier 부터
@@ -444,18 +579,63 @@ class DartSource:
         for ci, cstart in enumerate(range(offset, window_end, _CHUNK_SCAN)):
             cend = min(cstart + _CHUNK_SCAN, window_end)
             ckey = live_keys[ci % len(live_keys)]
-            st = {"key": ckey, "start": cstart, "end": cend, "stopped_at": cstart, "calls": 0}
+            st = {
+                "key": ckey, "start": cstart, "end": cend,
+                "stopped_at": cstart, "calls": 0, "fetched": [], "planned": cend - cstart,
+            }
             states.append(st)
 
             def _run(st: dict = st) -> list[DiscoveredCompany]:  # st=st: 늦은바인딩 방지.
-                comps, stopped_at, calls = self._scan_range(
+                comps, stopped_at, calls, fetched = self._scan_range(
                     segment, corps, prefixes, st["start"], st["end"], st["key"]
                 )
                 st["stopped_at"] = stopped_at
                 st["calls"] = calls
+                st["fetched"] = fetched
                 return comps
 
             chunks.append(_run)
+
+        # 최근공시 우선 레인(L2) — 살아있는 기업(최근 공시자)을 커서와 무관하게 매 런
+        # 선두 청크로 스캔한다. 0폭 구간(start=end=offset)이라 커서 계산에 중립이고,
+        # corp 캐시가 있으면 두 번째 세그먼트부터는 API 0콜(첫 세그먼트만 ≤300콜).
+        # 이번 창과 겹치는 corp 는 제외(창 청크가 어차피 조회 — 같은 finalize 내 이중
+        # fetch 방지). 예산 소진으로 위에서 조기 return 된 런은 레인도 안 돈다(태울 예산
+        # 이 없는 상태 — 의도된 순서).
+        recent = self._recent_filed_pairs(live_keys[0], fetch_spent)
+        if recent:
+            window_codes = {corps[i][0] for i in range(offset, window_end)}
+            recent = [p for p in recent if p[0] not in window_codes]
+        has_lane = bool(recent)
+        if recent:
+            pst: dict = {
+                "key": live_keys[0], "start": offset, "end": offset, "stopped_at": offset,
+                "calls": 0, "fetched": [], "codes": recent, "planned": len(recent),
+            }
+
+            def _run_recent(st: dict = pst) -> list[DiscoveredCompany]:
+                comps, _stop, calls, fetched = self._scan_range(
+                    segment, st["codes"], prefixes, 0, len(st["codes"]), st["key"]
+                )
+                st["calls"] = calls
+                st["fetched"] = fetched
+                return comps
+
+            states.insert(0, pst)
+            chunks.insert(0, _run_recent)
+
+        # 예산 선예약(스토어가 increment 지원 시) — 계획 창(키별 배정 구간 합)을 카운터에
+        # 먼저 가산해 두면, 동시에 뜨는 형제 세그먼트가 used0 에서 이 예약을 보고 자기
+        # 창을 줄인다 → 세그먼트별 used0 스냅샷의 집단 초과구독(예산 N배 소진, 2026-07-10
+        # 카운터 오염 사고의 증폭기) 차단. corpCode fetch 사용분도 이 시점에 확정 기록.
+        # finalize 가 (실사용 - 예약) 을 가감해 정산한다(조기중단·캐시히트분 환불).
+        reserved: dict[str, int] | None = None
+        if self._cursor_store is not None and hasattr(self._cursor_store, "increment"):
+            reserved = {}
+            for st in states:
+                reserved[st["key"]] = reserved.get(st["key"], 0) + st["planned"]
+            self._flush_quota(fetch_spent)
+            self._flush_quota(reserved)
 
         def _finalize(results: list[list[DiscoveredCompany]]) -> None:
             # 커서 = frontier + 완주 prefix 의 최소 연속값(중간청크 조기정지 뒤 완주청크를
@@ -468,18 +648,36 @@ class DartSource:
                     new_pos = st["stopped_at"]
                     break
             advance_cursor(self._cursor_store, self.name, segment, new_pos, len(corps))
-            spent = dict(fetch_spent)
-            for st in states:
-                spent[st["key"]] = spent.get(st["key"], 0) + st["calls"]
-            self._flush_quota(spent)
+            # corp 캐시 업서트(메인스레드 1회) — 이번 스캔이 새로 조회한 응답을 영속해
+            # 다음 세그먼트/라운드의 같은 corp 재조회를 없앤다(업종 세그먼트 수 배 절감).
+            if self._corp_cache is not None:
+                new_entries = [e for st in states for e in st["fetched"]]
+                if new_entries:
+                    self._corp_cache.put_many(new_entries)
+            if reserved is not None:
+                # 정산: 실사용 - 예약(fetch 분은 예약 시점에 이미 확정) — 조기중단분 환불.
+                settle: dict[str, int] = {}
+                for st in states:
+                    settle[st["key"]] = settle.get(st["key"], 0) + st["calls"]
+                self._flush_quota(
+                    {k: settle.get(k, 0) - planned for k, planned in reserved.items()}
+                )
+            else:  # 예약 미지원 스토어(구식 폴백) — 기존 일괄 flush.
+                spent = dict(fetch_spent)
+                for st in states:
+                    spent[st["key"]] = spent.get(st["key"], 0) + st["calls"]
+                self._flush_quota(spent)
             # cap trim(출력계약 복원): 청크 순수워커는 크로스청크 전역 cap early-stop 을 못 해
             # (_scan_range ponytail 주석) 구간 전량을 스캔한다 → 병합 output 을 cap 으로 잘라
             # _live 와 동일 크기(corp 오름차순 첫 cap개, 결정적)로 맞춘다. results(=청크별 산출,
             # offset 오름차순)를 제자리 수정하면 registry 가 이 뒤 flatten 할 때 반영된다.
+            # **트림은 창 청크에만** — 레인(results[0], 존재 시) 산출을 cap 에 포함시키면
+            # 커서가 이미 지나간 창 말단 corp 가 잘려 다음 랩까지 유실된다(적대 리뷰 H1).
+            # 레인은 전량 유지(상한 ~300·창과 disjoint·다운스트림 dedup 안전).
             cap = self._settings.discovery_max_per_source
             if cap:
                 remaining = cap
-                for chunk_out in results:
+                for chunk_out in (results[1:] if has_lane else results):
                     if remaining <= 0:
                         chunk_out.clear()
                     elif len(chunk_out) > remaining:

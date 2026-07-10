@@ -24,7 +24,7 @@ from typing import Any
 
 from ..config import Settings
 from ..logging import get_logger
-from ..sources.http import Fetcher, SupportsFetch
+from ..sources.http import Fetcher, HostRateLimiters, SupportsFetch
 
 log = get_logger("verify.registry_active")
 
@@ -45,9 +45,19 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 class RegistryActiveChecker:
     """등록처별 active 상태 조회기(키게이트·graceful None)."""
 
-    def __init__(self, settings: Settings, *, fetcher: SupportsFetch | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        fetcher: SupportsFetch | None = None,
+        rate_limiters: HostRateLimiters | None = None,
+    ) -> None:
         self._settings = settings
         self._fetcher = fetcher
+        # 공유 호스트 레이트리미터(주입 시) — 발견 스테이지와 같은 레지스트리를 물려받아
+        # CH `/company` 조회가 발견(advanced-search)과 **합산** 2 req/s 캡을 지키게 한다.
+        # 미주입이면 기존 동작(인스턴스별 min_interval 만) — CH 429 실사고 대응(2026-07-10).
+        self._rate_limiters = rate_limiters
 
     def is_active(self, registry: str | None, registry_id: str | None) -> bool | None:
         """등록처가 active/폐업을 보고하면 True/False, 판정 불가면 None."""
@@ -70,6 +80,7 @@ class RegistryActiveChecker:
                 user_agent=self._settings.discovery_user_agent,
                 min_interval=self._settings.http_request_delay,
                 timeout=self._settings.http_timeout,
+                rate_limiters=self._rate_limiters,
             )
         return self._fetcher
 
@@ -121,11 +132,14 @@ class RegistryActiveChecker:
 
 
 def build_registry_checker(
-    settings: Settings, *, fetcher: SupportsFetch | None = None
+    settings: Settings,
+    *,
+    fetcher: SupportsFetch | None = None,
+    rate_limiters: HostRateLimiters | None = None,
 ) -> RegistryActiveChecker | None:
     """관련 키가 하나라도 있으면 체커를, 없으면 None 을 반환한다(미주입=미사용)."""
     if settings.companies_house_api_key or settings.opencorporates_api_key:
-        return RegistryActiveChecker(settings, fetcher=fetcher)
+        return RegistryActiveChecker(settings, fetcher=fetcher, rate_limiters=rate_limiters)
     return None
 
 
