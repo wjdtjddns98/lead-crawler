@@ -111,7 +111,10 @@ def test_specific_industry_gates_unfiltered_sources() -> None:
     # 정밀도 우선: 구체 업종(건설) 지정 시 업종 필터를 못 하는 GLEIF/Wikidata 는 빠지고,
     # 등록처(DART)·검색·업종질의 가능한 OpenCorporates·AI 디렉토리(구체 업종 전용)만 남는다.
     rows = discover_segment(Segment(country="KR", industry="건설"), _dry_settings())
-    assert {r.source for r in rows} == {"dart", "opencorporates", "search", "ai_directory"}
+    # naver_local: KR 구체 업종에 적용되는 업종-우선 지역검색(광범위 '전체'는 미적용).
+    assert {r.source for r in rows} == {
+        "dart", "opencorporates", "search", "ai_directory", "naver_local",
+    }
 
 
 def test_aggregator_applies_to_resolvable_countries_only() -> None:
@@ -246,6 +249,7 @@ def test_build_sources_registers_all_adapters() -> None:
     assert names == {
         "edgar", "dart", "companies_house", "pse", "set", "sgx", "idx", "bursa",
         "hose", "hnx", "gleif", "wikidata", "opencorporates", "search", "ai_directory",
+        "naver_local",
     }
 
 
