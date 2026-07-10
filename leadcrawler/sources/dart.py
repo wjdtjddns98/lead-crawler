@@ -272,16 +272,21 @@ class DartSource:
     def _flush_quota(self, spent: dict[str, int]) -> None:
         """이번 런의 키별 사용 호출량을 누적 기록한다(커서 스토어 재사용, best-effort).
 
-        ponytail: read-modify-write 라 병렬 세그먼트에선 과소집계 가능 — 예산 기본값이
-        실쿼터(2만) 대비 여유(1.5만)라 허용. 정확 집계가 필요해지면 SQL increment 로.
+        스토어가 ``increment`` 를 주면 원자 가감(음수=환불 허용), 아니면 구식
+        read-modify-write 폴백 — 병렬 세그먼트 flush 가 서로를 덮어 카운터가
+        오염되던 실사고(2026-07-10, 예산 20k 대비 10만+ 기록→DART 하루 잠김) 대응.
         """
         if self._cursor_store is None:
             return
+        inc = getattr(self._cursor_store, "increment", None)
         for key, calls in spent.items():
-            if calls <= 0:
+            if calls == 0:
                 continue
-            used = self._cursor_store.get(_QUOTA_SOURCE, _quota_key(key))
-            self._cursor_store.advance(_QUOTA_SOURCE, _quota_key(key), used + calls)
+            if inc is not None:
+                inc(_QUOTA_SOURCE, _quota_key(key), calls)
+            elif calls > 0:  # 폴백은 가산만(환불 미지원 — 예약도 안 하므로 일관).
+                used = self._cursor_store.get(_QUOTA_SOURCE, _quota_key(key))
+                self._cursor_store.advance(_QUOTA_SOURCE, _quota_key(key), used + calls)
 
     def _company_from_info(
         self, segment: Segment, corp_code: str, corp_name: str, info: dict
@@ -457,6 +462,19 @@ class DartSource:
 
             chunks.append(_run)
 
+        # 예산 선예약(스토어가 increment 지원 시) — 계획 창(키별 배정 구간 합)을 카운터에
+        # 먼저 가산해 두면, 동시에 뜨는 형제 세그먼트가 used0 에서 이 예약을 보고 자기
+        # 창을 줄인다 → 세그먼트별 used0 스냅샷의 집단 초과구독(예산 N배 소진, 2026-07-10
+        # 카운터 오염 사고의 증폭기) 차단. corpCode fetch 사용분도 이 시점에 확정 기록.
+        # finalize 가 (실사용 - 예약) 을 가감해 정산한다(조기중단분 환불).
+        reserved: dict[str, int] | None = None
+        if self._cursor_store is not None and hasattr(self._cursor_store, "increment"):
+            reserved = {}
+            for st in states:
+                reserved[st["key"]] = reserved.get(st["key"], 0) + (st["end"] - st["start"])
+            self._flush_quota(fetch_spent)
+            self._flush_quota(reserved)
+
         def _finalize(results: list[list[DiscoveredCompany]]) -> None:
             # 커서 = frontier + 완주 prefix 의 최소 연속값(중간청크 조기정지 뒤 완주청크를
             # 건너뛰지 않게 — gap 스킵 0). 미완 구간은 다음 런이 재스캔(base.py 커서 계약).
@@ -468,10 +486,19 @@ class DartSource:
                     new_pos = st["stopped_at"]
                     break
             advance_cursor(self._cursor_store, self.name, segment, new_pos, len(corps))
-            spent = dict(fetch_spent)
-            for st in states:
-                spent[st["key"]] = spent.get(st["key"], 0) + st["calls"]
-            self._flush_quota(spent)
+            if reserved is not None:
+                # 정산: 실사용 - 예약(fetch 분은 예약 시점에 이미 확정) — 조기중단분 환불.
+                settle: dict[str, int] = {}
+                for st in states:
+                    settle[st["key"]] = settle.get(st["key"], 0) + st["calls"]
+                self._flush_quota(
+                    {k: settle.get(k, 0) - planned for k, planned in reserved.items()}
+                )
+            else:  # 예약 미지원 스토어(구식 폴백) — 기존 일괄 flush.
+                spent = dict(fetch_spent)
+                for st in states:
+                    spent[st["key"]] = spent.get(st["key"], 0) + st["calls"]
+                self._flush_quota(spent)
             # cap trim(출력계약 복원): 청크 순수워커는 크로스청크 전역 cap early-stop 을 못 해
             # (_scan_range ponytail 주석) 구간 전량을 스캔한다 → 병합 output 을 cap 으로 잘라
             # _live 와 동일 크기(corp 오름차순 첫 cap개, 결정적)로 맞춘다. results(=청크별 산출,

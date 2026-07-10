@@ -60,3 +60,26 @@ class DbCursorStore:
                 session.commit()
         except Exception as exc:  # 위와 동일 — best-effort 영속.
             log.info("cursor.advance.error", source=source, key=key, err=str(exc))
+
+    def increment(self, source: str, key: str, delta: int) -> None:
+        """position 을 원자적으로 delta 만큼 가감한다(카운터 용도 — DART 일일예산 등).
+
+        read-modify-write(get→advance)는 병렬 세그먼트 flush 가 서로를 덮어 집계가
+        틀어진다(2026-07-10 쿼터 카운터 오염 사고) — DB 서버측 단일 UPDATE 로 원자화.
+        행이 없으면 delta 로 생성. 실패는 advance 와 동일하게 best-effort(로그 후 무시).
+        """
+        for attempt in (1, 2):  # 동시 최초-INSERT 충돌(IntegrityError) 1회 재시도.
+            try:
+                with self._factory() as session:
+                    row = session.get(DiscoveryCursorRow, (source, key), with_for_update=True)
+                    if row is None:
+                        row = DiscoveryCursorRow(source=source, cursor_key=key, position=delta)
+                        session.add(row)
+                    else:
+                        row.position = row.position + delta
+                    row.updated_at = datetime.now(timezone.utc)
+                    session.commit()
+                return
+            except Exception as exc:
+                if attempt == 2:
+                    log.info("cursor.increment.error", source=source, key=key, err=str(exc))
