@@ -22,7 +22,7 @@ from .base import (
 )
 from .http import HostRateLimiters
 from .companieshouse import CompaniesHouseSource
-from .dart import DartSource
+from .dart import DartSource, SupportsCorpCache
 from .edgar import EdgarSource
 from .exchanges import (
     BursaSource,
@@ -35,6 +35,7 @@ from .exchanges import (
 )
 from .ai_directory import AiDirectorySource
 from .gleif import GleifSource
+from .naver_local import NaverLocalSource
 from .opencorporates import OpenCorporatesSource
 from .search import SearchSource
 from .wikidata import WikidataSource
@@ -47,6 +48,7 @@ def build_sources(
     cost_ledger: SupportsCostLedger | None = None,
     rate_limiters: HostRateLimiters | None = None,
     cursor_store: SupportsCursorStore | None = None,
+    dart_corp_cache: SupportsCorpCache | None = None,
 ) -> list[DiscoverySource]:
     """등록된 발견 소스 인스턴스 목록을 만든다(우선순위 순).
 
@@ -64,7 +66,12 @@ def build_sources(
     """
     return [
         EdgarSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
-        DartSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        DartSource(
+            settings,
+            rate_limiters=rate_limiters,
+            cursor_store=cursor_store,
+            corp_cache=dart_corp_cache,
+        ),
         CompaniesHouseSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         PseSource(settings, rate_limiters=rate_limiters),
         SetSource(settings, rate_limiters=rate_limiters),
@@ -75,6 +82,9 @@ def build_sources(
         HnxSource(settings, rate_limiters=rate_limiters),
         GleifSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         WikidataSource(settings, rate_limiters=rate_limiters),
+        # KR 지역검색(무료) — 업종 키워드로 살아있는 업체 직접 발견(순도·저장전환 高).
+        # 집계원 뒤·검색 앞: name: 키 신뢰도는 낮지만 link(도메인) 동봉분은 dom: 키.
+        NaverLocalSource(settings, rate_limiters=rate_limiters),
         OpenCorporatesSource(settings, rate_limiters=rate_limiters),
         SearchSource(settings, cost_ledger=cost_ledger, rate_limiters=rate_limiters),
         # AI 디렉토리(dom: 키, 구체 업종 전용 — applies_to 게이팅). 검색과 같은 약한 티어라
@@ -147,7 +157,8 @@ def discover_segment(
     applicable = [
         src
         for src in src_list
-        if (segment.region is None or isinstance(src, SearchSource)) and src.applies_to(segment)
+        if (segment.region is None or getattr(src, "region_aware", isinstance(src, SearchSource)))
+        and src.applies_to(segment)
     ]
     free_srcs = [src for src in applicable if not isinstance(src, SearchSource)]
     workers = min(settings.discovery_source_workers, len(free_srcs))

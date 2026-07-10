@@ -37,6 +37,7 @@ from ..sources.domain_resolver import DomainResolver
 from ..sources.taxonomy import AMBIGUOUS_LABELS
 from ..sources.http import HostRateLimiters
 from ..sources.registry import build_sources, close_sources, discover_segment
+from ..storage.dart_cache import DbDartCorpCache
 from ..storage.db import get_sessionmaker
 from ..storage.discovery_cursor import DbCursorStore
 from ..storage.repository import (
@@ -349,6 +350,9 @@ def run_pipeline(
     # 등록처 발견 커서(런 간 offset 영속, 딥백필) — persist 런에서만. 호출마다 자체 세션을
     # 여는 어댑터라 병렬 발견 워커에서도 안전하다. dry_run 은 _live 미진입이라 무접촉.
     cursor_store = DbCursorStore(get_sessionmaker(settings)) if persist else None
+    # DART corp 캐시(persist 런) — company.json 을 corp 당 평생 1회만 조회(업종 세그먼트
+    # 수 배 중복조회 제거). 호출마다 자체 세션이라 병렬 청크 워커에서도 읽기 안전.
+    dart_corp_cache = DbDartCorpCache(get_sessionmaker(settings)) if persist else None
     cancelled = False
     disco_sources: list = []  # finally 가 항상 참조할 수 있게 try 전 바인딩(빌드 실패 시 no-op).
     try:
@@ -363,7 +367,11 @@ def run_pipeline(
             # 병렬 분기와 동일 배선). 소스병렬도 꺼져 있으면 None(기존 동작, 회귀 0).
             seq_limiters = host_limiters if settings.discovery_source_workers > 1 else None
             disco_sources = build_sources(
-                settings, cost_ledger, rate_limiters=seq_limiters, cursor_store=cursor_store
+                settings,
+                cost_ledger,
+                rate_limiters=seq_limiters,
+                cursor_store=cursor_store,
+                dart_corp_cache=dart_corp_cache,
             )
         if session is not None:
             seen |= load_seen_keys(session)
@@ -493,6 +501,7 @@ def run_pipeline(
                         cost_ledger,
                         rate_limiters=shared_limiters,
                         cursor_store=cursor_store,
+                        dart_corp_cache=dart_corp_cache,
                     )
                     disco_tl.sources = ws
                     with disco_created_lock:

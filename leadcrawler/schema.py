@@ -244,6 +244,37 @@ class DiscoveryCursorRow(Base):
     )
 
 
+class DartCorpCacheRow(Base):
+    """DART company.json 응답 캐시 — corp 당 1회만 조회(업종은 불변에 가깝다).
+
+    DART 는 업종별 명부 API 가 없어 corp 마다 company.json 1콜을 써야 업종을 안다.
+    캐시 전에는 12개 업종 세그먼트가 **같은 corp 를 12번** 조회했다(2026-07-10 실측:
+    세그먼트 커서 12개가 같은 구간을 각자 스캔 — 라운드당 60k콜, 순도 1.6%).
+    이 캐시로 corp 당 평생 1콜: 히트는 API 0콜로 캐시에서 바로 emit 하고,
+    미스만 호출 후 업서트한다. KR 전 법인(~118k)이 채워지면 KR 업종 발견은
+    사실상 무료가 된다(신규 공시법인만 추가 조회).
+
+    ``info`` = company.json 원문(JSON 직렬화, status="000" 정상건) — emit 에 필요한
+    전 필드(induty·hm_url·adres·bizr_no 등)를 보존해 매칭 corp 재조회도 0콜.
+    비정상 status(013 데이터없음 등)는 info 없이 status 만 기록해 재조회를 막는다
+    (치명 status(쿼터·키)는 캐시하지 않는다 — 일시 상태).
+    ``induty_code`` 는 info 에서 추출한 검색용 사본(향후 SQL 측 업종 필터 인덱스).
+    ponytail: TTL 없음 — 업종은 사실상 불변, 홈페이지 변경은 다운스트림 site_alive/
+    enrich 가 재검증한다. 신선도가 문제되면 fetched_at 기반 TTL 재조회로 업그레이드.
+    """
+
+    __tablename__ = "dart_corp_cache"
+
+    corp_code: Mapped[str] = mapped_column(String(8), primary_key=True)
+    corp_name: Mapped[str] = mapped_column(String(512), default="", server_default=text("''"))
+    status: Mapped[str] = mapped_column(String(8), default="", server_default=text("''"))
+    induty_code: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    info: Mapped[str | None] = mapped_column(Text, nullable=True)  # company.json 원문(JSON).
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+
+
 class CrawlTargetRow(Base):
     """다음 크롤 타깃 — 웹앱 관리자가 클릭으로 설정, 스케줄러가 매일 읽는다.
 
