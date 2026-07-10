@@ -21,7 +21,7 @@ from leadcrawler.sources.dart import _CHUNK_SCAN, _QUOTA_SOURCE, DartSource, _qu
 
 
 class FakeCursorStore:
-    """SupportsCursorStore 더블 — dict 저장(커서·일일예산 카운터 겸용)."""
+    """SupportsCursorStore 더블 — dict 저장(커서·일일예산 카운터 겸용, increment 지원)."""
 
     def __init__(self, initial: dict[tuple[str, str], int] | None = None) -> None:
         self.data: dict[tuple[str, str], int] = dict(initial or {})
@@ -31,6 +31,9 @@ class FakeCursorStore:
 
     def advance(self, source: str, key: str, position: int) -> None:
         self.data[(source, key)] = position
+
+    def increment(self, source: str, key: str, delta: int) -> None:
+        self.data[(source, key)] = self.data.get((source, key), 0) + delta
 
 
 class CountingFetcher:
@@ -196,3 +199,69 @@ def test_ep4_fetch_corpcode_once_for_n_chunks() -> None:
     assert fetcher.zip_calls == 1  # fetch-once(청킹 전 메인스레드 1콜).
     [chunk() for chunk in chunks]
     assert fetcher.zip_calls == 1  # 청크 실행은 ZIP 재fetch 없음.
+
+
+def test_quota_reservation_visible_before_scan_and_settled_after() -> None:
+    """예산 선예약: discover_chunks 직후 카운터 = fetch(1) + 계획 창 — 형제 세그먼트가
+    이 예약을 보고 자기 창을 줄인다(집단 초과구독 차단). finalize 정산 후 = 실사용."""
+    corps_n = 5 * _CHUNK_SCAN
+    cap = 3 * _CHUNK_SCAN  # window = 3*chunk.
+    store = FakeCursorStore()
+    fetcher = CountingFetcher(corps_n, on_company=_ok)
+    src = DartSource(_settings(cap), fetcher=fetcher, cursor_store=store)
+
+    chunks, finalize = src.discover_chunks(_SEG)
+    # 예약 시점(스캔 전): corpCode 1 + 계획 창(cap) 이 이미 기록돼 있어야 한다.
+    assert store.get(_QUOTA_SOURCE, _quota_key("k")) == cap + 1
+
+    results = [chunk() for chunk in chunks]
+    finalize(results)
+    # 전청크 완주 → 실사용 == 계획 → 정산 후에도 cap + 1(변화 없음).
+    assert store.get(_QUOTA_SOURCE, _quota_key("k")) == cap + 1
+
+
+def test_quota_reservation_refunds_early_stop() -> None:
+    """중간청크 020 조기중단 → 미사용 예약분이 환불돼 카운터 = 실사용 콜수."""
+    corps_n = 5 * _CHUNK_SCAN
+    cap = 3 * _CHUNK_SCAN
+    fatal_idx = _CHUNK_SCAN + 200
+    fatal_code = f"{fatal_idx + 1:08d}"
+
+    def _on_company(code: str) -> dict:
+        if code == fatal_code:
+            return {"status": "020", "message": "사용한도를 초과하였습니다."}
+        return _ok(code)
+
+    store = FakeCursorStore()
+    src = DartSource(
+        _settings(cap), fetcher=CountingFetcher(corps_n, on_company=_on_company),
+        cursor_store=store,
+    )
+    _run_chunks(src, _SEG)
+    # 실사용: corpCode 1 + 청크0 완주 + 청크1 (200 + fatal 1콜) + 청크2 완주.
+    expected = 1 + _CHUNK_SCAN + (200 + 1) + _CHUNK_SCAN
+    assert store.get(_QUOTA_SOURCE, _quota_key("k")) == expected
+
+
+def test_quota_sibling_segment_sees_reservation() -> None:
+    """형제 세그먼트 시나리오: 예약이 걸린 상태에서 두 번째 discover_chunks 는 남은
+    예산만큼만 창을 연다 — used0 스냅샷 집단 초과구독(2026-07-10 사고 증폭기) 차단."""
+    corps_n = 20 * _CHUNK_SCAN
+    cap = 3 * _CHUNK_SCAN  # 세그먼트당 계획 창 = 1500.
+    budget = 2000  # 키 1개, 일일예산 2000.
+    store = FakeCursorStore()
+
+    def _src() -> DartSource:
+        s = Settings(
+            dry_run=False, dart_api_key="k", dart_api_key_2="", dart_api_key_3="",
+            dart_api_key_4="", discovery_max_per_source=cap,
+            dart_daily_call_budget=budget,
+        )
+        return DartSource(s, fetcher=CountingFetcher(corps_n, on_company=_ok), cursor_store=store)
+
+    chunks1, fin1 = _src().discover_chunks(_SEG)  # 예약: 1(fetch) + 1500.
+    seg2 = Segment(country="KR", industry="전체", listed="listed")  # 다른 라벨(독립 커서).
+    chunks2, fin2 = _src().discover_chunks(seg2)
+    # 두 번째 세그먼트의 창 = 잔여예산(2000-1501-1(fetch)) 안으로 클램프 → 계획 1500 이 아님.
+    planned2 = sum(len(c()) for c in chunks2)  # broad 전체 매칭이라 산출수 == 스캔수.
+    assert planned2 <= budget - 1501
