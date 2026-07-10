@@ -271,6 +271,10 @@ class DartCorpCacheRow(Base):
     status: Mapped[str] = mapped_column(String(8), default="", server_default=text("''"))
     induty_code: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     info: Mapped[str | None] = mapped_column(Text, nullable=True)  # company.json 원문(JSON).
+    # 조인 키(info 에서 추출·인덱스) — NPS 등 타 소스 발견분에 DART 필드(홈페이지·
+    # 사업자번호·상장)를 무쿼터로 부착하기 위한 룩업: 사업자번호 + 정규화 회사명.
+    bizno: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
+    name_norm: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )
@@ -305,6 +309,29 @@ class NpsWorkplaceRow(Base):
     # (구 스냅샷 삭제 + pending 해제) 원자 스왑한다. 중간 실패 시 활성 스냅샷 무손상
     # (잔재 pending 은 다음 인제스트가 청소). 조회(page/count)는 pending=False 만 본다.
     pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+
+
+class KsicIndustryMapRow(Base):
+    """업종코드 → 택소노미 통합 매핑(3층) — 코드 단위 1회 분류, 방법·시점 기록.
+
+    NPS 업종코드(6자리, KSIC 5자리 접두 대응)가 1차 소비자. 코드가 ~1.6천 개뿐이라
+    코드 단위로 분류하면 스냅샷 수십만 행 전체가 라벨링된다. ``method``:
+    rule(=industry_from_ksic 결정론)|llm(닫힌 택소노미 분류기). 라벨은 닫힌 집합
+    (INDUSTRY_TAXONOMY+미분류) 밖 값을 절대 담지 않는다(할루시네이션 게이트).
+    월간 재실행은 미등재 코드만 분류(멱등 — 기존 매핑 재분류 0). 이름을 nps_ 가
+    아닌 ksic_ 로 둔 것은 후속(DART induty_code) 공유 여지 — 단 공유 전 코드계
+    호환 실측 필수(적대 검토 LOW).
+    """
+
+    __tablename__ = "ksic_industry_map"
+
+    industry_code: Mapped[str] = mapped_column(String(8), primary_key=True)
+    industry_name: Mapped[str] = mapped_column(String(256), default="", server_default=text("''"))
+    taxonomy_label: Mapped[str] = mapped_column(String(128), index=True)
+    method: Mapped[str] = mapped_column(String(8), default="", server_default=text("''"))
+    mapped_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
 
 
 class CrawlTargetRow(Base):

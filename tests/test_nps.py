@@ -188,3 +188,164 @@ def test_ingest_empty_keeps_active_snapshot(tmp_path) -> None:
     ingest_nps_csv(sm, _csv(tmp_path, _rows()))
     inserted, _ = ingest_nps_rows(sm, iter([]))
     assert inserted == 0 and NpsStore(sm).count() == 4
+
+
+class FakeVerdict:
+    def __init__(self, label):
+        self.label = label
+
+
+class FakeClassifier:
+    """닫힌 택소노미 분류기 더블 — 코드명 키워드로 결정적 라벨."""
+
+    model = "stub"
+
+    def __init__(self):
+        self.calls = 0
+
+    def classify(self, name: str, domain, text):  # noqa: ARG002
+        self.calls += 1
+        if "게임" in name:
+            return FakeVerdict("게임")
+        return FakeVerdict(None)  # abstain → 미분류.
+
+
+def test_map_industry_codes_rule_llm_and_idempotent(tmp_path) -> None:
+    """3층 매핑: 규칙(industry_from_ksic) 우선, 잔여만 LLM, 재실행 멱등(리뷰 H2 반영)."""
+    from leadcrawler.storage.nps import map_industry_codes
+
+    s = _settings(tmp_path)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    rows = _rows() + [
+        # 888888: 규칙 역매핑에 없는 코드 → LLM 경로(코드명에 '게임' → FakeClassifier 매칭).
+        "202606,넥스트게임즈,345670,1,서울 강남구 게임로 1,,888888,게임 아이템 중개업,120,5000000,",
+        "202606,알수없는업,345671,1,서울 중구 모호로 2,,999999,기타 분류 안된 업,3,100000,",
+    ]
+    ingest_nps_csv(sm, _csv(tmp_path, rows))
+    clf = FakeClassifier()
+    stats = map_industry_codes(sm, clf)
+    # 화학·반도체 코드는 규칙으로, 888888(게임)은 LLM, 999999 는 abstain → 미분류.
+    assert stats["rule"] >= 1 and stats["llm"] == 1 and stats["unclassified"] >= 1
+    calls_first = clf.calls
+
+    stats2 = map_industry_codes(sm, clf)
+    assert stats2["rule"] == stats2["llm"] == stats2["unclassified"] == 0  # 전부 기매핑.
+    assert clf.calls == calls_first  # 재실행 LLM 재호출 0(멱등).
+
+    store = NpsStore(sm)
+    assert "게임" in store.mapped_labels()
+    hits = store.page_by_label("게임", offset=0, limit=10)
+    assert [r.name for r in hits] == ["넥스트게임즈"]
+
+
+def test_source_uses_label_path_for_unprefixed_industry(tmp_path) -> None:
+    """KSIC 접두표에 없는 라벨(게임)도 3층 매핑이 있으면 발견된다(리뷰 HIGH-1 소비 경로)."""
+    from leadcrawler.storage.nps import map_industry_codes
+
+    s = Settings(
+        database_url=f"sqlite:///{tmp_path}/nps.db", dry_run=False,
+        discovery_max_per_source=10,
+    )
+    init_db(s)
+    sm = get_sessionmaker(s)
+    rows = _rows() + [
+        "202606,넥스트게임즈,345670,1,서울 강남구 게임로 1,,888888,게임 아이템 중개업,120,5000000,",
+    ]
+    ingest_nps_csv(sm, _csv(tmp_path, rows))
+    map_industry_codes(sm, FakeClassifier())
+
+    src = NpsSource(s, nps_store=NpsStore(sm), cursor_store=DictCursor())
+    seg = Segment(country="KR", industry="게임")
+    assert src.applies_to(seg)  # 접두표엔 없지만 3층 매핑이 연다.
+    out = src.discover(seg)
+    assert [d.name for d in out] == ["넥스트게임즈"]
+
+
+def test_dart_cache_join_attaches_fields_and_reg_key(tmp_path) -> None:
+    """NPS×DART 조인: (사업자번호6+정규화명) 매치 시 홈페이지·reg: 키·상장 부착,
+    미스는 기존(name 키·무도메인) 경로 그대로."""
+    from leadcrawler.sources.dart import _FetchedCorp
+    from leadcrawler.storage.dart_cache import DbDartCorpCache
+
+    s = Settings(
+        database_url=f"sqlite:///{tmp_path}/nps.db", dry_run=False,
+        discovery_max_per_source=10,
+    )
+    init_db(s)
+    sm = get_sessionmaker(s)
+    rows = [
+        # 대형화학(주) — 사업자번호 123456, DART 캐시에 동일 법인 존재(하단 put).
+        "202606,대형화학(주),123456,1,서울특별시 강남구 화학로 1,,201234,화학제품 제조업,500,90000000,",
+        "202606,무연고상사,777777,1,서울 중구 무연고로 2,,201234,화학제품 제조업,5,900000,",
+    ]
+    ingest_nps_csv(sm, _csv(tmp_path, rows))
+    cache = DbDartCorpCache(sm)
+    cache.put_many([
+        _FetchedCorp(
+            "00099999", "주식회사 대한화학", "000",
+            {
+                "status": "000", "corp_name": "주식회사 대형화학",  # (주) 표기 변형.
+                "bizr_no": "1234567890", "hm_url": "http://bigchem.co.kr",
+                "corp_cls": "K", "stock_code": "099999", "induty_code": "201234",
+            },
+        ),
+    ])
+    # put_many 가 name_norm 을 corp_name("주식회사 대형화학")에서 계산 — H1 픽스로
+    # NPS 의 "대형화학(주)" 정규화와 같은 값이어야 매치된다.
+    src = NpsSource(s, nps_store=NpsStore(sm), cursor_store=DictCursor(), dart_cache=cache)
+    out = src.discover(Segment(country="KR", industry="화학·석유화학"))
+    by_name = {d.name: d for d in out}
+    hit = by_name["대형화학(주)"]
+    assert hit.canonical_key.startswith("reg:dart:")  # DART 발견분과 완전 합치(제약①).
+    assert hit.domain and "bigchem" in hit.domain
+    assert hit.listed == "listed" and hit.market == "KOSDAQ"
+    miss = by_name["무연고상사"]
+    assert miss.domain is None and miss.canonical_key.startswith("name:")
+
+
+def test_relink_cli_moves_name_key_to_reg_key(tmp_path, monkeypatch) -> None:
+    """nps-relink-dart: 기존 name: 원장 행이 캐시 정밀 매치로 reg: 키에 재연결(리뷰 H1)."""
+    from sqlalchemy import select as sa_select
+    from typer.testing import CliRunner
+
+    from leadcrawler import config as config_mod
+    from leadcrawler.cli import app
+    from leadcrawler.dedup import canonical_key
+    from leadcrawler.schema import DiscoveredCompanyRow
+    from leadcrawler.sources.dart import _FetchedCorp
+    from leadcrawler.storage.dart_cache import DbDartCorpCache
+
+    db_url = f"sqlite:///{tmp_path}/relink.db"
+    s = Settings(database_url=db_url, dry_run=True)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    ingest_nps_csv(sm, _csv(tmp_path, _rows()[:1]))  # 대형화학(주), bizno 123456.
+    DbDartCorpCache(sm).put_many([
+        _FetchedCorp(
+            "00012345", "주식회사 대형화학", "000",
+            {"status": "000", "corp_name": "주식회사 대형화학",
+             "bizr_no": "1234567890", "hm_url": "http://bigchem.co.kr"},
+        ),
+    ])
+    old_key = canonical_key(name="대형화학(주)", country="KR")
+    with sm() as session:
+        session.add(
+            DiscoveredCompanyRow(
+                canonical_key=old_key, name="대형화학(주)", country="KR",
+                industry="화학·석유화학", source="nps",
+            )
+        )
+        session.commit()
+
+    # CLI 는 get_settings()(캐시)를 쓰므로 env 주입 + 캐시 무효화로 이 DB 를 보게 한다.
+    monkeypatch.setenv("LEADCRAWLER_DATABASE_URL", db_url)
+    config_mod.get_settings.cache_clear()
+    try:
+        result = CliRunner().invoke(app, ["nps-relink-dart"])
+    finally:
+        config_mod.get_settings.cache_clear()  # 다른 테스트 오염 방지.
+    assert result.exit_code == 0, result.output
+    with sm() as session:
+        keys = list(session.scalars(sa_select(DiscoveredCompanyRow.canonical_key)))
+    assert keys == ["reg:dart:00012345"]

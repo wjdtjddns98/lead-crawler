@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ..config import Settings
+from ..dedup import normalize_name
 from ..logging import get_logger
 from .base import (
     DiscoveredCompany,
@@ -27,6 +28,8 @@ from .base import (
     build_company,
     is_country,
 )
+# DART corp_cls → listed/market 세분화 표 재사용(같은 corp 를 같은 규칙으로 해석).
+from .dart import _LISTED_CLS, _MARKET_CLS
 from .http import HostRateLimiters
 from .industry import ksic_prefixes
 from .taxonomy import UNCLASSIFIED
@@ -40,6 +43,16 @@ class SupportsNpsStore(Protocol):
     """스냅샷 조회 계약(구현: storage.nps.NpsStore) — 실패는 빈 결과로 삼켜야 한다."""
 
     def page(self, prefixes: tuple[str, ...], *, offset: int, limit: int) -> list: ...
+
+    def page_by_label(self, label: str, *, offset: int, limit: int) -> list: ...
+
+    def mapped_labels(self) -> frozenset[str]: ...
+
+
+class SupportsDartJoin(Protocol):
+    """DART 캐시 조인 계약(구현: storage.dart_cache.DbDartCorpCache.find_matches)."""
+
+    def find_matches(self, pairs: list[tuple[str, str]]) -> dict: ...
 
 
 class NpsSource(DiscoverySource):
@@ -55,43 +68,112 @@ class NpsSource(DiscoverySource):
         nps_store: SupportsNpsStore | None = None,
         cursor_store: SupportsCursorStore | None = None,
         rate_limiters: HostRateLimiters | None = None,
+        dart_cache: SupportsDartJoin | None = None,
     ) -> None:
         self._settings = settings
         self._count = count
         self._store = nps_store
         self._cursor_store = cursor_store
+        # DART 캐시 조인(주입 시) — 발견 시점에 홈페이지·사업자번호·상장 필드를 무쿼터 부착.
+        self._dart_cache = dart_cache
         # 무네트워크 소스라 미사용 — build_sources 의 "전 소스 공유 limiter" 균일 계약용.
         self._rate_limiters = rate_limiters
+        self._labels: frozenset[str] | None = None  # 3층 매핑 라벨 캐시(지연 1회 로드).
+
+    def _mapped_labels(self) -> frozenset[str]:
+        """3층 매핑 라벨 집합 — 인스턴스당 1회 로드(세그먼트마다 DB 히트 방지)."""
+        if self._labels is None:
+            self._labels = (
+                self._store.mapped_labels() if self._store is not None else frozenset()
+            )
+        return self._labels
 
     def applies_to(self, segment: Segment) -> bool:
-        """KR + KSIC 매핑 가능한 구체 업종 + (라이브면) 스냅샷 스토어 주입 시."""
+        """KR + (KSIC 접두 매핑 or 3층 통합매핑 보유 라벨) + (라이브면) 스토어 주입 시.
+
+        3층(ksic_industry_map)이 채워지면 KSIC 접두표에 없는 30개 라벨(게임·은행 등)도
+        열린다 — 매핑 없던 시절의 사각 63% 개방(적대 검토 HIGH-1 소비 경로).
+        """
         if not is_country(segment, _KR):
             return False
-        if ksic_prefixes(segment.industry) is None:
-            return False  # broad/미매핑 — 업종-우선 소스라 접두 없인 무의미.
-        return self._settings.dry_run or self._store is not None
+        if self._settings.dry_run:
+            return ksic_prefixes(segment.industry) is not None
+        if self._store is None:
+            return False
+        if segment.industry in self._mapped_labels():
+            return True
+        return ksic_prefixes(segment.industry) is not None
 
     def discover(self, segment: Segment) -> list[DiscoveredCompany]:
         if self._settings.dry_run:
             return self._dry(segment)
-        prefixes = ksic_prefixes(segment.industry)
-        if prefixes is None or self._store is None:
+        if self._store is None:
             return []
         cap = self._settings.discovery_max_per_source
         offset = 0
         if self._cursor_store is not None:
             offset = max(0, self._cursor_store.get(self.name, segment.label))
-        rows = self._store.page(prefixes, offset=offset, limit=cap)
-        out = [
-            build_company(
-                source=self.name,
-                segment=segment,
-                name=row.name,
-                address=row.address,
+        # 3층 라벨 매핑이 있으면 그 경로(42라벨 전체 커버·코드단위 통합), 없으면 접두 폴백.
+        if segment.industry in self._mapped_labels():
+            rows = self._store.page_by_label(segment.industry, offset=offset, limit=cap)
+        else:
+            prefixes = ksic_prefixes(segment.industry)
+            if prefixes is None:
+                return []
+            rows = self._store.page(prefixes, offset=offset, limit=cap)
+        # DART 캐시 조인 — (사업자번호 앞6 + 정규화명) 정확 매치만(정밀도 우선). 히트는
+        # DART 와 같은 reg: 키(registry_id=corp_code)로 emit 해 과거/미래 DART 발견분과
+        # canonical_key 가 완전히 합쳐진다(제약① 강화) + 홈페이지·상장 필드 무쿼터 부착.
+        matches: dict = {}
+        row_keys: dict[int, tuple[str, str]] = {}  # 행당 정규화 1회(재계산 방지).
+        if self._dart_cache is not None and rows:
+            for idx, row in enumerate(rows):
+                if row.name:
+                    row_keys[idx] = (
+                        (row.bizno_prefix or "")[:6], normalize_name(row.name)[:255]
+                    )
+            matches = self._dart_cache.find_matches(
+                [p for p in row_keys.values() if p[0] and p[1]]
             )
-            for row in rows
-            if row.name
-        ]
+
+        out: list[DiscoveredCompany] = []
+        for idx, row in enumerate(rows):
+            if not row.name:
+                continue
+            hit = matches.get(row_keys.get(idx, ("", "")))
+            info = getattr(hit, "info", None) if hit is not None else None
+            if hit is not None and isinstance(info, dict):
+                corp_cls = str(info.get("corp_cls") or "")
+                out.append(
+                    build_company(
+                        source=self.name,
+                        segment=Segment(
+                            country=segment.country,
+                            industry=segment.industry,
+                            listed=_LISTED_CLS.get(corp_cls, segment.listed),
+                        ),
+                        name=row.name,
+                        domain=str(info.get("hm_url") or "") or None,
+                        registry="dart",
+                        registry_id=hit.corp_code,
+                        address=row.address,
+                        reg_no=str(info.get("bizr_no") or "") or None,
+                        ticker=str(info.get("stock_code") or "") or None,
+                        phone=str(info.get("phn_no") or "") or None,
+                        ir_url=str(info.get("ir_url") or "") or None,
+                        name_eng=str(info.get("corp_name_eng") or "") or None,
+                        market=_MARKET_CLS.get(corp_cls),
+                    )
+                )
+                continue
+            out.append(
+                build_company(
+                    source=self.name,
+                    segment=segment,
+                    name=row.name,
+                    address=row.address,
+                )
+            )
         if self._cursor_store is not None:
             # 페이지가 cap 미만 = 매칭 소진 → 0 리셋(다음 스냅샷/랩 재검증 재개).
             nxt = 0 if len(rows) < cap else offset + len(rows)

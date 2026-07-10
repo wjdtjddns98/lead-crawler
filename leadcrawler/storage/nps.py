@@ -14,11 +14,11 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..logging import get_logger
-from ..schema import NpsWorkplaceRow
+from ..schema import KsicIndustryMapRow, NpsWorkplaceRow
 
 log = get_logger("storage.nps")
 
@@ -146,6 +146,75 @@ def ingest_nps_csv(sm: sessionmaker[Session], path: str | Path) -> tuple[int, in
         f.close()
 
 
+def map_industry_codes(sm: sessionmaker[Session], classifier) -> dict[str, int]:
+    """스냅샷의 미등재 업종코드를 택소노미로 분류해 3층(ksic_industry_map)에 적재한다.
+
+    ① 규칙 패스 — :func:`industry_from_ksic` (최장접두·동률 None·저정밀 차단이 이미
+    들어있는 결정론 역매핑, 적대 검토 H2)로 풀리는 코드는 method='rule'.
+    ② 잔여만 LLM — 닫힌 택소노미 분류기(classifier.classify)에 업종코드명 + 그 코드의
+    대표 사업장명(가입자수 상위 3, 신뢰불가 원문이지만 분류기의 인젝션 프레이밍·닫힌집합
+    게이트가 방어)을 근거로 넘긴다. abstain 은 '미분류'로 기록(닫힌 집합 밖 값 불가).
+    미등재 코드만 처리(멱등 — 월간 재실행 시 신규 코드만 분류, 기존 재분류 0).
+    """
+    from ..sources.industry import industry_from_ksic
+    from ..sources.taxonomy import UNCLASSIFIED
+
+    stats = {"rule": 0, "llm": 0, "unclassified": 0, "already": 0}
+    with sm() as session:
+        rows = session.execute(
+            select(
+                NpsWorkplaceRow.industry_code,
+                func.max(NpsWorkplaceRow.industry_name),
+            )
+            .where(NpsWorkplaceRow.pending.is_(False))
+            .where(NpsWorkplaceRow.industry_code.is_not(None))
+            .where(NpsWorkplaceRow.industry_code != "")
+            .group_by(NpsWorkplaceRow.industry_code)
+        ).all()
+        existing = set(session.scalars(select(KsicIndustryMapRow.industry_code)).all())
+    todo = [(c, n or "") for c, n in rows if c not in existing]
+    stats["already"] = len(rows) - len(todo)
+
+    for code, code_name in todo:
+        label = industry_from_ksic(code)
+        method = "rule"
+        if label is None:
+            method = "llm"
+            with sm() as session:
+                samples = session.scalars(
+                    select(NpsWorkplaceRow.name)
+                    .where(NpsWorkplaceRow.industry_code == code)
+                    .where(NpsWorkplaceRow.pending.is_(False))
+                    .order_by(NpsWorkplaceRow.subscribers.desc())
+                    .limit(3)
+                ).all()
+            verdict = classifier.classify(
+                name=f"업종: {code_name}",
+                domain=None,
+                text="이 업종(한국 표준산업분류 기반 업종코드 %s)의 대표 사업장: %s"
+                % (code, ", ".join(samples)),
+            )
+            label = verdict.label  # 닫힌 집합 게이트 통과분만, abstain=None.
+        if label is None:
+            label = UNCLASSIFIED
+            stats["unclassified"] += 1
+        else:
+            stats[method] += 1
+        with sm() as session:
+            if session.get(KsicIndustryMapRow, code) is None:  # 동시 실행 방어(멱등).
+                session.add(
+                    KsicIndustryMapRow(
+                        industry_code=code,
+                        industry_name=code_name[:256],
+                        taxonomy_label=label,
+                        method=method,
+                    )
+                )
+                session.commit()
+    log.info("nps.map_codes", **stats, total_codes=len(rows))
+    return stats
+
+
 class NpsStore:
     """발견 소스용 조회 어댑터 — 호출마다 자체 세션(스레드 안전, 다른 스토어와 동일 규약).
 
@@ -154,6 +223,53 @@ class NpsStore:
 
     def __init__(self, factory: sessionmaker[Session]) -> None:
         self._factory = factory
+
+    def mapped_labels(self) -> frozenset[str]:
+        """3층 매핑에 존재하는 택소노미 라벨 집합(미분류 제외) — 소스 게이팅용.
+
+        NpsSource 가 인스턴스당 1회 로드해 인메모리로 게이트한다(applies_to 를
+        세그먼트마다 DB 히트로 만들지 않기 위함 — 적대 검토 M2).
+        """
+        from ..sources.taxonomy import UNCLASSIFIED
+
+        try:
+            with self._factory() as session:
+                labels = session.scalars(
+                    select(KsicIndustryMapRow.taxonomy_label).distinct()
+                ).all()
+            return frozenset(lbl for lbl in labels if lbl and lbl != UNCLASSIFIED)
+        except Exception as exc:
+            log.info("nps.labels.error", err=str(exc))
+            return frozenset()
+
+    def page_by_label(self, label: str, *, offset: int, limit: int) -> list[NpsWorkplaceRow]:
+        """3층 매핑 라벨로 페이지 조회 — 접두 매칭을 대체하는 통합층 경로.
+
+        정렬·탈퇴 제외·pending 제외는 :meth:`page` 와 동일 계약.
+        """
+        if not label:
+            return []
+        try:
+            with self._factory() as session:
+                code_sq = select(KsicIndustryMapRow.industry_code).where(
+                    KsicIndustryMapRow.taxonomy_label == label
+                )
+                stmt = (
+                    select(NpsWorkplaceRow)
+                    .where(NpsWorkplaceRow.pending.is_(False))
+                    .where(NpsWorkplaceRow.industry_code.in_(code_sq))
+                    .where(
+                        (NpsWorkplaceRow.resigned_at.is_(None))
+                        | (NpsWorkplaceRow.resigned_at == "")
+                    )
+                    .order_by(NpsWorkplaceRow.subscribers.desc(), NpsWorkplaceRow.id.asc())
+                    .offset(offset)
+                    .limit(limit)
+                )
+                return list(session.scalars(stmt).all())
+        except Exception as exc:
+            log.info("nps.page_label.error", err=str(exc))
+            return []
 
     def count(self) -> int:
         try:
