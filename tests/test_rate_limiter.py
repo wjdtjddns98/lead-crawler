@@ -83,7 +83,14 @@ def test_host_rate_limiters_ch_known_cap_below_default() -> None:
     hrl = HostRateLimiters(default_rate=8.0)  # 전역 8/s.
     ch = hrl.for_host("api.company-information.service.gov.uk")
     assert ch._min_interval == 1.0 / 2.0  # 2 req/s 로 캡.
-    assert hrl.for_host("data.sec.gov")._min_interval == 1.0 / 8.0  # 그 외는 default.
+    assert hrl.for_host("api.gleif.org")._min_interval == 1.0 / 8.0  # 그 외는 default.
+
+
+def test_host_rate_limiters_sec_hosts_capped() -> None:
+    """SEC 두 호스트(www+data)는 각 4 req/s 캡 — 합산 8<10(IP당 한도)로 429 방지."""
+    hrl = HostRateLimiters(default_rate=8.0)  # 전역 8/s 여도.
+    assert hrl.for_host("www.sec.gov")._min_interval == 1.0 / 4.0
+    assert hrl.for_host("data.sec.gov")._min_interval == 1.0 / 4.0
 
 
 def test_host_rate_limiters_explicit_override_beats_known_cap() -> None:
