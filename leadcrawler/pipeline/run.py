@@ -40,6 +40,7 @@ from ..sources.registry import build_sources, close_sources, discover_segment
 from ..storage.dart_cache import DbDartCorpCache
 from ..storage.db import get_sessionmaker
 from ..storage.discovery_cursor import DbCursorStore
+from ..storage.nps import NpsStore
 from ..storage.repository import (
     load_seen_domains,
     load_seen_keys,
@@ -353,6 +354,8 @@ def run_pipeline(
     # DART corp 캐시(persist 런) — company.json 을 corp 당 평생 1회만 조회(업종 세그먼트
     # 수 배 중복조회 제거). 호출마다 자체 세션이라 병렬 청크 워커에서도 읽기 안전.
     dart_corp_cache = DbDartCorpCache(get_sessionmaker(settings)) if persist else None
+    # 국민연금 스냅샷(persist 런) — nps-import 적재분을 업종·규모 우선으로 발견 소비.
+    nps_store = NpsStore(get_sessionmaker(settings)) if persist else None
     cancelled = False
     disco_sources: list = []  # finally 가 항상 참조할 수 있게 try 전 바인딩(빌드 실패 시 no-op).
     try:
@@ -372,6 +375,7 @@ def run_pipeline(
                 rate_limiters=seq_limiters,
                 cursor_store=cursor_store,
                 dart_corp_cache=dart_corp_cache,
+                nps_store=nps_store,
             )
         if session is not None:
             seen |= load_seen_keys(session)
@@ -502,6 +506,7 @@ def run_pipeline(
                         rate_limiters=shared_limiters,
                         cursor_store=cursor_store,
                         dart_corp_cache=dart_corp_cache,
+                        nps_store=nps_store,
                     )
                     disco_tl.sources = ws
                     with disco_created_lock:

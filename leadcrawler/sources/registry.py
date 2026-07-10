@@ -36,6 +36,7 @@ from .exchanges import (
 from .ai_directory import AiDirectorySource
 from .gleif import GleifSource
 from .naver_local import NaverLocalSource
+from .nps import NpsSource, SupportsNpsStore
 from .opencorporates import OpenCorporatesSource
 from .search import SearchSource
 from .wikidata import WikidataSource
@@ -49,6 +50,7 @@ def build_sources(
     rate_limiters: HostRateLimiters | None = None,
     cursor_store: SupportsCursorStore | None = None,
     dart_corp_cache: SupportsCorpCache | None = None,
+    nps_store: SupportsNpsStore | None = None,
 ) -> list[DiscoverySource]:
     """등록된 발견 소스 인스턴스 목록을 만든다(우선순위 순).
 
@@ -82,6 +84,14 @@ def build_sources(
         HnxSource(settings, rate_limiters=rate_limiters),
         GleifSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         WikidataSource(settings, rate_limiters=rate_limiters),
+        # 국민연금 스냅샷(무네트워크) — 살아있는 사업장을 업종·규모(가입자수) 우선으로.
+        # name: 키(사업자번호 마스킹) — 집계원 뒤에 둬 등록처 키가 항상 이긴다(첫 등장 우선).
+        NpsSource(
+            settings,
+            nps_store=nps_store,
+            cursor_store=cursor_store,
+            rate_limiters=rate_limiters,
+        ),
         # KR 지역검색(무료) — 업종 키워드로 살아있는 업체 직접 발견(순도·저장전환 高).
         # 집계원 뒤·검색 앞: name: 키 신뢰도는 낮지만 link(도메인) 동봉분은 dom: 키.
         NaverLocalSource(settings, rate_limiters=rate_limiters),
