@@ -192,3 +192,69 @@ def test_resolve_batch_skips_promotion_on_domain_collision(tmp_path, monkeypatch
         row = session.get(DiscoveredCompanyRow, "name:kr:살아있는상사")
         assert row.domain == "살아있는상사.example.com"
         assert session.query(CompanyRow).count() == 0  # 중복 company 생성 안 됨.
+
+
+class _CrashingEnricher(_FakeEnricher):
+    """enrich 단계에서 항상 예외 — 일시적 크래시(TLS·헤드리스 등) 재현."""
+
+    def enrich(self, dc: DiscoveredCompany) -> list:  # noqa: ANN001
+        raise RuntimeError("simulated enrich crash")
+
+
+def test_resolve_batch_exception_leaves_domain_unrecorded_for_retry(tmp_path, monkeypatch) -> None:
+    """enrich 예외 시 도메인을 기록하지 않는다 — 다음 배치가 재시도 가능해야 한다(리뷰 HIGH-MED)."""
+    _patch(monkeypatch)
+    monkeypatch.setattr(fill_mod, "Enricher", _CrashingEnricher)
+    s = Settings(database_url=f"sqlite:///{tmp_path}/rb4.db", dry_run=False, resolve_domains=True)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    with sm() as session:
+        session.add(
+            DiscoveredCompanyRow(
+                canonical_key="name:kr:살아있는상사", name="살아있는상사", country="KR",
+                industry="화학·석유화학", source="nps",
+            )
+        )
+        session.commit()
+
+    processed, resolved, promoted = fill_mod.resolve_batch(s, sm, limit=50, workers=2)
+    assert (processed, resolved, promoted) == (1, 0, 0)
+    with sm() as session:
+        row = session.get(DiscoveredCompanyRow, "name:kr:살아있는상사")
+        assert not row.domain  # 해석은 성공했었지만 기록되지 않음 — 재시도 가능.
+    assert fill_mod.count_resolve_targets(sm) == 1
+
+
+def test_resolve_batch_intra_batch_domain_collision_promotes_once(tmp_path, monkeypatch) -> None:
+    """같은 배치 안의 두 서로 다른 신규 행이 같은 도메인으로 해석되면 1건만 승격한다."""
+    _patch(monkeypatch)
+
+    class _SameDomainResolver(_FakeResolver):
+        def resolve(self, dc: DiscoveredCompany) -> str | None:
+            return "shared.example.com"  # 두 행 모두 같은 도메인으로 해석.
+
+    monkeypatch.setattr(fill_mod, "DomainResolver", _SameDomainResolver)
+    s = Settings(database_url=f"sqlite:///{tmp_path}/rb5.db", dry_run=False, resolve_domains=True)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    with sm() as session:
+        session.add(
+            DiscoveredCompanyRow(
+                canonical_key="name:kr:회사A", name="회사A", country="KR",
+                industry="화학·석유화학", source="nps",
+            )
+        )
+        session.add(
+            DiscoveredCompanyRow(
+                canonical_key="name:kr:회사B", name="회사B", country="KR",
+                industry="화학·석유화학", source="nps",
+            )
+        )
+        session.commit()
+
+    processed, resolved, promoted = fill_mod.resolve_batch(s, sm, limit=50, workers=2)
+    assert (processed, resolved, promoted) == (2, 2, 1)  # 둘 다 도메인 기록, 1건만 승격.
+    with sm() as session:
+        assert session.get(DiscoveredCompanyRow, "name:kr:회사A").domain == "shared.example.com"
+        assert session.get(DiscoveredCompanyRow, "name:kr:회사B").domain == "shared.example.com"
+        assert session.query(CompanyRow).count() == 1
