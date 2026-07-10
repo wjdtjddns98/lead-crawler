@@ -16,6 +16,7 @@ enrich 가 즉시 빈손으로 끝나 사이트·이메일을 못 얻는다. 이
 from __future__ import annotations
 
 import re
+import threading
 
 from ..config import Settings
 from ..cost_ledger import SupportsCostLedger
@@ -23,7 +24,7 @@ from ..dedup import normalize_domain
 from ..logging import get_logger
 from .base import DiscoveredCompany
 from .countries import resolve_country
-from .http import SupportsFetch
+from .http import HostRateLimiters, SupportsFetch
 from .search import _BLOCKLIST, _DEFAULT_LOCALE, _LOCALE
 from .search_provider import SearchProvider, build_naver_provider, build_search_provider
 
@@ -64,28 +65,54 @@ class DomainResolver:
         *,
         fetcher: SupportsFetch | None = None,
         cost_ledger: SupportsCostLedger | None = None,
+        rate_limiters: HostRateLimiters | None = None,
     ) -> None:
         self._settings = settings
         self._fetcher = fetcher
         self._cost_ledger = cost_ledger
+        # 공유 인스턴스가 워커 스레드끼리 provider(=Fetcher)까지 공유하면(전 워커 단일
+        # DomainResolver, 2026-07-10) 호스트별 페이싱을 이 레지스트리로 합산해야 429 를
+        # 막는다(적대 리뷰 MED-3 — 없으면 워커 각자의 min_interval 만으로 openapi.naver.com/
+        # google.serper.dev 를 racy 하게 때림).
+        self._rate_limiters = rate_limiters
         self._provider: SearchProvider | None = None
         self._naver: SearchProvider | None = None
         self._naver_built = False  # None 이 유효값(키 없음)이라 별도 built 플래그로 캐시.
         self._used = 0  # 런당 해석 호출 수(quota·과금 캡 추적).
         self._capped_logged = False
+        # 캡 체크+증가를 원자화하는 락 — 원 설계(run.py)는 메인스레드 단독 호출이라 무의미
+        # 했지만, 백필 소비자가 인스턴스를 워커 스레드끼리 공유하면(캡을 진짜 런당 상한으로
+        # 지키기 위해 스레드별로 나누지 않음) 락 없인 경합으로 캡이 새어나간다(2026-07-10
+        # 적대 리뷰 MED — 워커별 스레드로컬로 우회했다가 캡이 사실상 무제한이 되던 결함).
+        # 실제 네트워크 호출은 락 밖에서 하므로 병렬성은 그대로 유지된다.
+        self._lock = threading.Lock()
 
     def _get_provider(self) -> SearchProvider | None:
         if self._provider is None:
             self._provider = build_search_provider(
-                self._settings, fetcher=self._fetcher, cost_ledger=self._cost_ledger
+                self._settings, fetcher=self._fetcher, cost_ledger=self._cost_ledger,
+                rate_limiters=self._rate_limiters,
             )
         return self._provider
 
     def _get_naver(self) -> SearchProvider | None:
         if not self._naver_built:
-            self._naver = build_naver_provider(self._settings, fetcher=self._fetcher)
+            self._naver = build_naver_provider(
+                self._settings, fetcher=self._fetcher, rate_limiters=self._rate_limiters
+            )
             self._naver_built = True
         return self._naver
+
+    def _reserve(self) -> bool:
+        """캡 미만이면 이번 호출을 원자적으로 선점(``_used`` 증가) — 동시 호출 안전."""
+        with self._lock:
+            if self._used >= max(0, self._settings.domain_resolve_max):
+                if not self._capped_logged:  # 캡 도달은 한 번만 로그(조용한 누락 방지).
+                    log.info("resolve.capped", cap=self._settings.domain_resolve_max)
+                    self._capped_logged = True
+                return False
+            self._used += 1
+            return True
 
     def resolve(self, dc: DiscoveredCompany) -> str | None:
         """발견 기업의 공식 도메인을 해석한다(못 찾으면 None).
@@ -108,10 +135,7 @@ class DomainResolver:
             provider = self._get_naver() or provider
         if provider is None:  # 무키(공급자 없음) → no-op.
             return None
-        if self._used >= max(0, s.domain_resolve_max):
-            if not self._capped_logged:  # 캡 도달은 한 번만 로그(조용한 누락 방지).
-                log.info("resolve.capped", cap=s.domain_resolve_max)
-                self._capped_logged = True
+        if not self._reserve():
             return None
 
         search_name = dc.name
@@ -130,9 +154,7 @@ class DomainResolver:
         # 되는 경우가 많다(라이브 확인). 정밀도는 아래 _name_matches(슬러그↔도메인 root) 가
         # 보장하므로 쿼리는 넓게 두고 후보를 매칭 단계에서 거른다.
         query = f"{search_name} {keyword}"
-
-        self._used += 1
-        items = provider.fetch_page(query, gl=gl, lr=lr, start=1)  # 단일 쿼리(기업당 1회).
+        items = provider.fetch_page(query, gl=gl, lr=lr, start=1)  # 단일 쿼리(기업당 1회, _reserve 가 이미 카운트).
 
         tld = f".{country.iso2.lower()}" if country else ""
         best: str | None = None

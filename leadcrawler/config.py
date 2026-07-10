@@ -53,9 +53,15 @@ class Settings(BaseSettings):
     google_cse_cx: str = Field(default="")
     serper_api_key: str = Field(default="")  # Serper.dev SERP API(유료·CSE 신규차단 대체)
     bing_api_key: str = Field(default="")
-    # 네이버 검색 API(무료 25,000쿼리/일) — KR 기업 도메인 해석 전용(둘 다 있어야 활성).
+    # 네이버 검색 API(앱당 무료 25,000쿼리/일) — KR 발견·도메인 해석 전용(id/secret 둘 다
+    # 있어야 그 슬롯 활성). 예비 앱(선택) — 있으면 요청마다 라운드로빈으로 분산해 합산
+    # 일일 쿼터를 앱 수만큼 늘린다(DART 다중키와 동일 취지, 2026-07-10 429 실사고 대응).
     naver_client_id: str = Field(default="")
     naver_client_secret: str = Field(default="")
+    naver_client_id_2: str = Field(default="")
+    naver_client_secret_2: str = Field(default="")
+    naver_client_id_3: str = Field(default="")
+    naver_client_secret_3: str = Field(default="")
     # 검색 공급자 선택: auto(serper 키>cse 키) | serper | cse | none.
     search_provider: str = Field(default="auto")
 

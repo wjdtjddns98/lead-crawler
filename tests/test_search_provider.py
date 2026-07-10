@@ -140,3 +140,80 @@ def test_serper_error_returns_empty() -> None:
         _settings(serper_api_key="k"), fetcher=FakeFetcher(post_json=_post)
     )
     assert src.discover(Segment(country="KR", industry="건설")) == []
+
+
+# --- Naver 다중앱 로테이션 -------------------------------------------------
+
+class NaverFakeFetcher:
+    """get_json(Naver) 호출마다 헤더를 기록하는 더블."""
+
+    def __init__(self) -> None:
+        self.headers: list[dict] = []
+
+    def get_json(self, url, *, params=None, headers=None):
+        self.headers.append(dict(headers or {}))
+        return {"items": [{"link": "https://acme.co.kr", "title": "ACME"}]}
+
+
+def test_build_naver_provider_none_without_any_pair() -> None:
+    from leadcrawler.sources.search_provider import build_naver_provider
+
+    assert build_naver_provider(_settings()) is None
+    # 반쪽만 있는 슬롯은 그 슬롯을 카운트하지 않는다.
+    assert build_naver_provider(_settings(naver_client_id_2="only-id")) is None
+
+
+def test_build_naver_provider_single_pair() -> None:
+    from leadcrawler.sources.search_provider import NaverProvider, build_naver_provider
+
+    p = build_naver_provider(_settings(naver_client_id="a", naver_client_secret="b"))
+    assert isinstance(p, NaverProvider)
+
+
+def test_naver_rotates_across_configured_apps() -> None:
+    """id/secret 3쌍이면 fetch_page 호출마다 라운드로빈으로 자격증명을 순환한다."""
+    from leadcrawler.sources.search_provider import build_naver_provider
+
+    f = NaverFakeFetcher()
+    p = build_naver_provider(
+        _settings(
+            naver_client_id="id1", naver_client_secret="sec1",
+            naver_client_id_2="id2", naver_client_secret_2="sec2",
+            naver_client_id_3="id3", naver_client_secret_3="sec3",
+        ),
+        fetcher=f,
+    )
+    for _ in range(4):
+        p.fetch_page("q", gl="", lr="", start=1)
+    used = [h["X-Naver-Client-Id"] for h in f.headers]
+    assert used == ["id1", "id2", "id3", "id1"]  # 3앱 순환, 4번째는 다시 1번.
+
+
+def test_naver_rotation_thread_safe_even_distribution() -> None:
+    """여러 스레드가 동시에 fetch_page 를 불러도 인덱스 경합 없이 정확히 순환한다."""
+    import threading
+
+    from leadcrawler.sources.search_provider import build_naver_provider
+
+    f = NaverFakeFetcher()
+    p = build_naver_provider(
+        _settings(
+            naver_client_id="id1", naver_client_secret="sec1",
+            naver_client_id_2="id2", naver_client_secret_2="sec2",
+        ),
+        fetcher=f,
+    )
+    n_calls = 60
+
+    def _call():
+        p.fetch_page("q", gl="", lr="", start=1)
+
+    threads = [threading.Thread(target=_call) for _ in range(n_calls)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    used = [h["X-Naver-Client-Id"] for h in f.headers]
+    assert len(used) == n_calls
+    # 인덱스 경합(중복 소비·건너뜀)이 있었다면 두 앱의 호출수가 30/30으로 안 맞는다.
+    assert used.count("id1") == n_calls // 2 and used.count("id2") == n_calls // 2
