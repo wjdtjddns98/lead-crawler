@@ -23,6 +23,10 @@ _LEGAL_SUFFIXES = {
 }
 _WS = re.compile(r"\s+")
 _NON_ALNUM = re.compile(r"[^0-9a-z가-힣]+")
+# 괄호형 KR 법인격 축약 — "(주)대한화학"·"㈜"는 기호 제거만 하면 "주"가 독립 토큰으로
+# 남아 "주식회사 대한화학"과 다른 키가 된다(제약① 누수, 2026-07-10 적대 리뷰 H1).
+# 괄호째 통으로 제거해 표기 변형이 같은 키로 모이게 한다.
+_PAREN_LEGAL = re.compile(r"[(（]\s*(주|유|사|재|합|합자|합명)\s*[)）]|[㈜㈔㈗]")
 
 
 def tokenize_name(name: str) -> list[str]:
@@ -32,6 +36,7 @@ def tokenize_name(name: str) -> list[str]:
     토큰화를 단일 출처로 둔다.
     """
     s = (name or "").strip().lower()
+    s = _PAREN_LEGAL.sub(" ", s)
     s = _NON_ALNUM.sub(" ", s)
     return [t for t in _WS.sub(" ", s).split() if t and t not in _LEGAL_SUFFIXES]
 

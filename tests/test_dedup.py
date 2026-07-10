@@ -82,3 +82,15 @@ def test_missing_identity_raises() -> None:
     except ValueError:
         return
     raise AssertionError("식별 정보가 없으면 ValueError 여야 한다")
+
+
+def test_normalize_name_folds_ascii_paren_legal_forms() -> None:
+    """괄호형 KR 법인격 표기 변형이 같은 키로 접힌다(2026-07-10 리뷰 H1 — 제약① 누수)."""
+    base = normalize_name("주식회사 대한화학")
+    assert normalize_name("(주)대한화학") == base
+    assert normalize_name("대한화학(주)") == base
+    assert normalize_name("㈜대한화학") == base
+    assert normalize_name("（주）대한화학") == base  # 전각 괄호.
+    assert normalize_name("(유)대한화학") == normalize_name("유한회사 대한화학")
+    # 오폴딩 방지 — 이름 본문 속 '주'는 보존.
+    assert normalize_name("주연테크") != normalize_name("연테크")

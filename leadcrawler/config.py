@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     # 검색 공급자 선택: auto(serper 키>cse 키) | serper | cse | none.
     search_provider: str = Field(default="auto")
 
+    # 공공데이터포털(data.go.kr) 인증키 — 국민연금 사업장 API 동기화(nps-sync)용.
+    # 활용신청(자동승인) 후 발급되는 serviceKey. 무료, dev 10,000콜/일.
+    data_go_kr_service_key: str = Field(default="")
+
     # 도메인 해석(opt-in) — 발견 소스가 도메인을 못 준 기업(GLEIF 등)을 회사명+국가로
     # 검색해 공식 도메인을 채운다. Google CSE 키 필요(무료 100/일), dry_run no-op.
     # 정밀도 우선(회사명↔도메인 root 일치할 때만 채택). quota 보호용 런당 캡.

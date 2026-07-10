@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -273,6 +274,37 @@ class DartCorpCacheRow(Base):
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )
+
+
+class NpsWorkplaceRow(Base):
+    """국민연금 가입 사업장 월간 스냅샷 — 업종·규모 우선 KR 발견 소재(소스: nps).
+
+    공공데이터포털 월간 파일(가입자 3인+ 법인 중심)을 CLI ``nps-import`` 로 통째 적재
+    (스냅샷 교체)한다. 연금 납부 중 = 살아있는 사업장이라 실존(제약②) 정합이 높고,
+    ``subscribers``(가입자수) 내림차순으로 대형 우선 발견이 가능하다.
+    사업자등록번호는 원천에서 앞 6자리 마스킹 — 유니크키 불가(보조 기록만),
+    canonical_key 는 name+지역으로 다운스트림(build_company)이 정한다.
+    ``industry_code`` 는 6자리(KSIC 5자리 접두 대응) — 세그먼트 매칭은 접두 비교.
+    """
+
+    __tablename__ = "nps_workplace"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    data_ym: Mapped[str] = mapped_column(String(6), default="", server_default=text("''"))
+    name: Mapped[str] = mapped_column(String(512))
+    bizno_prefix: Mapped[str | None] = mapped_column(String(6), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    industry_code: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
+    industry_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    subscribers: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # 당월고지금액(원) — 규모/연봉 프록시. 대형 사업장은 int32 초과 가능 → BigInteger.
+    notice_amt: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    status_cd: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    resigned_at: Mapped[str | None] = mapped_column(String(8), nullable=True)  # 탈퇴일자 원문.
+    # 스테이징 플래그 — 새 스냅샷은 pending=True 로 적재하고, 전량 성공 후 한 트랜잭션에서
+    # (구 스냅샷 삭제 + pending 해제) 원자 스왑한다. 중간 실패 시 활성 스냅샷 무손상
+    # (잔재 pending 은 다음 인제스트가 청소). 조회(page/count)는 pending=False 만 본다.
+    pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 class CrawlTargetRow(Base):

@@ -130,6 +130,118 @@ def fill_emails(
             time.sleep(interval)
 
 
+@app.command("nps-import")
+def nps_import(
+    path: str = typer.Argument(..., help="국민연금 가입 사업장 월간 CSV 경로(data.go.kr 파일)"),
+) -> None:
+    """국민연금 사업장 스냅샷을 통째 적재한다(기존 적재분 교체 — 월간 파일 갱신 시 재실행).
+
+    적재분은 NpsSource(발견 소스)가 업종 접두 매칭 + 가입자수 내림차순(대형 우선)으로
+    소비한다. 인코딩(utf-8/cp949)은 자동 판별. API 자동 수집은 ``nps-sync``.
+    """
+    from .storage.db import get_sessionmaker
+    from .storage.nps import ingest_nps_csv
+
+    inserted, skipped = ingest_nps_csv(get_sessionmaker(), path)
+    typer.echo(f"적재 {inserted:,}행, 건너뜀 {skipped:,}행")
+    if inserted == 0:
+        raise typer.Exit(code=1)
+
+
+@app.command("nps-sync")
+def nps_sync(
+    per_page: int = typer.Option(1000, help="API 페이지 크기(odcloud perPage)"),
+    max_pages: int = typer.Option(2000, help="페이지 상한(폭주 방지 — 1000행×2000=200만행 여유)"),
+) -> None:
+    """국민연금 사업장 스냅샷을 odcloud 오픈API 로 자동 수집·적재한다(수동 다운로드 불필요).
+
+    data.go.kr 파일데이터(15083277)는 월별 업로드마다 새 uddi API 경로가 생긴다 —
+    스웨거 문서에서 최신 경로를 골라 페이지 순회 후 통째 교체 적재한다(멱등).
+    LEADCRAWLER_DATA_GO_KR_SERVICE_KEY(활용신청 후 발급) 필요. 매달 1회 실행(또는 스케줄).
+    """
+    import re as _re
+
+    from .config import get_settings
+    from .sources.http import Fetcher
+    from .storage.db import get_sessionmaker
+    from .storage.nps import ingest_nps_rows
+
+    settings = get_settings()
+    key = settings.data_go_kr_service_key
+    if not key:
+        typer.echo("LEADCRAWLER_DATA_GO_KR_SERVICE_KEY 가 없습니다(활용신청 후 .env 에 추가).")
+        raise typer.Exit(code=1)
+
+    def _redact(text: str) -> str:
+        """예외/URL 문자열에서 serviceKey 를 가린다 — httpx 예외가 전체 URL 을 포함해
+        키가 로그로 새는 것을 차단(적대 리뷰 M4)."""
+        return text.replace(key, "***")
+
+    fetcher = Fetcher(
+        user_agent=settings.discovery_user_agent,
+        min_interval=settings.http_request_delay,
+        timeout=settings.http_timeout,
+    )
+    try:
+        # 최신 월 경로 선택(적대 리뷰 H3 반영) — 날짜는 **요약(summary)에서만** 추출
+        # (경로의 uddi UUID 숫자열이 lexicographic max 를 오염시키던 결함). 6~8자리
+        # 숫자를 int 로 비교하고, 요약에 데이터셋 키워드가 있는 경로만 후보로 삼는다.
+        docs = fetcher.get_json(
+            "https://infuser.odcloud.kr/oas/docs", params={"namespace": "15083277/v1"}
+        )
+        paths = docs.get("paths") if isinstance(docs, dict) else None
+        if not isinstance(paths, dict) or not paths:
+            typer.echo("스웨거 문서에서 API 경로를 찾지 못했습니다.")
+            raise typer.Exit(code=1)
+
+        def _summary(spec: object) -> str:
+            get_spec = spec.get("get") if isinstance(spec, dict) else None
+            return str(get_spec.get("summary") or "") if isinstance(get_spec, dict) else ""
+
+        candidates: list[tuple[int, str, str]] = []  # (날짜, 경로, 요약)
+        for path, spec in paths.items():
+            summary = _summary(spec)
+            if "사업장" not in summary and "가입" not in summary:
+                continue  # 네임스페이스에 섞인 다른 데이터셋 방어.
+            dates = [int(d) for d in _re.findall(r"\d{6,8}", summary)]
+            if dates:
+                # 8자리(YYYYMMDD)와 6자리(YYYYMM)를 같은 자릿수로 정규화해 비교.
+                candidates.append((max(d if d >= 10**7 else d * 100 for d in dates), path, summary))
+        if not candidates:
+            typer.echo("요약에 날짜가 있는 사업장 데이터셋 경로를 찾지 못했습니다(스웨거 형식 변경?).")
+            raise typer.Exit(code=1)
+        _, latest_path, summary = max(candidates)
+        typer.echo(f"최신 데이터셋: {summary}")
+
+        def _pages():
+            page = 1
+            while page <= max_pages:
+                payload = fetcher.get_json(
+                    f"https://api.odcloud.kr/api{latest_path}",
+                    params={"page": page, "perPage": per_page, "serviceKey": key},
+                )
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if not data:
+                    return
+                yield from (d for d in data if isinstance(d, dict))
+                if len(data) < per_page:
+                    return
+                page += 1
+
+        inserted, skipped = ingest_nps_rows(get_sessionmaker(), _pages())
+    except typer.Exit:
+        raise
+    except Exception as exc:  # 키 누출 차단 — 원문 대신 마스킹 문자열로 보고.
+        typer.echo(f"동기화 실패: {_redact(str(exc))}")
+        raise typer.Exit(code=1) from None
+    finally:
+        fetcher.close()
+    typer.echo(f"적재 {inserted:,}행, 건너뜀 {skipped:,}행")
+    if inserted == 0:
+        typer.echo("0행 — 활성 스냅샷은 교체하지 않았습니다.")
+        raise typer.Exit(code=1)
+
+
 @app.command("import-existing")
 def import_existing(
     path: str = typer.Argument(..., help="기존 엑셀/CSV 경로(파일 또는 디렉터리)"),
