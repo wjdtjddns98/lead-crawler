@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Protocol
 
 from ..config import Settings
@@ -157,26 +158,50 @@ class SerperProvider(_BaseProvider):
 
 
 class NaverProvider(_BaseProvider):
-    """네이버 검색 API(웹문서 webkr). 무료 25,000쿼리/일 — KR 기업 도메인 해석용.
+    """네이버 검색 API(웹문서 webkr). 앱당 무료 25,000쿼리/일 — KR 기업 도메인 해석용.
 
     KR 한정 백엔드라 :func:`build_search_provider` 선택 사다리(글로벌 SERP)에는 넣지 않고,
     :func:`build_naver_provider` 로 별도 구성해 호출부(DomainResolver)가 KR 기업에만
     라우팅한다. ``gl``/``lr`` 은 무의미(네이버=한국 웹)라 무시한다. 무과금(원장 기록 없음).
+
+    예비 앱(선택, ``naver_client_id_2``/``_3``)이 있으면 **요청마다 라운드로빈**으로
+    자격증명을 분산해 합산 일일 쿼터를 앱 수만큼 늘린다(DART 다중키와 동일 취지,
+    2026-07-10 429 실사고 대응). 인스턴스가 여러 스레드에 공유될 수 있어(도메인 백필
+    consumer 등) 인덱스 증가를 락으로 원자화한다.
     """
 
     name = "naver"
     page_size = 30  # webkr display 상한.
     max_start = 100  # webkr start 상한.
 
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        creds: list[tuple[str, str]],
+        fetcher: SupportsFetch | None = None,
+        cost_ledger: SupportsCostLedger | None = None,
+        rate_limiters: HostRateLimiters | None = None,
+    ) -> None:
+        super().__init__(settings, fetcher=fetcher, cost_ledger=cost_ledger, rate_limiters=rate_limiters)
+        self._creds = creds
+        self._idx = 0
+        self._idx_lock = threading.Lock()
+
+    def _next_creds(self) -> tuple[str, str]:
+        with self._idx_lock:
+            cid, secret = self._creds[self._idx % len(self._creds)]
+            self._idx += 1
+            return cid, secret
+
     def fetch_page(self, query: str, *, gl: str, lr: str, start: int) -> list[dict]:
+        cid, secret = self._next_creds()
         params = {"query": query, "display": self.page_size, "start": start}
-        headers = {
-            "X-Naver-Client-Id": self._settings.naver_client_id,
-            "X-Naver-Client-Secret": self._settings.naver_client_secret,
-        }
+        headers = {"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": secret}
         try:
             payload = self._fetcher().get_json(_NAVER_URL, params=params, headers=headers)
-        except Exception as exc:  # 검색 실패는 빈 페이지(호출부가 miss 처리).
+        except Exception as exc:  # 검색 실패는 빈 페이지(호출부가 miss 처리) — 이 앱이 쿼터
+            # 소진이어도 다음 요청은 라운드로빈으로 다른 앱을 타 자동 회복된다.
             log.info("search.naver.error", start=start, err=str(exc))
             return []
         items = payload.get("items") if isinstance(payload, dict) else None
@@ -189,10 +214,19 @@ def build_naver_provider(
     fetcher: SupportsFetch | None = None,
     rate_limiters: HostRateLimiters | None = None,
 ) -> SearchProvider | None:
-    """네이버 공급자를 만든다(Client ID/Secret 둘 다 필요, 없으면 None)."""
-    if not (settings.naver_client_id and settings.naver_client_secret):
+    """네이버 공급자를 만든다 — id/secret 쌍이 갖춰진 앱(1~3개)을 전부 모아 로테이션.
+
+    한 쌍도 안 갖춰졌으면 None(기존 동작·회귀 0).
+    """
+    pairs = (
+        (settings.naver_client_id, settings.naver_client_secret),
+        (settings.naver_client_id_2, settings.naver_client_secret_2),
+        (settings.naver_client_id_3, settings.naver_client_secret_3),
+    )
+    creds = [(cid, secret) for cid, secret in pairs if cid and secret]
+    if not creds:
         return None
-    return NaverProvider(settings, fetcher=fetcher, rate_limiters=rate_limiters)
+    return NaverProvider(settings, creds=creds, fetcher=fetcher, rate_limiters=rate_limiters)
 
 
 def build_search_provider(

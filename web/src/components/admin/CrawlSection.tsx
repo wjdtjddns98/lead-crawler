@@ -35,6 +35,16 @@ const CRAWL_STATUS_LABEL: Record<CrawlJob["status"], string> = {
   cancelled: "중지됨",
 };
 
+// 크롤 이력 테이블 상태별 점 색 — 여러 행을 텍스트 없이도 빠르게 스캔하기 위함(#237).
+// running 은 패널과 같은 깜빡임, 나머지는 정적.
+const CRAWL_STATUS_DOT: Record<CrawlJob["status"], string> = {
+  idle: "bg-muted",
+  running: "bg-ok crawl-dot-blink",
+  done: "bg-ok",
+  failed: "bg-danger",
+  cancelled: "bg-muted",
+};
+
 // 전 업종 CSV ↔ 빈값(=전체) 접기 — BE 는 빈 업종을 422 로 거부하므로(과도 발견 방지)
 // 빈 선택은 전송 시 전 업종 CSV 로 확장하고, 표시할 땐 전 업종 일치 시 빈값으로 되돌려
 // 발송/추출 섹션과 같은 '선택 안 함 = 전체' UI 를 유지한다.
@@ -319,8 +329,13 @@ function CrawlProgress({ job }: { job: CrawlJob }) {
   const stopping = running && job.cancel_requested;
   return (
     <div className="mt-3 p-3 border border-line rounded-md bg-panel">
-      {/* 상태 헤더 — 주요 상태 강조(text-ink), 보조 정보(연속·중지요청·트리거)는 muted */}
+      {/* 상태 헤더 — 주요 상태 강조(text-ink), 보조 정보(연속·중지요청·트리거)는 muted.
+         실행 중엔 점 깜빡임으로 '작동 중' 표시(#237, 스윕 바는 아래 카운터에서 시선을 뺏는다는
+         피드백으로 교체) — 진행바 자체는 실제 세그먼트 진행률로 고정. */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 my-1">
+        {running && (
+          <span className="crawl-dot-blink inline-block w-2 h-2 rounded-full bg-ok" aria-hidden />
+        )}
         <span className="font-semibold text-ink text-sm">
           상태: {CRAWL_STATUS_LABEL[job.status]}
         </span>
@@ -338,8 +353,6 @@ function CrawlProgress({ job }: { job: CrawlJob }) {
         {stopping && <span className="text-muted text-xs">· 중지 요청됨…</span>}
         {job.triggered_by && <span className="text-muted text-xs">· {job.triggered_by}</span>}
       </div>
-      {/* 진행바 — 실행 중엔 실제 진행률(너무 느려 티 안 남) 대신 흐르는 애니메이션으로
-         '작동 중'만 표시. 그 외 상태는 실제 진행률 width 로 고정. bg-line 트랙 + bg-ok 채움. */}
       <div
         className="w-full h-1.5 rounded-full bg-line my-2 overflow-hidden"
         role="progressbar"
@@ -347,11 +360,7 @@ function CrawlProgress({ job }: { job: CrawlJob }) {
         aria-valuemin={0}
         aria-valuemax={100}
       >
-        {running ? (
-          <div className="h-full bg-ok rounded-full crawl-bar-indeterminate" />
-        ) : (
-          <div className="h-full bg-ok rounded-full transition-[width]" style={{ width: `${pct}%` }} />
-        )}
+        <div className="h-full bg-ok rounded-full transition-[width]" style={{ width: `${pct}%` }} />
       </div>
       {/* 카운터 — tabular-nums 으로 숫자 흔들림 방지, 항목별 gap 으로 가독성 확보 */}
       <div className="flex flex-wrap gap-x-4 text-muted text-xs tabular-nums my-1">
@@ -408,6 +417,10 @@ function CrawlHistory({ statusKey }: { statusKey: CrawlJob["status"] | undefined
                   {fmt(j.started_at)}
                 </td>
                 <td className={`${TD} whitespace-nowrap`}>
+                  <span
+                    className={`inline-block w-2 h-2 rounded-full mr-1.5 ${CRAWL_STATUS_DOT[j.status]}`}
+                    aria-hidden
+                  />
                   {CRAWL_STATUS_LABEL[j.status]}
                   {j.mode === "continuous" && (
                     <span className="text-muted text-xs"> · 연속 {j.rounds_done}회</span>
