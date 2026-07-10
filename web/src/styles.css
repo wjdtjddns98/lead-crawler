@@ -38,15 +38,14 @@
     font-size: 14px;
   }
 
-  /* 크롤 진행바 — 실제 진행률이 너무 느려 티가 안 나므로, 실행 중엔 진행률 대신
-     좌→우로 흐르는 부정형(indeterminate) 애니메이션으로 '작동 중'만 표시한다. */
-  @keyframes crawl-indeterminate {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(320%); }
+  /* 크롤 실행 중 표시 — 진행바(폭 스윕/펄스)는 아래 카운터에서 시선을 뺏는다는
+     피드백(#237)으로, 상태 텍스트 앞 점 깜빡임으로 교체. 바 자체는 실제 세그먼트 진행률로 고정. */
+  @keyframes crawl-dot-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.2; }
   }
-  .crawl-bar-indeterminate {
-    width: 40%;
-    animation: crawl-indeterminate 1.2s ease-in-out infinite;
+  .crawl-dot-blink {
+    animation: crawl-dot-blink 1s ease-in-out infinite;
   }
 
   /* 접근성 — OS '동작 줄이기' 설정 존중. animate-pulse(스켈레톤)·진행률 바 width
