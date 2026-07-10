@@ -242,6 +242,115 @@ def nps_sync(
         raise typer.Exit(code=1)
 
 
+@app.command("dart-cache-fill")
+def dart_cache_fill(
+    max_calls: int = typer.Option(0, help="이번 실행 호출 상한(0=일일예산까지)"),
+) -> None:
+    """DART 전 법인 명부를 corp 캐시에 선적재한다(미스만, 일일예산 내·재개 가능).
+
+    전 법인 ~11.8만 × corp당 1콜 — 일일예산 60k(20k×3키)면 이틀에 전수 완료.
+    완료 후엔 발견·조인(NPS 등)이 캐시만으로 홈페이지·사업자번호·상장 필드를 얻는다.
+    기존 캐시 행의 조인 컬럼(bizno/name_norm)도 로컬 재계산으로 백필한다(API 0콜).
+    """
+    from .config import get_settings
+    from .sources.dart import DartSource, _FetchedCorp, _quota_key, _QUOTA_SOURCE
+    from .storage.dart_cache import DbDartCorpCache
+    from .storage.db import get_sessionmaker
+    from .storage.discovery_cursor import DbCursorStore
+
+    settings = get_settings()
+    sm = get_sessionmaker()
+    cache = DbDartCorpCache(sm)
+    cursor_store = DbCursorStore(sm)
+
+    backfilled = cache.backfill_join_cols()
+    if backfilled:
+        typer.echo(f"조인 컬럼 백필: {backfilled:,}행 (API 0콜)")
+
+    src = DartSource(settings, cursor_store=cursor_store, corp_cache=cache)
+    keys = src._api_keys()
+    if not keys:
+        typer.echo("DART 키가 없습니다.")
+        raise typer.Exit(code=1)
+    budget = settings.dart_daily_call_budget
+
+    def _headroom(key: str) -> int:
+        if not budget:
+            return 10**9
+        used = cursor_store.get(_QUOTA_SOURCE, _quota_key(key))
+        return max(0, budget - used)
+
+    live = [k for k in keys if _headroom(k) > 0]
+    if not live:
+        typer.echo("일일예산 소진 — KST 자정 리셋 후 재실행하세요.")
+        raise typer.Exit(code=1)
+
+    corps, status = src._fetch_corps(live[0])
+    cursor_store.increment(_QUOTA_SOURCE, _quota_key(live[0]), 1)
+    if not corps:
+        typer.echo(f"corpCode 목록 수집 실패(status={status}).")
+        raise typer.Exit(code=1)
+    typer.echo(f"전 법인 {len(corps):,} — 캐시 미스만 채웁니다.")
+
+    fetcher = src._client()
+    filled = errors = 0
+    spent_this = 0
+    ki = 0
+    batch: list[_FetchedCorp] = []
+    try:
+        for i in range(0, len(corps), 1000):
+            window = corps[i : i + 1000]
+            cached = cache.get_many([c for c, _ in window])
+            for corp_code, corp_name in window:
+                if corp_code in cached:
+                    continue
+                if max_calls and spent_this >= max_calls:
+                    raise StopIteration
+                # 예산 남은 키 선택(라운드로빈) — 전부 소진이면 중단(재개 가능).
+                tries = 0
+                while tries < len(live) and _headroom(live[ki % len(live)]) <= 0:
+                    ki += 1
+                    tries += 1
+                key = live[ki % len(live)]
+                if _headroom(key) <= 0:
+                    raise StopIteration
+                ki += 1
+                spent_this += 1
+                cursor_store.increment(_QUOTA_SOURCE, _quota_key(key), 1)
+                try:
+                    info = fetcher.get_json(
+                        "https://opendart.fss.or.kr/api/company.json",
+                        params={"crtfc_key": key, "corp_code": corp_code},
+                    )
+                except Exception:
+                    errors += 1
+                    continue
+                st = info.get("status") if isinstance(info, dict) else None
+                if st in {"010", "011", "012", "020", "800", "901"}:
+                    # 키 치명(쿼터소진 등) — 이 키 예산을 소진 처리하고 다음 키로.
+                    used = cursor_store.get(_QUOTA_SOURCE, _quota_key(key))
+                    if budget and used < budget:
+                        cursor_store.increment(_QUOTA_SOURCE, _quota_key(key), budget - used)
+                    continue
+                if isinstance(info, dict) and st:
+                    batch.append(
+                        _FetchedCorp(
+                            corp_code, corp_name, str(st), info if st == "000" else None
+                        )
+                    )
+                    filled += 1
+                if len(batch) >= 500:
+                    cache.put_many(batch)
+                    batch = []
+    except StopIteration:
+        pass
+    finally:
+        if batch:
+            cache.put_many(batch)
+        src.close()
+    typer.echo(f"적재 {filled:,} · 오류 {errors:,} · 이번 호출 {spent_this:,} (재개 가능 — 미스만 재시도)")
+
+
 @app.command("nps-map-industries")
 def nps_map_industries() -> None:
     """스냅샷의 업종코드(~1.6천)를 택소노미 42로 통합 매핑한다(3층 — 코드 단위 1회).

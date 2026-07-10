@@ -260,3 +260,45 @@ def test_source_uses_label_path_for_unprefixed_industry(tmp_path) -> None:
     assert src.applies_to(seg)  # 접두표엔 없지만 3층 매핑이 연다.
     out = src.discover(seg)
     assert [d.name for d in out] == ["넥스트게임즈"]
+
+
+def test_dart_cache_join_attaches_fields_and_reg_key(tmp_path) -> None:
+    """NPS×DART 조인: (사업자번호6+정규화명) 매치 시 홈페이지·reg: 키·상장 부착,
+    미스는 기존(name 키·무도메인) 경로 그대로."""
+    from leadcrawler.sources.dart import _FetchedCorp
+    from leadcrawler.storage.dart_cache import DbDartCorpCache
+
+    s = Settings(
+        database_url=f"sqlite:///{tmp_path}/nps.db", dry_run=False,
+        discovery_max_per_source=10,
+    )
+    init_db(s)
+    sm = get_sessionmaker(s)
+    rows = [
+        # 대형화학(주) — 사업자번호 123456, DART 캐시에 동일 법인 존재(하단 put).
+        "202606,대형화학(주),123456,1,서울특별시 강남구 화학로 1,,201234,화학제품 제조업,500,90000000,",
+        "202606,무연고상사,777777,1,서울 중구 무연고로 2,,201234,화학제품 제조업,5,900000,",
+    ]
+    ingest_nps_csv(sm, _csv(tmp_path, rows))
+    cache = DbDartCorpCache(sm)
+    cache.put_many([
+        _FetchedCorp(
+            "00099999", "주식회사 대한화학", "000",
+            {
+                "status": "000", "corp_name": "주식회사 대형화학",  # (주) 표기 변형.
+                "bizr_no": "1234567890", "hm_url": "http://bigchem.co.kr",
+                "corp_cls": "K", "stock_code": "099999", "induty_code": "201234",
+            },
+        ),
+    ])
+    # put_many 가 name_norm 을 corp_name("주식회사 대형화학")에서 계산 — H1 픽스로
+    # NPS 의 "대형화학(주)" 정규화와 같은 값이어야 매치된다.
+    src = NpsSource(s, nps_store=NpsStore(sm), cursor_store=DictCursor(), dart_cache=cache)
+    out = src.discover(Segment(country="KR", industry="화학·석유화학"))
+    by_name = {d.name: d for d in out}
+    hit = by_name["대형화학(주)"]
+    assert hit.canonical_key.startswith("reg:dart:")  # DART 발견분과 완전 합치(제약①).
+    assert hit.domain and "bigchem" in hit.domain
+    assert hit.listed == "listed" and hit.market == "KOSDAQ"
+    miss = by_name["무연고상사"]
+    assert miss.domain is None and miss.canonical_key.startswith("name:")
