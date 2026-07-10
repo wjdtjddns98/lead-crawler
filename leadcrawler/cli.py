@@ -130,6 +130,53 @@ def fill_emails(
             time.sleep(interval)
 
 
+@app.command("backfill-resolve-domains")
+def backfill_resolve_domains(
+    loop: bool = typer.Option(False, "--loop", help="상시 consumer — 취소 전까지 배치 반복"),
+    batch: int = typer.Option(200, help="배치당 최대 회사 수(쿼리 LIMIT)"),
+    workers: int = typer.Option(4, help="해석+enrich 병렬(검색 API 레이트 고려해 보수적)"),
+    interval: float = typer.Option(60.0, help="--loop: 대상 부족/소진 시 폴링 대기(초)"),
+    min_queue: int = typer.Option(20, help="--loop: 대상이 이 수 이상 쌓이면 배치 처리(그 전엔 대기)"),
+) -> None:
+    """도메인 없이 발견돼 정체된 회사(NPS 등)에 도메인 해석부터 다시 돌려 승격을 시도한다.
+
+    최초 발견 때 도메인을 못 준 소스는 dedup 원장에 이름 키로만 남고, 발견 파이프라인의
+    dedup(제약①) 때문에 재크롤로도 다시 잡히지 않는다 — 이 사각을 되짚는 전용 소비자.
+    KR 은 네이버(무료 25k/일) 단독 라우팅이라, 쿼터 소진 중엔 처리수만 늘고 해석은
+    거의 안 될 수 있다(정상 — 쿼터 리셋 후 재실행하면 이어서 풀린다).
+    """
+    import time
+
+    from .pipeline.fill import count_resolve_targets, resolve_batch
+    from .storage.db import get_sessionmaker
+
+    configure_logging()
+    settings = get_settings()
+    if settings.dry_run:
+        typer.echo("DRY_RUN=true — 해석 무의미(더미 반환). 중단.")
+        raise typer.Exit(1)
+    if not settings.resolve_domains:
+        typer.echo("LEADCRAWLER_RESOLVE_DOMAINS=false — 해석 비활성. 중단.")
+        raise typer.Exit(1)
+    sm = get_sessionmaker(settings)
+
+    if not loop:
+        processed, resolved, promoted = resolve_batch(settings, sm, limit=batch, workers=workers)
+        typer.echo(f"[resolve] 처리 {processed}, 도메인해석 {resolved}, 신규승격 {promoted}")
+        return
+
+    typer.echo(f"[resolve] 상시 consumer 시작 (batch={batch} workers={workers} min_queue={min_queue})")
+    while True:  # 취소 = Ctrl-C / 프로세스 종료.
+        pending = count_resolve_targets(sm)
+        if pending < min_queue:
+            time.sleep(interval)
+            continue
+        processed, resolved, promoted = resolve_batch(settings, sm, limit=batch, workers=workers)
+        typer.echo(f"[resolve] 배치 처리 {processed}, 해석 {resolved}, 승격 {promoted}, 대기 {pending}")
+        if processed == 0 or resolved == 0:  # 소진/무진전 → 폭주 방지 대기.
+            time.sleep(interval)
+
+
 @app.command("nps-import")
 def nps_import(
     path: str = typer.Argument(..., help="국민연금 가입 사업장 월간 CSV 경로(data.go.kr 파일)"),
