@@ -301,6 +301,10 @@ class NpsWorkplaceRow(Base):
     notice_amt: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
     status_cd: Mapped[str | None] = mapped_column(String(8), nullable=True)
     resigned_at: Mapped[str | None] = mapped_column(String(8), nullable=True)  # 탈퇴일자 원문.
+    # 스테이징 플래그 — 새 스냅샷은 pending=True 로 적재하고, 전량 성공 후 한 트랜잭션에서
+    # (구 스냅샷 삭제 + pending 해제) 원자 스왑한다. 중간 실패 시 활성 스냅샷 무손상
+    # (잔재 pending 은 다음 인제스트가 청소). 조회(page/count)는 pending=False 만 본다.
+    pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 class CrawlTargetRow(Base):

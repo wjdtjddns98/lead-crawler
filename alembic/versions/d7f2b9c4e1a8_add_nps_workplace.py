@@ -32,6 +32,7 @@ def upgrade() -> None:
         sa.Column("notice_amt", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("status_cd", sa.String(length=8), nullable=True),
         sa.Column("resigned_at", sa.String(length=8), nullable=True),
+        sa.Column("pending", sa.Boolean(), nullable=False, server_default=sa.false()),
     )
     op.create_index("ix_nps_workplace_industry_code", "nps_workplace", ["industry_code"])
 

@@ -172,14 +172,20 @@ def nps_sync(
         typer.echo("LEADCRAWLER_DATA_GO_KR_SERVICE_KEY 가 없습니다(활용신청 후 .env 에 추가).")
         raise typer.Exit(code=1)
 
+    def _redact(text: str) -> str:
+        """예외/URL 문자열에서 serviceKey 를 가린다 — httpx 예외가 전체 URL 을 포함해
+        키가 로그로 새는 것을 차단(적대 리뷰 M4)."""
+        return text.replace(key, "***")
+
     fetcher = Fetcher(
         user_agent=settings.discovery_user_agent,
         min_interval=settings.http_request_delay,
         timeout=settings.http_timeout,
     )
     try:
-        # 최신 월 경로 선택 — 스웨거 paths 의 각 항목 요약/경로에서 가장 긴 최근 날짜
-        # 숫자열(YYYYMMDD…)을 뽑아 최댓값 경로를 고른다(월별 업로드 관행).
+        # 최신 월 경로 선택(적대 리뷰 H3 반영) — 날짜는 **요약(summary)에서만** 추출
+        # (경로의 uddi UUID 숫자열이 lexicographic max 를 오염시키던 결함). 6~8자리
+        # 숫자를 int 로 비교하고, 요약에 데이터셋 키워드가 있는 경로만 후보로 삼는다.
         docs = fetcher.get_json(
             "https://infuser.odcloud.kr/oas/docs", params={"namespace": "15083277/v1"}
         )
@@ -188,20 +194,24 @@ def nps_sync(
             typer.echo("스웨거 문서에서 API 경로를 찾지 못했습니다.")
             raise typer.Exit(code=1)
 
-        def _date_key(item: tuple[str, dict]) -> str:
-            path, spec = item
-            summary = ""
+        def _summary(spec: object) -> str:
             get_spec = spec.get("get") if isinstance(spec, dict) else None
-            if isinstance(get_spec, dict):
-                summary = str(get_spec.get("summary") or "")
-            digits = _re.findall(r"\d{8,}", f"{summary} {path}")
-            return max(digits, default="0")
+            return str(get_spec.get("summary") or "") if isinstance(get_spec, dict) else ""
 
-        latest_path, latest_spec = max(paths.items(), key=_date_key)
-        summary = ""
-        if isinstance(latest_spec, dict) and isinstance(latest_spec.get("get"), dict):
-            summary = str(latest_spec["get"].get("summary") or "")
-        typer.echo(f"최신 데이터셋: {summary or latest_path}")
+        candidates: list[tuple[int, str, str]] = []  # (날짜, 경로, 요약)
+        for path, spec in paths.items():
+            summary = _summary(spec)
+            if "사업장" not in summary and "가입" not in summary:
+                continue  # 네임스페이스에 섞인 다른 데이터셋 방어.
+            dates = [int(d) for d in _re.findall(r"\d{6,8}", summary)]
+            if dates:
+                # 8자리(YYYYMMDD)와 6자리(YYYYMM)를 같은 자릿수로 정규화해 비교.
+                candidates.append((max(d if d >= 10**7 else d * 100 for d in dates), path, summary))
+        if not candidates:
+            typer.echo("요약에 날짜가 있는 사업장 데이터셋 경로를 찾지 못했습니다(스웨거 형식 변경?).")
+            raise typer.Exit(code=1)
+        _, latest_path, summary = max(candidates)
+        typer.echo(f"최신 데이터셋: {summary}")
 
         def _pages():
             page = 1
@@ -219,10 +229,16 @@ def nps_sync(
                 page += 1
 
         inserted, skipped = ingest_nps_rows(get_sessionmaker(), _pages())
+    except typer.Exit:
+        raise
+    except Exception as exc:  # 키 누출 차단 — 원문 대신 마스킹 문자열로 보고.
+        typer.echo(f"동기화 실패: {_redact(str(exc))}")
+        raise typer.Exit(code=1) from None
     finally:
         fetcher.close()
     typer.echo(f"적재 {inserted:,}행, 건너뜀 {skipped:,}행")
     if inserted == 0:
+        typer.echo("0행 — 활성 스냅샷은 교체하지 않았습니다.")
         raise typer.Exit(code=1)
 
 

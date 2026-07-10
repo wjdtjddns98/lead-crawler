@@ -148,3 +148,43 @@ def test_ingest_rows_accepts_api_shaped_dicts(tmp_path) -> None:
     assert (inserted, skipped) == (1, 1)
     row = NpsStore(sm).page(("20",), offset=0, limit=5)[0]
     assert row.name == "API화학(주)" and row.subscribers == 42 and row.industry_code == "201234"
+
+
+def test_ingest_failure_keeps_active_snapshot(tmp_path) -> None:
+    """소비 중 예외(API 5xx 등) → 활성 스냅샷 무손상(원자 스왑 — 리뷰 H2)."""
+    from leadcrawler.storage.nps import ingest_nps_rows
+
+    s = _settings(tmp_path)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    ingest_nps_csv(sm, _csv(tmp_path, _rows()))
+    store = NpsStore(sm)
+    assert store.count() == 4
+
+    def _boom():
+        yield {"사업장명": "새사업장", "사업장업종코드": "201234", "가입자수": "1"}
+        raise RuntimeError("api down")
+
+    try:
+        ingest_nps_rows(sm, _boom())
+    except RuntimeError:
+        pass
+    assert store.count() == 4  # 구 스냅샷 그대로(부분 적재분은 pending 격리).
+    names = {r.name for r in store.page(("20",), offset=0, limit=10)}
+    assert "새사업장" not in names  # pending 행은 조회에 안 나온다.
+
+    # 다음 정상 인제스트가 잔재 pending 을 청소하고 교체한다.
+    inserted, _ = ingest_nps_csv(sm, _csv(tmp_path, _rows()[:1]))
+    assert inserted == 1 and store.count() == 1
+
+
+def test_ingest_empty_keeps_active_snapshot(tmp_path) -> None:
+    """0행 응답 → 스냅샷 교체 안 함(빈 API 응답이 데이터를 지우지 않게 — 리뷰 H2)."""
+    from leadcrawler.storage.nps import ingest_nps_rows
+
+    s = _settings(tmp_path)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    ingest_nps_csv(sm, _csv(tmp_path, _rows()))
+    inserted, _ = ingest_nps_rows(sm, iter([]))
+    assert inserted == 0 and NpsStore(sm).count() == 4

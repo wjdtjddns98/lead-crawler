@@ -48,6 +48,7 @@ def _to_int(value: str | None) -> int:
 def _open_csv(path: Path):
     """utf-8-sig → cp949 순으로 열어 DictReader 를 반환한다(공공데이터 인코딩 관행)."""
     for enc in ("utf-8-sig", "cp949"):
+        f = None
         try:
             f = path.open(encoding=enc, newline="")
             reader = csv.DictReader(f)
@@ -58,6 +59,8 @@ def _open_csv(path: Path):
                 return f, reader
             f.close()
         except (UnicodeDecodeError, OSError):
+            if f is not None:  # fieldnames 읽기 중 디코딩 실패 — 핸들 정리 후 다음 인코딩.
+                f.close()
             continue
     raise ValueError(f"CSV 헤더에서 '{_COL_NAME}' 컬럼을 찾지 못함(인코딩/서식 확인): {path}")
 
@@ -88,14 +91,17 @@ def _row_to_model(raw: dict) -> NpsWorkplaceRow | None:
 
 
 def ingest_nps_rows(sm: sessionmaker[Session], rows) -> tuple[int, int]:
-    """행 dict 이터러블을 통째 적재한다(기존 스냅샷 전체 교체). (적재행, 건너뜀) 반환.
+    """행 dict 이터러블을 스테이징 적재 후 원자 스왑한다. (적재행, 건너뜀) 반환.
 
-    CSV 파일·odcloud API 페이지가 같은 경로를 탄다. 스냅샷 교체 = 단순·멱등.
-    제너레이터 허용(페이지 스트리밍) — 배치 커밋이라 수십만 행도 메모리 안전.
+    CSV 파일·odcloud API 페이지가 같은 경로를 탄다. 새 스냅샷을 pending=True 로
+    스트리밍 적재(배치 커밋 — 수십만 행 메모리 안전)하고, **전량 성공했을 때만**
+    한 트랜잭션에서 구 스냅샷 삭제 + pending 해제로 교체한다 — 소비 중 예외
+    (API 5xx·키 만료 등)가 나면 활성 스냅샷은 무손상(적대 리뷰 H2). 0행이면
+    교체하지 않는다(빈 응답이 스냅샷을 지우지 않게). 잔재 pending 은 시작 시 청소.
     """
     inserted = skipped = 0
-    with sm() as session:
-        session.execute(delete(NpsWorkplaceRow))
+    with sm() as session:  # 이전 실패 런의 스테이징 잔재 청소.
+        session.execute(delete(NpsWorkplaceRow).where(NpsWorkplaceRow.pending.is_(True)))
         session.commit()
     batch: list[NpsWorkplaceRow] = []
     with sm() as session:
@@ -104,6 +110,7 @@ def ingest_nps_rows(sm: sessionmaker[Session], rows) -> tuple[int, int]:
             if model is None:
                 skipped += 1
                 continue
+            model.pending = True
             batch.append(model)
             if len(batch) >= _BATCH:
                 session.add_all(batch)
@@ -114,6 +121,17 @@ def ingest_nps_rows(sm: sessionmaker[Session], rows) -> tuple[int, int]:
             session.add_all(batch)
             session.commit()
             inserted += len(batch)
+    if inserted == 0:
+        log.info("nps.ingest.empty", skipped=skipped)  # 활성 스냅샷 유지.
+        return 0, skipped
+    with sm() as session:  # 원자 스왑 — 단일 트랜잭션(둘 다 성공 또는 둘 다 무효).
+        session.execute(delete(NpsWorkplaceRow).where(NpsWorkplaceRow.pending.is_(False)))
+        session.execute(
+            NpsWorkplaceRow.__table__.update()
+            .where(NpsWorkplaceRow.pending.is_(True))
+            .values(pending=False)
+        )
+        session.commit()
     log.info("nps.ingest", inserted=inserted, skipped=skipped)
     return inserted, skipped
 
@@ -140,7 +158,11 @@ class NpsStore:
     def count(self) -> int:
         try:
             with self._factory() as session:
-                return session.query(NpsWorkplaceRow).count()
+                return (
+                    session.query(NpsWorkplaceRow)
+                    .filter(NpsWorkplaceRow.pending.is_(False))
+                    .count()
+                )
         except Exception as exc:
             log.info("nps.count.error", err=str(exc))
             return 0
@@ -161,6 +183,7 @@ class NpsStore:
                 cond = [NpsWorkplaceRow.industry_code.like(f"{p}%") for p in prefixes]
                 stmt = (
                     select(NpsWorkplaceRow)
+                    .where(NpsWorkplaceRow.pending.is_(False))  # 스테이징 중 행 제외.
                     .where(or_(*cond))
                     .where(
                         (NpsWorkplaceRow.resigned_at.is_(None))
