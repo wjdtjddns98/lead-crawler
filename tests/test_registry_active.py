@@ -161,3 +161,17 @@ def test_factory_returns_none_without_keys() -> None:
 def test_factory_returns_checker_with_any_key() -> None:
     s = Settings(dry_run=False, opencorporates_api_key="t")
     assert isinstance(build_registry_checker(s), RegistryActiveChecker)
+
+
+def test_lazy_fetcher_carries_shared_rate_limiters() -> None:
+    """주입한 공유 HostRateLimiters 가 지연 생성 Fetcher 까지 전달된다(CH 합산 캡)."""
+    from leadcrawler.sources.http import HostRateLimiters
+
+    limiters = HostRateLimiters(default_rate=8.0)
+    s = Settings(dry_run=False, companies_house_api_key="k")
+    c = RegistryActiveChecker(s, rate_limiters=limiters)
+    fetcher = c._client()
+    try:
+        assert fetcher._rate_limiters is limiters
+    finally:
+        c.close()
