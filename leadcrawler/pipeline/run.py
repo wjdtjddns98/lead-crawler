@@ -235,9 +235,18 @@ def run_pipeline(
     # 잡혀도 정규화 도메인이 같으면 한 번만 추출한다. seen(키)과 짝을 이뤄 런 전체·DB 영속을
     # 가로질러 적용된다(within-segment 머지는 discover_segment 가 1차로 수행).
     seen_domains: set[str] = set()
+    # 런당 단일 공유 호스트 레이트리미터 — 발견(등록처 스캔)과 검증(registry_active 의 CH
+    # `/company` 조회)이 **같은 호스트·같은 API 키**를 쓰므로 합산 발사율을 한 레지스트리로
+    # 묶는다. 따로 만들면 각자 캡 안이어도 합산이 CH 키 쿼터(600/5분=2req/s)를 초과해 429
+    # (2026-07-10 실사고). dry_run 은 네트워크 없음이라 무해(주입만 되고 미사용).
+    host_limiters = HostRateLimiters(default_rate=settings.discovery_rate_per_host)
     # 라이브에서만 등록처 active 체커 주입(키 있을 때) — 실존 판정의 최강 신호(active=0.9 우선).
     # dry_run 은 도메인 유무로 결정적이라 미주입.
-    registry_checker = None if settings.dry_run else build_registry_checker(settings)
+    registry_checker = (
+        None
+        if settings.dry_run
+        else build_registry_checker(settings, rate_limiters=host_limiters)
+    )
     existence = ExistenceVerifier(settings, registry_checker=registry_checker)
     # 라이브에서만 과금 원장을 켠다(dry_run 은 유료 호출이 없음). persist 면 DB 에 누계
     # 적재(월·다중런 합산), 아니면 인메모리(현재 런 내 가드만). 예산 초과 시 유료 차단.
@@ -283,7 +292,11 @@ def run_pipeline(
         w = getattr(_tl, "trio", None)
         if w is None:  # 워커 스레드당 독립 인스턴스 1회 생성. registry_checker 까지 워커별로
             # 따로 만들어 공유 Fetcher 의 throttle(self._last) 경쟁을 없앤다(아키텍트 MAJOR).
-            rc = None if settings.dry_run else build_registry_checker(settings)
+            rc = (
+                None
+                if settings.dry_run
+                else build_registry_checker(settings, rate_limiters=host_limiters)
+            )
             enr = Enricher(settings, cost_ledger=cost_ledger)
             exi = ExistenceVerifier(settings, registry_checker=rc)
             val = EmailValidator(settings, cost_ledger=cost_ledger)
@@ -348,11 +361,7 @@ def run_pipeline(
             # 소스병렬(discovery_source_workers>1)이면 세그먼트 순차라도 소스들이 동시에
             # 나가므로, 공유 호스트 레이트리미터를 주입해 합산 발사율을 억제한다(세그먼트
             # 병렬 분기와 동일 배선). 소스병렬도 꺼져 있으면 None(기존 동작, 회귀 0).
-            seq_limiters = (
-                HostRateLimiters(default_rate=settings.discovery_rate_per_host)
-                if settings.discovery_source_workers > 1
-                else None
-            )
+            seq_limiters = host_limiters if settings.discovery_source_workers > 1 else None
             disco_sources = build_sources(
                 settings, cost_ledger, rate_limiters=seq_limiters, cursor_store=cursor_store
             )
@@ -468,7 +477,7 @@ def run_pipeline(
             # 세그먼트를 더 제출하지 않는다(유료검색 절감). ③ 취소는 미제출 세그먼트만 즉시
             # 멈춘다 — in-flight 발견은 완료까지 가며, 이미 완료·소비분은 보존된다. dry_run 은
             # 발견이 seen 과 무관·결정적이라 순차와 산출 집합이 완전히 동일.
-            shared_limiters = HostRateLimiters(default_rate=settings.discovery_rate_per_host)
+            shared_limiters = host_limiters  # 런 공유 레지스트리(발견+검증 합산 캡).
             seen_domains_snapshot = set(seen_domains)  # 읽기전용 — 워커는 변형하지 않는다.
             # 워커 스레드별 독립 sources — 워커당 1회만 빌드해 그 워커의 모든 세그먼트에 재사용
             # (keep-alive 보존, 세그먼트마다 재빌드하던 httpx churn 제거), 풀 종료 후 일괄 close.

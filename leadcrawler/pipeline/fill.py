@@ -22,6 +22,7 @@ from ..enrich.enricher import Enricher
 from ..enrich.industry_classify import build_classifier
 from ..logging import get_logger
 from ..sources.base import DiscoveredCompany
+from ..sources.http import HostRateLimiters
 from ..verify.email_validator import EmailValidator
 from ..verify.existence import ExistenceVerifier
 from ..verify.registry_active import build_registry_checker
@@ -85,7 +86,10 @@ def fill_batch(settings: Settings, sm: sessionmaker, *, limit: int, workers: int
         return 0, 0
 
     cost_ledger = CostLedger(settings, persist=True)
-    registry_checker = build_registry_checker(settings)
+    # 공유 호스트 캡 — CH `/company` 조회가 워커 수와 무관하게 합산 2req/s 를 지키게(429 방지).
+    registry_checker = build_registry_checker(
+        settings, rate_limiters=HostRateLimiters(default_rate=settings.discovery_rate_per_host)
+    )
     classifier = build_classifier(settings, ledger=cost_ledger)  # 스텝리스 공유 안전.
     tl = threading.local()
     created: list[object] = []

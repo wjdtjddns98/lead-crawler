@@ -131,7 +131,9 @@ def _patch_live(monkeypatch, n: int, *, disc=None) -> None:
     monkeypatch.setattr(run_mod, "EmailValidator", _FakeValidator)
     monkeypatch.setattr(run_mod, "CostLedger", _CountingLedger)
     monkeypatch.setattr(run_mod, "DomainResolver", _FakeDomainResolver)
-    monkeypatch.setattr(run_mod, "build_registry_checker", lambda settings: None)  # noqa: ARG005
+    monkeypatch.setattr(
+        run_mod, "build_registry_checker", lambda settings, **kw: None  # noqa: ARG005
+    )
 
 
 def _shape(leads):
