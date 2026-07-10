@@ -130,6 +130,24 @@ def fill_emails(
             time.sleep(interval)
 
 
+@app.command("nps-import")
+def nps_import(
+    path: str = typer.Argument(..., help="국민연금 가입 사업장 월간 CSV 경로(data.go.kr 파일)"),
+) -> None:
+    """국민연금 사업장 스냅샷을 통째 적재한다(기존 적재분 교체 — 월간 파일 갱신 시 재실행).
+
+    적재분은 NpsSource(발견 소스)가 업종 접두 매칭 + 가입자수 내림차순(대형 우선)으로
+    소비한다. 인코딩(utf-8/cp949)은 자동 판별.
+    """
+    from .storage.db import get_sessionmaker
+    from .storage.nps import ingest_nps_csv
+
+    inserted, skipped = ingest_nps_csv(get_sessionmaker(), path)
+    typer.echo(f"적재 {inserted:,}행, 건너뜀 {skipped:,}행")
+    if inserted == 0:
+        raise typer.Exit(code=1)
+
+
 @app.command("import-existing")
 def import_existing(
     path: str = typer.Argument(..., help="기존 엑셀/CSV 경로(파일 또는 디렉터리)"),

@@ -113,7 +113,7 @@ def test_specific_industry_gates_unfiltered_sources() -> None:
     rows = discover_segment(Segment(country="KR", industry="건설"), _dry_settings())
     # naver_local: KR 구체 업종에 적용되는 업종-우선 지역검색(광범위 '전체'는 미적용).
     assert {r.source for r in rows} == {
-        "dart", "opencorporates", "search", "ai_directory", "naver_local",
+        "dart", "opencorporates", "search", "ai_directory", "naver_local", "nps",
     }
 
 
@@ -249,7 +249,7 @@ def test_build_sources_registers_all_adapters() -> None:
     assert names == {
         "edgar", "dart", "companies_house", "pse", "set", "sgx", "idx", "bursa",
         "hose", "hnx", "gleif", "wikidata", "opencorporates", "search", "ai_directory",
-        "naver_local",
+        "naver_local", "nps",
     }
 
 
