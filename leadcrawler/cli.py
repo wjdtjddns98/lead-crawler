@@ -137,12 +137,90 @@ def nps_import(
     """국민연금 사업장 스냅샷을 통째 적재한다(기존 적재분 교체 — 월간 파일 갱신 시 재실행).
 
     적재분은 NpsSource(발견 소스)가 업종 접두 매칭 + 가입자수 내림차순(대형 우선)으로
-    소비한다. 인코딩(utf-8/cp949)은 자동 판별.
+    소비한다. 인코딩(utf-8/cp949)은 자동 판별. API 자동 수집은 ``nps-sync``.
     """
     from .storage.db import get_sessionmaker
     from .storage.nps import ingest_nps_csv
 
     inserted, skipped = ingest_nps_csv(get_sessionmaker(), path)
+    typer.echo(f"적재 {inserted:,}행, 건너뜀 {skipped:,}행")
+    if inserted == 0:
+        raise typer.Exit(code=1)
+
+
+@app.command("nps-sync")
+def nps_sync(
+    per_page: int = typer.Option(1000, help="API 페이지 크기(odcloud perPage)"),
+    max_pages: int = typer.Option(2000, help="페이지 상한(폭주 방지 — 1000행×2000=200만행 여유)"),
+) -> None:
+    """국민연금 사업장 스냅샷을 odcloud 오픈API 로 자동 수집·적재한다(수동 다운로드 불필요).
+
+    data.go.kr 파일데이터(15083277)는 월별 업로드마다 새 uddi API 경로가 생긴다 —
+    스웨거 문서에서 최신 경로를 골라 페이지 순회 후 통째 교체 적재한다(멱등).
+    LEADCRAWLER_DATA_GO_KR_SERVICE_KEY(활용신청 후 발급) 필요. 매달 1회 실행(또는 스케줄).
+    """
+    import re as _re
+
+    from .config import get_settings
+    from .sources.http import Fetcher
+    from .storage.db import get_sessionmaker
+    from .storage.nps import ingest_nps_rows
+
+    settings = get_settings()
+    key = settings.data_go_kr_service_key
+    if not key:
+        typer.echo("LEADCRAWLER_DATA_GO_KR_SERVICE_KEY 가 없습니다(활용신청 후 .env 에 추가).")
+        raise typer.Exit(code=1)
+
+    fetcher = Fetcher(
+        user_agent=settings.discovery_user_agent,
+        min_interval=settings.http_request_delay,
+        timeout=settings.http_timeout,
+    )
+    try:
+        # 최신 월 경로 선택 — 스웨거 paths 의 각 항목 요약/경로에서 가장 긴 최근 날짜
+        # 숫자열(YYYYMMDD…)을 뽑아 최댓값 경로를 고른다(월별 업로드 관행).
+        docs = fetcher.get_json(
+            "https://infuser.odcloud.kr/oas/docs", params={"namespace": "15083277/v1"}
+        )
+        paths = docs.get("paths") if isinstance(docs, dict) else None
+        if not isinstance(paths, dict) or not paths:
+            typer.echo("스웨거 문서에서 API 경로를 찾지 못했습니다.")
+            raise typer.Exit(code=1)
+
+        def _date_key(item: tuple[str, dict]) -> str:
+            path, spec = item
+            summary = ""
+            get_spec = spec.get("get") if isinstance(spec, dict) else None
+            if isinstance(get_spec, dict):
+                summary = str(get_spec.get("summary") or "")
+            digits = _re.findall(r"\d{8,}", f"{summary} {path}")
+            return max(digits, default="0")
+
+        latest_path, latest_spec = max(paths.items(), key=_date_key)
+        summary = ""
+        if isinstance(latest_spec, dict) and isinstance(latest_spec.get("get"), dict):
+            summary = str(latest_spec["get"].get("summary") or "")
+        typer.echo(f"최신 데이터셋: {summary or latest_path}")
+
+        def _pages():
+            page = 1
+            while page <= max_pages:
+                payload = fetcher.get_json(
+                    f"https://api.odcloud.kr/api{latest_path}",
+                    params={"page": page, "perPage": per_page, "serviceKey": key},
+                )
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if not data:
+                    return
+                yield from (d for d in data if isinstance(d, dict))
+                if len(data) < per_page:
+                    return
+                page += 1
+
+        inserted, skipped = ingest_nps_rows(get_sessionmaker(), _pages())
+    finally:
+        fetcher.close()
     typer.echo(f"적재 {inserted:,}행, 건너뜀 {skipped:,}행")
     if inserted == 0:
         raise typer.Exit(code=1)

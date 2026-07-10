@@ -62,55 +62,70 @@ def _open_csv(path: Path):
     raise ValueError(f"CSV 헤더에서 '{_COL_NAME}' 컬럼을 찾지 못함(인코딩/서식 확인): {path}")
 
 
-def ingest_nps_csv(sm: sessionmaker[Session], path: str | Path) -> tuple[int, int]:
-    """월간 CSV 를 통째 적재한다(기존 스냅샷 전체 교체). (적재행, 건너뜀) 반환.
+def _row_to_model(raw: dict) -> NpsWorkplaceRow | None:
+    """원천 행(dict — CSV/DictReader·odcloud API JSON 공용, 한국어 헤더 키)을 모델로.
 
-    스냅샷 교체 = 단순·멱등(같은 파일 재실행 결과 동일). 사업장명 없는 행은 건너뛴다.
+    사업장명 없는 행은 None(건너뜀). 값은 전부 방어적 문자열화·절단(신뢰불가 공공 파일).
     """
-    p = Path(path)
-    f, reader = _open_csv(p)
+    row = {str(k or "").strip(): str(v if v is not None else "").strip() for k, v in raw.items()}
+    name = row.get(_COL_NAME, "")
+    if not name:
+        return None
+    bizno = row.get(_COL_BIZNO, "").replace("-", "")[:6] or None
+    addr = row.get(_COL_ADDR_ROAD) or row.get(_COL_ADDR_JIBUN) or None
+    return NpsWorkplaceRow(
+        data_ym=row.get(_COL_YM, "")[:6],
+        name=name[:512],
+        bizno_prefix=bizno,
+        address=(addr or "")[:512] or None,
+        industry_code=(row.get(_COL_IND_CODE, "") or "")[:8] or None,
+        industry_name=(row.get(_COL_IND_NAME, "") or "")[:256] or None,
+        subscribers=_to_int(row.get(_COL_SUBS)),
+        notice_amt=_to_int(row.get(_COL_AMT)),
+        status_cd=(row.get(_COL_STATUS, "") or "")[:8] or None,
+        resigned_at=(row.get(_COL_RESIGNED, "") or "")[:8] or None,
+    )
+
+
+def ingest_nps_rows(sm: sessionmaker[Session], rows) -> tuple[int, int]:
+    """행 dict 이터러블을 통째 적재한다(기존 스냅샷 전체 교체). (적재행, 건너뜀) 반환.
+
+    CSV 파일·odcloud API 페이지가 같은 경로를 탄다. 스냅샷 교체 = 단순·멱등.
+    제너레이터 허용(페이지 스트리밍) — 배치 커밋이라 수십만 행도 메모리 안전.
+    """
     inserted = skipped = 0
-    try:
-        with sm() as session:
-            session.execute(delete(NpsWorkplaceRow))
-            session.commit()
-        batch: list[NpsWorkplaceRow] = []
-        with sm() as session:
-            for raw in reader:
-                row = {(k or "").strip(): (v or "").strip() for k, v in raw.items()}
-                name = row.get(_COL_NAME, "")
-                if not name:
-                    skipped += 1
-                    continue
-                bizno = row.get(_COL_BIZNO, "").replace("-", "")[:6] or None
-                addr = row.get(_COL_ADDR_ROAD) or row.get(_COL_ADDR_JIBUN) or None
-                batch.append(
-                    NpsWorkplaceRow(
-                        data_ym=row.get(_COL_YM, "")[:6],
-                        name=name[:512],
-                        bizno_prefix=bizno,
-                        address=(addr or "")[:512] or None,
-                        industry_code=(row.get(_COL_IND_CODE, "") or "")[:8] or None,
-                        industry_name=(row.get(_COL_IND_NAME, "") or "")[:256] or None,
-                        subscribers=_to_int(row.get(_COL_SUBS)),
-                        notice_amt=_to_int(row.get(_COL_AMT)),
-                        status_cd=(row.get(_COL_STATUS, "") or "")[:8] or None,
-                        resigned_at=(row.get(_COL_RESIGNED, "") or "")[:8] or None,
-                    )
-                )
-                if len(batch) >= _BATCH:
-                    session.add_all(batch)
-                    session.commit()
-                    inserted += len(batch)
-                    batch = []
-            if batch:
+    with sm() as session:
+        session.execute(delete(NpsWorkplaceRow))
+        session.commit()
+    batch: list[NpsWorkplaceRow] = []
+    with sm() as session:
+        for raw in rows:
+            model = _row_to_model(raw)
+            if model is None:
+                skipped += 1
+                continue
+            batch.append(model)
+            if len(batch) >= _BATCH:
                 session.add_all(batch)
                 session.commit()
                 inserted += len(batch)
+                batch = []
+        if batch:
+            session.add_all(batch)
+            session.commit()
+            inserted += len(batch)
+    log.info("nps.ingest", inserted=inserted, skipped=skipped)
+    return inserted, skipped
+
+
+def ingest_nps_csv(sm: sessionmaker[Session], path: str | Path) -> tuple[int, int]:
+    """월간 CSV 파일을 통째 적재한다(스냅샷 교체) — :func:`ingest_nps_rows` 의 파일 어댑터."""
+    p = Path(path)
+    f, reader = _open_csv(p)
+    try:
+        return ingest_nps_rows(sm, reader)
     finally:
         f.close()
-    log.info("nps.ingest", path=str(p), inserted=inserted, skipped=skipped)
-    return inserted, skipped
 
 
 class NpsStore:

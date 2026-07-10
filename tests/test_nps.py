@@ -125,3 +125,26 @@ def test_source_gating_and_dry_run(tmp_path) -> None:
     out1 = dry.discover(seg)
     out2 = dry.discover(seg)
     assert out1 and [d.canonical_key for d in out1] == [d.canonical_key for d in out2]
+
+
+def test_ingest_rows_accepts_api_shaped_dicts(tmp_path) -> None:
+    """odcloud API JSON 행(한국어 키, 숫자값 비문자열)도 같은 인제스트를 탄다."""
+    from leadcrawler.storage.nps import ingest_nps_rows
+
+    s = _settings(tmp_path)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    rows = [
+        {
+            "자료생성년월": 202606, "사업장명": "API화학(주)", "사업자등록번호": "123456",
+            "사업장가입상태코드": 1, "사업장도로명상세주소": "서울 강남구 1",
+            "사업장지번상세주소": "", "사업장업종코드": 201234,
+            "사업장업종코드명": "화학제품 제조업", "가입자수": 42, "당월고지금액": 1234567,
+            "탈퇴일자": None,
+        },
+        {"사업장명": ""},  # 이름 없음 → skip.
+    ]
+    inserted, skipped = ingest_nps_rows(sm, iter(rows))
+    assert (inserted, skipped) == (1, 1)
+    row = NpsStore(sm).page(("20",), offset=0, limit=5)[0]
+    assert row.name == "API화학(주)" and row.subscribers == 42 and row.industry_code == "201234"
