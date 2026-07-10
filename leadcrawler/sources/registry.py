@@ -22,7 +22,7 @@ from .base import (
 )
 from .http import HostRateLimiters
 from .companieshouse import CompaniesHouseSource
-from .dart import DartSource
+from .dart import DartSource, SupportsCorpCache
 from .edgar import EdgarSource
 from .exchanges import (
     BursaSource,
@@ -47,6 +47,7 @@ def build_sources(
     cost_ledger: SupportsCostLedger | None = None,
     rate_limiters: HostRateLimiters | None = None,
     cursor_store: SupportsCursorStore | None = None,
+    dart_corp_cache: SupportsCorpCache | None = None,
 ) -> list[DiscoverySource]:
     """등록된 발견 소스 인스턴스 목록을 만든다(우선순위 순).
 
@@ -64,7 +65,12 @@ def build_sources(
     """
     return [
         EdgarSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
-        DartSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        DartSource(
+            settings,
+            rate_limiters=rate_limiters,
+            cursor_store=cursor_store,
+            corp_cache=dart_corp_cache,
+        ),
         CompaniesHouseSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         PseSource(settings, rate_limiters=rate_limiters),
         SetSource(settings, rate_limiters=rate_limiters),

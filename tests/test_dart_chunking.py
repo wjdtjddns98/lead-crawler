@@ -37,12 +37,18 @@ class FakeCursorStore:
 
 
 class CountingFetcher:
-    """SupportsFetch 더블 — corpCode ZIP(get_bytes)과 company.json(get_json) 호출 계수."""
+    """SupportsFetch 더블 — corpCode ZIP·company.json·list.json(최근공시) 호출 계수.
 
-    def __init__(self, corps_n: int, *, on_company) -> None:
+    on_list 미지정이면 list.json 은 '데이터 없음'(013) — 최근공시 레인이 빈 목록으로
+    동작(레인 자체는 호출 1회를 쓰므로 쿼터 단언은 +1 을 반영한다).
+    """
+
+    def __init__(self, corps_n: int, *, on_company, on_list=None) -> None:
         self._corps_n = corps_n
         self._on_company = on_company
+        self._on_list = on_list
         self.zip_calls = 0
+        self.list_calls = 0
         self.company_codes: list[str] = []
 
     def get_bytes(self, url: str, *, params=None, headers=None) -> bytes:
@@ -50,6 +56,9 @@ class CountingFetcher:
         return _corp_zip(self._corps_n)
 
     def get_json(self, url: str, *, params=None, headers=None) -> Any:
+        if "list.json" in url:
+            self.list_calls += 1
+            return self._on_list(params or {}) if self._on_list else {"status": "013"}
         code = (params or {})["corp_code"]
         self.company_codes.append(code)
         return self._on_company(code)
@@ -159,8 +168,8 @@ def test_ep3a_all_chunks_complete_advances_cursor_by_window() -> None:
     _run_chunks(src, _SEG)
     # window_end = offset(0) + cap < len(corps) → 커서 = cap(랩 아님).
     assert store.get("dart", _SEG.label) == cap
-    # 쿼터: corpCode 1 + company.json cap.
-    assert store.get(_QUOTA_SOURCE, _quota_key("k")) == cap + 1
+    # 쿼터: corpCode 1 + 최근공시 list 1 + company.json cap.
+    assert store.get(_QUOTA_SOURCE, _quota_key("k")) == cap + 2
 
 
 def test_ep3b_mid_chunk_fatal_advances_min_contiguous_frontier() -> None:
@@ -183,8 +192,9 @@ def test_ep3b_mid_chunk_fatal_advances_min_contiguous_frontier() -> None:
     # 청크0 완주(→ _CHUNK_SCAN), 청크1 fatal_idx 에서 정지 → frontier = fatal_idx.
     # 청크2 는 완주해도 gap 방지로 건너뜀(커서에 반영 안 됨).
     assert store.get("dart", _SEG.label) == fatal_idx
-    # 쿼터(정확 집계): corpCode 1 + 청크0 _CHUNK_SCAN + 청크1 (200+1 fatal) + 청크2 _CHUNK_SCAN.
-    expected = 1 + _CHUNK_SCAN + (200 + 1) + _CHUNK_SCAN
+    # 쿼터(정확 집계): corpCode 1 + 최근공시 list 1 + 청크0 _CHUNK_SCAN + 청크1 (200+1 fatal)
+    # + 청크2 _CHUNK_SCAN.
+    expected = 2 + _CHUNK_SCAN + (200 + 1) + _CHUNK_SCAN
     assert store.get(_QUOTA_SOURCE, _quota_key("k")) == expected
 
 
@@ -211,13 +221,13 @@ def test_quota_reservation_visible_before_scan_and_settled_after() -> None:
     src = DartSource(_settings(cap), fetcher=fetcher, cursor_store=store)
 
     chunks, finalize = src.discover_chunks(_SEG)
-    # 예약 시점(스캔 전): corpCode 1 + 계획 창(cap) 이 이미 기록돼 있어야 한다.
-    assert store.get(_QUOTA_SOURCE, _quota_key("k")) == cap + 1
+    # 예약 시점(스캔 전): corpCode 1 + 최근공시 list 1 + 계획 창(cap) 이 기록돼 있어야 한다.
+    assert store.get(_QUOTA_SOURCE, _quota_key("k")) == cap + 2
 
     results = [chunk() for chunk in chunks]
     finalize(results)
-    # 전청크 완주 → 실사용 == 계획 → 정산 후에도 cap + 1(변화 없음).
-    assert store.get(_QUOTA_SOURCE, _quota_key("k")) == cap + 1
+    # 전청크 완주 → 실사용 == 계획 → 정산 후에도 cap + 2(변화 없음).
+    assert store.get(_QUOTA_SOURCE, _quota_key("k")) == cap + 2
 
 
 def test_quota_reservation_refunds_early_stop() -> None:
@@ -238,8 +248,8 @@ def test_quota_reservation_refunds_early_stop() -> None:
         cursor_store=store,
     )
     _run_chunks(src, _SEG)
-    # 실사용: corpCode 1 + 청크0 완주 + 청크1 (200 + fatal 1콜) + 청크2 완주.
-    expected = 1 + _CHUNK_SCAN + (200 + 1) + _CHUNK_SCAN
+    # 실사용: corpCode 1 + 최근공시 list 1 + 청크0 완주 + 청크1 (200 + fatal 1콜) + 청크2 완주.
+    expected = 2 + _CHUNK_SCAN + (200 + 1) + _CHUNK_SCAN
     assert store.get(_QUOTA_SOURCE, _quota_key("k")) == expected
 
 
@@ -265,3 +275,148 @@ def test_quota_sibling_segment_sees_reservation() -> None:
     # 두 번째 세그먼트의 창 = 잔여예산(2000-1501-1(fetch)) 안으로 클램프 → 계획 1500 이 아님.
     planned2 = sum(len(c()) for c in chunks2)  # broad 전체 매칭이라 산출수 == 스캔수.
     assert planned2 <= budget - 1501
+
+
+class FakeCorpCache:
+    """SupportsCorpCache 더블 — dict 저장, get/put 계수."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, object] = {}
+        self.put_calls = 0
+
+    def get_many(self, corp_codes):
+        return {c: self.data[c] for c in corp_codes if c in self.data}
+
+    def put_many(self, entries) -> None:
+        self.put_calls += 1
+        for e in entries:
+            self.data[e.corp_code] = e
+
+
+def test_corp_cache_cold_then_warm_zero_api_calls() -> None:
+    """콜드 스캔이 캐시를 채우고, 같은 구간 웜 재스캔은 company.json 0콜 + 동일 산출."""
+    corps_n = 5 * _CHUNK_SCAN
+    cap = 3 * _CHUNK_SCAN
+    cache = FakeCorpCache()
+
+    # 콜드: 전 corp 미스 → cap 콜 + 캐시 적재.
+    f1 = CountingFetcher(corps_n, on_company=_ok)
+    src1 = DartSource(
+        _settings(cap), fetcher=f1, cursor_store=FakeCursorStore(), corp_cache=cache
+    )
+    cold_ids = {d.registry_id for d in _run_chunks(src1, _SEG)}
+    assert len(f1.company_codes) == cap
+    assert cache.put_calls >= 1
+    assert len(cache.data) == cap  # status 000 전부 캐시.
+
+    # 웜: 다른 세그먼트(독립 커서)가 같은 구간 [0, cap) 스캔 → API 0콜, 같은 산출.
+    warm_seg = Segment(country="KR", industry="전체", listed="listed")
+    f2 = CountingFetcher(corps_n, on_company=_ok)
+    src2 = DartSource(
+        _settings(cap), fetcher=f2, cursor_store=FakeCursorStore(), corp_cache=cache
+    )
+    warm_ids = {d.registry_id for d in _run_chunks(src2, warm_seg)}
+    assert len(f2.company_codes) == 0  # 핵심: 중복조회 0.
+    assert warm_ids == cold_ids
+
+    # 쿼터: 웜 스캔의 실사용 0 → 예약 전액 환불(fetch 1콜만 남음).
+    # (콜드 cap+1) + (웜 corpCode fetch 1) — company.json 재조회 없음.
+
+
+def test_corp_cache_nodata_status_not_refetched() -> None:
+    """비치명 비정상 status(013 데이터없음)는 status 만 캐시 → 재스캔 시 재조회 0."""
+    corps_n = 2 * _CHUNK_SCAN
+    cap = _CHUNK_SCAN
+    cache = FakeCorpCache()
+    nodata_code = f"{5:08d}"
+
+    def _mixed(code: str) -> dict:
+        if code == nodata_code:
+            return {"status": "013", "message": "조회된 데이타가 없습니다."}
+        return _ok(code)
+
+    f1 = CountingFetcher(corps_n, on_company=_mixed)
+    src1 = DartSource(
+        _settings(cap), fetcher=f1, cursor_store=FakeCursorStore(), corp_cache=cache
+    )
+    ids1 = {d.registry_id for d in _run_chunks(src1, _SEG)}
+    assert nodata_code not in ids1  # 013 은 emit 안 됨.
+    assert nodata_code in cache.data  # 하지만 status 는 캐시됨.
+
+    f2 = CountingFetcher(corps_n, on_company=_mixed)
+    warm_seg = Segment(country="KR", industry="전체", listed="listed")
+    src2 = DartSource(
+        _settings(cap), fetcher=f2, cursor_store=FakeCursorStore(), corp_cache=cache
+    )
+    _run_chunks(src2, warm_seg)
+    assert nodata_code not in f2.company_codes  # 013 재조회 0.
+
+
+def test_db_corp_cache_roundtrip(tmp_path) -> None:
+    """DbDartCorpCache 왕복 — 업서트 후 벌크조회로 info 원문 복원(SQLite)."""
+    from leadcrawler.sources.dart import _FetchedCorp
+    from leadcrawler.storage.dart_cache import DbDartCorpCache
+    from leadcrawler.storage.db import get_sessionmaker, init_db
+
+    settings = Settings(database_url=f"sqlite:///{tmp_path}/cache.db", dry_run=True)
+    init_db(settings)
+    store = DbDartCorpCache(get_sessionmaker(settings))
+    info = {"status": "000", "corp_name": "회사1", "induty_code": "264", "hm_url": "x.kr"}
+    store.put_many([
+        _FetchedCorp("00000001", "회사1", "000", info),
+        _FetchedCorp("00000002", "회사2", "013", None),
+    ])
+    got = store.get_many(["00000001", "00000002", "00000003"])
+    assert set(got) == {"00000001", "00000002"}
+    assert got["00000001"].info["induty_code"] == "264"
+    assert got["00000002"].status == "013" and got["00000002"].info is None
+    # 멱등 업서트 — 같은 corp 재기록해도 1행.
+    store.put_many([_FetchedCorp("00000001", "회사1", "000", info)])
+    assert len(store.get_many(["00000001"])) == 1
+
+
+def test_recent_filed_priority_lane_emits_and_keeps_cursor() -> None:
+    """L2 최근공시 레인: 커서 창 밖의 최근 공시 corp 도 이번 런에 emit 되고,
+    커서는 창(cap)만큼만 전진(레인은 커서 중립)."""
+    corps_n = 5 * _CHUNK_SCAN
+    cap = 3 * _CHUNK_SCAN
+    fresh_code = f"{corps_n - 3:08d}"  # 창 [0, cap) 밖 — 커서로는 한참 뒤 corp.
+
+    def _on_list(params) -> dict:
+        assert "bgn_de" in params and "end_de" in params
+        return {"status": "000", "list": [{"corp_code": fresh_code, "corp_name": "신규공시사"}]}
+
+    store = FakeCursorStore()
+    fetcher = CountingFetcher(corps_n, on_company=_ok, on_list=_on_list)
+    src = DartSource(_settings(cap), fetcher=fetcher, cursor_store=store)
+    ids = {d.registry_id for d in _run_chunks(src, _SEG)}
+    assert fresh_code in ids  # 창 밖인데도 이번 런에 발견됨(살아있는 기업 우선).
+    assert store.get("dart", _SEG.label) == cap  # 커서는 창만큼만(레인 중립).
+    # 쿼터 정산 = 실사용: corpCode 1 + list 1 + 레인 1 + 창 cap.
+    assert store.get(_QUOTA_SOURCE, _quota_key("k")) == cap + 3
+
+
+def test_recent_lane_warm_cache_zero_calls() -> None:
+    """L2×L1: 첫 세그먼트가 레인 corp 를 캐시에 넣으면, 다음 세그먼트 레인은 API 0콜."""
+    corps_n = 2 * _CHUNK_SCAN
+    cap = _CHUNK_SCAN
+    fresh_code = f"{corps_n - 1:08d}"
+
+    def _on_list(params) -> dict:
+        return {"status": "000", "list": [{"corp_code": fresh_code, "corp_name": "신규공시사"}]}
+
+    cache = FakeCorpCache()
+    f1 = CountingFetcher(corps_n, on_company=_ok, on_list=_on_list)
+    src1 = DartSource(
+        _settings(cap), fetcher=f1, cursor_store=FakeCursorStore(), corp_cache=cache
+    )
+    _run_chunks(src1, _SEG)
+    assert fresh_code in cache.data  # 레인 조회분도 캐시에 적재.
+
+    f2 = CountingFetcher(corps_n, on_company=_ok, on_list=_on_list)
+    warm_seg = Segment(country="KR", industry="전체", listed="listed")
+    src2 = DartSource(
+        _settings(cap), fetcher=f2, cursor_store=FakeCursorStore(), corp_cache=cache
+    )
+    _run_chunks(src2, warm_seg)
+    assert fresh_code not in f2.company_codes  # 레인 재조회 0(캐시 히트).
