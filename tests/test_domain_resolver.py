@@ -101,6 +101,38 @@ def test_cap_enforced() -> None:
     assert f.calls == 1
 
 
+def test_cap_enforced_under_concurrent_workers() -> None:
+    """공유 인스턴스를 여러 워커 스레드가 동시에 resolve() 해도 캡을 초과해 호출하지
+    않는다 — ``resolve_batch`` 가 전 워커 공유 단일 인스턴스를 쓰는 근거였던 핵심 주장을
+    실측(2026-07-10 적대 리뷰 테스트갭: 순차 ``test_cap_enforced`` 만으론 ``_reserve`` 락의
+    동시성 정확성이 검증되지 않았다)."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    class _CountingFetcher:
+        def __init__(self) -> None:
+            self.calls = 0
+            self._lock = threading.Lock()
+
+        def get_json(self, url: str, *, params: dict | None = None) -> dict:
+            with self._lock:
+                self.calls += 1
+            return {"items": []}
+
+    cap = 5
+    f = _CountingFetcher()
+    # search_provider="cse" 로 강제 — 로컬 .env 의 실제 serper 키가 auto 선택을 새치기해
+    # (post_json 미구현 _CountingFetcher 가 조용히 예외처리돼 호출이 안 잡히는) 환경별
+    # 결과 차이를 없앤다(다른 테스트들의 로컬 베이스라인 실패와 동일 원인, memory 참고).
+    r = DomainResolver(_settings(domain_resolve_max=cap, search_provider="cse"), fetcher=f)
+    targets = [_dc(f"Company{i}", country="US") for i in range(20)]
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        list(pool.map(r.resolve, targets))
+
+    assert f.calls == cap  # 동시 20건 중 정확히 캡만큼만 실제 fetch_page 호출.
+
+
 def test_non_latin_name_no_fetch() -> None:
     # ASCII 토큰이 없으면(비라틴 명칭) 검색 자체를 시도하지 않음.
     f = FakeFetcher(_items("https://example.com"))

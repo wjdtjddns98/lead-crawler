@@ -24,7 +24,7 @@ from ..dedup import normalize_domain
 from ..logging import get_logger
 from .base import DiscoveredCompany
 from .countries import resolve_country
-from .http import SupportsFetch
+from .http import HostRateLimiters, SupportsFetch
 from .search import _BLOCKLIST, _DEFAULT_LOCALE, _LOCALE
 from .search_provider import SearchProvider, build_naver_provider, build_search_provider
 
@@ -65,10 +65,16 @@ class DomainResolver:
         *,
         fetcher: SupportsFetch | None = None,
         cost_ledger: SupportsCostLedger | None = None,
+        rate_limiters: HostRateLimiters | None = None,
     ) -> None:
         self._settings = settings
         self._fetcher = fetcher
         self._cost_ledger = cost_ledger
+        # 공유 인스턴스가 워커 스레드끼리 provider(=Fetcher)까지 공유하면(전 워커 단일
+        # DomainResolver, 2026-07-10) 호스트별 페이싱을 이 레지스트리로 합산해야 429 를
+        # 막는다(적대 리뷰 MED-3 — 없으면 워커 각자의 min_interval 만으로 openapi.naver.com/
+        # google.serper.dev 를 racy 하게 때림).
+        self._rate_limiters = rate_limiters
         self._provider: SearchProvider | None = None
         self._naver: SearchProvider | None = None
         self._naver_built = False  # None 이 유효값(키 없음)이라 별도 built 플래그로 캐시.
@@ -84,13 +90,16 @@ class DomainResolver:
     def _get_provider(self) -> SearchProvider | None:
         if self._provider is None:
             self._provider = build_search_provider(
-                self._settings, fetcher=self._fetcher, cost_ledger=self._cost_ledger
+                self._settings, fetcher=self._fetcher, cost_ledger=self._cost_ledger,
+                rate_limiters=self._rate_limiters,
             )
         return self._provider
 
     def _get_naver(self) -> SearchProvider | None:
         if not self._naver_built:
-            self._naver = build_naver_provider(self._settings, fetcher=self._fetcher)
+            self._naver = build_naver_provider(
+                self._settings, fetcher=self._fetcher, rate_limiters=self._rate_limiters
+            )
             self._naver_built = True
         return self._naver
 

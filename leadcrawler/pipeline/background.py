@@ -167,7 +167,10 @@ def trigger_crawl_job(
         # 발견 시점 inline 해석(run.py)이 실패/스킵한(쿼터 소진 등) 회사를 재시도해 승격
         # 기회를 살린다. 웹앱 '크롤 실행' 버튼 하나로 발견+이메일+도메인재시도가 전부
         # 자동으로 돈다 — 사용자가 별도 CLI(backfill-resolve-domains 등)를 몰라도 된다.
-        if persist and runner is None and not settings.dry_run:
+        # resolve_domains opt-in 게이트 — CLI(cli.py)·run.py 인라인 해석과 동일하게 지켜야
+        # 한다(2026-07-10 적대 리뷰 MED-2: 게이트 없으면 opt-in 안 한 운영자도 persist 크롤마다
+        # 유료 검색키가 있으면 과금이 도는 사고).
+        if persist and runner is None and not settings.dry_run and settings.resolve_domains:
             _spawn_domain_backfill_thread(settings, job_id)
     except Exception as exc:  # 스레드 spawn 실패 — 가드 누수 방지 + 작업을 failed 로.
         log.warning("crawl_job.spawn_failed", job=job_id, err=str(exc))

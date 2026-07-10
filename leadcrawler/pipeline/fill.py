@@ -170,10 +170,16 @@ def resolve_batch(settings: Settings, sm: sessionmaker, *, limit: int, workers: 
 
     반환 (처리수, 도메인해석수, 신규승격수). enrich/existence/validate 는 워커별 독립
     인스턴스로 병렬화하지만(``fill_batch`` 와 동일 스레드로컬 관례), **도메인 해석기는
-    전 워커가 공유하는 단일 인스턴스**를 쓴다 — ``DomainResolver`` 의 런당 캡
-    (``domain_resolve_max``)이 원래 "런 전체 상한"인데 워커별로 나누면 워커수배로
-    새어나가기 때문(2026-07-10 적대 리뷰 MED). 캡 체크는 ``DomainResolver`` 내부 락으로
-    원자화돼 있어(스레드 안전) 공유해도 실제 네트워크 호출은 병렬로 나간다.
+    전 워커가 공유하는 단일 인스턴스**를 쓴다 — ``DomainResolver`` 의 캡
+    (``domain_resolve_max``)이 워커별로 나뉘면 워커수배로 새어나가던 결함을 막는다
+    (2026-07-10 적대 리뷰 MED-1). 캡 체크는 ``DomainResolver`` 내부 락으로 원자화돼
+    있어(스레드 안전) 공유해도 실제 네트워크 호출은 병렬로 나간다.
+    ``resolve_batch`` 호출마다 새 인스턴스를 만들므로 이 캡은 **배치당** 상한이지
+    "런"(CLI ``--loop``·크롤 companion 은 배치를 계속 반복 호출) 전체 상한은 아니다 —
+    무료 CSE(100/일)는 큰 문제 없고, 유료 Serper 는 별도 ``cost_budget_enforce``/
+    ``monthly_budget_krw`` 예산가드가 실제 과금 상한이다(``domain_resolve_max`` 는
+    배치 단위 페이싱 목적, 예산 하드캡이 아님). 진짜 런/일 단위 상한이 필요해지면
+    호출자가 ``DomainResolver`` 를 만들어 여러 배치에 걸쳐 재사용하도록 승격.
     **도메인 동치 dedup(제약①)은 메인스레드에서 순차 판정**한다 — 워커가 해석한 도메인이
     이번 배치 안에서 서로 겹치거나(다른 표기의 같은 회사) 이미 원장에 있는 도메인과
     겹치면(``load_seen_domains`` 스냅샷) 승격을 건너뛰어 중복 ``company`` 행을 막는다.
@@ -192,7 +198,13 @@ def resolve_batch(settings: Settings, sm: sessionmaker, *, limit: int, workers: 
         settings, rate_limiters=HostRateLimiters(default_rate=settings.discovery_rate_per_host)
     )
     classifier = build_classifier(settings, ledger=cost_ledger)
-    shared_resolver = DomainResolver(settings, cost_ledger=cost_ledger)  # 전 워커 공유(캡 원자적).
+    # 해석기용 공유 호스트 레이트리미터 — 워커가 provider(=Fetcher)를 공유하는데(아래)
+    # 없으면 openapi.naver.com/google.serper.dev 를 워커 각자 min_interval 로 racy 하게
+    # 때린다(2026-07-10 적대 리뷰 MED-3).
+    resolve_rate_limiters = HostRateLimiters(default_rate=settings.discovery_rate_per_host)
+    shared_resolver = DomainResolver(
+        settings, cost_ledger=cost_ledger, rate_limiters=resolve_rate_limiters
+    )  # 전 워커 공유(캡 원자적).
     tl = threading.local()
     created: list[object] = [shared_resolver]
     lock = threading.Lock()

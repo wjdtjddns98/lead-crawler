@@ -510,8 +510,9 @@ def test_continuous_rounds_accumulate_counters(settings, monkeypatch) -> None:
 
 
 def test_persist_crawl_spawns_domain_backfill_consumer(settings, monkeypatch) -> None:
-    # persist=True(라이브) → 발견 스레드 + 도메인 백필 consumer 둘 다 스폰(discovery_only 무관).
-    live = settings.model_copy(update={"dry_run": False})
+    # persist=True(라이브) + resolve_domains opt-in → 발견 스레드 + 도메인 백필 consumer 둘 다 스폰
+    # (discovery_only 무관).
+    live = settings.model_copy(update={"dry_run": False, "resolve_domains": True})
     calls = {"crawl": 0, "resolve": 0}
     monkeypatch.setattr(bg, "_spawn_thread", lambda *a, **k: calls.__setitem__("crawl", calls["crawl"] + 1))
     monkeypatch.setattr(
@@ -527,6 +528,29 @@ def test_persist_crawl_spawns_domain_backfill_consumer(settings, monkeypatch) ->
         with bg._guard:
             bg._running = False
     assert calls["crawl"] == 1 and calls["resolve"] == 1
+
+
+def test_persist_crawl_without_resolve_domains_opt_in_skips_domain_backfill(
+    settings, monkeypatch
+) -> None:
+    # persist=True 지만 resolve_domains=False(기본값, CLI·run.py 와 동일 게이트) → 도메인 백필
+    # consumer 는 스폰 안 함(2026-07-10 적대 리뷰 MED-2 — opt-in 안 한 운영자 과금 방지).
+    live = settings.model_copy(update={"dry_run": False, "resolve_domains": False})
+    calls = {"resolve": 0}
+    monkeypatch.setattr(bg, "_spawn_thread", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bg, "_spawn_domain_backfill_thread",
+        lambda *a, **k: calls.__setitem__("resolve", calls["resolve"] + 1),
+    )
+    try:
+        trigger_crawl_job(
+            live, countries="KR", industries="건설", listed="unknown",
+            persist=True, triggered_by="x", discovery_only=False,
+        )
+    finally:
+        with bg._guard:
+            bg._running = False
+    assert calls["resolve"] == 0
 
 
 def test_non_persist_crawl_does_not_spawn_domain_backfill_consumer(settings, monkeypatch) -> None:
