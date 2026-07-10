@@ -327,10 +327,21 @@ def dart_cache_fill(
                     continue
                 st = info.get("status") if isinstance(info, dict) else None
                 if st in {"010", "011", "012", "020", "800", "901"}:
-                    # 키 치명(쿼터소진 등) — 이 키 예산을 소진 처리하고 다음 키로.
-                    used = cursor_store.get(_QUOTA_SOURCE, _quota_key(key))
-                    if budget and used < budget:
-                        cursor_store.increment(_QUOTA_SOURCE, _quota_key(key), budget - used)
+                    # 치명 status — 공유 일일카운터는 **진짜 쿼터소진(020)만** 영속 소진
+                    # 처리한다. 800(시스템 점검)·키오류는 일시적/키한정이라 CLI 로컬
+                    # dead 처리만 — 종일 카운터를 오염시켜 라이브 크롤의 그 키까지
+                    # 죽이는 부작용 방지(리뷰 M2).
+                    if st == "020":
+                        used = cursor_store.get(_QUOTA_SOURCE, _quota_key(key))
+                        if budget and used < budget:
+                            cursor_store.increment(
+                                _QUOTA_SOURCE, _quota_key(key), budget - used
+                            )
+                    else:
+                        live = [k for k in live if k != key]
+                        if not live:
+                            typer.echo(f"전 키 치명 status({st}) — 중단(재개 가능).")
+                            raise StopIteration
                     continue
                 if isinstance(info, dict) and st:
                     batch.append(

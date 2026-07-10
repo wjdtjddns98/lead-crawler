@@ -111,6 +111,9 @@ class DbDartCorpCache:
                         select(DartCorpCacheRow)
                         .where(DartCorpCacheRow.name_norm.in_(norms[i : i + _BATCH]))
                         .where(DartCorpCacheRow.status == "000")
+                        # tie-break 고정(리뷰 M4) — 동일 (bizno6, name_norm) 이 여러 corp 면
+                        # corp_code 최소값으로 결정적 선택(런/스냅샷 간 키 플립 방지).
+                        .order_by(DartCorpCacheRow.corp_code.asc())
                     ).all()
                     for row in rows:
                         if not row.bizno or not row.name_norm:

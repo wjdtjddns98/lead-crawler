@@ -125,19 +125,22 @@ class NpsSource(DiscoverySource):
         # DART 와 같은 reg: 키(registry_id=corp_code)로 emit 해 과거/미래 DART 발견분과
         # canonical_key 가 완전히 합쳐진다(제약① 강화) + 홈페이지·상장 필드 무쿼터 부착.
         matches: dict = {}
+        row_keys: dict[int, tuple[str, str]] = {}  # 행당 정규화 1회(재계산 방지).
         if self._dart_cache is not None and rows:
-            pairs = [
-                ((row.bizno_prefix or "")[:6], normalize_name(row.name)[:255])
-                for row in rows
-                if row.name
-            ]
-            matches = self._dart_cache.find_matches([p for p in pairs if p[0] and p[1]])
+            for idx, row in enumerate(rows):
+                if row.name:
+                    row_keys[idx] = (
+                        (row.bizno_prefix or "")[:6], normalize_name(row.name)[:255]
+                    )
+            matches = self._dart_cache.find_matches(
+                [p for p in row_keys.values() if p[0] and p[1]]
+            )
 
         out: list[DiscoveredCompany] = []
-        for row in rows:
+        for idx, row in enumerate(rows):
             if not row.name:
                 continue
-            hit = matches.get(((row.bizno_prefix or "")[:6], normalize_name(row.name)[:255]))
+            hit = matches.get(row_keys.get(idx, ("", "")))
             info = getattr(hit, "info", None) if hit is not None else None
             if hit is not None and isinstance(info, dict):
                 corp_cls = str(info.get("corp_cls") or "")
