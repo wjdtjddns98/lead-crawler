@@ -242,6 +242,29 @@ def nps_sync(
         raise typer.Exit(code=1)
 
 
+@app.command("nps-map-industries")
+def nps_map_industries() -> None:
+    """스냅샷의 업종코드(~1.6천)를 택소노미 42로 통합 매핑한다(3층 — 코드 단위 1회).
+
+    규칙(industry_from_ksic) 우선, 잔여만 LLM(닫힌 택소노미 분류기 — 셋 밖 값 불가,
+    abstain=미분류). 멱등: 이미 매핑된 코드는 건너뛴다(월간 재실행 시 신규 코드만).
+    실행 후 NpsSource 가 매핑 라벨 전체(사각 63% 포함)를 발견 대상으로 연다.
+    """
+    from .config import get_settings
+    from .cost_ledger import CostLedger
+    from .enrich.industry_classify import build_classifier
+    from .storage.db import get_sessionmaker
+    from .storage.nps import map_industry_codes
+
+    settings = get_settings()
+    classifier = build_classifier(settings, ledger=CostLedger(settings, persist=True))
+    stats = map_industry_codes(get_sessionmaker(), classifier)
+    typer.echo(
+        f"규칙 {stats['rule']:,} · LLM {stats['llm']:,} · 미분류 {stats['unclassified']:,}"
+        f" · 기매핑 {stats['already']:,}"
+    )
+
+
 @app.command("import-existing")
 def import_existing(
     path: str = typer.Argument(..., help="기존 엑셀/CSV 경로(파일 또는 디렉터리)"),

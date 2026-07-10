@@ -203,10 +203,27 @@ def register_admin(
     def list_industries(
         _admin: UserRow = Depends(require_admin),
     ) -> list[IndustryOption]:
-        """선택 가능한 표준 업종 목록 — 타깃 업종 선택 UI 의 단일 출처(필터 가능한 업종만)."""
+        """선택 가능한 표준 업종 목록 — 타깃 업종 선택 UI 의 단일 출처.
+
+        기본은 코드/검색어 매핑으로 풀리는 라벨(supported_industries). 여기에
+        3층 통합매핑(ksic_industry_map — NPS 발견이 서빙 가능)이 보유한 라벨을
+        합집합으로 추가해, 매핑이 채워지면 택소노미 42 전체가 자동 노출된다
+        (FE 계약: 응답 스키마 동일·옵션만 증가하는 additive 변경).
+        """
+        from ..sources.industry import industry_search_term
+        from ..storage.db import get_sessionmaker
+        from ..storage.nps import NpsStore
+        from ..sources.taxonomy import INDUSTRY_TAXONOMY
+
+        base = {ko: en for ko, en in supported_industries()}
+        mapped = NpsStore(get_sessionmaker()).mapped_labels()
+        # 택소노미 정의 순서 유지 — base ∪ 3층 매핑 라벨.
         return [
-            IndustryOption(value=ko, label=ko, aliases=[en])
-            for ko, en in supported_industries()
+            IndustryOption(
+                value=label, label=label, aliases=[base.get(label) or industry_search_term(label)]
+            )
+            for label in INDUSTRY_TAXONOMY
+            if label in base or label in mapped
         ]
 
     @app.get("/admin/crawl-target", response_model=CrawlTargetInfo)

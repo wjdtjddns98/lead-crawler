@@ -188,3 +188,75 @@ def test_ingest_empty_keeps_active_snapshot(tmp_path) -> None:
     ingest_nps_csv(sm, _csv(tmp_path, _rows()))
     inserted, _ = ingest_nps_rows(sm, iter([]))
     assert inserted == 0 and NpsStore(sm).count() == 4
+
+
+class FakeVerdict:
+    def __init__(self, label):
+        self.label = label
+
+
+class FakeClassifier:
+    """닫힌 택소노미 분류기 더블 — 코드명 키워드로 결정적 라벨."""
+
+    model = "stub"
+
+    def __init__(self):
+        self.calls = 0
+
+    def classify(self, name: str, domain, text):  # noqa: ARG002
+        self.calls += 1
+        if "게임" in name:
+            return FakeVerdict("게임")
+        return FakeVerdict(None)  # abstain → 미분류.
+
+
+def test_map_industry_codes_rule_llm_and_idempotent(tmp_path) -> None:
+    """3층 매핑: 규칙(industry_from_ksic) 우선, 잔여만 LLM, 재실행 멱등(리뷰 H2 반영)."""
+    from leadcrawler.storage.nps import map_industry_codes
+
+    s = _settings(tmp_path)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    rows = _rows() + [
+        # 888888: 규칙 역매핑에 없는 코드 → LLM 경로(코드명에 '게임' → FakeClassifier 매칭).
+        "202606,넥스트게임즈,345670,1,서울 강남구 게임로 1,,888888,게임 아이템 중개업,120,5000000,",
+        "202606,알수없는업,345671,1,서울 중구 모호로 2,,999999,기타 분류 안된 업,3,100000,",
+    ]
+    ingest_nps_csv(sm, _csv(tmp_path, rows))
+    clf = FakeClassifier()
+    stats = map_industry_codes(sm, clf)
+    # 화학·반도체 코드는 규칙으로, 888888(게임)은 LLM, 999999 는 abstain → 미분류.
+    assert stats["rule"] >= 1 and stats["llm"] == 1 and stats["unclassified"] >= 1
+    calls_first = clf.calls
+
+    stats2 = map_industry_codes(sm, clf)
+    assert stats2["rule"] == stats2["llm"] == stats2["unclassified"] == 0  # 전부 기매핑.
+    assert clf.calls == calls_first  # 재실행 LLM 재호출 0(멱등).
+
+    store = NpsStore(sm)
+    assert "게임" in store.mapped_labels()
+    hits = store.page_by_label("게임", offset=0, limit=10)
+    assert [r.name for r in hits] == ["넥스트게임즈"]
+
+
+def test_source_uses_label_path_for_unprefixed_industry(tmp_path) -> None:
+    """KSIC 접두표에 없는 라벨(게임)도 3층 매핑이 있으면 발견된다(리뷰 HIGH-1 소비 경로)."""
+    from leadcrawler.storage.nps import map_industry_codes
+
+    s = Settings(
+        database_url=f"sqlite:///{tmp_path}/nps.db", dry_run=False,
+        discovery_max_per_source=10,
+    )
+    init_db(s)
+    sm = get_sessionmaker(s)
+    rows = _rows() + [
+        "202606,넥스트게임즈,345670,1,서울 강남구 게임로 1,,888888,게임 아이템 중개업,120,5000000,",
+    ]
+    ingest_nps_csv(sm, _csv(tmp_path, rows))
+    map_industry_codes(sm, FakeClassifier())
+
+    src = NpsSource(s, nps_store=NpsStore(sm), cursor_store=DictCursor())
+    seg = Segment(country="KR", industry="게임")
+    assert src.applies_to(seg)  # 접두표엔 없지만 3층 매핑이 연다.
+    out = src.discover(seg)
+    assert [d.name for d in out] == ["넥스트게임즈"]
