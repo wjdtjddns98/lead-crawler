@@ -87,6 +87,25 @@ def load_seen_keys(session: Session) -> set[str]:
     return set(session.scalars(select(DiscoveredCompanyRow.canonical_key)).all())
 
 
+def backfill_domain(session: Session, canonical_key: str, domain: str) -> bool:
+    """도메인 미보유 발견 행에 사후 해석된 도메인을 채운다(null 전용, 있으면 무시).
+
+    ``save_discovered`` 는 기존 행의 식별정보(도메인 포함)를 절대 덮지 않는다 —
+    재크롤 시 값이 흔들리지 않게 하려는 의도다. 하지만 그 규약 때문에 최초 발견 때
+    도메인을 못 준 행(예: NPS)은 나중에 해석에 성공해도 원장에 영영 기록되지 않고,
+    다음 배치가 같은 행을 계속 "도메인 없음"으로 재시도하는 구조적 사각이 생긴다
+    (2026-07-10 실측: NPS 발견 18,319건 전부 도메인없음+미승격으로 정체).
+    이 함수는 그 사각만 좁혀 메운다 — **domain 이 비어있는 행만** 채우고(기존 값은
+    절대 덮지 않아 위 규약과 충돌 없음), 없는 키는 조용히 무시(발견 원장은 발견
+    파이프라인만 새로 만든다 — 여기선 upsert 하지 않는다).
+    """
+    row = session.get(DiscoveredCompanyRow, canonical_key)
+    if row is None or (row.domain or "").strip():
+        return False
+    row.domain = domain
+    return True
+
+
 def load_seen_domains(session: Session) -> set[str]:
     """발견 테이블에 적재된 모든 정규화 도메인을 반환한다(제약 ① 도메인 동치 시드).
 

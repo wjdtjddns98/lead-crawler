@@ -193,3 +193,40 @@ def test_save_lead_without_email_has_no_validation(session: Session) -> None:
     session.commit()
     assert len(session.scalars(select(CompanyRow)).all()) == 1
     assert session.scalars(select(EmailValidationRow)).all() == []
+
+
+def test_backfill_domain_fills_only_null(tmp_path) -> None:
+    from leadcrawler.config import Settings
+    from leadcrawler.schema import DiscoveredCompanyRow
+    from leadcrawler.storage.db import get_sessionmaker, init_db
+    from leadcrawler.storage.repository import backfill_domain
+
+    s = Settings(database_url=f"sqlite:///{tmp_path}/repo.db", dry_run=True)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    with sm() as session:
+        session.add(
+            DiscoveredCompanyRow(canonical_key="name:kr:무도메인", name="무도메인상사", country="KR")
+        )
+        session.add(
+            DiscoveredCompanyRow(
+                canonical_key="name:kr:기존도메인", name="기존도메인상사", country="KR",
+                domain="existing.example.com",
+            )
+        )
+        session.commit()
+
+    with sm() as session:
+        assert backfill_domain(session, "name:kr:무도메인", "new.example.com") is True
+        # 이미 값이 있으면 절대 덮지 않는다(제약① 규약과 일관).
+        assert backfill_domain(session, "name:kr:기존도메인", "hijack.example.com") is False
+        # 존재하지 않는 키는 조용히 무시(new-insert 아님).
+        assert backfill_domain(session, "name:kr:없는키", "x.example.com") is False
+        session.commit()
+
+    with sm() as session:
+        assert session.get(DiscoveredCompanyRow, "name:kr:무도메인").domain == "new.example.com"
+        assert (
+            session.get(DiscoveredCompanyRow, "name:kr:기존도메인").domain
+            == "existing.example.com"
+        )
