@@ -41,6 +41,10 @@ class SupportsNpsStore(Protocol):
 
     def page(self, prefixes: tuple[str, ...], *, offset: int, limit: int) -> list: ...
 
+    def page_by_label(self, label: str, *, offset: int, limit: int) -> list: ...
+
+    def mapped_labels(self) -> frozenset[str]: ...
+
 
 class NpsSource(DiscoverySource):
     """국민연금 스냅샷 기반 KR 사업장 발견(대형 우선)."""
@@ -62,26 +66,49 @@ class NpsSource(DiscoverySource):
         self._cursor_store = cursor_store
         # 무네트워크 소스라 미사용 — build_sources 의 "전 소스 공유 limiter" 균일 계약용.
         self._rate_limiters = rate_limiters
+        self._labels: frozenset[str] | None = None  # 3층 매핑 라벨 캐시(지연 1회 로드).
+
+    def _mapped_labels(self) -> frozenset[str]:
+        """3층 매핑 라벨 집합 — 인스턴스당 1회 로드(세그먼트마다 DB 히트 방지)."""
+        if self._labels is None:
+            self._labels = (
+                self._store.mapped_labels() if self._store is not None else frozenset()
+            )
+        return self._labels
 
     def applies_to(self, segment: Segment) -> bool:
-        """KR + KSIC 매핑 가능한 구체 업종 + (라이브면) 스냅샷 스토어 주입 시."""
+        """KR + (KSIC 접두 매핑 or 3층 통합매핑 보유 라벨) + (라이브면) 스토어 주입 시.
+
+        3층(ksic_industry_map)이 채워지면 KSIC 접두표에 없는 30개 라벨(게임·은행 등)도
+        열린다 — 매핑 없던 시절의 사각 63% 개방(적대 검토 HIGH-1 소비 경로).
+        """
         if not is_country(segment, _KR):
             return False
-        if ksic_prefixes(segment.industry) is None:
-            return False  # broad/미매핑 — 업종-우선 소스라 접두 없인 무의미.
-        return self._settings.dry_run or self._store is not None
+        if self._settings.dry_run:
+            return ksic_prefixes(segment.industry) is not None
+        if self._store is None:
+            return False
+        if segment.industry in self._mapped_labels():
+            return True
+        return ksic_prefixes(segment.industry) is not None
 
     def discover(self, segment: Segment) -> list[DiscoveredCompany]:
         if self._settings.dry_run:
             return self._dry(segment)
-        prefixes = ksic_prefixes(segment.industry)
-        if prefixes is None or self._store is None:
+        if self._store is None:
             return []
         cap = self._settings.discovery_max_per_source
         offset = 0
         if self._cursor_store is not None:
             offset = max(0, self._cursor_store.get(self.name, segment.label))
-        rows = self._store.page(prefixes, offset=offset, limit=cap)
+        # 3층 라벨 매핑이 있으면 그 경로(42라벨 전체 커버·코드단위 통합), 없으면 접두 폴백.
+        if segment.industry in self._mapped_labels():
+            rows = self._store.page_by_label(segment.industry, offset=offset, limit=cap)
+        else:
+            prefixes = ksic_prefixes(segment.industry)
+            if prefixes is None:
+                return []
+            rows = self._store.page(prefixes, offset=offset, limit=cap)
         out = [
             build_company(
                 source=self.name,
