@@ -391,6 +391,10 @@ def test_recent_filed_priority_lane_emits_and_keeps_cursor() -> None:
     src = DartSource(_settings(cap), fetcher=fetcher, cursor_store=store)
     ids = {d.registry_id for d in _run_chunks(src, _SEG)}
     assert fresh_code in ids  # 창 밖인데도 이번 런에 발견됨(살아있는 기업 우선).
+    # H1 회귀: 레인이 cap 을 잠식해 창 말단 corp 를 잘라내면 커서가 지나간 뒤라 유실 —
+    # 창 [0, cap) 전체가 산출에 있어야 한다(트림은 창 청크에만, 레인은 전량 유지).
+    window_ids = {f"{i:08d}" for i in range(1, cap + 1)}
+    assert window_ids <= ids and len(ids) == cap + 1
     assert store.get("dart", _SEG.label) == cap  # 커서는 창만큼만(레인 중립).
     # 쿼터 정산 = 실사용: corpCode 1 + list 1 + 레인 1 + 창 cap.
     assert store.get(_QUOTA_SOURCE, _quota_key("k")) == cap + 3
@@ -420,3 +424,19 @@ def test_recent_lane_warm_cache_zero_calls() -> None:
     )
     _run_chunks(src2, warm_seg)
     assert fresh_code not in f2.company_codes  # 레인 재조회 0(캐시 히트).
+
+
+def test_recent_lane_excludes_window_overlap() -> None:
+    """레인 corp 가 이번 창 안이면 레인에서 제외 — 같은 finalize 내 이중 fetch 0(리뷰 M2)."""
+    corps_n = 5 * _CHUNK_SCAN
+    cap = 3 * _CHUNK_SCAN
+    in_window_code = f"{7:08d}"  # 창 [0, cap) 안의 corp.
+
+    def _on_list(params) -> dict:  # noqa: ARG001
+        return {"status": "000", "list": [{"corp_code": in_window_code, "corp_name": "창내기업"}]}
+
+    fetcher = CountingFetcher(corps_n, on_company=_ok, on_list=_on_list)
+    src = DartSource(_settings(cap), fetcher=fetcher, cursor_store=FakeCursorStore())
+    ids = [d.registry_id for d in _run_chunks(src, _SEG)]
+    assert fetcher.company_codes.count(in_window_code) == 1  # 창 청크 1회만(레인 제외).
+    assert ids.count(in_window_code) == 1  # 산출도 1회.

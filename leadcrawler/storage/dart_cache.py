@@ -85,9 +85,11 @@ class DbDartCorpCache:
         if not entries:
             return
         now = datetime.now(timezone.utc)
-        try:
-            for i in range(0, len(entries), _BATCH):
-                chunk = entries[i : i + _BATCH]
+        for i in range(0, len(entries), _BATCH):
+            chunk = entries[i : i + _BATCH]
+            # 배치별 격리 — 병렬 워커 간 PK 경합(IntegrityError) 1건이 잔여 배치를
+            # 못 죽이게 한다(캐시는 최적화 — 유실분은 다음 스캔이 재조회·자가치유).
+            try:
                 with self._factory() as session:
                     for e in chunk:
                         info_json = json.dumps(e.info, ensure_ascii=False) if e.info else None
@@ -105,5 +107,5 @@ class DbDartCorpCache:
                         row.info = info_json
                         row.fetched_at = now
                     session.commit()
-        except Exception as exc:
-            log.info("dart_cache.put.error", n=len(entries), err=str(exc))
+            except Exception as exc:
+                log.info("dart_cache.put.error", n=len(chunk), err=str(exc))

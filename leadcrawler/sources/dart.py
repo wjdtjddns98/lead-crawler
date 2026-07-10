@@ -599,7 +599,14 @@ class DartSource:
         # 최근공시 우선 레인(L2) — 살아있는 기업(최근 공시자)을 커서와 무관하게 매 런
         # 선두 청크로 스캔한다. 0폭 구간(start=end=offset)이라 커서 계산에 중립이고,
         # corp 캐시가 있으면 두 번째 세그먼트부터는 API 0콜(첫 세그먼트만 ≤300콜).
+        # 이번 창과 겹치는 corp 는 제외(창 청크가 어차피 조회 — 같은 finalize 내 이중
+        # fetch 방지). 예산 소진으로 위에서 조기 return 된 런은 레인도 안 돈다(태울 예산
+        # 이 없는 상태 — 의도된 순서).
         recent = self._recent_filed_pairs(live_keys[0], fetch_spent)
+        if recent:
+            window_codes = {corps[i][0] for i in range(offset, window_end)}
+            recent = [p for p in recent if p[0] not in window_codes]
+        has_lane = bool(recent)
         if recent:
             pst: dict = {
                 "key": live_keys[0], "start": offset, "end": offset, "stopped_at": offset,
@@ -664,10 +671,13 @@ class DartSource:
             # (_scan_range ponytail 주석) 구간 전량을 스캔한다 → 병합 output 을 cap 으로 잘라
             # _live 와 동일 크기(corp 오름차순 첫 cap개, 결정적)로 맞춘다. results(=청크별 산출,
             # offset 오름차순)를 제자리 수정하면 registry 가 이 뒤 flatten 할 때 반영된다.
+            # **트림은 창 청크에만** — 레인(results[0], 존재 시) 산출을 cap 에 포함시키면
+            # 커서가 이미 지나간 창 말단 corp 가 잘려 다음 랩까지 유실된다(적대 리뷰 H1).
+            # 레인은 전량 유지(상한 ~300·창과 disjoint·다운스트림 dedup 안전).
             cap = self._settings.discovery_max_per_source
             if cap:
                 remaining = cap
-                for chunk_out in results:
+                for chunk_out in (results[1:] if has_lane else results):
                     if remaining <= 0:
                         chunk_out.clear()
                     elif len(chunk_out) > remaining:

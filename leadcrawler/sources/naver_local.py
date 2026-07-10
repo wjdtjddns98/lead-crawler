@@ -14,6 +14,7 @@ dry_run 은 네트워크 없이 결정적 더미를 반환한다(다른 소스�
 
 from __future__ import annotations
 
+import html
 import re
 
 from ..config import Settings
@@ -21,6 +22,7 @@ from ..cost_ledger import SupportsCostLedger
 from ..logging import get_logger
 from .base import DiscoveredCompany, DiscoverySource, Segment, build_company, is_country
 from .http import Fetcher, HostRateLimiters, SupportsFetch
+from .industry import is_broad_industry
 
 log = get_logger("sources.naver_local")
 
@@ -34,10 +36,12 @@ def _industry_terms(industry: str) -> list[str]:
     """택소노미 라벨을 지역검색 키워드로 — '화학·석유화학' → ['화학', '석유화학'].
 
     라벨 자체가 한국어라 그대로 검색어가 된다(글로벌 SERP 용 영어 동의어와 별개).
-    broad('전체' 등)는 검색어가 못 되므로 빈 목록(이 소스는 업종-우선이 존재 이유).
+    broad('전체' 등)는 검색어가 못 되므로 빈 목록 — "전체" 를 그대로 검색하면
+    업종무관 업체가 '미분류'로 유입돼 이 소스의 존재 이유(업종-우선 순도)가 무너진다.
     """
-    terms = [t.strip() for t in industry.split("·") if t.strip()]
-    return terms if industry.strip() and terms else []
+    if not industry.strip() or is_broad_industry(industry):
+        return []
+    return [t.strip() for t in industry.split("·") if t.strip()]
 
 
 class NaverLocalSource(DiscoverySource):
@@ -135,7 +139,9 @@ class NaverLocalSource(DiscoverySource):
             for it in items or []:
                 if not isinstance(it, dict):
                     continue
-                name = _TAG_RE.sub("", str(it.get("title") or "")).strip()
+                # <b> 태그 제거 + HTML 엔티티 복원("AT&amp;T"→"AT&T") — 엔티티를 남기면
+                # name: canonical_key 가 오염돼 동일기업 dedup(제약①)이 어긋난다.
+                name = html.unescape(_TAG_RE.sub("", str(it.get("title") or ""))).strip()
                 if not name or name in seen_names:
                     continue
                 seen_names.add(name)

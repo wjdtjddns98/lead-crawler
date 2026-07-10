@@ -34,8 +34,8 @@ def _item(name: str, link: str = "", address: str = "서울특별시 강남구 x
 
 def test_industry_terms_split_and_broad_empty() -> None:
     assert _industry_terms("화학·석유화학") == ["화학", "석유화학"]
-    assert _industry_terms("전체") == ["전체"]  # broad 라벨도 형태상 1어 — applies_to 가 아닌
-    # 세그먼트 구성에서 broad KR 은 '전체' 키워드 검색이 무의미하지만 콜 1회뿐(허용).
+    # broad 라벨은 빈 목록 — "전체" 검색은 업종무관 유입(순도 붕괴)이라 소스가 안 돈다(리뷰 M5).
+    assert _industry_terms("전체") == []
     assert _industry_terms("") == []
 
 
@@ -48,6 +48,8 @@ def test_applies_to_kr_only_and_key_gated() -> None:
         Settings(dry_run=False, naver_client_id="", naver_client_secret="")
     )
     assert not nokey.applies_to(Segment(country="KR", industry="화학·석유화학"))
+    # broad KR 도 안 돈다(업종-우선 소스 — 리뷰 M5).
+    assert not src.applies_to(Segment(country="KR", industry="전체"))
 
 
 def test_live_queries_terms_with_region_prefix_and_emits() -> None:
@@ -87,3 +89,13 @@ def test_dry_run_deterministic_no_network() -> None:
     out1 = src.discover(seg)
     out2 = src.discover(seg)
     assert out1 and [d.canonical_key for d in out1] == [d.canonical_key for d in out2]
+
+
+def test_live_unescapes_html_entities_in_name() -> None:
+    """title 의 HTML 엔티티 복원 — name: canonical_key 오염 방지(리뷰 M6)."""
+    def _on_query(q):  # noqa: ARG001
+        return {"items": [_item("AT&amp;T 코리아")]}
+
+    src = NaverLocalSource(_settings(), fetcher=FakeFetcher(_on_query))
+    out = src.discover(Segment(country="KR", industry="통신·네트워크"))
+    assert any(d.name == "AT&T 코리아" for d in out)
