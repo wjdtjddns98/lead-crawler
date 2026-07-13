@@ -302,6 +302,7 @@ def dart_cache_fill(
     """
     from .config import get_settings
     from .sources.dart import DartSource, _FetchedCorp, _quota_key, _QUOTA_SOURCE
+    from .sources.registry import close_sources
     from .storage.dart_cache import DbDartCorpCache
     from .storage.db import get_sessionmaker
     from .storage.discovery_cursor import DbCursorStore
@@ -406,7 +407,8 @@ def dart_cache_fill(
     finally:
         if batch:
             cache.put_many(batch)
-        src.close()
+        # DartSource 엔 close() 가 없다 — 내부 fetcher 만 best-effort 로 닫는 공용 헬퍼 사용.
+        close_sources([src])
     typer.echo(f"적재 {filled:,} · 오류 {errors:,} · 이번 호출 {spent_this:,} (재개 가능 — 미스만 재시도)")
 
 
@@ -420,10 +422,12 @@ def nps_relink_dart(
     같은 회사가 reg:dart: 키로 재발견되며 재추출된다(적대 리뷰 H1) — 이 커맨드가
     같은 정밀 매치(사업자번호 앞6+정규화명)로 키를 선제 재연결해 그 창을 닫는다.
     reg: 키가 이미 원장에 있으면 보존·보고만(과거 중복 — dedup-report 대상).
-    ``dart-cache-fill`` 완료 후 1회 실행."""
+    재연결 행은 캐시 원문(corp_cls)으로 상장여부·시장·registry 도 함께 채운다
+    (미상 전용 — save_discovered 백필과 동일 규약). ``dart-cache-fill`` 완료 후 1회 실행."""
     from sqlalchemy import text as _text
 
     from .dedup import canonical_key as _ckey, normalize_name as _norm
+    from .sources.dart import _LISTED_CLS, _MARKET_CLS
     from .schema import DiscoveredCompanyRow
     from .storage.dart_cache import DbDartCorpCache
     from .storage.db import get_sessionmaker
@@ -475,6 +479,26 @@ def nps_relink_dart(
                 continue
             # PK 교체는 copy→FK전환→delete (company FK 가 즉시검사라 in-place 불가).
             s.execute(copy_sql, {"new": new_key, "old": old_key})
+            # 캐시 원문으로 미상 필드 채움 — NPS 행은 발견 시점 캐시 미비로 listed
+            # unknown 박제가 대부분이라, 재연결하면서 corp_cls 를 바로 붙인다.
+            corp_cls = str((hit.info or {}).get("corp_cls") or "")
+            s.execute(
+                _text(
+                    "update discovered_company set "
+                    "listed = case when listed is null or listed in ('', 'unknown') "
+                    "  then coalesce(:listed, listed) else listed end, "
+                    "market = coalesce(market, :market), "
+                    "registry = coalesce(registry, 'dart'), "
+                    "registry_id = coalesce(registry_id, :corp) "
+                    "where canonical_key = :k"
+                ),
+                {
+                    "listed": _LISTED_CLS.get(corp_cls),
+                    "market": _MARKET_CLS.get(corp_cls),
+                    "corp": hit.corp_code,
+                    "k": new_key,
+                },
+            )
             s.execute(
                 _text("update company set canonical_key=:new where canonical_key=:old"),
                 {"new": new_key, "old": old_key},

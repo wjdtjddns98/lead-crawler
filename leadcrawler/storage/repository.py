@@ -156,8 +156,17 @@ def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompan
 
     제약 ①: 이미 존재하는 ``canonical_key`` 의 식별정보는 덮어쓰지 않고 그대로 둔다.
     단, ``last_crawled_at`` 은 신규/기존 모두 매 발견 시각으로 갱신(재크롤 추적용).
+    예외: 상장여부(listed)·시장(market)가 **미상인 기존 행**은 재발견분이 알아온 값으로
+    채운다(미상 전용 — 확정된 값은 절대 덮지 않음, :func:`backfill_domain` 과 동일 규약).
+    최초 발견 시점에 DART 캐시 미비 등으로 unknown 이 박제된 행이 다음 랩 재발견에서
+    자가치유되는 경로다(재발견은 dedup 스킵 후 touch 로 여기를 지난다).
     """
     row = session.get(DiscoveredCompanyRow, dc.canonical_key)
+    if row is not None:
+        if dc.listed and dc.listed != "unknown" and row.listed in (None, "", "unknown"):
+            row.listed = dc.listed
+        if dc.market and not row.market:
+            row.market = _clip(dc.market, 32)
     if row is None:
         row = DiscoveredCompanyRow(
             canonical_key=dc.canonical_key,

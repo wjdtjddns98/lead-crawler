@@ -180,6 +180,30 @@ def test_save_discovered_updates_last_crawled_on_existing(session: Session) -> N
     assert second >= first
 
 
+def test_save_discovered_fills_unknown_listed_on_rediscovery(session: Session) -> None:
+    # 최초 발견이 unknown 이면 재발견분이 알아온 상장여부·시장을 채운다(미상 전용 백필).
+    save_discovered(session, DiscoveredCompany(
+        canonical_key="dom:x.com", name="A", domain="x.com", source="nps"
+    ))
+    session.commit()
+    save_discovered(session, DiscoveredCompany(
+        canonical_key="dom:x.com", name="A", domain="x.com", source="dart",
+        listed="listed", market="KOSPI",
+    ))
+    session.commit()
+    row = session.get(DiscoveredCompanyRow, "dom:x.com")
+    assert (row.listed, row.market) == ("listed", "KOSPI")
+
+    # 확정된 값은 재발견이 절대 못 덮는다(제약① 식별정보 보존 — 강등 시도 무시).
+    save_discovered(session, DiscoveredCompany(
+        canonical_key="dom:x.com", name="A", domain="x.com", source="gleif",
+        listed="unlisted", market="NASDAQ",
+    ))
+    session.commit()
+    row = session.get(DiscoveredCompanyRow, "dom:x.com")
+    assert (row.listed, row.market) == ("listed", "KOSPI")
+
+
 def test_no_duplicate_company_for_same_key(session: Session) -> None:
     # canonical_key 가 같으면 결정적 PK 라 회사 행은 항상 1개(M1 회귀가드).
     save_lead(session, _lead("x.com"), source="dart")
