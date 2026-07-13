@@ -247,6 +247,52 @@ def test_korean_name_title_mismatch_rejected() -> None:
     assert r.resolve(dc) is None
 
 
+def test_noise_domains_never_adopted_even_with_matching_title() -> None:
+    """뉴스·구인·정부·협회 도메인은 title 에 상호명이 그대로 있어도 채택 금지.
+
+    라이브 사고(2026-07-13, 큐 60건 중 20건): 기사/공고/도청 보도자료 제목에 상호명이
+    들어가 한글 결정 규칙(title 토큰일치)이 edaily·findjob24h·gg.go.kr 등을 홈페이지로
+    채택했다. 구조 게이트(_is_noise_domain)가 후보 단계에서 걸러야 한다.
+    """
+    for link in (
+        "https://edaily.co.kr/article/123",       # 뉴스(blocklist)
+        "https://findjob24h.com/post/9",           # 구인(blocklist)
+        "https://gg.go.kr/board/1",                # 정부(.go.kr 접미)
+        "https://kati.or.kr/news/2",               # 협회(.or.kr 접미)
+        "https://jobplanet.co.kr/company/1",       # 구인(root 정규식 단독 — blocklist 밖)
+        "https://lab.re.kr/board/2",               # 연구기관(normalize 후 're.kr' 등가)
+    ):
+        f = FakeFetcher({"items": [{"link": link, "title": "한영타이어 신제품 출시"}]})
+        r = DomainResolver(_no_naver_settings(), fetcher=f)
+        dc = DiscoveredCompany(canonical_key="reg:dart:9", name="한영타이어", country="KR")
+        assert r.resolve(dc) is None, link
+
+
+def test_noise_gate_passes_official_domain_after_noise() -> None:
+    """노이즈 후보가 앞서도 뒤의 진짜 공식 도메인은 정상 채택된다(recall 보존)."""
+    f = FakeFetcher({"items": [
+        {"link": "https://edaily.co.kr/a/1", "title": "한영타이어 기사"},
+        {"link": "https://hanyoungtire.co.kr", "title": "한영타이어 공식 홈페이지"},
+    ]})
+    r = DomainResolver(_no_naver_settings(), fetcher=f)
+    dc = DiscoveredCompany(canonical_key="reg:dart:10", name="한영타이어", country="KR")
+    assert r.resolve(dc) == "hanyoungtire.co.kr"
+
+
+def test_noise_root_regex_not_applied_to_latin_slug_path() -> None:
+    """뉴스/구인 root 정규식은 한글 title-매칭 경로 한정 — 라틴 슬러그 경로의 실기업
+    도메인(jobyaviation·americanexpress 류)은 정상 채택된다(교차리뷰 HIGH 회귀가드)."""
+    for name, link, want in (
+        ("Joby Aviation", "https://jobyaviation.com", "jobyaviation.com"),
+        ("American Express", "https://americanexpress.com", "americanexpress.com"),
+    ):
+        f = FakeFetcher(_items(link))
+        # serper 키 명시 차단 — 로컬 .env 라이브키가 프로바이더 선택(serper 우선)에
+        # 새면 FakeFetcher(post_json 없음)와 충돌한다(기존 로컬 베이스라인과 동일 부류).
+        r = DomainResolver(_settings(serper_api_key=""), fetcher=f)
+        assert r.resolve(_dc(name, country="US")) == want, name
+
+
 def test_naver_b_tags_stripped_before_match() -> None:
     """네이버 title 의 <b> 하이라이트가 매칭 전에 제거된다(#239 리뷰 HIGH #2).
 
@@ -320,7 +366,9 @@ def test_llm_arbiter_picks_official() -> None:
     """LLM 중재 on — 후보 중 공식 도메인 index 를 골라 채택(짧은 한글명 구제)."""
     f = FakeFetcher(
         {"items": [
-            {"link": "https://news.co.kr", "title": "동양 관련 뉴스"},
+            # 미끼는 노이즈 게이트에 안 걸리는 도메인이어야 한다(뉴스 도메인이던 구
+            # 픽스처는 이제 후보 단계에서 걸러져 index 가 밀림 — 게이트 의도 동작).
+            {"link": "https://tongyanglife.co.kr", "title": "동양생명"},
             {"link": "https://tongyang.com", "title": "동양 공식"},
         ]}
     )
