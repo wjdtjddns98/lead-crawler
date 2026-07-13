@@ -80,8 +80,11 @@ class Settings(BaseSettings):
     resolve_serper_fallback: bool = Field(default=False)
     # ② 후보 도메인들을 Claude 로 중재해 공식 도메인 1건을 고르거나 기권(-1). 짧은 한글명
     # 같은 애매한 케이스에서 substring 오탐을 막으면서도 수율을 올리는 정밀도 게이트.
+    # **Claude Agent SDK(구독 인증)** 로 호출한다 — 별도 ANTHROPIC_API_KEY 불필요, 머신에
+    # claude CLI(+Node) 설치·로그인 필요(서버는 `claude setup-token`→CLAUDE_CODE_OAUTH_TOKEN).
+    # 구독 정액이라 cost_ledger(메터드 API 예산)엔 적재하지 않는다. dry_run no-op.
     resolve_llm_arbiter: bool = Field(default=False)
-    resolve_llm_model: str = Field(default="claude-haiku-4-5-20251001")  # 저가 모델(비용)
+    resolve_llm_model: str = Field(default="haiku")  # Agent SDK 모델 별칭(haiku|sonnet|opus)
     resolve_llm_max: int = Field(default=0)  # 런당 LLM 중재 호출 상한(0=domain_resolve_max 따름)
 
     # 검증 큐 동시 처리(당겨가기) — 6명 동시 검증 시 충돌 방지. batch=1회 "작업 받기"로

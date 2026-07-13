@@ -14,8 +14,9 @@ enrich 가 즉시 빈손으로 끝나 사이트·이메일을 못 얻는다. 이
 
 수율 사다리(저장 실존율 레버 — 무도메인·한글명 기업 구제, 전부 opt-in·캡·예산가드):
 ① KR=네이버(무료) 1차, 그 외=글로벌 SERP. ② `resolve_serper_fallback`=KR miss 시
-유료 Serper 재시도. ③ `resolve_llm_arbiter`=후보를 Claude 로 공식 도메인 1건 중재(기권 -1).
-짧은 한글명 substring 오탐은 LLM 이 없으면 토큰 완전일치로만 보수 채택(제약②).
+유료 Serper 재시도. ③ `resolve_llm_arbiter`=후보를 Claude Agent SDK(구독 인증·무 API키)로
+공식 도메인 1건 중재(기권 -1). 짧은 한글명 substring 오탐은 LLM 이 없으면 토큰 완전일치로만
+보수 채택(제약②).
 """
 
 from __future__ import annotations
@@ -254,31 +255,24 @@ class DomainResolver:
     ) -> str | None:
         """후보를 Claude 에 주고 공식 도메인 1건을 중재받는다(기권/캡초과/실패 시 폴백).
 
-        캡 초과·키없음·예산초과·오류면 한글은 보수적 결정 규칙으로, 라틴은 None 으로
-        폴백한다(절대 무근거 채택 금지 — 제약②). 실제 API 왕복이 일어났을 때만 과금 적재.
+        캡 초과·CLI 미설치/미인증·오류면 한글은 보수적 결정 규칙으로, 라틴은 None 으로
+        폴백한다(절대 무근거 채택 금지 — 제약②). Claude Agent SDK(구독) 호출이라 메터드
+        과금은 없다 — cost_ledger 미적재, 예산가드는 무료 레버라 미적용(캡만 제어).
         """
-        # 예산가드 — 유료 호출 전 월 예산 초과면 중재 생략(폴백).
-        led = self._cost_ledger
-        over_budget = (
-            led is not None and self._settings.cost_budget_enforce and led.is_over_budget()
-        )
-        if over_budget or not self._settings.anthropic_api_key or not self._reserve_llm():
+        if not self._reserve_llm():  # 런당 캡 — 서브프로세스 왕복 폭주 방지.
             if korean_core is not None:
                 return _korean_deterministic_pick(cands, korean_core, tld)
             return None
         shortlist = cands[:_LLM_MAX_CANDIDATES]
-        idx, billed = self._arbitrate(dc, shortlist)
-        if not billed:
-            # 왕복 자체가 실패(anthropic 미설치·전이 429/타임아웃 등) — 과금 안 하고 캡 슬롯을
-            # 환급한다. 안 그러면 일시적 장애가 남은 배치/런의 중재를 영구 불능화한다(적대
-            # 리뷰 MED). 폴백으로라도 recall 을 지킨다(한글=토큰일치, 라틴=None).
+        idx, ok = self._arbitrate(dc, shortlist)
+        if not ok:
+            # 왕복 자체가 실패(claude CLI 미설치/미인증·타임아웃 등) — 캡 슬롯을 환급해
+            # 일시 장애가 남은 배치/런의 중재를 영구 불능화하지 않게 한다(적대 리뷰 MED).
+            # 폴백으로라도 recall 을 지킨다(한글=토큰일치, 라틴=None).
             self._refund_llm()
             if korean_core is not None:
                 return _korean_deterministic_pick(cands, korean_core, tld)
             return None
-        # 실제 API 왕복이 일어났을 때만 과금(llm_judge.ClaudeJudge.billed 패턴, 적대 리뷰 MED).
-        if led is not None:
-            led.record("resolve_llm")
         if 0 <= idx < len(shortlist):
             return shortlist[idx].domain
         return None  # 모델이 기권(-1) — 무근거 채택 금지(제약②).
@@ -290,10 +284,10 @@ class DomainResolver:
                 self._llm_used -= 1
 
     def _arbitrate(self, dc: DiscoveredCompany, cands: list[_Candidate]) -> tuple[int, bool]:
-        """Claude(Haiku)로 후보 index 를 받는다 — (index, billed). 오류 시 (-1, False).
+        """Claude Agent SDK(구독)로 후보 index 를 받는다 — (index, ok). 오류 시 (-1, False).
 
-        ``billed`` 는 **실제 API 왕복이 일어났는지**다(과금 판별 단일 출처). 미설치·키오류·
-        호출 전 예외는 (−1, False)=미과금, 응답을 받은 뒤의 파싱실패는 (−1, True)=이미 과금.
+        ``ok`` 는 **실제 SDK 왕복이 일어났는지**(캡 환급 판별). CLI 미설치/미인증·호출 오류는
+        (−1, False), 응답을 받았으나 index 파싱이 애매하면 (−1, True)=기권(왕복은 일어남).
         """
         lines = "\n".join(
             f"{i}) domain={c.domain} title={c.title!r} snippet={c.snippet[:120]!r}"
@@ -303,26 +297,13 @@ class DomainResolver:
             name=dc.name, name_eng=dc.name_eng or "", country=dc.country or "", candidates=lines
         )
         try:
-            import anthropic
-
-            client = anthropic.Anthropic(api_key=self._settings.anthropic_api_key)
-            msg = client.messages.create(
-                model=self._settings.resolve_llm_model,
-                max_tokens=8,  # 숫자 하나만 필요.
-                messages=[{"role": "user", "content": prompt}],
-            )
-        except Exception as exc:  # 미설치·키오류·호출 전 오류 → 기권·미과금(왕복 없음).
+            text = _sdk_complete(prompt, self._settings.resolve_llm_model)
+        except Exception as exc:  # CLI 미설치(CLINotFoundError)·미인증·프로세스오류 → 왕복 없음.
             log.info("resolve.llm.error", err=str(exc))
             return -1, False
-        # 왕복 성공 → billed 확정. 응답 파싱은 예외-safe 하지만, 만일 실패해도 이미 청구됐으니
-        # billed=True 를 유지한다(과금 판별 단일 출처가 왕복 여부라는 계약 정합).
+        # 왕복 성공 → ok. _parse_index 는 예외-safe(정규식+클램프)라 파싱실패=기권(-1)이지만 ok 유지.
         log.info("resolve.llm.call", name=dc.name, model=self._settings.resolve_llm_model)
-        try:
-            text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
-            return _parse_index(text, len(cands)), True
-        except Exception as exc:  # 응답 형태 이탈 → 기권하되 과금은 유지.
-            log.info("resolve.llm.parse_error", err=str(exc))
-            return -1, True
+        return _parse_index(text, len(cands)), True
 
 
 def _name_slug(name: str) -> str:
@@ -434,6 +415,41 @@ def _korean_deterministic_pick(
         if tld and c.domain.endswith(tld):
             return c.domain
     return best
+
+
+_ARBITER_SYSTEM = "너는 회사 공식 도메인을 고르는 판정기다. 오직 후보 번호 하나 또는 -1만 출력한다."
+
+
+def _sdk_complete(prompt: str, model: str) -> str:
+    """Claude Agent SDK(구독 인증)로 단발 완성 텍스트를 받는다 — 실패는 예외로 위임.
+
+    별도 ANTHROPIC_API_KEY 불필요(claude CLI 로그인/CLAUDE_CODE_OAUTH_TOKEN 사용). 워커
+    스레드에서 호출되므로 스레드별 독립 이벤트루프(asyncio.run)로 브리지한다 — 스레드마다
+    새 루프라 충돌 없음. tools/파일접근 없음(allowed_tools=[])·단일 턴(max_turns=1).
+    """
+    import asyncio
+
+    from claude_agent_sdk import ClaudeAgentOptions, query
+
+    async def _run() -> str:
+        parts: list[str] = []
+        async for message in query(
+            prompt=prompt,
+            options=ClaudeAgentOptions(
+                model=model,
+                system_prompt=_ARBITER_SYSTEM,
+                allowed_tools=[],
+                max_turns=1,
+                permission_mode="bypassPermissions",
+            ),
+        ):
+            for block in getattr(message, "content", None) or []:
+                text = getattr(block, "text", None)
+                if text:
+                    parts.append(text)
+        return "".join(parts).strip()
+
+    return asyncio.run(_run())
 
 
 def _parse_index(text: str, n: int) -> int:
