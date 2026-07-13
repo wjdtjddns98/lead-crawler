@@ -456,6 +456,9 @@ def nps_relink_dart(
         ((r.bizno_prefix or "")[:6], _norm(r.name)[:255]) for r in targets.values()
     ]
     matches = cache.find_matches([p for p in pairs if p[0] and p[1]])
+    if matches is None:  # 조회 실패(미스 아님) — 오판 재연결·허위 nomatch 방지.
+        typer.echo("DART 캐시 조회 실패 — 재연결 중단(재실행하세요)")
+        raise typer.Exit(1)
     with sm() as s:
         for old_key, r in targets.items():
             hit = matches.get(((r.bizno_prefix or "")[:6], _norm(r.name)[:255]))
@@ -484,8 +487,11 @@ def nps_relink_dart(
             corp_cls = str((hit.info or {}).get("corp_cls") or "")
             s.execute(
                 _text(
+                    # unlisted 도 교정 대상 — name: 키 NPS 행의 unlisted 는 전부 조인 미스
+                    # 기본값(실측 아님)이라, 캐시 완충 후 corp_cls 실측으로 덮는 게 옳다
+                    # (corp_cls 히트 행은 reg: 키라 여기 안 옴 — 실측 unlisted 는 안 덮인다).
                     "update discovered_company set "
-                    "listed = case when listed is null or listed in ('', 'unknown') "
+                    "listed = case when listed is null or listed in ('', 'unknown', 'unlisted') "
                     "  then coalesce(:listed, listed) else listed end, "
                     "market = coalesce(market, :market), "
                     "registry = coalesce(registry, 'dart'), "

@@ -92,12 +92,15 @@ class DbDartCorpCache:
 
     def find_matches(
         self, pairs: list[tuple[str, str]]
-    ) -> dict[tuple[str, str], CachedCorp]:
+    ) -> dict[tuple[str, str], CachedCorp] | None:
         """(사업자번호 앞6자리, 정규화명) 쌍 벌크 룩업 — NPS×DART 무쿼터 enrich 조인.
 
         정밀도 우선: **둘 다** 일치해야 매치(동명 이사·유사 사업자번호 오결합 방지 —
         false-merge 는 제약① 방향으로 위험해 이름 단독 매치는 하지 않는다).
-        반환 dict 키 = 입력 쌍. 실패는 빈 dict(조인은 최적화 — 없으면 기존 경로).
+        반환 dict 키 = 입력 쌍. **조회 실패는 None**(빈 dict=진짜 미스와 구분) —
+        미스는 '조인 미스=비상장' 추론의 근거가 되므로 실패를 미스로 뭉개면
+        상장사가 비상장으로 박제된다(교차리뷰 HIGH-1). 호출부는 None 이면
+        조인 없던 것으로 처리한다(기존 경로).
         """
         want = {(p, n) for p, n in pairs if p and n}
         if not want:
@@ -124,7 +127,7 @@ class DbDartCorpCache:
             return out
         except Exception as exc:
             log.info("dart_cache.match.error", n=len(pairs), err=str(exc))
-            return {}
+            return None
 
     def backfill_join_cols(self) -> int:
         """기존 캐시 행의 bizno/name_norm 을 저장된 info 에서 재계산한다(API 콜 0).

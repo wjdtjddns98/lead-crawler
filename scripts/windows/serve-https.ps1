@@ -22,6 +22,12 @@ $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $root
 
+# Yield CPU to interactive work: every child (uvicorn, reload workers,
+# headless chrome, vite watch) inherits this priority class.
+# Best-effort: a policy/permission failure must not block server startup.
+try { (Get-Process -Id $PID).PriorityClass = "BelowNormal" }
+catch { Write-Warning "priority not lowered: $_" }
+
 $certDir = Join-Path $root "certs"
 $cert = Join-Path $certDir "cert.pem"
 $key = Join-Path $certDir "key.pem"

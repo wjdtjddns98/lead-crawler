@@ -50,9 +50,12 @@ class SupportsNpsStore(Protocol):
 
 
 class SupportsDartJoin(Protocol):
-    """DART 캐시 조인 계약(구현: storage.dart_cache.DbDartCorpCache.find_matches)."""
+    """DART 캐시 조인 계약(구현: storage.dart_cache.DbDartCorpCache.find_matches).
 
-    def find_matches(self, pairs: list[tuple[str, str]]) -> dict: ...
+    조회 실패는 None(빈 dict=진짜 미스와 구분) — 미스=비상장 추론의 전제.
+    """
+
+    def find_matches(self, pairs: list[tuple[str, str]]) -> dict | None: ...
 
 
 class NpsSource(DiscoverySource):
@@ -124,7 +127,8 @@ class NpsSource(DiscoverySource):
         # DART 캐시 조인 — (사업자번호 앞6 + 정규화명) 정확 매치만(정밀도 우선). 히트는
         # DART 와 같은 reg: 키(registry_id=corp_code)로 emit 해 과거/미래 DART 발견분과
         # canonical_key 가 완전히 합쳐진다(제약① 강화) + 홈페이지·상장 필드 무쿼터 부착.
-        matches: dict = {}
+        # matches=None 은 캐시 조회 실패(미스 아님 — unlisted 추론 금지), {}는 진짜 미스.
+        matches: dict | None = {}
         row_keys: dict[int, tuple[str, str]] = {}  # 행당 정규화 1회(재계산 방지).
         if self._dart_cache is not None and rows:
             for idx, row in enumerate(rows):
@@ -135,12 +139,13 @@ class NpsSource(DiscoverySource):
             matches = self._dart_cache.find_matches(
                 [p for p in row_keys.values() if p[0] and p[1]]
             )
+        lookup = matches if matches is not None else {}
 
         out: list[DiscoveredCompany] = []
         for idx, row in enumerate(rows):
             if not row.name:
                 continue
-            hit = matches.get(row_keys.get(idx, ("", "")))
+            hit = lookup.get(row_keys.get(idx, ("", "")))
             info = getattr(hit, "info", None) if hit is not None else None
             if hit is not None and isinstance(info, dict):
                 corp_cls = str(info.get("corp_cls") or "")
@@ -167,10 +172,25 @@ class NpsSource(DiscoverySource):
                     )
                 )
                 continue
+            # 조인 미스 = DART 캐시에 없는 법인 → 사실상 비상장(PO 결정 2026-07-13).
+            # 유효한 키(사업자번호 6자리 숫자+정규화명)로 실제 조회하고도 미스일 때만 —
+            # 키 불충분(빈/손상 사업자번호)·캐시 미주입·조회 실패(matches=None)면
+            # 세그먼트 기본값 유지. 캐시 미완충기의 오표기(실상장인데 미스)는
+            # nps-relink-dart 와 save_discovered 검증값 백필이 소급 교정한다.
+            key = row_keys.get(idx)
+            seg = segment
+            if (
+                matches is not None
+                and key is not None
+                and len(key[0]) == 6
+                and key[0].isdigit()
+                and key[1]
+            ):
+                seg = segment.model_copy(update={"listed": "unlisted"})
             out.append(
                 build_company(
                     source=self.name,
-                    segment=segment,
+                    segment=seg,
                     name=row.name,
                     address=row.address,
                 )
