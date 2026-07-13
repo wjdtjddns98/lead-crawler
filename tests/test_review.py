@@ -82,6 +82,54 @@ def test_save_lead_auto_enqueues(session: Session) -> None:
     assert items[0]["email_smtp"] is True
 
 
+def test_default_order_is_lifo_newest_first(session: Session) -> None:
+    # 기본 정렬 = LIFO(2026-07-13 PO 요청): 발견 first_seen 최신이 최상단.
+    from datetime import datetime, timedelta, timezone
+
+    from leadcrawler.schema import DiscoveredCompanyRow
+
+    save_lead(session, _lead(domain="old.com", email="ir@old.com"))
+    save_lead(session, _lead(domain="new.com", email="ir@new.com"))
+    session.flush()
+    base = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    session.get(DiscoveredCompanyRow, "dom:old.com").first_seen = base
+    session.get(DiscoveredCompanyRow, "dom:new.com").first_seen = base + timedelta(days=7)
+    session.flush()
+    assert [it["selected"] for it in query_reviews(session)] == [
+        "ir@new.com", "ir@old.com",
+    ]
+    # 필터 병행 회귀가드 — 필터가 같은 테이블(DiscoveredCompanyRow)을 조인해도
+    # first_seen 서브쿼리(aliased+correlate)가 auto-correlation 으로 깨지지 않는다.
+    assert [it["selected"] for it in query_reviews(session, listed="unknown")] == [
+        "ir@new.com", "ir@old.com",
+    ]
+
+
+def test_default_order_pending_before_confirmed(session: Session) -> None:
+    # 확정 건은 점유 해제로 미점유 풀에 재노출된다 — 원시 status 알파벳순이었다면
+    # confirmed<pending 으로 확정건이 최상단을 차지한다(Codex 리뷰 HIGH-1 회귀가드).
+    save_lead(session, _lead(domain="done.com", email="ir@done.com"))
+    save_lead(session, _lead(domain="todo.com", email="ir@todo.com"))
+    session.flush()
+    done_rid = next(
+        it["id"] for it in query_reviews(session) if it["selected"] == "ir@done.com"
+    )
+    set_review_status(session, done_rid, CONFIRMED)
+    session.flush()
+    assert [it["selected"] for it in query_reviews(session)] == [
+        "ir@todo.com", "ir@done.com",
+    ]
+
+
+def test_sort_by_listed_with_listed_filter_no_correlation_error(session: Session) -> None:
+    # sort_by=listed + listed/지역/시장 필터 병행 — raw 테이블 참조였다면 auto-correlation
+    # 오류로 500(#258 리뷰 발견 사전 버그). aliased+correlate 처방 회귀가드.
+    save_lead(session, _lead())
+    session.flush()
+    items = query_reviews(session, sort_by="listed", listed="unknown")
+    assert [it["selected"] for it in items] == ["ir@acme.com"]
+
+
 def test_form_low_confidence_flag(session: Session) -> None:
     # G: 저신뢰 폴백 폼(0.3) → form_low_confidence True; 실폼(0.6) → False. URL·신뢰도도 노출.
     save_lead(session, _lead(domain="low.com", email=None, form="https://low.com/contact",
