@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import case, func, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..logging import get_logger
 from ..models import ContactType, ExtractMethod
@@ -63,9 +63,14 @@ def _sort_expression(sort_by: str, *, pg: bool = False):  # noqa: ANN202 — SQL
             else_=2,
         )
     if sort_by == "listed":
+        # 별칭+명시 correlate — listed/region/market 필터가 같은 테이블을 외부 조인하면
+        # raw 참조는 자동 상관으로 FROM 을 잃고 500 이 난다(#258 리뷰 재현 — 기본 정렬의
+        # first_seen 서브쿼리와 동일 패턴·동일 처방).
+        dc = aliased(DiscoveredCompanyRow)
         listed_sq = (
-            select(DiscoveredCompanyRow.listed)
-            .where(DiscoveredCompanyRow.canonical_key == CompanyRow.canonical_key)
+            select(dc.listed)
+            .where(dc.canonical_key == CompanyRow.canonical_key)
+            .correlate(CompanyRow)
             .scalar_subquery()
         )
         return case((listed_sq == "listed", 0), (listed_sq == "unlisted", 1), else_=2)
@@ -356,7 +361,8 @@ def query_reviews(
     적용한다(:func:`_apply_queue_filters`). 점유(claim) 중 행은 :func:`count_reviews` 와
     동일하게 제외한다(전체큐 = 미점유 작업만 — 단건 조회 :func:`get_review` 는 무관).
     ``sort_by``(#238, :data:`QUEUE_SORT_KEYS` 중 1개)가 주어지면 그 키+방향으로 전체
-    결과를 서버 정렬한다(페이지 경계에서도 순서 일관) — 없으면 기존 기본 정렬 유지.
+    결과를 서버 정렬한다(페이지 경계에서도 순서 일관). 기본(sort_by 없음)은 LIFO —
+    status 업무순위(pending 먼저) 안에서 **최신 크롤분(발견 first_seen 역순) 최상단**.
     """
     stmt = (
         select(ReviewQueueRow, CompanyRow)
@@ -376,7 +382,27 @@ def query_reviews(
             expr.desc() if sort_dir == "desc" else expr.asc(), ReviewQueueRow.id
         )
     else:
-        stmt = stmt.order_by(ReviewQueueRow.status, CompanyRow.name, ReviewQueueRow.id)
+        # 기본 = LIFO(최신 크롤분 최상단, 2026-07-13 PO 요청). 큐 행엔 시각 컬럼이 없어
+        # 발견 원장 first_seen 을 상관 서브쿼리로 근사한다 — 조인이 아닌 이유는
+        # _apply_queue_filters 가 같은 테이블을 조건부 조인해 중복 조인이 되기 때문.
+        # ponytail: 큐 적재시각 정밀 LIFO 가 필요해지면 review_queue.created_at 마이그레이션.
+        # 별칭+명시 correlate — 필터 경로가 같은 테이블을 외부 조인해도 서브쿼리가
+        # 자동 상관으로 FROM 을 잃지 않게(no FROM clauses 오류) 고정한다.
+        dc = aliased(DiscoveredCompanyRow)
+        first_seen = (
+            select(dc.first_seen)
+            .where(dc.canonical_key == CompanyRow.canonical_key)
+            .correlate(CompanyRow)
+            .scalar_subquery()
+        )
+        # status 는 원시 문자열(알파벳순 confirmed<pending — 확정건이 위로 오는 버그,
+        # Codex 리뷰 HIGH-1)이 아니라 업무순위 CASE(#238 정렬키와 동일)로. 확정/거부는
+        # 점유 해제로 미점유 풀에 재노출되므로 pending 먼저가 실동작에 중요하다.
+        # 범위 주의: LIFO 는 이 목록 조회 전용 — 클레임 배정(_claim_more)·내 점유 목록
+        # 순서는 별개(PO 확인 후 후속).
+        stmt = stmt.order_by(
+            _sort_expression("status"), first_seen.desc(), ReviewQueueRow.id
+        )
     stmt = stmt.limit(limit).offset(offset)
     rows = session.execute(stmt).all()
     ids = [company.id for _, company in rows]

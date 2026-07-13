@@ -115,7 +115,9 @@ def create_app() -> FastAPI:
         listed: _ListedFilter = Query(default="", description="상장여부, 빈값=전체"),
         region: str = Query(default="", description="쉼표구분 지역(시/도·도시), 빈값=전체"),
         market: str = Query(default="", description="쉼표구분 시장 보드(KOSPI/KOSDAQ…), 빈값=전체"),
-        sort_by: _QueueSortKey = Query(default="", description="정렬 컬럼(#238), 빈값=기본 정렬"),
+        sort_by: _QueueSortKey = Query(
+            default="", description="정렬 컬럼(#238), 빈값=LIFO(최신 크롤분 최상단)"
+        ),
         sort_dir: Literal["asc", "desc"] = Query(default="asc", description="정렬 방향"),
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
@@ -126,7 +128,8 @@ def create_app() -> FastAPI:
         받아간 작업). ``total`` 도 동일 필터를 반영해 '이 범위 잔여건수' 표시에 쓴다.
         지역·시장 필터는 미상(주소 없는 소스 유입·시장 미기입) 행을 자연히 제외한다.
         ``sort_by``/``sort_dir``(#238) 는 전체 결과 기준 서버 정렬이라 페이지를 넘겨도
-        순서가 일관된다(미지정=기존 기본 정렬, 하위호환).
+        순서가 일관된다. 미지정 시 기본 = LIFO(status 업무순위 안에서 발견 first_seen
+        역순 — 최신 크롤분 최상단, 2026-07-13 변경).
         """
         status_val = status.value if status is not None else None
         countries = _split_csv(country)
