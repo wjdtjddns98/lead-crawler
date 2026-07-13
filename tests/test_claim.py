@@ -28,6 +28,7 @@ from leadcrawler.storage.db import init_db, session_scope
 from leadcrawler.storage.repository import save_lead
 from leadcrawler.storage.review import (
     CONFIRMED,
+    REJECTED,
     ReviewConflict,
     admin_reclaim,
     claim_work,
@@ -322,3 +323,53 @@ def test_count_and_query_reviews_with_filter(mixed_settings) -> None:
         assert count_reviews(s) == 5  # 빈 필터=전체.
         rows = query_reviews(s, countries=["KR"])
     assert {r["country"] for r in rows} == {"KR"} and len(rows) == 2
+
+
+def test_unclaimed_terminal_rework_by_other_conflicts(settings) -> None:
+    """미점유 항목을 타인이 이미 확정했으면 재확정/재거부는 충돌(전수리뷰 — LWW 차단).
+
+    구 동작: 두 검수자가 미점유 항목을 동시에 열면 마지막 저장이 앞선 확정을 덮었다.
+    """
+    a, b = _uid(settings, "alice"), _uid(settings, "bob")
+    with session_scope(settings) as s:
+        rid = query_reviews(s)[0]["id"]  # fixture 시드분 — 아무도 점유 안 한 상태.
+    with session_scope(settings) as s:  # alice 가 미점유 상태에서 바로 확정.
+        set_review_status(s, rid, CONFIRMED, assignee="alice", assignee_id=a, now=_T0)
+    with session_scope(settings) as s:  # bob 의 뒤늦은 확정/거부 → 충돌.
+        with pytest.raises(ReviewConflict):
+            set_review_status(s, rid, CONFIRMED, assignee="bob", assignee_id=b, now=_T0)
+        with pytest.raises(ReviewConflict):
+            set_review_status(s, rid, REJECTED, assignee="bob", assignee_id=b, now=_T0)
+    with session_scope(settings) as s:  # 같은 처리자(alice)의 재처리(정정)는 허용.
+        item = set_review_status(s, rid, REJECTED, assignee="alice", assignee_id=a, now=_T0)
+    assert item["status"] == "rejected"
+
+
+def test_terminal_guard_survives_prior_load_in_same_session(settings) -> None:
+    """confirm 라우트 경로 재현(교차리뷰 HIGH 실측): 같은 세션이 행을 먼저 로드한 뒤
+    (register_edited_email 모사) 타 세션이 확정 커밋 → 이어진 set_review_status 는
+    stale 객체가 아니라 최신 행을 보고 ReviewConflict 를 내야 한다(populate_existing).
+    """
+    from leadcrawler.schema import ReviewQueueRow
+
+    a, b = _uid(settings, "alice"), _uid(settings, "bob")
+    with session_scope(settings) as s0:
+        rid = query_reviews(s0)[0]["id"]
+    with session_scope(settings) as bob_s:
+        bob_s.get(ReviewQueueRow, rid)  # bob 세션이 pending 상태로 먼저 로드.
+        with session_scope(settings) as alice_s:  # 그 사이 alice 가 확정 커밋.
+            set_review_status(alice_s, rid, CONFIRMED, assignee="alice", assignee_id=a, now=_T0)
+        with pytest.raises(ReviewConflict):  # bob 의 뒤늦은 확정 — stale 객체로 덮으면 안 됨.
+            set_review_status(bob_s, rid, CONFIRMED, assignee="bob", assignee_id=b, now=_T0)
+
+
+def test_terminal_guard_protects_null_actor_rows(settings) -> None:
+    """처리자 미상(assignee_id NULL) 확정 행도 로그인 사용자가 덮지 못한다(교차리뷰 MED)."""
+    b = _uid(settings, "bob")
+    with session_scope(settings) as s0:
+        rid = query_reviews(s0)[0]["id"]
+    with session_scope(settings) as s1:  # 내부/레거시 경로 — actor 없이 확정.
+        set_review_status(s1, rid, CONFIRMED, now=_T0)
+    with session_scope(settings) as s2:
+        with pytest.raises(ReviewConflict):
+            set_review_status(s2, rid, CONFIRMED, assignee="bob", assignee_id=b, now=_T0)
