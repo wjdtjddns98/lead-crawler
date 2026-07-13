@@ -181,7 +181,7 @@ class DomainResolver:
         tld = f".{country.iso2.lower()}" if country else ""
 
         cands = _candidates_from(primary.fetch_page(query, gl=gl, lr=lr, start=1))
-        best = self._pick(dc, cands, slug=slug, korean_core=korean_core, tld=tld)
+        best = self._pick(dc, cands, slug=slug, korean_core=korean_core, tld=tld, is_kr=is_kr)
 
         # ② Serper 폴백 — KR 네이버 miss 시 유료 글로벌로 재시도(예산가드는 Serper 내부).
         if best is None and is_kr and s.resolve_serper_fallback:
@@ -190,7 +190,9 @@ class DomainResolver:
                 more = _candidates_from(fallback.fetch_page(query, gl=gl, lr=lr, start=1))
                 if more:
                     cands = _merge_candidates(cands, more)
-                    best = self._pick(dc, cands, slug=slug, korean_core=korean_core, tld=tld)
+                    best = self._pick(
+                        dc, cands, slug=slug, korean_core=korean_core, tld=tld, is_kr=is_kr
+                    )
 
         if best is not None:
             log.info("resolve.hit", name=dc.name, domain=best)
@@ -206,17 +208,22 @@ class DomainResolver:
         slug: str,
         korean_core: str | None,
         tld: str,
+        is_kr: bool,
     ) -> str | None:
         """후보 도메인 중 이 기업의 공식 도메인을 정밀도 우선으로 고른다(없으면 None).
 
         한글 경로(``korean_core``)는 LLM 중재가 켜졌으면 그쪽에 위임하고, 아니면 보수적
         결정 규칙(title 이 상호명으로 시작 + 충분히 긴 이름)만 자동 채택한다 — 짧은 한글명의
         substring 오탐(예: '동양'→동양생명)을 막는다. 라틴 경로는 도메인 root 대조.
+
+        LLM 중재는 ``is_kr`` 일 때만 탄다(PO 지시 2026-07-13) — 비KR 은 라틴명이 있어
+        root 대조로 충분하고, CLI 콜드스타트(~16초/콜)를 글로벌 크롤에 흘리지 않는다.
         """
         if not cands:
             return None
+        use_llm = is_kr and self._settings.resolve_llm_arbiter
         if korean_core is not None:
-            if self._settings.resolve_llm_arbiter:
+            if use_llm:
                 return self._llm_pick(dc, cands, korean_core=korean_core, tld=tld)
             return _korean_deterministic_pick(cands, korean_core, tld)
         # 라틴 경로 — 도메인 root ↔ 슬러그 경계 정합.
@@ -228,8 +235,8 @@ class DomainResolver:
                 best = c.domain
             if tld and c.domain.endswith(tld):
                 return c.domain
-        # root 대조 실패분도 LLM 중재로 구제(결합형·약어 실기업). 켜졌을 때만.
-        if best is None and self._settings.resolve_llm_arbiter:
+        # root 대조 실패분도 LLM 중재로 구제(결합형·약어 실기업) — KR + 켜졌을 때만.
+        if best is None and use_llm:
             return self._llm_pick(dc, cands, korean_core=None, tld=tld)
         return best
 
