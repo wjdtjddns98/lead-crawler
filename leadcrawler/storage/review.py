@@ -63,9 +63,14 @@ def _sort_expression(sort_by: str, *, pg: bool = False):  # noqa: ANN202 — SQL
             else_=2,
         )
     if sort_by == "listed":
+        # 별칭+명시 correlate — listed/region/market 필터가 같은 테이블을 외부 조인하면
+        # raw 참조는 자동 상관으로 FROM 을 잃고 500 이 난다(#258 리뷰 재현 — 기본 정렬의
+        # first_seen 서브쿼리와 동일 패턴·동일 처방).
+        dc = aliased(DiscoveredCompanyRow)
         listed_sq = (
-            select(DiscoveredCompanyRow.listed)
-            .where(DiscoveredCompanyRow.canonical_key == CompanyRow.canonical_key)
+            select(dc.listed)
+            .where(dc.canonical_key == CompanyRow.canonical_key)
+            .correlate(CompanyRow)
             .scalar_subquery()
         )
         return case((listed_sq == "listed", 0), (listed_sq == "unlisted", 1), else_=2)

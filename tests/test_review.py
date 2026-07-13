@@ -98,6 +98,20 @@ def test_default_order_is_lifo_newest_first(session: Session) -> None:
     assert [it["selected"] for it in query_reviews(session)] == [
         "ir@new.com", "ir@old.com",
     ]
+    # 필터 병행 회귀가드 — 필터가 같은 테이블(DiscoveredCompanyRow)을 조인해도
+    # first_seen 서브쿼리(aliased+correlate)가 auto-correlation 으로 깨지지 않는다.
+    assert [it["selected"] for it in query_reviews(session, listed="unknown")] == [
+        "ir@new.com", "ir@old.com",
+    ]
+
+
+def test_sort_by_listed_with_listed_filter_no_correlation_error(session: Session) -> None:
+    # sort_by=listed + listed/지역/시장 필터 병행 — raw 테이블 참조였다면 auto-correlation
+    # 오류로 500(#258 리뷰 발견 사전 버그). aliased+correlate 처방 회귀가드.
+    save_lead(session, _lead())
+    session.flush()
+    items = query_reviews(session, sort_by="listed", listed="unknown")
+    assert [it["selected"] for it in items] == ["ir@acme.com"]
 
 
 def test_form_low_confidence_flag(session: Session) -> None:
