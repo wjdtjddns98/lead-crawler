@@ -358,3 +358,16 @@ def test_multi_email_no_fanout(session: Session) -> None:
     assert len(items) == 1  # 1:1 유지 — 중복 행 없음
     assert items[0]["email_status"] == "valid"  # 결정적 대표 신호
     assert get_review(session, items[0]["id"])["email_status"] == "valid"  # 목록=단건 일치
+
+
+def test_sort_expression_pg_collate_c() -> None:
+    """PG 정렬은 COLLATE "C"(코드포인트=가나다순) 강제 — en_US.utf8 한글 순서 어긋남 방지."""
+    from sqlalchemy.dialects import postgresql, sqlite
+
+    from leadcrawler.storage.review import _sort_expression
+
+    pg_sql = str(_sort_expression("name", pg=True).compile(dialect=postgresql.dialect()))
+    assert 'COLLATE "C"' in pg_sql
+    # SQLite 는 기본 BINARY 가 이미 코드포인트순 — COLLATE 미부착("C" 미지원).
+    lite_sql = str(_sort_expression("name").compile(dialect=sqlite.dialect()))
+    assert "COLLATE" not in lite_sql

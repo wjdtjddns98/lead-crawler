@@ -39,19 +39,23 @@ _VALID_LISTED = frozenset({"listed", "unlisted", "unknown"})
 QUEUE_SORT_KEYS = ("name", "country", "industry", "listed", "form", "status")
 
 
-def _sort_expression(sort_by: str):  # noqa: ANN202 — SQLAlchemy 표현식(공용 상위타입 없음)
+def _sort_expression(sort_by: str, *, pg: bool = False):  # noqa: ANN202 — SQLAlchemy 표현식
     """정렬 키 → SQLAlchemy 정렬 표현식(#238). 허용 밖 키는 ValueError(fail-loud).
 
     status/listed 는 알파벳순이 아니라 **업무 순위**(pending 먼저 / 상장·비상장·미상)로,
     form 은 '폼 있음 먼저'(asc 기준)로 FE 클라이언트 정렬과 동일 의미를 낸다. listed 는
     스칼라 서브쿼리로 읽어 필터의 조건부 DiscoveredCompanyRow 조인과 간섭하지 않는다.
+    문자열 컬럼은 PostgreSQL(``pg=True``)에서 ``COLLATE "C"``(코드포인트순)를 강제한다 —
+    운영 DB 의 en_US.utf8 로케일 콜레이션은 한글을 가나다순이 아닌 순서로 돌려줘(실서버
+    실측: '하나…'가 '동우…'보다 앞) 종전 FE 클라이언트 정렬(JS 코드포인트=가나다순)과
+    어긋난다. SQLite 는 기본 BINARY 가 이미 코드포인트순이라 그대로 둔다("C" 미지원).
     """
     if sort_by == "name":
-        return CompanyRow.name
+        return CompanyRow.name.collate("C") if pg else CompanyRow.name
     if sort_by == "country":
-        return CompanyRow.country
+        return CompanyRow.country.collate("C") if pg else CompanyRow.country
     if sort_by == "industry":
-        return CompanyRow.industry
+        return CompanyRow.industry.collate("C") if pg else CompanyRow.industry
     if sort_by == "status":
         return case(
             (ReviewQueueRow.status == PENDING, 0),
@@ -366,7 +370,8 @@ def query_reviews(
         markets=markets,
     )
     if sort_by:
-        expr = _sort_expression(sort_by)
+        pg = session.bind is not None and session.bind.dialect.name == "postgresql"
+        expr = _sort_expression(sort_by, pg=pg)
         stmt = stmt.order_by(
             expr.desc() if sort_dir == "desc" else expr.asc(), ReviewQueueRow.id
         )
