@@ -9,7 +9,7 @@ import {
   setAuthErrorHandler,
 } from "./api";
 import { errMsg } from "./format";
-import { LISTED_FILTER_OPTIONS, useQueueFilterOpts } from "./filterOptions";
+import { krInScope, LISTED_FILTER_OPTIONS, useQueueFilterOpts } from "./filterOptions";
 import { Admin } from "./components/Admin";
 import { MyWork } from "./components/MyWork";
 import { FilterPopover, pickSummary } from "./components/FilterPopover";
@@ -127,8 +127,11 @@ function Workbench({
   const [industry, setIndustry] = useState("");
   const [listed, setListed] = useState<"" | Listed>("");
   const [market, setMarket] = useState("");
-  // 국가·업종·시장 셀렉트 옵션 — worker 접근 가능한 경로로 한 번 로드(실패해도 큐 조회는 가능).
-  const { countryOpts, industryOpts, markets } = useQueueFilterOpts();
+  // 지역(KR 시/도) — 국가에 KR 이 있을 때만 노출·전송(#243). 숨김 중엔 선택값을 유지해
+  // KR 재선택 시 복원하고, 전송만 비운다(크롤 실행 섹션의 지역 팬아웃과 같은 패턴).
+  const [region, setRegion] = useState("");
+  // 국가·업종·시장·지역 셀렉트 옵션 — worker 접근 가능한 경로로 한 번 로드(실패해도 큐 조회는 가능).
+  const { countryOpts, industryOpts, markets, regionOpts } = useQueueFilterOpts();
   // 시장 어휘는 BE 계약 확장 대기 — 내려올 때만 폴백을 실측 목록으로 교체.
   const marketOpts = toMarketOpts(markets.length ? markets : FALLBACK_MARKETS);
   const [offset, setOffset] = useState(0);
@@ -152,7 +155,7 @@ function Workbench({
         status: filter,
         limit: PAGE,
         offset,
-        filter: { country, industry, listed, market },
+        filter: { country, industry, listed, market, region: krInScope(country) ? region : "" },
       });
       if (myReq !== reqRef.current) return; // 더 새 요청이 진행 중 — 결과 폐기
       // 마지막 페이지의 마지막 항목을 처리해 페이지가 비면 한 페이지 앞으로 보정.
@@ -168,7 +171,7 @@ function Workbench({
     } finally {
       if (myReq === reqRef.current) setLoading(false);
     }
-  }, [filter, offset, country, industry, listed, market]);
+  }, [filter, offset, country, industry, listed, market, region]);
 
   useEffect(() => {
     // 전체 큐 탭에 있을 때만 조회 — 탭 진입·복귀 시 재조회해 내 작업에서 처리한
@@ -278,6 +281,25 @@ function Workbench({
               emptyHint="전체 업종"
             />
           </FilterPopover>
+          {/* 지역(KR 시/도) — 국가에 KR 을 선택했을 때만 노출(#243). */}
+          {krInScope(country) && (
+            <FilterPopover
+              label="지역"
+              summary={pickSummary(region, regionOpts)}
+              active={region !== ""}
+            >
+              <MultiPicker
+                options={regionOpts}
+                value={region}
+                onChange={(csv) => {
+                  setRegion(csv);
+                  setOffset(0);
+                }}
+                placeholder="지역 검색 (예: 서울, 경기)"
+                emptyHint="전체 지역"
+              />
+            </FilterPopover>
+          )}
           <label className="flex items-center gap-1.5 text-muted text-[13px]">
             상장여부
             <select
