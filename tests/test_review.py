@@ -105,6 +105,22 @@ def test_default_order_is_lifo_newest_first(session: Session) -> None:
     ]
 
 
+def test_default_order_pending_before_confirmed(session: Session) -> None:
+    # 확정 건은 점유 해제로 미점유 풀에 재노출된다 — 원시 status 알파벳순이었다면
+    # confirmed<pending 으로 확정건이 최상단을 차지한다(Codex 리뷰 HIGH-1 회귀가드).
+    save_lead(session, _lead(domain="done.com", email="ir@done.com"))
+    save_lead(session, _lead(domain="todo.com", email="ir@todo.com"))
+    session.flush()
+    done_rid = next(
+        it["id"] for it in query_reviews(session) if it["selected"] == "ir@done.com"
+    )
+    set_review_status(session, done_rid, CONFIRMED)
+    session.flush()
+    assert [it["selected"] for it in query_reviews(session)] == [
+        "ir@todo.com", "ir@done.com",
+    ]
+
+
 def test_sort_by_listed_with_listed_filter_no_correlation_error(session: Session) -> None:
     # sort_by=listed + listed/지역/시장 필터 병행 — raw 테이블 참조였다면 auto-correlation
     # 오류로 500(#258 리뷰 발견 사전 버그). aliased+correlate 처방 회귀가드.

@@ -395,8 +395,13 @@ def query_reviews(
             .correlate(CompanyRow)
             .scalar_subquery()
         )
+        # status 는 원시 문자열(알파벳순 confirmed<pending — 확정건이 위로 오는 버그,
+        # Codex 리뷰 HIGH-1)이 아니라 업무순위 CASE(#238 정렬키와 동일)로. 확정/거부는
+        # 점유 해제로 미점유 풀에 재노출되므로 pending 먼저가 실동작에 중요하다.
+        # 범위 주의: LIFO 는 이 목록 조회 전용 — 클레임 배정(_claim_more)·내 점유 목록
+        # 순서는 별개(PO 확인 후 후속).
         stmt = stmt.order_by(
-            ReviewQueueRow.status, first_seen.desc(), ReviewQueueRow.id
+            _sort_expression("status"), first_seen.desc(), ReviewQueueRow.id
         )
     stmt = stmt.limit(limit).offset(offset)
     rows = session.execute(stmt).all()
