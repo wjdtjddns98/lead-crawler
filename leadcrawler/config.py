@@ -202,6 +202,11 @@ class Settings(BaseSettings):
     # 깊게). 과도한 호출은 target_count 조기종료 + cost_ledger 예산 가드 + 취소로 막는다.
     # 유료 검색(Serper)은 이 캡을 쓰지 않는다 → discovery_search_max_per_segment 로 분리.
     discovery_max_per_source: int = Field(default=500)
+    # KR 발견 = NPS(국민연금) 단독(PO 결정 2026-07-13). 근거: DART 등재 법인은 가입 사업장으로
+    # NPS 에 전부 있고, DART 데이터(홈페이지·상장·업종)는 NpsSource 의 캐시 조인과
+    # nps-relink-dart 가 참고용으로 부착한다. 검색·지역검색 발견은 뉴스/블로그 제목이 회사로
+    # 유입되는 오탐 실측(2026-07-13, <b>태그 헤드라인 57건)으로 차단. False=기존 다소스 발견.
+    kr_discovery_nps_only: bool = Field(default=True)
     # DART 일일 호출 예산(KST 리셋, 0=끄기) — OpenDART 일일 쿼터 2만을 KR 12업종 세그먼트가
     # 라운드 초반에 다 태우면 이후 응답이 전부 020(한도초과)이라 커서만 헛돌던 실사고
     # (2026-07-07) 방지. 2만보다 낮게 잡아 수동 백필/CLI 몫 여유를 남긴다.

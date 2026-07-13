@@ -217,3 +217,27 @@ def test_naver_rotation_thread_safe_even_distribution() -> None:
     assert len(used) == n_calls
     # 인덱스 경합(중복 소비·건너뜀)이 있었다면 두 앱의 호출수가 30/30으로 안 맞는다.
     assert used.count("id1") == n_calls // 2 and used.count("id2") == n_calls // 2
+
+
+def test_naver_sanitizes_title_tags_and_entities() -> None:
+    """네이버 title/description 의 <b> 하이라이트·HTML 엔티티를 공급자에서 정화한다.
+
+    안 하면 발견 회사명에 '칸젠 … <b>화장품</b> &gt; 뉴스' 같은 원문이 그대로 적재되고
+    (2026-07-13 라이브 실측 57건), 도메인해석 토큰매칭에도 엔티티가 유입된다.
+    """
+    from leadcrawler.sources.search_provider import build_naver_provider
+
+    class TagFetcher:
+        def get_json(self, url, *, params=None, headers=None):
+            return {"items": [{
+                "link": "https://acme.co.kr",
+                "title": "에이스<b>전자</b> &amp; 부품 &gt; 소개",
+                "description": "국내 1위 <b>전자부품</b> 제조사 &quot;에이스&quot;",
+            }]}
+
+    p = build_naver_provider(
+        _settings(naver_client_id="a", naver_client_secret="b"), fetcher=TagFetcher()
+    )
+    [item] = p.fetch_page("에이스전자", gl="", lr="", start=1)
+    assert item["title"] == "에이스전자 & 부품 > 소개"
+    assert item["description"] == '국내 1위 전자부품 제조사 "에이스"'

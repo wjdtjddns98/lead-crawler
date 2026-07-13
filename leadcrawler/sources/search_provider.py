@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import html
+import re
 import threading
 from typing import Protocol
 
@@ -28,6 +30,20 @@ log = get_logger("sources.search_provider")
 _CSE_URL = "https://customsearch.googleapis.com/customsearch/v1"
 _SERPER_URL = "https://google.serper.dev/search"
 _NAVER_URL = "https://openapi.naver.com/v1/search/webkr.json"
+# 네이버 응답 title/description 은 검색어를 <b>…</b> 로 하이라이트하고 HTML 엔티티
+# (&gt;·&quot;·&amp;)를 이스케이프한 채 온다 — 공급자 계약(정규화된 결과)에 맞춰 여기서
+# 정화한다(안 하면 발견 회사명·도메인해석 토큰매칭에 태그/엔티티가 그대로 유입).
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def clean_search_text(text: str) -> str:
+    """검색결과 텍스트 공용 정화 — HTML 태그 제거 + 엔티티 unescape(+trim).
+
+    네이버(<b> 하이라이트·&gt; 엔티티) 대응이 원출처지만 공급자 불문 무해해 발견·도메인해석
+    양쪽이 공유한다(3중 구현 방지 — 교차리뷰 LOW). 태그 제거를 unescape 보다 먼저 하는
+    순서는 의도: 역순이면 &amp;gt; 가 &gt; 로 풀린 뒤 태그 정규식이 본문을 오려낼 수 있다.
+    """
+    return html.unescape(_HTML_TAG_RE.sub("", text)).strip()
 
 
 class SearchProvider(Protocol):
@@ -205,7 +221,15 @@ class NaverProvider(_BaseProvider):
             log.info("search.naver.error", start=start, err=str(exc))
             return []
         items = payload.get("items") if isinstance(payload, dict) else None
-        return [it for it in (items or []) if isinstance(it, dict)]
+        return [
+            {
+                **it,
+                "title": clean_search_text(str(it.get("title") or "")),
+                "description": clean_search_text(str(it.get("description") or "")),
+            }
+            for it in (items or [])
+            if isinstance(it, dict)
+        ]
 
 
 def build_naver_provider(
