@@ -304,16 +304,31 @@ def supported_industries() -> tuple[tuple[str, str], ...]:
     )
 
 
+# 택소노미 멤버십용 casefold 셋 — 이 함수는 입력 경계라 케이스를 강제할 수 없다
+# (admin API·저장 크롤타깃·env 전부 트림만 함). "ai·데이터" 소문자 입력이 정확일치에
+# 빠지면 게이트가 도로 열린다(적대리뷰 HIGH — AI·데이터는 구키 폴백도 없음).
+_TAXONOMY_CASEFOLD: frozenset[str] = frozenset(lb.casefold() for lb in INDUSTRY_TAXONOMY)
+
+
 def is_specific_industry(industry: str) -> bool:
     """업종이 '구체적'(알려진 매핑 업종)인지 — 집계원(GLEIF/Wikidata/거래소) 게이팅 기준.
 
     구체 업종이면 업종 필터를 못 하는 집계원·거래소 소스를 끄고 등록처(코드 필터)와
-    검색(키워드 필터)에 맡긴다(정밀도 우선). 빈값·미매핑('전체'·'기타' 등)은 '광범위'로
+    검색(키워드 필터)에 맡긴다(정밀도 우선). 택소노미 라벨과 알려진 기존 매핑 키만
+    구체로 판정하고, 그 외(빈값·'전체'·'기타'·미매핑 자유텍스트)는 모두 '광범위'로
     보아 집계원을 그대로 둔다(광범위 발견의 유일 출처일 수 있으므로).
+
+    **택소노미 라벨은 코드 매핑 유무와 무관하게 전부 구체다** — 과거엔 매핑 없는 라벨
+    (게임·기계·산업장비 등)을 광범위로 취급해 집계원을 켜뒀는데, 집계원은 업종 무관
+    명부(LEI 발급순 등)를 그대로 퍼오면서 세그먼트 라벨이 도장돼 100% 오라벨이 됐다
+    (2026-07-13 실측: gleif 1,000건 전원 캐피탈·SPC 가 '기계·산업장비'). 3층 매핑
+    이후 NPS 가 42라벨 전부를 커버해 '유일 출처' 근거도 소멸.
     """
-    key = (industry or "").strip().lower()
-    if not key:
+    stripped = (industry or "").strip()
+    if not stripped:
         return False
+    if stripped.casefold() in _TAXONOMY_CASEFOLD:
+        return True
     return any(
         k in _EN_INDUSTRY or k in _KSIC or k in _SIC or k in _UK_SIC
         for k in _lookup_keys(industry)

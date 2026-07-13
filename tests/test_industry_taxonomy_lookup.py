@@ -30,9 +30,22 @@ def test_taxonomy_label_union_search_terms() -> None:
 
 
 def test_taxonomy_label_is_specific() -> None:
-    # 매핑 있는 라벨=구체(집계원 OFF), 매핑 없는 라벨=광범위(집계원 유지).
+    # 택소노미 라벨은 코드 매핑 유무와 무관하게 전부 구체(집계원 OFF) — 매핑 없는
+    # 라벨에 집계원을 켜두면 업종 무관 명부가 라벨 도장을 받는 오라벨 사고(gleif 실측).
     assert is_specific_industry("IT·소프트웨어")
-    assert not is_specific_industry("게임")
+    assert is_specific_industry("게임")
+    assert is_specific_industry("기계·산업장비")
+    # 전 라벨 회귀가드 — 미래 택소노미 추가분이 매핑 기반 구로직으로 새는 것 방지.
+    # casefold 입력도 통과해야 한다(입력 경계 함수 — "ai·데이터" 소문자 케이스 HIGH).
+    for lbl in INDUSTRY_TAXONOMY:
+        assert is_specific_industry(lbl), lbl
+        assert is_specific_industry(lbl.casefold()), lbl
+    # '기타 제조'는 AMBIGUOUS(강제 재분류 대상)지만 is_broad_industry 도 False 라
+    # 구체 취급이 두 게이트 함수의 정합 — 광범위로 되돌리면 기존 비일관 재도입.
+    assert is_specific_industry("기타 제조")
+    # 광범위 토큰은 여전히 비구체(집계원 유지 — 광범위 발견 경로 보존).
+    assert not is_specific_industry("전체")
+    assert not is_specific_industry("")
 
 
 def test_old_keys_still_work() -> None:
