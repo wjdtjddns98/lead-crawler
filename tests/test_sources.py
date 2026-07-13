@@ -606,6 +606,24 @@ def test_kr_nps_only_policy_off_restores_multi_source() -> None:
     assert len({r.source for r in rows}) > 1
 
 
+def test_kr_nps_only_policy_normalizes_country_aliases() -> None:
+    """소문자 'kr'·별칭 'korea' 표기도 게이트에 걸린다(is_country 정규화 — 리뷰 MED).
+
+    admin API 경로는 국가 문자열을 대문자화하지 않으므로 엄격비교면 정책이 우회된다.
+    """
+    for alias in ("kr", "korea", " KR "):
+        rows = discover_segment(Segment(country=alias, industry="건설"), Settings(dry_run=True))
+        assert rows and {r.source for r in rows} == {"nps"}
+
+
+def test_kr_nps_only_broad_industry_returns_empty_without_error() -> None:
+    """NPS 미적용 KR 세그먼트(브로드 '전체')는 예외 없이 빈 결과(경고 로그 경로).
+
+    구 동작은 DART/검색이 커버하던 사각 — 정책 on 에서는 per-업종(택소노미) 트리거가 전제.
+    """
+    assert discover_segment(Segment(country="KR", industry="전체"), Settings(dry_run=True)) == []
+
+
 def test_kr_nps_only_policy_leaves_other_countries() -> None:
     """비KR 세그먼트는 정책과 무관하게 다소스 발견을 유지한다."""
     rows = discover_segment(Segment(country="US", industry="전체"), Settings(dry_run=True))

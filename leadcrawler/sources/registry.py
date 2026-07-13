@@ -19,6 +19,7 @@ from .base import (
     Segment,
     SupportsCursorStore,
     discovery_chunks,
+    is_country,
 )
 from .http import HostRateLimiters
 from .companieshouse import CompaniesHouseSource
@@ -36,7 +37,7 @@ from .exchanges import (
 from .ai_directory import AiDirectorySource
 from .gleif import GleifSource
 from .naver_local import NaverLocalSource
-from .nps import NpsSource, SupportsNpsStore
+from .nps import _KR, NpsSource, SupportsNpsStore
 from .opencorporates import OpenCorporatesSource
 from .search import SearchSource
 from .wikidata import WikidataSource
@@ -176,8 +177,13 @@ def discover_segment(
     # 참고용으로 부착한다 — DART 는 발견에서 참고용으로 강등. 검색·지역검색은 뉴스/블로그
     # 헤드라인이 회사로 유입되는 오탐(2026-07-13 실측)으로 발견에서 제외.
     # KR 지역 팬아웃 세그먼트(region, 검색 전용)는 applicable 이 비어 자연 no-op.
-    if settings.kr_discovery_nps_only and segment.country == "KR":
+    if settings.kr_discovery_nps_only and is_country(segment, _KR):
         applicable = [src for src in applicable if isinstance(src, NpsSource)]
+        if not applicable:
+            # NPS 미적용 KR 세그먼트(브로드 '전체'·3층매핑 미커버 라벨·persist=False 로
+            # 스토어 미주입·region 팬아웃)는 발견 0 이 된다 — 조용한 사각 방지용 가시화
+            # (교차리뷰 HIGH: 침묵 0건은 원인 구분 불가).
+            log.warning("discover.kr_nps_only.empty", segment=segment.label)
     free_srcs = [src for src in applicable if not isinstance(src, SearchSource)]
     workers = min(settings.discovery_source_workers, len(free_srcs))
     found_by_src: dict[int, list[DiscoveredCompany]] = {}

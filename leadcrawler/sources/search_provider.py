@@ -36,7 +36,13 @@ _NAVER_URL = "https://openapi.naver.com/v1/search/webkr.json"
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _clean_text(text: str) -> str:
+def clean_search_text(text: str) -> str:
+    """검색결과 텍스트 공용 정화 — HTML 태그 제거 + 엔티티 unescape(+trim).
+
+    네이버(<b> 하이라이트·&gt; 엔티티) 대응이 원출처지만 공급자 불문 무해해 발견·도메인해석
+    양쪽이 공유한다(3중 구현 방지 — 교차리뷰 LOW). 태그 제거를 unescape 보다 먼저 하는
+    순서는 의도: 역순이면 &amp;gt; 가 &gt; 로 풀린 뒤 태그 정규식이 본문을 오려낼 수 있다.
+    """
     return html.unescape(_HTML_TAG_RE.sub("", text)).strip()
 
 
@@ -218,8 +224,8 @@ class NaverProvider(_BaseProvider):
         return [
             {
                 **it,
-                "title": _clean_text(str(it.get("title") or "")),
-                "description": _clean_text(str(it.get("description") or "")),
+                "title": clean_search_text(str(it.get("title") or "")),
+                "description": clean_search_text(str(it.get("description") or "")),
             }
             for it in (items or [])
             if isinstance(it, dict)
