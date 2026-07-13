@@ -28,6 +28,7 @@ from leadcrawler.storage.db import init_db, session_scope
 from leadcrawler.storage.repository import save_lead
 from leadcrawler.storage.review import (
     CONFIRMED,
+    REJECTED,
     ReviewConflict,
     admin_reclaim,
     claim_work,
@@ -322,3 +323,23 @@ def test_count_and_query_reviews_with_filter(mixed_settings) -> None:
         assert count_reviews(s) == 5  # 빈 필터=전체.
         rows = query_reviews(s, countries=["KR"])
     assert {r["country"] for r in rows} == {"KR"} and len(rows) == 2
+
+
+def test_unclaimed_terminal_rework_by_other_conflicts(settings) -> None:
+    """미점유 항목을 타인이 이미 확정했으면 재확정/재거부는 충돌(전수리뷰 — LWW 차단).
+
+    구 동작: 두 검수자가 미점유 항목을 동시에 열면 마지막 저장이 앞선 확정을 덮었다.
+    """
+    a, b = _uid(settings, "alice"), _uid(settings, "bob")
+    with session_scope(settings) as s:
+        rid = query_reviews(s)[0]["id"]  # fixture 시드분 — 아무도 점유 안 한 상태.
+    with session_scope(settings) as s:  # alice 가 미점유 상태에서 바로 확정.
+        set_review_status(s, rid, CONFIRMED, assignee="alice", assignee_id=a, now=_T0)
+    with session_scope(settings) as s:  # bob 의 뒤늦은 확정/거부 → 충돌.
+        with pytest.raises(ReviewConflict):
+            set_review_status(s, rid, CONFIRMED, assignee="bob", assignee_id=b, now=_T0)
+        with pytest.raises(ReviewConflict):
+            set_review_status(s, rid, REJECTED, assignee="bob", assignee_id=b, now=_T0)
+    with session_scope(settings) as s:  # 같은 처리자(alice)의 재처리(정정)는 허용.
+        item = set_review_status(s, rid, REJECTED, assignee="alice", assignee_id=a, now=_T0)
+    assert item["status"] == "rejected"
