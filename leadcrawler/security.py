@@ -119,7 +119,10 @@ def create_user(
     user = UserRow(
         id=uuid4().hex[:12],
         username=username.strip(),  # 앞뒤 공백 제거(프론트 트림과 일관 — 로그인 불일치 방지).
-        password_hash=hash_password(password),
+        # 비밀번호도 트림(QA①) — 로그인이 트림하므로, 모든 생성 경로의 단일 관문인
+        # 여기(CLI user-add·admin API 공용)서 같은 규칙을 적용해야 공백 포함 비번
+        # 계정이 생겨 영구 로그인 불가가 되는 불일치를 막는다.
+        password_hash=hash_password(password.strip()),
         role=effective_role,
         is_active=True,
     )

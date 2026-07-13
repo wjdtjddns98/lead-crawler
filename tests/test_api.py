@@ -426,6 +426,13 @@ def test_queue_sort_invalid_key_422(client: TestClient) -> None:
     ).status_code == 422
 
 
+def test_login_trims_whitespace(anon: TestClient) -> None:
+    # QA①: 아이디/비번 앞뒤 공백(복사·모바일 자동완성)이 있어도 로그인 허용.
+    r = anon.post("/auth/login", json={"username": f"  {_USER} ", "password": f" {_PW}  "})
+    assert r.status_code == 200
+    assert r.json()["username"] == _USER
+
+
 # --- #191: GET /queue/mine status 필터(처리 이력) -----------------------
 
 def test_mine_no_status_is_unchanged(client: TestClient) -> None:
