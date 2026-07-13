@@ -27,3 +27,14 @@
 
 한국어 주석·docstring, `from __future__ import annotations`, ruff line-length=100,
 `ruff check .` + `pytest -q` green 후 커밋.
+
+## 운영 제약 (전수리뷰 2026-07-13)
+
+- **웹 서버는 단일 uvicorn worker 전용.** 크롤 동시 1건 가드(`_running`)와 워치독의
+  스레드 생존 판정이 프로세스 로컬이라, `--workers 2+` 로 띄우면 다른 worker 의
+  워치독이 정상 크롤을 죽은 잡으로 오판해 reap 한다. `leadcrawler web` CLI 는 workers
+  옵션 자체가 없어 안전 — **uvicorn 을 직접 띄울 때도 workers 를 늘리지 말 것.**
+  (다중 프로세스가 필요해지면 DB 리스/하트비트로 전환이 선행돼야 한다.)
+- **전체 `pytest -q` 는 저장소 루트에 `.env`(라이브 키) 없는 체크아웃에서 돌릴 것.**
+  클린 워크트리 실측 ~80초. 루트 `.env` 가 있으면 라이브 경로 테스트가 실 네트워크를
+  타서 행/실패한다(>10분 실측, 기존 베이스라인) — 로컬은 타깃 테스트, 전체는 CI 가 권위.

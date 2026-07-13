@@ -244,6 +244,7 @@ class SendResult(BaseModel):
     attempted: int = 0
     sent: int = 0
     failed: int = 0
+    skipped: int = 0  # 동시 캠페인 선점/기발송 스킵(pydantic 이 조용히 드롭하지 않게 명시)
     capped: int = 0  # 일일 상한 초과로 미발송
 
 

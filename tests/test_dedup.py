@@ -94,3 +94,35 @@ def test_normalize_name_folds_ascii_paren_legal_forms() -> None:
     assert normalize_name("(유)대한화학") == normalize_name("유한회사 대한화학")
     # 오폴딩 방지 — 이름 본문 속 '주'는 보존.
     assert normalize_name("주연테크") != normalize_name("연테크")
+
+
+def test_normalize_domain_preserves_multi_tenant_subdomain() -> None:
+    """멀티테넌트 호스팅은 테넌트 라벨 보존 — 서로 다른 회사의 false merge 방지(전수리뷰)."""
+    from leadcrawler.dedup import normalize_domain
+
+    assert normalize_domain("https://alpha.github.io/about") == "alpha.github.io"
+    assert normalize_domain("beta.github.io") == "beta.github.io"
+    assert normalize_domain("https://shop.myshopify.com") == "shop.myshopify.com"
+    assert normalize_domain("www.acme.modoo.at") == "acme.modoo.at"
+    # 접미 자체만 오면 그대로(라벨 부족 시 인덱스 안전).
+    assert normalize_domain("github.io") == "github.io"
+    # 깊은 서브도메인도 테넌트 1라벨까지만.
+    assert normalize_domain("a.b.pages.dev") == "b.pages.dev"
+    # 기존 동작 회귀 없음: 일반 도메인·2단계 ccTLD.
+    assert normalize_domain("https://www.acme.co.kr/ir") == "acme.co.kr"
+    assert normalize_domain("sub.acme.com") == "acme.com"
+    # 블로그 플랫폼은 의도적으로 미보존(검색 blocklist 등치 유지).
+    assert normalize_domain("someone.tistory.com") == "tistory.com"
+
+
+def test_multi_tenant_tenants_get_distinct_canonical_keys() -> None:
+    """테넌트별로 canonical_key 자체가 갈라진다(교차리뷰 — false merge 방지의 최종 계약).
+
+    주의: 이 변경 전 저장된 행은 base(dom:cafe24.com)로 이미 접혀 있어 신규 키와
+    불일치한다 — 배포 시점 실측 6건(전수리뷰 후속 확인)이라 소급 재키잉은 하지 않는다.
+    """
+    from leadcrawler.dedup import canonical_key
+
+    a = canonical_key(domain="alpha.github.io", name="Alpha", country="US")
+    b = canonical_key(domain="beta.github.io", name="Beta", country="US")
+    assert a != b and a == "dom:alpha.github.io"

@@ -162,3 +162,77 @@ def test_preview_counts_without_sending(db_settings, monkeypatch) -> None:
         p = outreach.preview(s, sess, countries=["KR"])
     assert p["recipients"] == 2 and p["enabled"] is True and not calls
     assert set(p["sample"]) <= {"ir@a.co.kr", "ir@b.co.kr"}
+
+
+def test_reserve_send_blocks_duplicate_race(db_settings) -> None:
+    """선점 원자성(전수리뷰) — 같은 주소의 두 번째 예약은 dup(중복 발송 창 제거)."""
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
+    kw = dict(email="ir@a.co.kr", company_id="c1", subject="s", sent_by=None, cap=10, now=now)
+    assert outreach._reserve_send(db_settings, **kw) == "reserved"
+    assert outreach._reserve_send(db_settings, **kw) == "dup"  # 상대 캠페인 시점의 재예약.
+
+
+def test_reserve_send_enforces_cap_and_stale_retry(db_settings) -> None:
+    """상한은 예약(sending) 포함 계산, 좌초 예약은 stale 창 이후 재예약 허용."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
+    assert outreach._reserve_send(
+        db_settings, email="ir@a.co.kr", company_id="c1", subject="s",
+        sent_by=None, cap=1, now=now,
+    ) == "reserved"
+    # 예약 1건이 cap=1 을 소진 — 두 번째 수신자는 SMTP 전에 차단(상한 초과 발송 불가).
+    assert outreach._reserve_send(
+        db_settings, email="ir@b.co.kr", company_id="c2", subject="s",
+        sent_by=None, cap=1, now=now,
+    ) == "capped"
+    # 좌초(sending 박제) 예약은 stale 창(_RESERVE_STALE_SEC) 이후 재예약된다.
+    later = now + timedelta(seconds=outreach._RESERVE_STALE_SEC + 1)
+    assert outreach._reserve_send(
+        db_settings, email="ir@a.co.kr", company_id="c1", subject="s",
+        sent_by=None, cap=10, now=later,
+    ) == "reserved"
+
+
+def test_send_campaign_skips_recipient_reserved_elsewhere(db_settings, monkeypatch) -> None:
+    """다른 요청이 방금 선점한 수신자는 SMTP 없이 스킵(skipped 카운트)."""
+    from datetime import datetime, timezone
+
+    sent_to: list[str] = []
+    monkeypatch.setattr(outreach, "send_one", lambda *_a, **k: sent_to.append(k["to"]))
+    now = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
+    # 경쟁 요청이 ir@a.co.kr 를 선점한 상황 재현.
+    outreach._reserve_send(
+        db_settings, email="ir@a.co.kr", company_id="cx", subject="s",
+        sent_by=None, cap=10, now=now,
+    )
+    s = _settings(email_send_enabled=True, email_send_daily_cap=10,
+                  database_url=db_settings.database_url)
+    with session_scope(db_settings) as db:
+        out = outreach.send_campaign(
+            s, db, subject="s", body="b", countries=("KR",), now=now,
+        )
+    assert "ir@a.co.kr" not in sent_to  # 선점분 스킵.
+    assert out["skipped"] == 1 and out["sent"] == 1  # ir@b.co.kr 만 발송.
+
+
+def test_stale_sending_of_other_email_releases_cap(db_settings) -> None:
+    """좌초(sending 박제) 예약이 **다른 이메일** 의 상한 슬롯을 영구 점유하지 않는다(교차리뷰 MED).
+
+    사용량 계산이 신선한 sending 만 포함해야, 크래시 박제 1건이 그날 상한을 갉아먹지 않는다.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
+    assert outreach._reserve_send(
+        db_settings, email="ir@a.co.kr", company_id="c1", subject="s",
+        sent_by=None, cap=1, now=now,
+    ) == "reserved"
+    later = now + timedelta(seconds=outreach._RESERVE_STALE_SEC + 1)
+    # a 의 예약이 좌초된 뒤에는, 다른 이메일 b 가 cap=1 슬롯을 쓸 수 있어야 한다.
+    assert outreach._reserve_send(
+        db_settings, email="ir@b.co.kr", company_id="c2", subject="s",
+        sent_by=None, cap=1, now=later,
+    ) == "reserved"
