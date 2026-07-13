@@ -147,12 +147,13 @@ export function MyWork() {
     kind: "confirm" | "reject",
     selected?: string,
     homepage?: string,
+    hasForm?: boolean,
   ): Promise<boolean> => {
     setBusyIds((p) => new Set(p).add(id));
     setError(null);
     let ok = false;
     try {
-      if (kind === "confirm") await confirmReview(id, selected, homepage);
+      if (kind === "confirm") await confirmReview(id, selected, homepage, hasForm);
       else await rejectReview(id);
       setSessionDone((n) => n + 1);
       ok = true;
@@ -296,7 +297,9 @@ export function MyWork() {
           // 진행률 분모 = 이번 세션 처리분 + 내 잔여 작업분(내 배치 기준). 전체큐 잔여(remaining)를
           // 쓰면 영구 배정에선 내 점유가 전체큐에서 빠져 있어 처리해도 분모가 계속 자란다.
           remaining={items.length}
-          onConfirm={(id, selected, homepage) => act(id, "confirm", selected, homepage)}
+          onConfirm={(id, selected, homepage, hasForm) =>
+            act(id, "confirm", selected, homepage, hasForm)
+          }
           onReject={(id) => act(id, "reject")}
         />
       )}
