@@ -431,6 +431,10 @@ def _sdk_complete(prompt: str, model: str) -> str:
 
     from claude_agent_sdk import ClaudeAgentOptions, query
 
+    from ..logging import suppress_child_windows
+
+    suppress_child_windows()  # Windows: claude.exe 콘솔창 플래시 억제(Popen 경계 전역).
+
     async def _run() -> str:
         parts: list[str] = []
         async for message in query(
