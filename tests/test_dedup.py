@@ -113,3 +113,16 @@ def test_normalize_domain_preserves_multi_tenant_subdomain() -> None:
     assert normalize_domain("sub.acme.com") == "acme.com"
     # 블로그 플랫폼은 의도적으로 미보존(검색 blocklist 등치 유지).
     assert normalize_domain("someone.tistory.com") == "tistory.com"
+
+
+def test_multi_tenant_tenants_get_distinct_canonical_keys() -> None:
+    """테넌트별로 canonical_key 자체가 갈라진다(교차리뷰 — false merge 방지의 최종 계약).
+
+    주의: 이 변경 전 저장된 행은 base(dom:cafe24.com)로 이미 접혀 있어 신규 키와
+    불일치한다 — 배포 시점 실측 6건(전수리뷰 후속 확인)이라 소급 재키잉은 하지 않는다.
+    """
+    from leadcrawler.dedup import canonical_key
+
+    a = canonical_key(domain="alpha.github.io", name="Alpha", country="US")
+    b = canonical_key(domain="beta.github.io", name="Beta", country="US")
+    assert a != b and a == "dom:alpha.github.io"
