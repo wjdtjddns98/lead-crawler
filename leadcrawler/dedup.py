@@ -46,11 +46,28 @@ def normalize_name(name: str) -> str:
     return "".join(tokenize_name(name))
 
 
+# 공용 멀티테넌트 호스팅 접미 — 서브도메인마다 **다른 주체(회사)** 라, 등록도메인으로
+# 접으면 alpha.github.io 와 beta.github.io 가 같은 회사로 병합된다(false merge). 이
+# 프로젝트에선 중복 판정이 재추출 생략(제약①)으로 이어져 false merge = 리드 손실이다
+# (전수리뷰). 테넌트 라벨 1개를 보존한다.
+# ponytail: PSL(tldextract) 도입 대신 기업 공식사이트 호스팅으로 관측되는 부류의 정적표 —
+# 블로그 플랫폼(tistory·blogspot·wordpress)은 넣지 않는다(검색 blocklist 가 등록도메인
+# 등치로 걸러야 하는 노이즈 부류라, 테넌트 보존이 오히려 blocklist 우회가 된다).
+_MULTI_TENANT_SUFFIXES = frozenset({
+    "github.io", "gitlab.io", "netlify.app", "vercel.app", "pages.dev", "web.app",
+    "firebaseapp.com", "herokuapp.com", "azurewebsites.net", "webflow.io",
+    "myshopify.com", "wixsite.com", "notion.site", "oopy.io",
+    # KR SME 사이트빌더 — 소기업 공식 홈페이지가 이 접미의 서브도메인으로 흔히 온다.
+    "imweb.me", "modoo.at", "cafe24.com", "sixshop.com", "creatorlink.net",
+})
+
+
 def normalize_domain(value: str | None) -> str | None:
     """URL/도메인 문자열에서 등록 도메인(eTLD+1 근사)을 추출한다.
 
     완전한 공개 접미사 목록(PSL) 대신 단순 휴리스틱을 쓴다 — 2단계 국가코드
-    (co.kr, co.jp, com.cn 등)는 3레이블을 유지한다.
+    (co.kr, co.jp, com.cn 등)는 3레이블을 유지하고, 멀티테넌트 호스팅 접미
+    (:data:`_MULTI_TENANT_SUFFIXES`)는 테넌트 라벨 1개를 추가로 보존한다.
     """
     if not value:
         return None
@@ -66,8 +83,14 @@ def normalize_domain(value: str | None) -> str | None:
     labels = host.split(".")
     two_level_tlds = {"co", "com", "or", "ne", "go", "ac", "gov", "edu", "org"}
     if len(labels) >= 3 and labels[-2] in two_level_tlds and len(labels[-1]) == 2:
-        return ".".join(labels[-3:])
-    return ".".join(labels[-2:])
+        base = ".".join(labels[-3:])
+    else:
+        base = ".".join(labels[-2:])
+    # 멀티테넌트 접미면 서브도메인(테넌트) 라벨 1개 보존 — 접미 자체만 오면 그대로.
+    base_n = base.count(".") + 1
+    if base in _MULTI_TENANT_SUFFIXES and len(labels) > base_n:
+        return ".".join(labels[-(base_n + 1):])
+    return base
 
 
 def normalize_reg_no(value: str | None) -> str | None:
