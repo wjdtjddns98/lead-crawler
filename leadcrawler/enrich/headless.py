@@ -49,6 +49,9 @@ class PlaywrightRenderer:
         try:
             from playwright.sync_api import sync_playwright
 
+            from ..logging import suppress_child_windows
+
+            suppress_child_windows()  # Windows: node 드라이버 콘솔창 플래시 억제(Popen 경계 전역).
             self._pw = sync_playwright().start()
             self._browser = self._pw.chromium.launch(headless=True)
             # 자체서명·호스트불일치 인증서 사이트(KR 영세기업 다수)도 렌더 — 공개 페이지만

@@ -30,7 +30,7 @@ def _rows() -> list[str]:
     # 화학(KSIC 20x → 코드 201234)·반도체(26x)·탈퇴 사업장 각 1 + 대형/소형 화학사.
     return [
         "202606,대형화학(주),123456,1,서울특별시 강남구 화학로 1,,201234,화학제품 제조업,500,90000000,",
-        "202606,소형화학상사,234567,1,경기도 수원시 화학길 2,,201234,화학제품 제조업,5,900000,",
+        "202606,소형화학상사,234567,1,경기도 수원시 화학길 2,,201234,화학제품 제조업,15,900000,",
         "202606,반도체사,345678,1,,경기도 이천시 반도체길 3,261111,반도체 제조업,50,9000000,",
         "202606,탈퇴화학,456789,2,서울특별시 중구 옛길 4,,201234,화학제품 제조업,10,0,20250101",
     ]
@@ -143,9 +143,10 @@ def test_ingest_rows_accepts_api_shaped_dicts(tmp_path) -> None:
             "탈퇴일자": None,
         },
         {"사업장명": ""},  # 이름 없음 → skip.
+        {"사업장명": "영세상회", "사업장업종코드": 201234, "가입자수": 9},  # 10인 미만 → skip.
     ]
     inserted, skipped = ingest_nps_rows(sm, iter(rows))
-    assert (inserted, skipped) == (1, 1)
+    assert (inserted, skipped) == (1, 2)
     row = NpsStore(sm).page(("20",), offset=0, limit=5)[0]
     assert row.name == "API화학(주)" and row.subscribers == 42 and row.industry_code == "201234"
 
@@ -162,7 +163,7 @@ def test_ingest_failure_keeps_active_snapshot(tmp_path) -> None:
     assert store.count() == 4
 
     def _boom():
-        yield {"사업장명": "새사업장", "사업장업종코드": "201234", "가입자수": "1"}
+        yield {"사업장명": "새사업장", "사업장업종코드": "201234", "가입자수": "20"}
         raise RuntimeError("api down")
 
     try:
@@ -220,7 +221,7 @@ def test_map_industry_codes_rule_llm_and_idempotent(tmp_path) -> None:
     rows = _rows() + [
         # 888888: 규칙 역매핑에 없는 코드 → LLM 경로(코드명에 '게임' → FakeClassifier 매칭).
         "202606,넥스트게임즈,345670,1,서울 강남구 게임로 1,,888888,게임 아이템 중개업,120,5000000,",
-        "202606,알수없는업,345671,1,서울 중구 모호로 2,,999999,기타 분류 안된 업,3,100000,",
+        "202606,알수없는업,345671,1,서울 중구 모호로 2,,999999,기타 분류 안된 업,30,100000,",
     ]
     ingest_nps_csv(sm, _csv(tmp_path, rows))
     clf = FakeClassifier()
@@ -277,7 +278,7 @@ def test_dart_cache_join_attaches_fields_and_reg_key(tmp_path) -> None:
     rows = [
         # 대형화학(주) — 사업자번호 123456, DART 캐시에 동일 법인 존재(하단 put).
         "202606,대형화학(주),123456,1,서울특별시 강남구 화학로 1,,201234,화학제품 제조업,500,90000000,",
-        "202606,무연고상사,777777,1,서울 중구 무연고로 2,,201234,화학제품 제조업,5,900000,",
+        "202606,무연고상사,777777,1,서울 중구 무연고로 2,,201234,화학제품 제조업,15,900000,",
     ]
     ingest_nps_csv(sm, _csv(tmp_path, rows))
     cache = DbDartCorpCache(sm)

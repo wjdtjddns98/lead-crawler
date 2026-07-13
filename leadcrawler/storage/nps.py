@@ -65,14 +65,23 @@ def _open_csv(path: Path):
     raise ValueError(f"CSV 헤더에서 '{_COL_NAME}' 컬럼을 찾지 못함(인코딩/서식 확인): {path}")
 
 
+# 가입자수 하한 — 이 미만 영세 사업장은 적재 자체를 생략(IR 대상 아님·도메인해석/enrich 낭비,
+# PO 지시 2026-07-13). ponytail: 상수 고정, 운영 중 조정 필요해지면 Settings 필드로 승격.
+_MIN_SUBSCRIBERS = 10
+
+
 def _row_to_model(raw: dict) -> NpsWorkplaceRow | None:
     """원천 행(dict — CSV/DictReader·odcloud API JSON 공용, 한국어 헤더 키)을 모델로.
 
-    사업장명 없는 행은 None(건너뜀). 값은 전부 방어적 문자열화·절단(신뢰불가 공공 파일).
+    사업장명 없는 행·가입자수 ``_MIN_SUBSCRIBERS`` 미만 행은 None(건너뜀). 값은 전부
+    방어적 문자열화·절단(신뢰불가 공공 파일).
     """
     row = {str(k or "").strip(): str(v if v is not None else "").strip() for k, v in raw.items()}
     name = row.get(_COL_NAME, "")
     if not name:
+        return None
+    subscribers = _to_int(row.get(_COL_SUBS))
+    if subscribers < _MIN_SUBSCRIBERS:
         return None
     bizno = row.get(_COL_BIZNO, "").replace("-", "")[:6] or None
     addr = row.get(_COL_ADDR_ROAD) or row.get(_COL_ADDR_JIBUN) or None
@@ -83,7 +92,7 @@ def _row_to_model(raw: dict) -> NpsWorkplaceRow | None:
         address=(addr or "")[:512] or None,
         industry_code=(row.get(_COL_IND_CODE, "") or "")[:8] or None,
         industry_name=(row.get(_COL_IND_NAME, "") or "")[:256] or None,
-        subscribers=_to_int(row.get(_COL_SUBS)),
+        subscribers=subscribers,
         notice_amt=_to_int(row.get(_COL_AMT)),
         status_cd=(row.get(_COL_STATUS, "") or "")[:8] or None,
         resigned_at=(row.get(_COL_RESIGNED, "") or "")[:8] or None,
