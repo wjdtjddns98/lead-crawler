@@ -185,16 +185,19 @@ export async function fetchMyWork(status?: ReviewStatus): Promise<ReviewItem[]> 
 }
 
 // 담당자는 서버가 로그인 사용자로 자동 기록. selected = 사람이 고른 최종 이메일 후보.
-// homepage = 사람이 수정한 사이트 URL(null=변경 없음) — BE 계약 확장 제안분. Pydantic 기본이
+// homepage = 사람이 수정한 사이트 URL(null=변경 없음) — BE 계약 확장 제안분. hasForm = 사람이
+// 교정한 문의폼 유무(undefined=변경 없음) — 마찬가지로 BE 계약 확장 제안분. Pydantic 기본이
 // 추가 필드 무시라 미배포 서버에도 안전하다(수정만 반영 안 됨). PR 본문 계약 명세 참조.
 export async function confirmReview(
   id: string,
   selected?: string,
   homepage?: string,
+  hasForm?: boolean,
 ): Promise<ReviewItem> {
   return apiSend("POST", `/queue/${id}/confirm`, {
     selected: selected ?? null,
     homepage: homepage ?? null,
+    has_form: hasForm ?? null,
   });
 }
 
