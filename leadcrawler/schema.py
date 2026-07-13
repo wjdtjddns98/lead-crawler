@@ -389,7 +389,8 @@ class CrawlJobRow(Base):
     # 잡 실행에 영향 주는 옵션 스냅샷 — 워치독 재기동이 원 요청 조건을 그대로 복원하기 위함
     # (전수리뷰 HIGH: 미저장이면 재기동 시 지역한정→전국·상한 소멸·discovery_only→풀 enrich).
     target_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
-    regions: Mapped[str] = mapped_column(String(256), default="", server_default=text("''"))
+    # 512 = AdminCrawlRequest.regions max_length 와 계약 일치(요청 검증 통과 후 DB 절단 500 방지).
+    regions: Mapped[str] = mapped_column(String(512), default="", server_default=text("''"))
     discovery_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     segments_total: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     segments_done: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))

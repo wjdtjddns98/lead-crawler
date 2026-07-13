@@ -30,7 +30,7 @@ def upgrade() -> None:
     )
     op.add_column(
         "crawl_job",
-        sa.Column("regions", sa.String(length=256), nullable=False, server_default=sa.text("''")),
+        sa.Column("regions", sa.String(length=512), nullable=False, server_default=sa.text("''")),
     )
     op.add_column(
         "crawl_job",

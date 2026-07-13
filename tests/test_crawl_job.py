@@ -616,3 +616,20 @@ def test_watchdog_restart_restores_option_snapshot(settings, monkeypatch) -> Non
         assert alive.target_count == 7
         assert alive.regions == "서울특별시"
         assert alive.discovery_only is True
+
+
+def test_crawl_job_info_exposes_option_snapshot(settings) -> None:
+    """API 응답모델이 스냅샷 3필드를 실제로 노출한다(교차리뷰 HIGH — pydantic extra 드롭).
+
+    미선언이면 crawl_job_dict 가 값을 실어도 CrawlJobInfo(**dict) 가 조용히 버린다.
+    """
+    from leadcrawler.api.schemas import CrawlJobInfo
+    from leadcrawler.storage.crawl_job import crawl_job_dict, get_crawl_job
+
+    jid = _make_continuous(settings, target_count=5, regions="부산광역시", discovery_only=True)
+    with session_scope(settings) as db:
+        info = CrawlJobInfo(**crawl_job_dict(get_crawl_job(db, jid)))
+    dumped = info.model_dump()
+    assert dumped["target_count"] == 5
+    assert dumped["regions"] == "부산광역시"
+    assert dumped["discovery_only"] is True
