@@ -27,10 +27,22 @@ const COL_W = [
   "min-w-[240px]", // 이메일 후보(편집 입력 포함 — 넓게 유지)
   "", // 메일(뱃지·MX·SMTP — 단위 사이에서만 줄바꿈)
   "", // 사이트
+  "whitespace-nowrap", // 문의폼 유무
   "", // 상태(뱃지는 자체 nowrap — 담당자·시각이 아래로 접힘)
   "min-w-[120px]", // 액션(버튼 2개 가로 고정 — flex 줄바꿈 없음)
 ];
-const HEADERS = ["업체명", "국가", "업종", "상장여부", "이메일 후보", "메일", "사이트", "상태", "액션"];
+const HEADERS = [
+  "업체명",
+  "국가",
+  "업종",
+  "상장여부",
+  "이메일 후보",
+  "메일",
+  "사이트",
+  "문의폼",
+  "상태",
+  "액션",
+];
 
 // 상장여부 표기·정렬 순서 — 필터 셀렉트 어휘(상장/비상장/미상)와 동일, 상장 먼저.
 const LISTED_LABEL: Record<Listed, string> = { listed: "상장", unlisted: "비상장", unknown: "미상" };
@@ -50,7 +62,8 @@ const SORT_KEY: Record<number, (it: ReviewItem) => string | number> = {
   1: (it) => it.country,
   2: (it) => it.industry,
   3: (it) => LISTED_RANK[it.listed],
-  7: (it) => STATUS_RANK[it.status],
+  7: (it) => (it.form ? 0 : 1), // 문의폼 있음이 먼저
+  8: (it) => STATUS_RANK[it.status],
 };
 
 type Sort = { col: number; dir: "asc" | "desc" };
@@ -62,7 +75,8 @@ interface Props {
   remaining: number; // 남은 작업 건수(호출부 기준 — 내 작업=내 잔여분, 전체큐=필터 반영 total). 분모 = doneCount + remaining
   // 성공(처리 완료) 시 true 를 resolve — 팝업에서 '성공해야 다음 행 전진' 판단에 쓴다.
   // homepage = 사람이 수정한 사이트 URL(유효 http(s)·원본과 다를 때만, 없으면 undefined).
-  onConfirm: (id: string, selected?: string, homepage?: string) => Promise<boolean>;
+  // hasForm = 사람이 교정한 문의폼 유무(감지값과 다를 때만, 없으면 undefined).
+  onConfirm: (id: string, selected?: string, homepage?: string, hasForm?: boolean) => Promise<boolean>;
   onReject: (id: string) => Promise<boolean>;
   emptyText?: string; // 빈 목록 안내 — 화면 맥락별 문구(생략 시 기본).
 }
@@ -102,9 +116,11 @@ interface RowProps {
   choice: string | undefined;
   // 사용자가 편집 중인 사이트 URL — undefined 면 편집기 닫힘(기본 한 줄 유지).
   site: string | undefined;
+  formChecked: boolean; // 문의폼 유무 체크박스 표시값(override 없으면 감지값).
   onPick: (id: string, value: string) => void;
   onEditSite: (id: string, value: string) => void;
   onCancelSite: (id: string) => void; // 편집 취소 — 입력을 닫고 원본 링크로 복귀.
+  onToggleForm: (id: string, value: boolean) => void;
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
   onOpen: (id: string, tab: SiteTab) => void;
@@ -120,9 +136,11 @@ const QueueRow = memo(
     busy,
     choice,
     site,
+    formChecked,
     onPick,
     onEditSite,
     onCancelSite,
+    onToggleForm,
     onConfirm,
     onReject,
     onOpen,
@@ -242,6 +260,17 @@ const QueueRow = memo(
           )}
         </td>
         <td className={`${TD} ${COL_W[7]}`}>
+          <div className="flex justify-center">
+            <input
+              type="checkbox"
+              checked={formChecked}
+              disabled={locked}
+              title="문의폼 유무를 직접 교정합니다(확정 시 함께 반영)"
+              onChange={(e) => onToggleForm(item.id, e.target.checked)}
+            />
+          </div>
+        </td>
+        <td className={`${TD} ${COL_W[8]}`}>
           <StatusBadge status={item.status} />
           {item.assignee && (
             <span className="text-muted text-xs" title={item.reviewed_at ?? undefined}>
@@ -253,7 +282,7 @@ const QueueRow = memo(
             </span>
           )}
         </td>
-        <td className={`${TD} ${COL_W[8]}`}>
+        <td className={`${TD} ${COL_W[9]}`}>
           {/* 버튼 라벨은 TD 의 overflow-wrap:anywhere 상속으로 '확/정' 처럼 세로로
               접힐 수 있어 nowrap 으로 잠근다(액션 셀 한정). */}
           <div className="flex gap-1.5 whitespace-nowrap">
@@ -280,7 +309,8 @@ const QueueRow = memo(
     prev.item === next.item &&
     prev.busy === next.busy &&
     prev.choice === next.choice &&
-    prev.site === next.site,
+    prev.site === next.site &&
+    prev.formChecked === next.formChecked,
 );
 
 // 검증 큐 표 — 회사/이메일 후보(다중 선택)/메일 검증 신호/상태/액션.
@@ -321,6 +351,24 @@ export function QueueTable({
       return norm && norm !== it.homepage ? norm : undefined;
     },
     [sites],
+  );
+
+  // 행별 문의폼 유무 교정 — 감지값(!!form)과 다를 때만 override 를 갖는다.
+  const [formOverride, setFormOverride] = useState<Record<string, boolean>>({});
+  const onToggleForm = useCallback((id: string, value: boolean) => {
+    setFormOverride((p) => ({ ...p, [id]: value }));
+  }, []);
+  const formChecked = useCallback(
+    (it: ReviewItem): boolean => formOverride[it.id] ?? !!it.form,
+    [formOverride],
+  );
+  // 확정에 실을 문의폼 유무 수정값 — 감지값과 다를 때만(그 외 undefined = 변경 없음).
+  const editedForm = useCallback(
+    (it: ReviewItem): boolean | undefined => {
+      const v = formOverride[it.id];
+      return v === undefined || v === !!it.form ? undefined : v;
+    },
+    [formOverride],
   );
 
   // 컬럼 정렬 — 같은 컬럼 재클릭 시 asc↔desc 토글, 3번째 클릭이면 해제(원본 순서 복귀).
@@ -401,11 +449,11 @@ export function QueueTable({
   const popupConfirm = useCallback(
     (id: string, selected?: string) =>
       advanceAfter(id, () => {
-        // 표에서 편집해 둔 사이트 URL 이 있으면 팝업 확정에도 함께 실린다(편집 유실 방지).
+        // 표에서 편집해 둔 사이트 URL·문의폼 유무가 있으면 팝업 확정에도 함께 실린다(편집 유실 방지).
         const it = itemsRef.current.find((x) => x.id === id);
-        return onConfirm(id, selected, it ? editedSite(it) : undefined);
+        return onConfirm(id, selected, it ? editedSite(it) : undefined, it ? editedForm(it) : undefined);
       }),
-    [advanceAfter, onConfirm, editedSite],
+    [advanceAfter, onConfirm, editedSite, editedForm],
   );
   const popupReject = useCallback(
     (id: string) => advanceAfter(id, () => onReject(id)),
@@ -425,6 +473,8 @@ export function QueueTable({
   // 확정에 실릴 사이트 수정값(없으면 undefined). raw 는 무효 입력 경고 판단용.
   const modalSite = modalItem ? editedSite(modalItem) : undefined;
   const modalSiteRaw = modalItem ? sites[modalItem.id]?.trim() : undefined;
+  // 확정에 실릴 문의폼 유무 수정값(없으면 undefined).
+  const modalForm = modalItem ? editedForm(modalItem) : undefined;
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
@@ -473,9 +523,11 @@ export function QueueTable({
               busy={busyIds.has(it.id)}
               choice={picked[it.id] ?? it.selected ?? it.candidates[0]?.value}
               site={sites[it.id]}
+              formChecked={formChecked(it)}
               onPick={onPick}
               onEditSite={onEditSite}
               onCancelSite={onCancelSite}
+              onToggleForm={onToggleForm}
               onConfirm={(id) => setModal({ id, action: "confirm" }) /* 즉시 확정 대신 확인 모달 */}
               // confirmed 행 거부 = 확정 번복 — 확인 모달 경유. pending 거부는 기존대로 1클릭.
               onReject={(id) =>
@@ -518,6 +570,11 @@ export function QueueTable({
                       사이트 → {modalSite}
                     </span>
                   )}
+                  {modalForm !== undefined && (
+                    <span className="block mt-1 text-xs text-muted">
+                      문의폼 → {modalForm ? "있음" : "없음"}
+                    </span>
+                  )}
                   {/* 편집했지만 반영될 변경이 없는 경우(무효 URL·정규화 후 원본과 동일)
                       — 조용히 버리지 않고 미반영을 알린다. */}
                   {modalSiteRaw !== undefined &&
@@ -554,7 +611,7 @@ export function QueueTable({
                 onClick={() => {
                   setModal(null);
                   if (modal.action === "confirm")
-                    void onConfirm(modalItem.id, modalChoice || undefined, modalSite);
+                    void onConfirm(modalItem.id, modalChoice || undefined, modalSite, modalForm);
                   else void onReject(modalItem.id);
                 }}
               >

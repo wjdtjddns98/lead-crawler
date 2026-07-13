@@ -74,6 +74,18 @@ class Settings(BaseSettings):
     # 정밀도 우선(회사명↔도메인 root 일치할 때만 채택). quota 보호용 런당 캡.
     resolve_domains: bool = Field(default=False)
     domain_resolve_max: int = Field(default=50)  # 런당 CSE 해석 호출 상한(quota 보호)
+    # 저장 수율 레버(도메인 해석 강화) — 무도메인·한글명 기업(NPS 등)의 도메인 해석률을
+    # 올려 실존 저장으로 잇는다. 셋 다 opt-in·캡·예산가드(제약② 정밀도 유지).
+    # ① KR 이 무료 네이버에서 miss 하면 유료 Serper(글로벌)로 재시도(recall 보강).
+    resolve_serper_fallback: bool = Field(default=False)
+    # ② 후보 도메인들을 Claude 로 중재해 공식 도메인 1건을 고르거나 기권(-1). 짧은 한글명
+    # 같은 애매한 케이스에서 substring 오탐을 막으면서도 수율을 올리는 정밀도 게이트.
+    # **Claude Agent SDK(구독 인증)** 로 호출한다 — 별도 ANTHROPIC_API_KEY 불필요, 머신에
+    # claude CLI(+Node) 설치·로그인 필요(서버는 `claude setup-token`→CLAUDE_CODE_OAUTH_TOKEN).
+    # 구독 정액이라 cost_ledger(메터드 API 예산)엔 적재하지 않는다. dry_run no-op.
+    resolve_llm_arbiter: bool = Field(default=False)
+    resolve_llm_model: str = Field(default="haiku")  # Agent SDK 모델 별칭(haiku|sonnet|opus)
+    resolve_llm_max: int = Field(default=0)  # 런당 LLM 중재 호출 상한(0=domain_resolve_max 따름)
 
     # 검증 큐 동시 처리(당겨가기) — 6명 동시 검증 시 충돌 방지. batch=1회 "작업 받기"로
     # 추가 점유하는 개수, cap=한 계정이 동시에 점유할 수 있는 총량 상한(선취 허용 —

@@ -182,14 +182,17 @@ function Workbench({
     kind: "confirm" | "reject",
     selected?: string,
     homepage?: string,
+    hasForm?: boolean,
   ): Promise<boolean> => {
     setBusyIds((prev) => new Set(prev).add(id));
     setError(null);
     let ok = false;
     try {
-      // 담당자는 서버가 로그인 사용자로 자동 기록. 확정 시 사람이 고른 이메일·사이트 수정값을 보낸다.
+      // 담당자는 서버가 로그인 사용자로 자동 기록. 확정 시 사람이 고른 이메일·사이트·문의폼 수정값을 보낸다.
       const updated =
-        kind === "confirm" ? await confirmReview(id, selected, homepage) : await rejectReview(id);
+        kind === "confirm"
+          ? await confirmReview(id, selected, homepage, hasForm)
+          : await rejectReview(id);
       // 현재 필터에서 벗어난 항목은 목록에서 빠지므로 재조회, 아니면 제자리 갱신.
       if (filter && updated.status !== filter) {
         await load();
@@ -333,7 +336,9 @@ function Workbench({
           remaining={total}
           // 전체 큐는 admin 전용 뷰(탭 자체가 admin 에게만 노출) — worker 의 직접 처리는
           // claim(내 작업) 경유만이라 미점유 항목 동시 중복 검토가 원천 차단된다.
-          onConfirm={(id, selected, homepage) => act(id, "confirm", selected, homepage)}
+          onConfirm={(id, selected, homepage, hasForm) =>
+            act(id, "confirm", selected, homepage, hasForm)
+          }
           onReject={(id) => act(id, "reject")}
           // 전체큐는 점유 항목이 서버에서 제외됨 — pending 0 = "받아갈 수 있는 작업 없음".
           emptyText={

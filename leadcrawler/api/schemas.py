@@ -76,15 +76,18 @@ class ClaimRequest(BaseModel):
 
 
 class ConfirmRequest(BaseModel):
-    """확정 요청 본문 — 사람이 고른 최종 이메일 후보(선택) + 홈페이지 수정값(선택).
+    """확정 요청 본문 — 사람이 고른 최종 이메일(선택)+홈페이지(선택)+문의폼 유무(선택).
 
     ``homepage`` 는 신뢰불가 입력(사람이 직접 입력하는 URL)이라 스킴(http/https)·호스트
     존재를 형식 검증한다 — 실패 시 FastAPI 가 422. ``None`` = 변경 없음(하위호환),
-    빈 문자열("")도 형식 위반이라 422 로 거부된다.
+    빈 문자열("")도 형식 위반이라 422 로 거부된다. ``has_form``(#241) 은 문의폼 유무
+    교정값(``None`` = 변경 없음): ``False`` = 폼 없음(저장된 폼 삭제), ``True`` = 폼 있음
+    (URL 미상이면 홈페이지를 진입 링크로 저장 — 홈페이지도 없으면 400).
     """
 
     selected: str | None = None
     homepage: str | None = Field(default=None, max_length=512)
+    has_form: bool | None = None
 
     @field_validator("homepage")
     @classmethod
@@ -102,10 +105,17 @@ class LoginRequest(BaseModel):
 
     길이상한만 둔다(과대 페이로드·scrypt 비용 폭증 방지). 하한은 두지 않는다 —
     기존 계정/정책 노출·열거를 피하고 빈 값은 인증에서 자연 거부된다(생성 제약과 동일 상한).
+    앞뒤 공백은 트림한다(QA①: 복사·모바일 자동완성이 붙이는 공백으로 로그인 실패 방지 —
+    계정 생성도 동일 트림이라 공백 포함 자격증명은 애초에 존재하지 않는다).
     """
 
     username: str = Field(max_length=64)
     password: str = Field(max_length=256)
+
+    @field_validator("username", "password", mode="before")
+    @classmethod
+    def _strip(cls, v: object) -> object:
+        return v.strip() if isinstance(v, str) else v
 
 
 class LoginResponse(BaseModel):
@@ -138,11 +148,20 @@ class UserStatsItem(BaseModel):
 
 
 class CreateUserRequest(BaseModel):
-    """계정 생성 요청(관리자 전용)."""
+    """계정 생성 요청(관리자 전용).
+
+    앞뒤 공백은 트림 후 길이 검증한다(QA①: 로그인이 트림하므로 공백 포함 자격증명이
+    만들어지면 영원히 로그인 불가 — 생성·로그인 양쪽 동일 규칙으로 불일치 차단).
+    """
 
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=8, max_length=256)
     role: str = "worker"
+
+    @field_validator("username", "password", mode="before")
+    @classmethod
+    def _strip(cls, v: object) -> object:
+        return v.strip() if isinstance(v, str) else v
 
 
 class RoleUpdateRequest(BaseModel):

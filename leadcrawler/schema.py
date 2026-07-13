@@ -221,6 +221,10 @@ class ReviewAuditRow(Base):
     # 홈페이지 수정(#185) 변경 전/후 값 — 둘 다 NULL 이면 이 처리에 홈페이지 변경 없음.
     homepage_before: Mapped[str | None] = mapped_column(String(512), nullable=True)
     homepage_after: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # 문의폼 유무 교정(#241) 변경 전/후 폼 URL — 둘 다 NULL 이면 폼 변경 없는 처리.
+    # ContactRow.value(Text)와 동일 타입(폼 URL 은 512 를 넘을 수 있음 — 절단 방지).
+    form_before: Mapped[str | None] = mapped_column(Text, nullable=True)
+    form_after: Mapped[str | None] = mapped_column(Text, nullable=True)
     at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now(), index=True
     )

@@ -29,7 +29,10 @@ dependencies = [
 # extras. dev 는 패키지 피처가 아니라 로컬 개발 전용이라 [dependency-groups] 로 분리한다(PEP 735).
 crawl = ["playwright>=1.44"]
 ocr = ["pytesseract>=0.3.10", "Pillow>=10.0"]
-ai = ["anthropic>=0.40"]
+ai = [
+    "anthropic>=0.40",
+    "claude-agent-sdk>=0.1.0",
+]
 db = ["psycopg[binary]>=3.1"]
 # WAF 우회 임베드(Track A) — 벤더링된 insane-search 엔진 런타임 의존(curl_cffi 격자 등).
 bypass = ["curl_cffi>=0.6", "beautifulsoup4>=4.12", "pyyaml>=6.0"]
