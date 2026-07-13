@@ -299,6 +299,34 @@ def test_confirm_has_form_false_removes_form(client: TestClient) -> None:
     assert row.form_after is None
 
 
+def test_confirm_has_form_true_promotes_low_confidence_form(client: TestClient) -> None:
+    # 저신뢰 폴백 폼(0.3)이 있는데 사람이 '폼 있음' 확인 → URL 유지 + 사람확인 승격
+    # (form_low_confidence 해제 — '사람 확인 필요' 재노출 방지, 교차리뷰 반영).
+    from leadcrawler.schema import ContactRow
+    from leadcrawler.storage.db import session_scope
+    from leadcrawler.storage.repository import contact_id_for
+
+    item = client.get("/queue").json()["items"][0]
+    rid, cid = item["id"], item["company_id"]
+    with session_scope(get_settings()) as s:
+        s.add(
+            ContactRow(
+                id=contact_id_for(cid, "form", "https://acme.com/contact"),
+                company_id=cid,
+                type="form",
+                value="https://acme.com/contact",
+                confidence=0.3,
+            )
+        )
+    assert client.get(f"/queue/{rid}").json()["form_low_confidence"] is True
+    r = client.post(f"/queue/{rid}/confirm", json={"has_form": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["form"] == "https://acme.com/contact"  # URL 유지(홈페이지로 덮지 않음)
+    assert body["form_confidence"] == 1.0
+    assert body["form_low_confidence"] is False
+
+
 def test_confirm_has_form_true_without_homepage_400(client: TestClient) -> None:
     # 홈페이지조차 없으면 저장할 진입 링크가 없다 → 400(조용한 유실 방지).
     from leadcrawler.models import Company, CompanyLead

@@ -512,12 +512,15 @@ def _apply_form_correction(
     """문의폼 유무 교정(#241)을 연락처에 반영하고 감사용 (변경 전, 후) 폼 URL 을 돌려준다.
 
     ``None`` 은 변경 없음((None, None) 반환 — 감사행에 폼 변경 없음으로 남는다).
-    ``False`` 는 회사의 폼 연락처 전부 삭제. ``True`` 는 폼이 이미 있으면 no-op, 없으면
-    사람이 '폼 있음'을 확인한 것이므로 홈페이지(이번 요청 교정값 우선)를 진입 링크로
-    저장한다(method=manual·confidence=1.0 — 사람 확인이라 저신뢰 폴백 표기 대상 아님).
-    홈페이지조차 없으면 저장할 URL 이 없어 ValueError(API 에서 400).
+    ``False`` 는 회사의 폼 연락처 전부 삭제. ``True`` 는 폼이 이미 있으면 그 폼을 사람
+    확인으로 **승격**(confidence=1.0·method=manual — 저신뢰 폴백 폼이 '사람 확인 필요'로
+    재노출되지 않게), 없으면 사람이 '폼 있음'을 확인한 것이므로 홈페이지(이번 요청
+    교정값 우선)를 진입 링크로 저장한다. 홈페이지조차 없으면 저장할 URL 이 없어
+    ValueError(API 에서 400).
     재크롤이 폼을 다시 감지/미감지하면 이 교정은 덮일 수 있다 — 홈페이지 교정(#185)과
-    동일한 내구성 한계로, 수용된 선례를 따른다.
+    동일한 내구성 한계로, 수용된 선례를 따른다. 감사행 적재는 호출부(set_review_status)
+    의 처리자(assignee) 게이트를 따르므로 처리자 없는 내부 호출은 has_form 을 넘기지
+    말 것(폼은 바뀌는데 감사기록이 안 남는다 — API 경로는 항상 처리자 세팅).
     """
     if has_form is None:
         return None, None
@@ -532,12 +535,20 @@ def _apply_form_correction(
             session.delete(row)
         return before, None
     if form_rows:
-        return before, before  # 이미 폼 있음 — 교정 불필요(no-op).
+        # 이미 폼 있음 — URL 은 유지하고 사람 확인으로 승격(교차리뷰 반영: 저신뢰 0.3
+        # 폴백 폼이 form_low_confidence 로 계속 재노출되던 것을 여기서 끝낸다).
+        for row in form_rows:
+            row.extract_method = ExtractMethod.MANUAL.value
+            row.confidence = 1.0
+        return before, before
     url = homepage or (company.homepage if company is not None else None)
     if not url:
         raise ValueError("문의폼 있음으로 교정하려면 회사 홈페이지가 필요합니다")
     from .repository import contact_id_for  # 순환 import 회피(repository→review 역방향).
 
+    # ponytail: check-then-insert — 미점유 행을 두 직원이 동시에 has_form=true 확정하면
+    # 같은 결정적 PK 로 충돌(한쪽 IntegrityError→500)할 수 있다. register_edited_email 의
+    # 기존 수용 패턴과 동일한 한계 — 실측 발생 시 dialect upsert(on_conflict_do_nothing)로.
     session.add(
         ContactRow(
             id=contact_id_for(company_id, ContactType.FORM.value, url),
