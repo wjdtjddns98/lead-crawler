@@ -262,8 +262,8 @@ class DomainResolver:
     ) -> str | None:
         """후보를 Claude 에 주고 공식 도메인 1건을 중재받는다(기권/캡초과/실패 시 폴백).
 
-        캡 초과·CLI 미설치/미인증·오류면 한글은 보수적 결정 규칙으로, 라틴은 None 으로
-        폴백한다(절대 무근거 채택 금지 — 제약②). Claude Agent SDK(구독) 호출이라 메터드
+        캡 초과·anthropic 미설치/인증정보 없음·오류면 한글은 보수적 결정 규칙으로, 라틴은
+        None 으로 폴백한다(절대 무근거 채택 금지 — 제약②). 구독 OAuth Bearer 호출이라
         과금은 없다 — cost_ledger 미적재, 예산가드는 무료 레버라 미적용(캡만 제어).
         """
         if not self._reserve_llm():  # 런당 캡 — 서브프로세스 왕복 폭주 방지.
@@ -291,10 +291,10 @@ class DomainResolver:
                 self._llm_used -= 1
 
     def _arbitrate(self, dc: DiscoveredCompany, cands: list[_Candidate]) -> tuple[int, bool]:
-        """Claude Agent SDK(구독)로 후보 index 를 받는다 — (index, ok). 오류 시 (-1, False).
+        """raw Anthropic API(구독 OAuth)로 후보 index 를 받는다 — (index, ok). 오류 시 (-1, False).
 
-        ``ok`` 는 **실제 SDK 왕복이 일어났는지**(캡 환급 판별). CLI 미설치/미인증·호출 오류는
-        (−1, False), 응답을 받았으나 index 파싱이 애매하면 (−1, True)=기권(왕복은 일어남).
+        ``ok`` 는 **실제 API 왕복이 일어났는지**(캡 환급 판별). 미설치/인증정보 없음·호출
+        오류는 (−1, False), 응답을 받았으나 index 파싱이 애매하면 (−1, True)=기권(왕복은 일어남).
         """
         lines = "\n".join(
             f"{i}) domain={c.domain} title={c.title!r} snippet={c.snippet[:120]!r}"
@@ -304,8 +304,8 @@ class DomainResolver:
             name=dc.name, name_eng=dc.name_eng or "", country=dc.country or "", candidates=lines
         )
         try:
-            text = _sdk_complete(prompt, self._settings.resolve_llm_model)
-        except Exception as exc:  # CLI 미설치(CLINotFoundError)·미인증·프로세스오류 → 왕복 없음.
+            text = _sdk_complete(prompt, self._settings.resolve_llm_model, self._settings)
+        except Exception as exc:  # anthropic 미설치·인증정보 없음·API 오류 → 왕복 없음.
             log.info("resolve.llm.error", err=str(exc))
             return -1, False
         # 왕복 성공 → ok. _parse_index 는 예외-safe(정규식+클램프)라 파싱실패=기권(-1)이지만 ok 유지.
@@ -427,40 +427,36 @@ def _korean_deterministic_pick(
 _ARBITER_SYSTEM = "너는 회사 공식 도메인을 고르는 판정기다. 오직 후보 번호 하나 또는 -1만 출력한다."
 
 
-def _sdk_complete(prompt: str, model: str) -> str:
-    """Claude Agent SDK(구독 인증)로 단발 완성 텍스트를 받는다 — 실패는 예외로 위임.
+# Agent SDK 별칭(haiku|sonnet|opus) → raw API 모델 ID. 전체 ID 는 그대로 통과.
+_MODEL_ALIASES = {
+    "haiku": "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-5",
+    "opus": "claude-opus-4-8",
+}
 
-    별도 ANTHROPIC_API_KEY 불필요(claude CLI 로그인/CLAUDE_CODE_OAUTH_TOKEN 사용). 워커
-    스레드에서 호출되므로 스레드별 독립 이벤트루프(asyncio.run)로 브리지한다 — 스레드마다
-    새 루프라 충돌 없음. tools/파일접근 없음(allowed_tools=[])·단일 턴(max_turns=1).
+
+def _sdk_complete(prompt: str, model: str, settings: Settings) -> str:
+    """raw Anthropic API(구독 OAuth Bearer 우선)로 단발 완성 텍스트 — 실패는 예외로 위임.
+
+    #240 의 Agent SDK(claude CLI 서브프로세스)는 콜당 ~16초 콜드스타트에 더해 Node 가
+    띄우는 손자 프로세스가 콘솔창을 번쩍여(Popen 억제는 직계만 커버) 실사용 불가 판정
+    (2026-07-13 실측) → 업종분류기(ClaudeClassifier)와 동일한 raw API 경로로 교체
+    (창 0·~1초/콜, 당일 996콜 실증). 인증정보 없음/호출 실패는 예외 → 호출측이
+    (-1, False) 폴백. 구독 정액이라 cost_ledger 미적재(#240 과 동일 방침).
     """
-    import asyncio
+    import anthropic
 
-    from claude_agent_sdk import ClaudeAgentOptions, query
-
-    from ..logging import suppress_child_windows
-
-    suppress_child_windows()  # Windows: claude.exe 콘솔창 플래시 억제(Popen 경계 전역).
-
-    async def _run() -> str:
-        parts: list[str] = []
-        async for message in query(
-            prompt=prompt,
-            options=ClaudeAgentOptions(
-                model=model,
-                system_prompt=_ARBITER_SYSTEM,
-                allowed_tools=[],
-                max_turns=1,
-                permission_mode="bypassPermissions",
-            ),
-        ):
-            for block in getattr(message, "content", None) or []:
-                text = getattr(block, "text", None)
-                if text:
-                    parts.append(text)
-        return "".join(parts).strip()
-
-    return asyncio.run(_run())
+    if settings.anthropic_auth_token:  # OAuth Bearer(구독) 우선 — 업종분류기와 동일 규약.
+        client = anthropic.Anthropic(auth_token=settings.anthropic_auth_token, max_retries=8)
+    else:
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key, max_retries=8)
+    msg = client.messages.create(
+        model=_MODEL_ALIASES.get(model, model),
+        max_tokens=16,
+        system=_ARBITER_SYSTEM,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text").strip()
 
 
 def _parse_index(text: str, n: int) -> int:
