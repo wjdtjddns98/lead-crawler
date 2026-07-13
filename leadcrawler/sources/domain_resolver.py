@@ -11,16 +11,22 @@ enrich 가 즉시 빈손으로 끝나 사이트·이메일을 못 얻는다. 이
 - opt-in(`resolve_domains`) + 검색 공급자 필요. 무키·dry_run 은 no-op(결정적 유지).
 - 비용: 런당 캡(`domain_resolve_max`)으로 호출·과금(Serper)을 보호, 초과는 로그.
 - blocklist(포털·뉴스·SNS)는 SearchSource 와 공유해 단일 출처로 둔다.
+
+수율 사다리(저장 실존율 레버 — 무도메인·한글명 기업 구제, 전부 opt-in·캡·예산가드):
+① KR=네이버(무료) 1차, 그 외=글로벌 SERP. ② `resolve_serper_fallback`=KR miss 시
+유료 Serper 재시도. ③ `resolve_llm_arbiter`=후보를 Claude 로 공식 도메인 1건 중재(기권 -1).
+짧은 한글명 substring 오탐은 LLM 이 없으면 토큰 완전일치로만 보수 채택(제약②).
 """
 
 from __future__ import annotations
 
 import re
 import threading
+from typing import NamedTuple
 
 from ..config import Settings
 from ..cost_ledger import SupportsCostLedger
-from ..dedup import normalize_domain
+from ..dedup import normalize_domain, normalize_name, tokenize_name
 from ..logging import get_logger
 from .base import DiscoveredCompany
 from .countries import resolve_country
@@ -80,6 +86,10 @@ class DomainResolver:
         self._naver_built = False  # None 이 유효값(키 없음)이라 별도 built 플래그로 캐시.
         self._used = 0  # 런당 해석 호출 수(quota·과금 캡 추적).
         self._capped_logged = False
+        # LLM 중재(도메인 후보 → 공식 1건 선택) 런당 캡. 검색 캡(_used)과 별도로 센다 —
+        # 검색은 무료(네이버)일 수 있지만 LLM 은 항상 유료라 상한을 따로 둔다.
+        self._llm_used = 0
+        self._llm_capped_logged = False
         # 캡 체크+증가를 원자화하는 락 — 원 설계(run.py)는 메인스레드 단독 호출이라 무의미
         # 했지만, 백필 소비자가 인스턴스를 워커 스레드끼리 공유하면(캡을 진짜 런당 상한으로
         # 지키기 위해 스레드별로 나누지 않음) 락 없인 경합으로 캡이 새어나간다(2026-07-10
@@ -117,8 +127,15 @@ class DomainResolver:
     def resolve(self, dc: DiscoveredCompany) -> str | None:
         """발견 기업의 공식 도메인을 해석한다(못 찾으면 None).
 
-        dry_run·무키·캡 초과·이미 도메인 보유면 호출하지 않는다(no-op). 한 기업당 검색
-        1쿼리만 써 quota·과금을 아낀다.
+        수율 사다리(전부 opt-in·캡·예산가드, 제약② 정밀도 유지):
+        ① 1차 검색 — KR=네이버(무료), 그 외=글로벌 SERP. 후보를 정밀도 게이트로 선택.
+        ② Serper 폴백(``resolve_serper_fallback``) — KR 이 네이버에서 miss 하면 유료
+           글로벌로 재시도해 후보를 합친다(무료 우선, 필요할 때만 과금).
+        ③ LLM 중재(``resolve_llm_arbiter``) — 게이트가 못 고른 후보들을 Claude 가
+           공식 도메인 1건으로 중재하거나 기권(-1). 짧은 한글명 substring 오탐을 막으면서
+           결합형·약어로 root 가 안 맞는 실기업을 구제한다.
+
+        dry_run·무키·캡 초과·이미 도메인 보유면 검색하지 않는다(no-op).
         """
         s = self._settings
         if s.dry_run or dc.domain:
@@ -128,55 +145,184 @@ class DomainResolver:
             log.info("resolve.skip.fund", name=dc.name)
             return None
         country = resolve_country(dc.country)
-        provider = self._get_provider()
-        # KR 기업은 네이버(무료 25,000쿼리/일)로 라우팅해 유료 SERP 크레딧을 아낀다.
-        # 네이버 키가 있으면 KR 은 네이버 단독(miss 여도 유료 폴백 없음 — 절약이 목적).
-        if country and country.iso2 == "KR":
-            provider = self._get_naver() or provider
-        if provider is None:  # 무키(공급자 없음) → no-op.
+        is_kr = bool(country and country.iso2 == "KR")
+        primary = self._get_provider()
+        # KR 기업은 네이버(무료 25,000쿼리/일)로 1차 라우팅해 유료 SERP 크레딧을 아낀다.
+        if is_kr:
+            primary = self._get_naver() or primary
+        if primary is None:  # 무키(공급자 없음) → no-op.
             return None
         if not self._reserve():
             return None
 
         search_name = dc.name
         slug = _name_slug(search_name)
+        korean_core: str | None = None  # 슬러그 매칭 대신 title 대조·LLM 에 쓸 정규화 한글 상호명.
         if len(slug) < 3 and dc.name_eng:
             # 비라틴(한글 등) 명칭은 슬러그가 비어 스킵되던 경로 — 등록처가 준 영문명으로
             # 폴백하면 검색·도메인 매칭 둘 다 가능해진다(KR 기업 도메인 해석 수율 레버).
             search_name = dc.name_eng
             slug = _name_slug(search_name)
-        if len(slug) < 3:  # 1~2자·비라틴 명칭은 매칭 신뢰도가 낮아 시도하지 않음(quota 절약).
-            return None
+        if len(slug) < 3:
+            # name_eng 도 없는 순수 한글 상호명(NPS 등은 name_eng 를 아예 안 줌) — 도메인
+            # root 는 대개 로마자라 슬러그 대조가 원천 불가능했다(2026-07-13, 4만건 발견에
+            # 저장 115건으로 발각). 한글 원문으로 검색해 title 대조/LLM 중재로 잇는다.
+            korean_core = normalize_name(dc.name)
+            if len(korean_core) < 2:  # 그래도 너무 짧으면(오탐 위험) 시도하지 않음.
+                return None
+            search_name = dc.name
 
         gl, lr, keyword = _LOCALE.get(country.iso2, _DEFAULT_LOCALE) if country else _DEFAULT_LOCALE
         # 회사명 + 국가 현지화 키워드(공식/IR). 정확구문 인용("...")은 쓰지 않는다 — 법인명
         # 전체를 따옴표로 묶으면(예: "EMCOR Group, Inc.") 구글이 정확일치만 찾아 organic 0건이
-        # 되는 경우가 많다(라이브 확인). 정밀도는 아래 _name_matches(슬러그↔도메인 root) 가
-        # 보장하므로 쿼리는 넓게 두고 후보를 매칭 단계에서 거른다.
+        # 되는 경우가 많다(라이브 확인). 정밀도는 후보 선택 단계에서 거른다.
         query = f"{search_name} {keyword}"
-        items = provider.fetch_page(query, gl=gl, lr=lr, start=1)  # 단일 쿼리(기업당 1회, _reserve 가 이미 카운트).
-
         tld = f".{country.iso2.lower()}" if country else ""
-        best: str | None = None
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            domain = normalize_domain(item.get("link") or item.get("displayLink"))
-            if not domain or domain in _BLOCKLIST:
-                continue
-            if not _name_matches(slug, domain):
-                continue
-            # 첫 일치(=최상위 관련도)를 기본 채택하되, 국가 TLD 일치 도메인이 있으면 우선.
-            if best is None:
-                best = domain
-            if tld and domain.endswith(tld):
-                best = domain
-                break
+
+        cands = _candidates_from(primary.fetch_page(query, gl=gl, lr=lr, start=1))
+        best = self._pick(dc, cands, slug=slug, korean_core=korean_core, tld=tld)
+
+        # ② Serper 폴백 — KR 네이버 miss 시 유료 글로벌로 재시도(예산가드는 Serper 내부).
+        if best is None and is_kr and s.resolve_serper_fallback:
+            fallback = self._get_provider()  # 글로벌(serper/cse) — KR 도 country 무시하고 서비스.
+            if fallback is not None and fallback is not primary:
+                more = _candidates_from(fallback.fetch_page(query, gl=gl, lr=lr, start=1))
+                if more:
+                    cands = _merge_candidates(cands, more)
+                    best = self._pick(dc, cands, slug=slug, korean_core=korean_core, tld=tld)
+
         if best is not None:
             log.info("resolve.hit", name=dc.name, domain=best)
         else:
             log.info("resolve.miss", name=dc.name)
         return best
+
+    def _pick(
+        self,
+        dc: DiscoveredCompany,
+        cands: list[_Candidate],
+        *,
+        slug: str,
+        korean_core: str | None,
+        tld: str,
+    ) -> str | None:
+        """후보 도메인 중 이 기업의 공식 도메인을 정밀도 우선으로 고른다(없으면 None).
+
+        한글 경로(``korean_core``)는 LLM 중재가 켜졌으면 그쪽에 위임하고, 아니면 보수적
+        결정 규칙(title 이 상호명으로 시작 + 충분히 긴 이름)만 자동 채택한다 — 짧은 한글명의
+        substring 오탐(예: '동양'→동양생명)을 막는다. 라틴 경로는 도메인 root 대조.
+        """
+        if not cands:
+            return None
+        if korean_core is not None:
+            if self._settings.resolve_llm_arbiter:
+                return self._llm_pick(dc, cands, korean_core=korean_core, tld=tld)
+            return _korean_deterministic_pick(cands, korean_core, tld)
+        # 라틴 경로 — 도메인 root ↔ 슬러그 경계 정합.
+        best: str | None = None
+        for c in cands:
+            if not _name_matches(slug, c.domain):
+                continue
+            if best is None:
+                best = c.domain
+            if tld and c.domain.endswith(tld):
+                return c.domain
+        # root 대조 실패분도 LLM 중재로 구제(결합형·약어 실기업). 켜졌을 때만.
+        if best is None and self._settings.resolve_llm_arbiter:
+            return self._llm_pick(dc, cands, korean_core=None, tld=tld)
+        return best
+
+    def _reserve_llm(self) -> bool:
+        """LLM 중재 캡 미만이면 이번 호출을 원자적으로 선점 — 동시 호출 안전."""
+        cap = self._settings.resolve_llm_max or self._settings.domain_resolve_max
+        with self._lock:
+            if self._llm_used >= max(0, cap):
+                if not self._llm_capped_logged:
+                    log.info("resolve.llm.capped", cap=cap)
+                    self._llm_capped_logged = True
+                return False
+            self._llm_used += 1
+            return True
+
+    def _llm_pick(
+        self,
+        dc: DiscoveredCompany,
+        cands: list[_Candidate],
+        *,
+        korean_core: str | None,
+        tld: str,
+    ) -> str | None:
+        """후보를 Claude 에 주고 공식 도메인 1건을 중재받는다(기권/캡초과/실패 시 폴백).
+
+        캡 초과·키없음·예산초과·오류면 한글은 보수적 결정 규칙으로, 라틴은 None 으로
+        폴백한다(절대 무근거 채택 금지 — 제약②). 실제 API 왕복이 일어났을 때만 과금 적재.
+        """
+        # 예산가드 — 유료 호출 전 월 예산 초과면 중재 생략(폴백).
+        led = self._cost_ledger
+        over_budget = (
+            led is not None and self._settings.cost_budget_enforce and led.is_over_budget()
+        )
+        if over_budget or not self._settings.anthropic_api_key or not self._reserve_llm():
+            if korean_core is not None:
+                return _korean_deterministic_pick(cands, korean_core, tld)
+            return None
+        shortlist = cands[:_LLM_MAX_CANDIDATES]
+        idx, billed = self._arbitrate(dc, shortlist)
+        if not billed:
+            # 왕복 자체가 실패(anthropic 미설치·전이 429/타임아웃 등) — 과금 안 하고 캡 슬롯을
+            # 환급한다. 안 그러면 일시적 장애가 남은 배치/런의 중재를 영구 불능화한다(적대
+            # 리뷰 MED). 폴백으로라도 recall 을 지킨다(한글=토큰일치, 라틴=None).
+            self._refund_llm()
+            if korean_core is not None:
+                return _korean_deterministic_pick(cands, korean_core, tld)
+            return None
+        # 실제 API 왕복이 일어났을 때만 과금(llm_judge.ClaudeJudge.billed 패턴, 적대 리뷰 MED).
+        if led is not None:
+            led.record("resolve_llm")
+        if 0 <= idx < len(shortlist):
+            return shortlist[idx].domain
+        return None  # 모델이 기권(-1) — 무근거 채택 금지(제약②).
+
+    def _refund_llm(self) -> None:
+        """왕복 실패로 소모된 LLM 캡 슬롯 1건을 되돌린다(전이 장애가 캡을 영구 소진하지 않게)."""
+        with self._lock:
+            if self._llm_used > 0:
+                self._llm_used -= 1
+
+    def _arbitrate(self, dc: DiscoveredCompany, cands: list[_Candidate]) -> tuple[int, bool]:
+        """Claude(Haiku)로 후보 index 를 받는다 — (index, billed). 오류 시 (-1, False).
+
+        ``billed`` 는 **실제 API 왕복이 일어났는지**다(과금 판별 단일 출처). 미설치·키오류·
+        호출 전 예외는 (−1, False)=미과금, 응답을 받은 뒤의 파싱실패는 (−1, True)=이미 과금.
+        """
+        lines = "\n".join(
+            f"{i}) domain={c.domain} title={c.title!r} snippet={c.snippet[:120]!r}"
+            for i, c in enumerate(cands)
+        )
+        prompt = _ARBITER_PROMPT.format(
+            name=dc.name, name_eng=dc.name_eng or "", country=dc.country or "", candidates=lines
+        )
+        try:
+            import anthropic
+
+            client = anthropic.Anthropic(api_key=self._settings.anthropic_api_key)
+            msg = client.messages.create(
+                model=self._settings.resolve_llm_model,
+                max_tokens=8,  # 숫자 하나만 필요.
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as exc:  # 미설치·키오류·호출 전 오류 → 기권·미과금(왕복 없음).
+            log.info("resolve.llm.error", err=str(exc))
+            return -1, False
+        # 왕복 성공 → billed 확정. 응답 파싱은 예외-safe 하지만, 만일 실패해도 이미 청구됐으니
+        # billed=True 를 유지한다(과금 판별 단일 출처가 왕복 여부라는 계약 정합).
+        log.info("resolve.llm.call", name=dc.name, model=self._settings.resolve_llm_model)
+        try:
+            text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+            return _parse_index(text, len(cands)), True
+        except Exception as exc:  # 응답 형태 이탈 → 기권하되 과금은 유지.
+            log.info("resolve.llm.parse_error", err=str(exc))
+            return -1, True
 
 
 def _name_slug(name: str) -> str:
@@ -207,3 +353,96 @@ def _name_matches(slug: str, domain: str) -> bool:
     if len(brand) >= 4 and slug.startswith(brand):  # 'samsung'(brand)←'samsungelectronics'
         return True
     return False
+
+
+# ── 후보 수집·선택 헬퍼(수율 3레버 공용) ──────────────────────────────────────
+
+_LLM_MAX_CANDIDATES = 6  # LLM 중재에 보낼 후보 상한(프롬프트 비용·토큰 절약).
+_KOREAN_TOKEN_MIN = 3  # LLM-off 한글 결정 채택 최소 상호명 길이(짧으면 오탐 위험 → 포기).
+_TAG_RE = re.compile(r"<[^>]+>")  # 네이버 title 의 <b>…</b> 하이라이트 등 제거.
+
+_ARBITER_PROMPT = (
+    "회사의 **공식 웹사이트** 도메인을 아래 후보 중에서 고르라. 뉴스·블로그·위키·디렉토리·"
+    "쇼핑몰·SNS·채용사이트·다른 회사 사이트는 제외한다. 공식 사이트가 없거나 확신이 없으면 "
+    "-1 을 출력하라(틀린 채택보다 기권이 낫다).\n"
+    "오직 후보 번호 하나(또는 -1)만 출력하라(설명·문장 금지).\n\n"
+    "회사: 이름={name!r} 영문명={name_eng!r} 국가={country!r}\n"
+    "후보:\n{candidates}"
+)
+
+
+class _Candidate(NamedTuple):
+    """검색결과 1건의 선택용 정규화 뷰 — 도메인 + (태그 제거된) title/snippet."""
+
+    domain: str
+    title: str
+    snippet: str
+
+
+def _strip_tags(text: str) -> str:
+    """검색결과 title/snippet 의 HTML 태그를 제거한다(네이버 <b> 하이라이트 대응).
+
+    태그를 안 지우면 정규화 시 'b' 가 상호명 사이에 끼어(에스케이<b>하이닉스</b> →
+    에스케이b하이닉스) 정확한 공식 사이트가 오히려 매칭에서 탈락한다(#239 리뷰 HIGH).
+    """
+    return _TAG_RE.sub("", text)
+
+
+def _candidates_from(items: list) -> list[_Candidate]:
+    """공급자 raw 결과를 blocklist·중복도메인 제거한 후보 목록으로 정규화한다(순서 보존)."""
+    out: list[_Candidate] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        domain = normalize_domain(item.get("link") or item.get("displayLink"))
+        if not domain or domain in _BLOCKLIST or domain in seen:
+            continue
+        seen.add(domain)
+        title = _strip_tags(item.get("title") or "")
+        snippet = _strip_tags(item.get("snippet") or item.get("description") or "")
+        out.append(_Candidate(domain=domain, title=title, snippet=snippet))
+    return out
+
+
+def _merge_candidates(a: list[_Candidate], b: list[_Candidate]) -> list[_Candidate]:
+    """b 중 a 에 없는 도메인만 뒤에 붙인다(1차 결과 우선순위 보존)."""
+    seen = {c.domain for c in a}
+    return a + [c for c in b if c.domain not in seen]
+
+
+def _korean_deterministic_pick(
+    cands: list[_Candidate], korean_core: str, tld: str
+) -> str | None:
+    """LLM-off 한글 경로 폴백 — title 의 **토큰 하나와 정확히 일치**할 때만 채택(경계 정합).
+
+    substring 이 아닌 토큰 완전일치라, '동양'→동양생명·'한국전력'→한국전력기술 같은
+    접두 오탐을 차단한다(제약②). 짧은 상호명은 아예 시도하지 않는다.
+
+    ponytail: 다중어절 상호명(예: '포스코 인터내셔널')은 korean_core 가 토큰을 concat 해
+    ('포스코인터내셔널') title 의 개별 토큰과 안 맞아 여기선 미채택(오탐 대신 miss — 안전).
+    이런 케이스의 recall 은 LLM 중재 경로가 담당한다(resolve_llm_arbiter).
+    """
+    if len(korean_core) < _KOREAN_TOKEN_MIN:
+        return None
+    best: str | None = None
+    for c in cands:
+        if korean_core not in tokenize_name(c.title):  # 토큰 완전일치(경계 보장).
+            continue
+        if best is None:
+            best = c.domain
+        if tld and c.domain.endswith(tld):
+            return c.domain
+    return best
+
+
+def _parse_index(text: str, n: int) -> int:
+    """LLM 응답에서 후보 index 를 뽑는다 — 범위 밖·파싱실패는 -1(기권)."""
+    m = re.search(r"-?\d+", text or "")
+    if not m:
+        return -1
+    try:
+        v = int(m.group())
+    except ValueError:
+        return -1
+    return v if 0 <= v < n else -1
