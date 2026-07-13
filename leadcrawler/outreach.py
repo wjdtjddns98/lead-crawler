@@ -13,10 +13,10 @@ import hashlib
 import smtplib
 import time
 from collections.abc import Callable, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -100,14 +100,29 @@ def recipients(
     return out
 
 
-def _today_sent_count(session: Session, now: datetime) -> int:
-    """오늘(UTC) 실발송 성공 건수 — 일일 상한 계산용."""
+def _today_used_count(session: Session, now: datetime) -> int:
+    """오늘(UTC) 상한 사용량 = 실발송(sent) + **신선한** 예약(sending).
+
+    좌초 예약(sending 이 _RESERVE_STALE_SEC 초과)은 제외한다 — 크래시 박제 1건이
+    그날 상한을 영구히 갉아먹는 것 방지(교차리뷰 MED). preview 와 예약검사가 이
+    함수를 공유해 '미리보기 잔여 ≠ 실제 발송 가능' 불일치를 없앤다.
+    """
     start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    fresh_floor = now - timedelta(seconds=_RESERVE_STALE_SEC)
     return int(
         session.scalar(
             select(func.count())
             .select_from(EmailSendLogRow)
-            .where(EmailSendLogRow.status == "sent", EmailSendLogRow.sent_at >= start)
+            .where(
+                EmailSendLogRow.sent_at >= start,
+                or_(
+                    EmailSendLogRow.status == "sent",
+                    and_(
+                        EmailSendLogRow.status == "sending",
+                        EmailSendLogRow.sent_at >= fresh_floor,
+                    ),
+                ),
+            )
         )
         or 0
     )
@@ -126,7 +141,7 @@ def preview(
     now = now or _utcnow()
     recips = recipients(session, countries=countries, industries=industries)
     cap = max(0, settings.email_send_daily_cap)
-    remaining = max(0, cap - _today_sent_count(session, now))
+    remaining = max(0, cap - _today_used_count(session, now))
     return {
         "recipients": len(recips),
         "enabled": bool(settings.email_send_enabled),
@@ -162,24 +177,19 @@ def _reserve_send(
     수신자를 미발송으로 판단해 두 통 나가던 레이스(전수리뷰)를 DB 선점으로 차단.
     이미 sent(또는 신선한 sending) 행이 있으면 'dup', 오늘 상한 소진이면 'capped'.
     실패(failed)·좌초(sending 이 _RESERVE_STALE_SEC 초과) 행은 재예약해 재시도를 살린다.
+
+    ponytail 잔여 한계(교차리뷰 합의): ①비PG(SQLite)는 advisory lock 이 없어 서로 다른
+    이메일 간 상한 레이스가 이론상 가능 — 운영 DB 는 PG 전제. ②재예약에 펜싱 토큰이
+    없으나, SMTP 타임아웃(10s)이 stale 창(600s)보다 훨씬 짧아 '진행 중인데 stale 로
+    오판'은 예약 시각을 매 건 신선하게 찍는 한 실현 불가(send_campaign 쪽 보장).
     """
+    if now.tzinfo is None:  # naive 입력 방어 — UTC 저장 규약으로 재해석.
+        now = now.replace(tzinfo=timezone.utc)
     with session_scope(settings) as res:
         if res.get_bind().dialect.name == "postgresql":
             # 예약 직렬화 — count→INSERT 사이 창을 닫는다(다중 워커·다중 요청 공통).
             res.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _SEND_LOCK_KEY})
-        start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-        used = int(
-            res.scalar(
-                select(func.count())
-                .select_from(EmailSendLogRow)
-                .where(
-                    EmailSendLogRow.status.in_(("sent", "sending")),
-                    EmailSendLogRow.sent_at >= start,
-                )
-            )
-            or 0
-        )
-        if used >= cap:
+        if _today_used_count(res, now) >= cap:
             return "capped"
         rid = _send_id(email)
         row = res.get(EmailSendLogRow, rid)
@@ -252,6 +262,7 @@ def send_campaign(
     ``email_send_enabled`` 가 꺼져 있으면 **실발송·로그 없이** dry-run 요약만 반환한다.
     켜져 있으면 일일 잔여 상한까지만 보내고 발송 간 ``email_send_min_interval`` 만큼 쉰다.
     """
+    injected_now = now  # 테스트 주입용 고정 시각 — 미주입(운영)이면 수신자마다 신선하게 찍는다.
     now = now or _utcnow()
     recips = recipients(session, countries=countries, industries=industries)
 
@@ -263,6 +274,7 @@ def send_campaign(
             "attempted": 0,
             "sent": 0,
             "failed": 0,
+            "skipped": 0,
             "capped": 0,
         }
 
@@ -270,11 +282,14 @@ def send_campaign(
     sent = failed = skipped = 0
     capped = 0
     for i, (company_id, email) in enumerate(recips):
+        # 예약·확정 시각은 수신자마다 신선하게 — 캠페인 시작 시각을 재사용하면 레이트리밋으로
+        # 긴 캠페인의 후반 예약이 '이미 stale' 로 태어나 동시 캠페인이 이중발송한다(교차리뷰 HIGH).
+        tick = injected_now or _utcnow()
         # 발송 **전** DB 선점(격리 커밋) — 동시 요청/더블클릭의 상대편이 이 수신자·상한
         # 슬롯을 쓸 수 없게 한다. 'dup'=상대가 선점/기발송(스킵), 'capped'=오늘 상한 소진.
         outcome = _reserve_send(
             settings, email=email, company_id=company_id, subject=subject,
-            sent_by=sent_by, cap=cap, now=now,
+            sent_by=sent_by, cap=cap, now=tick,
         )
         if outcome == "capped":
             capped = len(recips) - i
@@ -295,7 +310,7 @@ def send_campaign(
         # 재실행 중복발송은 stale 창(_RESERVE_STALE_SEC) 이후에만 가능하도록 좁힌다.
         with session_scope(settings) as log_session:
             _log_send(log_session, email=email, company_id=company_id, subject=subject,
-                      status=status, error=error, sent_by=sent_by, now=now)
+                      status=status, error=error, sent_by=sent_by, now=injected_now or _utcnow())
         if i < len(recips) - 1 and settings.email_send_min_interval > 0:
             sleep(settings.email_send_min_interval)  # 레이트리밋(계정 차단 방지).
     log.info("outreach.sent", sent=sent, failed=failed, skipped=skipped, capped=capped)

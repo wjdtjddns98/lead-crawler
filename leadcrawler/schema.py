@@ -442,7 +442,9 @@ class EmailSendLogRow(Base):
 
     PK 는 이메일 주소에서 결정적으로 파생해, 같은 주소에 두 번 발송하지 않도록 한다
     (status='sent' 면 스킵). 실패(status='failed')는 재시도 시 덮어쓴다. dry-run 은
-    status='dryrun' 으로 남겨 미리보기 추적(실발송 카운트와 구분).
+    status='dryrun' 으로 남겨 미리보기 추적(실발송 카운트와 구분). status='sending' 은
+    발송 직전 원자 선점(outreach._reserve_send) 예약 — 확정 시 sent/failed 로 전이되고,
+    좌초분은 stale 창(10분) 이후 재예약된다.
     """
 
     __tablename__ = "email_send_log"

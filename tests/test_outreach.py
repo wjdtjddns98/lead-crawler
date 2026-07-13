@@ -216,3 +216,23 @@ def test_send_campaign_skips_recipient_reserved_elsewhere(db_settings, monkeypat
         )
     assert "ir@a.co.kr" not in sent_to  # 선점분 스킵.
     assert out["skipped"] == 1 and out["sent"] == 1  # ir@b.co.kr 만 발송.
+
+
+def test_stale_sending_of_other_email_releases_cap(db_settings) -> None:
+    """좌초(sending 박제) 예약이 **다른 이메일** 의 상한 슬롯을 영구 점유하지 않는다(교차리뷰 MED).
+
+    사용량 계산이 신선한 sending 만 포함해야, 크래시 박제 1건이 그날 상한을 갉아먹지 않는다.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
+    assert outreach._reserve_send(
+        db_settings, email="ir@a.co.kr", company_id="c1", subject="s",
+        sent_by=None, cap=1, now=now,
+    ) == "reserved"
+    later = now + timedelta(seconds=outreach._RESERVE_STALE_SEC + 1)
+    # a 의 예약이 좌초된 뒤에는, 다른 이메일 b 가 cap=1 슬롯을 쓸 수 있어야 한다.
+    assert outreach._reserve_send(
+        db_settings, email="ir@b.co.kr", company_id="c2", subject="s",
+        sent_by=None, cap=1, now=later,
+    ) == "reserved"
