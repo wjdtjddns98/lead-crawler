@@ -142,6 +142,18 @@ def test_specific_industry_gates_aggregators_not_opencorporates() -> None:
     assert GleifSource(s).applies_to(broad) and PseSource(s).applies_to(broad)
 
 
+def test_unmapped_taxonomy_label_gates_aggregators() -> None:
+    # 매핑 없는 택소노미 라벨(게임 등)도 구체 취급 — 집계원이 켜지면 업종 무관 명부가
+    # 세그먼트 라벨 도장을 받는 오라벨 사고(2026-07-13 gleif 1,000건 실측) 회귀가드.
+    # 소문자 입력("ai·데이터")도 게이트가 유지돼야 한다(케이스 정합 HIGH).
+    s = _dry_settings()
+    for label in ("게임", "기계·산업장비", "ai·데이터"):
+        seg = Segment(country="필리핀", industry=label)
+        assert not GleifSource(s).applies_to(seg), label
+        assert not WikidataSource(s).applies_to(seg), label
+        assert not PseSource(s).applies_to(seg), label
+
+
 def test_unknown_country_routes_to_search_only() -> None:
     # 미등록 국가는 등록처·집계원 모두 미적용 → 검색·AI 디렉토리(구체 업종 전용)로 폴백.
     rows = discover_segment(Segment(country="Atlantis", industry="제조"), _dry_settings())
