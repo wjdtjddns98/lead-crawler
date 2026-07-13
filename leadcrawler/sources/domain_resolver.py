@@ -20,7 +20,7 @@ import threading
 
 from ..config import Settings
 from ..cost_ledger import SupportsCostLedger
-from ..dedup import normalize_domain
+from ..dedup import normalize_domain, normalize_name
 from ..logging import get_logger
 from .base import DiscoveredCompany
 from .countries import resolve_country
@@ -140,13 +140,21 @@ class DomainResolver:
 
         search_name = dc.name
         slug = _name_slug(search_name)
+        korean_core: str | None = None  # 슬러그 매칭 대신 title 대조로 쓸 정규화 한글 상호명.
         if len(slug) < 3 and dc.name_eng:
             # 비라틴(한글 등) 명칭은 슬러그가 비어 스킵되던 경로 — 등록처가 준 영문명으로
             # 폴백하면 검색·도메인 매칭 둘 다 가능해진다(KR 기업 도메인 해석 수율 레버).
             search_name = dc.name_eng
             slug = _name_slug(search_name)
-        if len(slug) < 3:  # 1~2자·비라틴 명칭은 매칭 신뢰도가 낮아 시도하지 않음(quota 절약).
-            return None
+        if len(slug) < 3:
+            # name_eng 도 없는 순수 한글 상호명(NPS 등은 name_eng 를 아예 안 줌) — 도메인
+            # root 는 대개 로마자라 슬러그 대조가 원천 불가능했다(2026-07-13, 4만건 발견에
+            # 저장 115건으로 발각). 여기서 포기 않고 한글 원문으로 검색해 결과 title 에
+            # 정규화 상호명이 그대로 나타나는지로 정밀도를 지킨다(도메인 root 대조 대신).
+            korean_core = normalize_name(dc.name)
+            if len(korean_core) < 2:  # 그래도 너무 짧으면(오탐 위험) 시도하지 않음.
+                return None
+            search_name = dc.name
 
         gl, lr, keyword = _LOCALE.get(country.iso2, _DEFAULT_LOCALE) if country else _DEFAULT_LOCALE
         # 회사명 + 국가 현지화 키워드(공식/IR). 정확구문 인용("...")은 쓰지 않는다 — 법인명
@@ -164,7 +172,10 @@ class DomainResolver:
             domain = normalize_domain(item.get("link") or item.get("displayLink"))
             if not domain or domain in _BLOCKLIST:
                 continue
-            if not _name_matches(slug, domain):
+            if korean_core is not None:
+                if korean_core not in normalize_name(item.get("title") or ""):
+                    continue
+            elif not _name_matches(slug, domain):
                 continue
             # 첫 일치(=최상위 관련도)를 기본 채택하되, 국가 TLD 일치 도메인이 있으면 우선.
             if best is None:

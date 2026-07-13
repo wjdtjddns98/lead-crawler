@@ -201,13 +201,50 @@ def test_korean_name_falls_back_to_name_eng() -> None:
     assert f.calls == 1
 
 
-def test_korean_name_without_name_eng_still_skipped() -> None:
-    """영문명도 없으면 기존대로 스킵(quota 절약) — 폴백이 무근거 검색을 만들지 않는다."""
-    f = FakeFetcher(_items("https://skhynix.com"))
-    r = DomainResolver(_settings(), fetcher=f)
+def _no_naver_settings(**over) -> Settings:
+    # KR 은 naver 키가 있으면 자동으로 네이버 라우팅된다 — 로컬 .env 라이브 키(3앱 로테이션,
+    # #236)가 새치기하지 못하게 1~3번 앱 전부 명시적으로 비워 CSE(FakeFetcher)로 고정한다
+    # (다른 KR 테스트들의 로컬 베이스라인 오염과 동일 원인, memory 참고).
+    return _settings(
+        naver_client_id="", naver_client_secret="",
+        naver_client_id_2="", naver_client_secret_2="",
+        naver_client_id_3="", naver_client_secret_3="",
+        search_provider="cse",  # .env 라이브 serper 키가 auto 선택에 새치기 못 하게 고정.
+        **over,
+    )
+
+
+def test_korean_name_without_name_eng_still_searches_via_title_match() -> None:
+    """영문명 없는 순수 한글 상호명(NPS 등)도 이제 검색은 한다 — title 에 상호명이 없으면 미해석.
+
+    구 동작(호출 자체를 안 함)은 2026-07-13 4만건 발견/저장 115건 사고의 근본원인이었다:
+    name_eng 를 안 주는 소스(NPS)가 슬러그 매칭 불가로 전량 스킵돼 도메인을 못 채웠다.
+    """
+    f = FakeFetcher(_items("https://skhynix.com"))  # title 없음 → "" 취급, 매칭 실패.
+    r = DomainResolver(_no_naver_settings(), fetcher=f)
     dc = DiscoveredCompany(canonical_key="reg:dart:2", name="에스케이하이닉스", country="KR")
     assert r.resolve(dc) is None
-    assert f.calls == 0
+    assert f.calls == 1  # 더 이상 무조건 스킵하지 않음.
+
+
+def test_korean_name_resolves_via_title_match() -> None:
+    """name_eng 없어도 검색결과 title 에 정규화 상호명이 그대로 있으면 채택."""
+    f = FakeFetcher(
+        {"items": [{"link": "https://skhynix.com", "title": "에스케이하이닉스 공식 홈페이지"}]}
+    )
+    r = DomainResolver(_no_naver_settings(), fetcher=f)
+    dc = DiscoveredCompany(canonical_key="reg:dart:3", name="에스케이하이닉스", country="KR")
+    assert r.resolve(dc) == "skhynix.com"
+
+
+def test_korean_name_title_mismatch_rejected() -> None:
+    """title 에 상호명이 없는 엉뚱한 결과는 도메인만 그럴듯해도 채택하지 않는다(정밀도 우선)."""
+    f = FakeFetcher(
+        {"items": [{"link": "https://skhynix.com", "title": "반도체 뉴스 - 전자신문"}]}
+    )
+    r = DomainResolver(_no_naver_settings(), fetcher=f)
+    dc = DiscoveredCompany(canonical_key="reg:dart:4", name="에스케이하이닉스", country="KR")
+    assert r.resolve(dc) is None
 
 
 # ── 네이버 검색 API 라우팅(KR 전용·무료) ────────────────────────────────────
