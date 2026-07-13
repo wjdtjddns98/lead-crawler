@@ -15,11 +15,11 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
 from ..logging import get_logger
-from ..models import ContactType
+from ..models import ContactType, ExtractMethod
 from ..schema import (
     CompanyRow,
     ContactRow,
@@ -34,6 +34,46 @@ log = get_logger("review")
 
 # 큐 당겨가기/조회용 작업범위 필터 화이트리스트(상장 여부). 빈 문자열/None = 전체.
 _VALID_LISTED = frozenset({"listed", "unlisted", "unknown"})
+
+# 큐 목록 서버 정렬(#238) 허용 컬럼 — FE 테이블의 정렬 가능 컬럼과 1:1(계약 어휘).
+QUEUE_SORT_KEYS = ("name", "country", "industry", "listed", "form", "status")
+
+
+def _sort_expression(sort_by: str):  # noqa: ANN202 — SQLAlchemy 표현식(공용 상위타입 없음)
+    """정렬 키 → SQLAlchemy 정렬 표현식(#238). 허용 밖 키는 ValueError(fail-loud).
+
+    status/listed 는 알파벳순이 아니라 **업무 순위**(pending 먼저 / 상장·비상장·미상)로,
+    form 은 '폼 있음 먼저'(asc 기준)로 FE 클라이언트 정렬과 동일 의미를 낸다. listed 는
+    스칼라 서브쿼리로 읽어 필터의 조건부 DiscoveredCompanyRow 조인과 간섭하지 않는다.
+    """
+    if sort_by == "name":
+        return CompanyRow.name
+    if sort_by == "country":
+        return CompanyRow.country
+    if sort_by == "industry":
+        return CompanyRow.industry
+    if sort_by == "status":
+        return case(
+            (ReviewQueueRow.status == PENDING, 0),
+            (ReviewQueueRow.status == CONFIRMED, 1),
+            else_=2,
+        )
+    if sort_by == "listed":
+        listed_sq = (
+            select(DiscoveredCompanyRow.listed)
+            .where(DiscoveredCompanyRow.canonical_key == CompanyRow.canonical_key)
+            .scalar_subquery()
+        )
+        return case((listed_sq == "listed", 0), (listed_sq == "unlisted", 1), else_=2)
+    if sort_by == "form":
+        form_exists = (
+            select(ContactRow.id)
+            .where(ContactRow.company_id == ReviewQueueRow.company_id)
+            .where(ContactRow.type == ContactType.FORM.value)
+            .exists()
+        )
+        return case((form_exists, 0), else_=1)
+    raise ValueError(f"허용되지 않은 정렬 키: {sort_by}")
 
 
 def _apply_queue_filters(
@@ -301,6 +341,8 @@ def query_reviews(
     listed: str | None = None,
     regions: Sequence[str] | None = None,
     markets: Sequence[str] | None = None,
+    sort_by: str | None = None,
+    sort_dir: str = "asc",
 ) -> list[dict]:
     """큐 항목을 회사 정보와 함께 DTO dict 목록으로 반환한다(큐 행과 1:1).
 
@@ -309,6 +351,8 @@ def query_reviews(
     더해 offset 페이지네이션이 안정적이다. 국가/업종/상장 작업범위 필터는 선택적으로
     적용한다(:func:`_apply_queue_filters`). 점유(claim) 중 행은 :func:`count_reviews` 와
     동일하게 제외한다(전체큐 = 미점유 작업만 — 단건 조회 :func:`get_review` 는 무관).
+    ``sort_by``(#238, :data:`QUEUE_SORT_KEYS` 중 1개)가 주어지면 그 키+방향으로 전체
+    결과를 서버 정렬한다(페이지 경계에서도 순서 일관) — 없으면 기존 기본 정렬 유지.
     """
     stmt = (
         select(ReviewQueueRow, CompanyRow)
@@ -321,11 +365,14 @@ def query_reviews(
         stmt, countries=countries, industries=industries, listed=listed, regions=regions,
         markets=markets,
     )
-    stmt = (
-        stmt.order_by(ReviewQueueRow.status, CompanyRow.name, ReviewQueueRow.id)
-        .limit(limit)
-        .offset(offset)
-    )
+    if sort_by:
+        expr = _sort_expression(sort_by)
+        stmt = stmt.order_by(
+            expr.desc() if sort_dir == "desc" else expr.asc(), ReviewQueueRow.id
+        )
+    else:
+        stmt = stmt.order_by(ReviewQueueRow.status, CompanyRow.name, ReviewQueueRow.id)
+    stmt = stmt.limit(limit).offset(offset)
     rows = session.execute(stmt).all()
     ids = [company.id for _, company in rows]
     signals = _email_signals_by_value(session, ids)
@@ -381,6 +428,7 @@ def set_review_status(
     assignee_id: str | None = None,
     selected: str | None = None,
     homepage: str | None = None,
+    has_form: bool | None = None,
     now: datetime | None = None,
 ) -> dict | None:
     """큐 항목 상태(확정/거부/보류)와 선택 후보를 갱신하고 감사 이력을 적재한다.
@@ -388,9 +436,13 @@ def set_review_status(
     없으면 None, 잘못된 상태면 ValueError. ``selected`` 가 주어지면 후보 목록에 있어야
     하며(아니면 ValueError), 확정/거부 시 사람이 고른 최종 이메일을 기록한다. ``homepage``
     가 주어지면(#185) 회사(CompanyRow)의 홈페이지를 갱신한다 — URL 형식 검증은 상위
-    (API 스키마) 책임이라 여기선 값을 그대로 반영한다. 처리자(assignee/assignee_id)와
+    (API 스키마) 책임이라 여기선 값을 그대로 반영한다. ``has_form``(#241, ``None``=변경
+    없음)이 주어지면 문의폼 유무를 교정한다: ``False`` 는 저장된 폼 연락처를 삭제하고,
+    ``True`` 인데 폼이 없으면 실제 폼 URL 을 모르므로(FE 는 유무만 교정) **홈페이지를
+    진입 링크로 저장**한다(엑셀 E 컬럼=클릭 이동 목적과 정합 — 홈페이지도 없으면
+    ValueError). 처리자(assignee/assignee_id)와
     시각(reviewed_at)을 큐 행에 남기고, 변경 1건마다 :class:`ReviewAuditRow` 를 append 해
-    책임추적 이력을 보존한다(홈페이지 변경 전/후 값도 같은 행에 기록). 점유는 영구
+    책임추적 이력을 보존한다(홈페이지·폼 변경 전/후 값도 같은 행에 기록). 점유는 영구
     귀속이라 **타인이 점유한 항목이면 시간 경과와 무관하게** :class:`ReviewConflict`.
     """
     if status not in _VALID_STATUSES:
@@ -408,13 +460,15 @@ def set_review_status(
             raise ValueError(f"후보에 없는 선택: {selected}")
         rq.selected = selected
         rq.selected_by_human = True  # 사람 명시 선택 — 이후 재크롤에서 보존.
+    company = session.get(CompanyRow, rq.company_id)
     homepage_before = homepage_after = None
-    if homepage is not None:
-        company = session.get(CompanyRow, rq.company_id)
-        if company is not None:
-            homepage_before = company.homepage
-            company.homepage = homepage
-            homepage_after = homepage
+    if homepage is not None and company is not None:
+        homepage_before = company.homepage
+        company.homepage = homepage
+        homepage_after = homepage
+    form_before, form_after = _apply_form_correction(
+        session, rq.company_id, has_form, homepage=homepage, company=company
+    )
     rq.status = status
     if status in (CONFIRMED, REJECTED):
         # 종료 상태로 가면 점유는 무의미 — 정리(귀속은 assignee/reviewed_at 가 보존).
@@ -438,11 +492,63 @@ def set_review_status(
                 selected=rq.selected,
                 homepage_before=homepage_before,
                 homepage_after=homepage_after,
+                form_before=form_before,
+                form_after=form_after,
                 at=when,
             )
         )
     session.flush()
     return get_review(session, review_id)
+
+
+def _apply_form_correction(
+    session: Session,
+    company_id: str,
+    has_form: bool | None,
+    *,
+    homepage: str | None,
+    company: CompanyRow | None,
+) -> tuple[str | None, str | None]:
+    """문의폼 유무 교정(#241)을 연락처에 반영하고 감사용 (변경 전, 후) 폼 URL 을 돌려준다.
+
+    ``None`` 은 변경 없음((None, None) 반환 — 감사행에 폼 변경 없음으로 남는다).
+    ``False`` 는 회사의 폼 연락처 전부 삭제. ``True`` 는 폼이 이미 있으면 no-op, 없으면
+    사람이 '폼 있음'을 확인한 것이므로 홈페이지(이번 요청 교정값 우선)를 진입 링크로
+    저장한다(method=manual·confidence=1.0 — 사람 확인이라 저신뢰 폴백 표기 대상 아님).
+    홈페이지조차 없으면 저장할 URL 이 없어 ValueError(API 에서 400).
+    재크롤이 폼을 다시 감지/미감지하면 이 교정은 덮일 수 있다 — 홈페이지 교정(#185)과
+    동일한 내구성 한계로, 수용된 선례를 따른다.
+    """
+    if has_form is None:
+        return None, None
+    form_rows = session.scalars(
+        select(ContactRow)
+        .where(ContactRow.company_id == company_id)
+        .where(ContactRow.type == ContactType.FORM.value)
+    ).all()
+    before = form_rows[0].value if form_rows else None
+    if not has_form:
+        for row in form_rows:
+            session.delete(row)
+        return before, None
+    if form_rows:
+        return before, before  # 이미 폼 있음 — 교정 불필요(no-op).
+    url = homepage or (company.homepage if company is not None else None)
+    if not url:
+        raise ValueError("문의폼 있음으로 교정하려면 회사 홈페이지가 필요합니다")
+    from .repository import contact_id_for  # 순환 import 회피(repository→review 역방향).
+
+    session.add(
+        ContactRow(
+            id=contact_id_for(company_id, ContactType.FORM.value, url),
+            company_id=company_id,
+            type=ContactType.FORM.value,
+            value=url,
+            extract_method=ExtractMethod.MANUAL.value,
+            confidence=1.0,
+        )
+    )
+    return before, url
 
 
 def _claim_more(
