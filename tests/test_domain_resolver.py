@@ -351,7 +351,9 @@ def test_llm_arbiter_picks_official() -> None:
     """LLM 중재 on — 후보 중 공식 도메인 index 를 골라 채택(짧은 한글명 구제)."""
     f = FakeFetcher(
         {"items": [
-            {"link": "https://news.co.kr", "title": "동양 관련 뉴스"},
+            # 미끼는 노이즈 게이트에 안 걸리는 도메인이어야 한다(뉴스 도메인이던 구
+            # 픽스처는 이제 후보 단계에서 걸러져 index 가 밀림 — 게이트 의도 동작).
+            {"link": "https://tongyanglife.co.kr", "title": "동양생명"},
             {"link": "https://tongyang.com", "title": "동양 공식"},
         ]}
     )
