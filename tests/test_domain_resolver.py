@@ -364,6 +364,24 @@ def test_llm_arbiter_cap_enforced() -> None:
     assert calls["n"] == 1
 
 
+def test_llm_arbiter_kr_only() -> None:
+    """LLM 중재는 KR 전용 — 비KR 은 켜져 있어도 중재하지 않는다(root 대조 실패=miss)."""
+    f = FakeFetcher(
+        {"items": [{"link": "https://unrelated.com", "title": "Acme Holdings 관련 뉴스"}]}
+    )
+    r = DomainResolver(_no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k"), fetcher=f)
+    calls = {"n": 0}
+
+    def _stub(dc, cands):
+        calls["n"] += 1
+        return 0, True
+
+    r._arbitrate = _stub
+    dc = DiscoveredCompany(canonical_key="reg:edgar:1", name="Acme Holdings Group", country="US")
+    assert r.resolve(dc) is None  # root 불일치 + LLM 미가동 → miss.
+    assert calls["n"] == 0  # 비KR 은 LLM 왕복 자체가 없다.
+
+
 class _Ledger:
     """cost_ledger 스파이 — 구독 SDK 경로가 메터드 원장을 건드리지 않는지 검증용."""
 
