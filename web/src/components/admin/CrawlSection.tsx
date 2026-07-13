@@ -13,7 +13,7 @@ import type { CrawlJob, CrawlTarget, Listed } from "../../types";
 import { Square } from "lucide-react";
 import { toast } from "sonner";
 import { errMsg } from "../../format";
-import { toCountryOpts } from "../../filterOptions";
+import { krInScope, toCountryOpts } from "../../filterOptions";
 import { MultiPicker, type PickerOption } from "../MultiPicker";
 import { ErrorBox } from "../ErrorBox";
 import { BTN_CONFIRM, BTN_REJECT, EMPTY, TD, TH } from "../../ui";
@@ -93,7 +93,7 @@ export function CrawlTargetSection() {
   // 지역 픽커는 KR 을 명시 선택했을 때만 노출 — 국가 미선택(=전체)이어도 숨긴다(KR 특화
   // 옵션이라 명시적 의도가 있을 때만). 숨김 중엔 전송도 빈값으로 비워 잔존 선택이 몰래
   // 나가는 걸 막고, 상태는 유지해 KR 재선택 시 복원한다.
-  const krInScope = countries.split(",").some((c) => c.trim().toUpperCase() === "KR");
+  const inKrScope = krInScope(countries);
 
   const apply = (t: CrawlTarget) => {
     setCountries(t.countries);
@@ -158,7 +158,7 @@ export function CrawlTargetSection() {
           listed,
           persist,
           continuous,
-          regions: krInScope ? regions.trim() : "",
+          regions: inKrScope ? regions.trim() : "",
         }),
       );
       // 시작 피드백 — 휘발성 정보라 인라인 문구 대신 토스트(자동 소멸).
@@ -240,7 +240,7 @@ export function CrawlTargetSection() {
               emptyHint="전체 업종"
             />
           </div>
-          {krInScope && (
+          {inKrScope && (
             <div className={FIELD}>
               <span>
                 지역 <span className="text-muted">(KR 전용 · 선택 시 지역별 검색 팬아웃)</span>

@@ -111,6 +111,9 @@ export interface ClaimFilter {
   // 쉼표구분 시장 보드(KOSPI/KOSDAQ…), 빈값=전체 — 전체 큐(GET /queue) 조회 전용.
   // BE 계약 확장 대기: 파라미터 추가 전까지 실서버에선 무시된다(PR 본문 계약 명세 참조).
   market?: string;
+  // 쉼표구분 지역(시/도, KR 전용), 빈값=전체. country 에 KR 이 있을 때만 의미가 있다
+  // (BE ClaimRequest.region·GET /queue region 파라미터, #139 region 컬럼 활용).
+  region: string;
 }
 
 // 검증 직원용 필터 옵션(국가+업종 한 번에) — GET /queue/filters (worker 접근 가능).
@@ -121,6 +124,8 @@ export interface QueueFilters {
   listed: string[];
   // 시장 보드 어휘(DB distinct) — BE 계약 확장 대기. 없으면 FE 폴백 목록 사용.
   markets?: string[];
+  // 지역 어휘(KR 시/도, DB distinct·실측값만) — BE 이미 배포됨(GET /queue/filters regions).
+  regions?: string[];
 }
 
 export interface CrawlTarget {

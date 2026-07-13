@@ -158,17 +158,19 @@ export async function fetchQueue(params: {
   if (params.filter?.industry) q.set("industry", params.filter.industry);
   if (params.filter?.listed) q.set("listed", params.filter.listed);
   if (params.filter?.market) q.set("market", params.filter.market);
+  if (params.filter?.region) q.set("region", params.filter.region);
   return apiGet(`/queue?${q.toString()}`);
 }
 
 // 작업 받기 — 호출 1회 = +30개 추가 배정(선취, 총량 100 상한). 응답은 필터와 무관하게 내 점유
 // 전체. 추가형이라 새로고침·복원 용도로 쓰면 안 됨(그 용도는 fetchMyWork) — "작업 받기" 버튼
-// 클릭 시에만 호출한다. filter(국가·업종·상장)는 신규 배정분에만 적용(빈값=전체).
+// 클릭 시에만 호출한다. filter(국가·업종·상장·지역)는 신규 배정분에만 적용(빈값=전체).
 export async function claimWork(filter?: ClaimFilter): Promise<ReviewItem[]> {
   return apiSend("POST", "/queue/claim", {
     country: filter?.country ?? "",
     industry: filter?.industry ?? "",
     listed: filter?.listed ?? "",
+    region: filter?.region ?? "",
   });
 }
 
