@@ -367,6 +367,24 @@ class _Candidate(NamedTuple):
     snippet: str
 
 
+# 기업 공식 도메인이 구조적으로 불가능한 KR 2단계 접미(정부·협회/비영리·학교·연구기관).
+# blocklist 는 개별 나열이라 항상 뒤처진다 — 부류 전체를 게이트로 막는다(2026-07-13
+# 실측: gg.go.kr·gb.go.kr(도청 보도자료)·kpi.or.kr·kati.or.kr(협회)가 홈페이지로 채택됨).
+_NON_COMPANY_SUFFIXES = (".go.kr", ".or.kr", ".ac.kr", ".re.kr", ".hs.kr", ".ms.kr", ".es.kr")
+# 뉴스·구인 어휘가 등록 root 에 든 도메인 — 기사/공고 title 에 상호명이 그대로 들어가
+# 한글 결정 규칙(title 토큰일치)이 오탐하는 주 경로(edaily·fnnews·dailystock·
+# industrynews·findjob24h·jobploy 실측). 실기업 root 에 이 어휘가 드물어 정밀도 우선 차단.
+_NOISE_ROOT_RE = re.compile(r"news|daily|ilbo|press|recruit|job", re.IGNORECASE)
+
+
+def _is_noise_domain(domain: str) -> bool:
+    """도메인 해석 후보에서 구조적으로 제외할 부류인지(정부/협회/학교 접미·뉴스/구인 root)."""
+    if domain.endswith(_NON_COMPANY_SUFFIXES):
+        return True
+    root = domain.split(".", 1)[0]
+    return bool(_NOISE_ROOT_RE.search(root))
+
+
 def _strip_tags(text: str) -> str:
     """검색결과 title/snippet 의 HTML 태그를 제거한다(네이버 <b> 하이라이트 대응).
 
@@ -384,7 +402,7 @@ def _candidates_from(items: list) -> list[_Candidate]:
         if not isinstance(item, dict):
             continue
         domain = normalize_domain(item.get("link") or item.get("displayLink"))
-        if not domain or domain in _BLOCKLIST or domain in seen:
+        if not domain or domain in _BLOCKLIST or domain in seen or _is_noise_domain(domain):
             continue
         seen.add(domain)
         title = _strip_tags(item.get("title") or "")

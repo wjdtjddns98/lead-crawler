@@ -247,6 +247,37 @@ def test_korean_name_title_mismatch_rejected() -> None:
     assert r.resolve(dc) is None
 
 
+def test_noise_domains_never_adopted_even_with_matching_title() -> None:
+    """뉴스·구인·정부·협회 도메인은 title 에 상호명이 그대로 있어도 채택 금지.
+
+    라이브 사고(2026-07-13, 큐 60건 중 20건): 기사/공고/도청 보도자료 제목에 상호명이
+    들어가 한글 결정 규칙(title 토큰일치)이 edaily·findjob24h·gg.go.kr 등을 홈페이지로
+    채택했다. 구조 게이트(_is_noise_domain)가 후보 단계에서 걸러야 한다.
+    """
+    for link in (
+        "https://edaily.co.kr/article/123",       # 뉴스(root 에 daily)
+        "https://findjob24h.com/post/9",           # 구인(root 에 job)
+        "https://gg.go.kr/board/1",                # 정부(.go.kr)
+        "https://kati.or.kr/news/2",               # 협회(.or.kr)
+        "https://industrynews.co.kr/a/3",          # 업계지(root 에 news)
+    ):
+        f = FakeFetcher({"items": [{"link": link, "title": "한영타이어 신제품 출시"}]})
+        r = DomainResolver(_no_naver_settings(), fetcher=f)
+        dc = DiscoveredCompany(canonical_key="reg:dart:9", name="한영타이어", country="KR")
+        assert r.resolve(dc) is None, link
+
+
+def test_noise_gate_passes_official_domain_after_noise() -> None:
+    """노이즈 후보가 앞서도 뒤의 진짜 공식 도메인은 정상 채택된다(recall 보존)."""
+    f = FakeFetcher({"items": [
+        {"link": "https://edaily.co.kr/a/1", "title": "한영타이어 기사"},
+        {"link": "https://hanyoungtire.co.kr", "title": "한영타이어 공식 홈페이지"},
+    ]})
+    r = DomainResolver(_no_naver_settings(), fetcher=f)
+    dc = DiscoveredCompany(canonical_key="reg:dart:10", name="한영타이어", country="KR")
+    assert r.resolve(dc) == "hanyoungtire.co.kr"
+
+
 def test_naver_b_tags_stripped_before_match() -> None:
     """네이버 title 의 <b> 하이라이트가 매칭 전에 제거된다(#239 리뷰 HIGH #2).
 

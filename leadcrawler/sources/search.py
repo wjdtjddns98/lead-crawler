@@ -91,6 +91,15 @@ _BLOCKLIST = frozenset({
     "bloomberg.com", "reuters.com", "yahoo.com", "yelp.com", "trustpilot.com",
     "biopharmguy.com", "bionity.com", "medium.com", "github.com", "apollo.io",
     "threads.net", "tiktok.com", "pinterest.com", "amazon.com",
+    # KR 노이즈 실측 확장(2026-07-13 — 도메인 해석이 뉴스·구인·전화번호부·디렉터리를
+    # 기업 홈페이지로 채택한 라이브 사고 20/60건): 전부 기업 직도메인 불가 부류.
+    "114.co.kr", "bizwiki.co.kr", "biztop.co.kr", "komachine.com", "thinkzon.com",
+    "clickn.co.kr", "jstock.com", "kompass.com", "ec21.com",
+    "incruit.com", "jobploy.kr", "findjob24h.com", "albamon.com", "wanted.co.kr",
+    "catch.co.kr", "jobaba.net",
+    "edaily.co.kr", "fnnews.com", "sedaily.com", "newsis.com", "yna.co.kr",
+    "mt.co.kr", "etnews.com", "dt.co.kr", "asiae.co.kr", "heraldcorp.com",
+    "dailystock.co.kr", "industrynews.co.kr", "koreadisablednews.com",
 })
 
 
