@@ -261,6 +261,7 @@ def test_source_uses_label_path_for_unprefixed_industry(tmp_path) -> None:
     assert src.applies_to(seg)  # 접두표엔 없지만 3층 매핑이 연다.
     out = src.discover(seg)
     assert [d.name for d in out] == ["넥스트게임즈"]
+    assert out[0].listed == "unknown"  # 캐시 미주입 — 조인 미스 기본값(unlisted) 미적용.
 
 
 def test_dart_cache_join_attaches_fields_and_reg_key(tmp_path) -> None:
@@ -279,6 +280,8 @@ def test_dart_cache_join_attaches_fields_and_reg_key(tmp_path) -> None:
         # 대형화학(주) — 사업자번호 123456, DART 캐시에 동일 법인 존재(하단 put).
         "202606,대형화학(주),123456,1,서울특별시 강남구 화학로 1,,201234,화학제품 제조업,500,90000000,",
         "202606,무연고상사,777777,1,서울 중구 무연고로 2,,201234,화학제품 제조업,15,900000,",
+        # 사업자번호 손상(3자리) — 조인을 '시도했다'고 볼 수 없는 행(교차리뷰 MED-3).
+        "202606,번호손상상사,123,1,서울 중구 손상로 3,,201234,화학제품 제조업,20,900000,",
     ]
     ingest_nps_csv(sm, _csv(tmp_path, rows))
     cache = DbDartCorpCache(sm)
@@ -303,6 +306,34 @@ def test_dart_cache_join_attaches_fields_and_reg_key(tmp_path) -> None:
     assert hit.listed == "listed" and hit.market == "KOSDAQ"
     miss = by_name["무연고상사"]
     assert miss.domain is None and miss.canonical_key.startswith("name:")
+    # 조인 미스 = 비상장 기본값(PO 결정) — 실측 아님(listed_verified False 유지).
+    assert miss.listed == "unlisted"
+    assert miss.listed_verified is False
+    # 손상된 사업자번호(6자리 미만) = 조인 미시도 → 기본값(unknown) 유지(오표기 방지).
+    assert by_name["번호손상상사"].listed == "unknown"
+
+
+class FailingCache:
+    """조회 실패 더블 — find_matches 계약상 실패는 None(미스와 구분)."""
+
+    def find_matches(self, pairs):  # noqa: ARG002
+        return None
+
+
+def test_cache_lookup_failure_keeps_segment_default(tmp_path) -> None:
+    """캐시 조회 실패(None)는 미스가 아니다 — unlisted 기본값을 붙이면 안 된다."""
+    s = Settings(
+        database_url=f"sqlite:///{tmp_path}/nps.db", dry_run=False,
+        discovery_max_per_source=10,
+    )
+    init_db(s)
+    sm = get_sessionmaker(s)
+    ingest_nps_csv(sm, _csv(tmp_path, _rows()[:1]))  # 유효 사업자번호(123456) 행.
+    src = NpsSource(
+        s, nps_store=NpsStore(sm), cursor_store=DictCursor(), dart_cache=FailingCache()
+    )
+    out = src.discover(Segment(country="KR", industry="화학·석유화학"))
+    assert [d.listed for d in out] == ["unknown"]
 
 
 def test_relink_cli_moves_name_key_to_reg_key(tmp_path, monkeypatch) -> None:
@@ -335,6 +366,9 @@ def test_relink_cli_moves_name_key_to_reg_key(tmp_path, monkeypatch) -> None:
             DiscoveredCompanyRow(
                 canonical_key=old_key, name="대형화학(주)", country="KR",
                 industry="화학·석유화학", source="nps",
+                # 조인 미스 기본값으로 박힌 비상장 — 캐시 완충 후 relink 가 corp_cls
+                # 실측(Y=상장)으로 교정해야 한다(미스 기본값은 실측이 아니므로).
+                listed="unlisted",
             )
         )
         session.commit()

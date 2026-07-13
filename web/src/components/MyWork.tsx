@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { claimWork, confirmReview, fetchMyWork, fetchQueue, rejectReview } from "../api";
 import { errMsg } from "../format";
-import { LISTED_FILTER_OPTIONS, useQueueFilterOpts } from "../filterOptions";
+import { krInScope, LISTED_FILTER_OPTIONS, useQueueFilterOpts } from "../filterOptions";
 import { QueueTable } from "./QueueTable";
 import { TableSkeleton } from "./TableSkeleton";
 import { FilterPopover, pickSummary } from "./FilterPopover";
@@ -11,7 +11,7 @@ import { ErrorBox } from "./ErrorBox";
 import type { ClaimFilter, Listed, ReviewItem, ReviewStatus } from "../types";
 
 const FILTER_KEY = "lc_claim_filter";
-const EMPTY_FILTER: ClaimFilter = { country: "", industry: "", listed: "" };
+const EMPTY_FILTER: ClaimFilter = { country: "", industry: "", listed: "", region: "" };
 // 한 계정 동시 점유 총량 상한 — BE review_claim_cap 과 동일값(계약: PRD-queue-claim-permanent §4.2).
 const CLAIM_CAP = 100;
 
@@ -42,12 +42,19 @@ function loadFilter(): ClaimFilter {
         country: typeof p.country === "string" ? p.country : "",
         industry: typeof p.industry === "string" ? p.industry : "",
         listed: (LISTED_VALUES.has(String(p.listed)) ? p.listed : "") as "" | Listed,
+        region: typeof p.region === "string" ? p.region : "",
       };
     }
   } catch {
     // 파싱 실패 — 전체로 시작.
   }
   return EMPTY_FILTER;
+}
+
+// 지역은 KR 이 국가 선택에서 빠지면 전송하지 않는다(숨김 픽커의 잔존 선택이 몰래 나가는 것
+// 방지) — 저장 상태 자체는 유지해 KR 재선택 시 픽커에 복원된다(크롤 실행 섹션과 동일 패턴).
+function scopedFilter(f: ClaimFilter): ClaimFilter {
+  return krInScope(f.country) ? f : { ...f, region: "" };
 }
 
 // 내 작업 뷰(영구 배정) — 받아간 항목은 확정/거부 전까지 내 계정 귀속(반납·TTL 없음).
@@ -60,7 +67,7 @@ export function MyWork() {
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<ClaimFilter>(loadFilter);
   // 작업범위 픽커 옵션 — 로드 실패해도 작업 자체는 가능(셀렉트만 빈 채로).
-  const { countryOpts, industryOpts } = useQueueFilterOpts();
+  const { countryOpts, industryOpts, regionOpts } = useQueueFilterOpts();
   const [remaining, setRemaining] = useState<number | null>(null);
   // 이번 세션 처리(확정+거부) 건수 — 모달 하단 진행률 바의 분자. '작업 받기'로 새 배치를
   // 받으면 0 으로 리셋.
@@ -86,7 +93,12 @@ export function MyWork() {
         // 대기 탭 전용(빈 목록 안내·작업 받기 판단) — 내역 탭에선 불필요 조회를 생략한다.
         const q =
           tabRef.current === "pending"
-            ? await fetchQueue({ status: "pending", limit: 1, offset: 0, filter: filterRef.current })
+            ? await fetchQueue({
+                status: "pending",
+                limit: 1,
+                offset: 0,
+                filter: scopedFilter(filterRef.current),
+              })
             : null;
         if (token !== reqRef.current) return null; // 더 최신 요청이 진행 중 — 결과 버림.
         setItems(mine);
@@ -115,7 +127,7 @@ export function MyWork() {
   // 진행률 세션 리셋은 새 항목이 실제로 들어왔을 때만(풀 고갈·총량 100 도달이면 배정 0 — 유지).
   const claimMore = async () => {
     const before = items.length;
-    const mine = await sync(() => claimWork(filterRef.current));
+    const mine = await sync(() => claimWork(scopedFilter(filterRef.current)));
     if (mine && mine.length > before) setSessionDone(0);
   };
 
@@ -172,7 +184,7 @@ export function MyWork() {
     return ok;
   };
 
-  const hasFilter = Boolean(filter.country || filter.industry || filter.listed);
+  const hasFilter = Boolean(filter.country || filter.industry || filter.listed || filter.region);
 
   return (
     <>
@@ -221,6 +233,22 @@ export function MyWork() {
                 emptyHint="전체 업종"
               />
             </FilterPopover>
+            {/* 지역(KR 시/도) — 국가에 KR 을 선택했을 때만 노출(#243). */}
+            {krInScope(filter.country) && (
+              <FilterPopover
+                label="지역"
+                summary={pickSummary(filter.region, regionOpts)}
+                active={filter.region !== ""}
+              >
+                <MultiPicker
+                  options={regionOpts}
+                  value={filter.region}
+                  onChange={(csv) => setFilterValue({ ...filter, region: csv })}
+                  placeholder="지역 검색 (예: 서울, 경기)"
+                  emptyHint="전체 지역"
+                />
+              </FilterPopover>
+            )}
             <label className="flex items-center gap-1.5 text-muted text-[13px]">
               상장여부
               <select

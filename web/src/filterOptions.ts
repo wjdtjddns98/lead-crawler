@@ -21,10 +21,21 @@ export function toCountryOpts(countries: CountryOption[]): PickerOption[] {
   return countries.map((c) => ({ value: c.iso2, label: c.label, code: c.iso2, aliases: c.aliases }));
 }
 
+// 지역 어휘(문자열 배열) → 픽커 옵션 — 저장값=표시값(이미 한글 시/도명이라 별칭 불필요).
+export function toRegionOpts(regions: string[]): PickerOption[] {
+  return regions.map((r) => ({ value: r, label: r }));
+}
+
+// 지역 필터 노출 조건 — 국가 CSV 에 KR 이 포함됐는지(지역은 KR 세그먼트 전용, #139/#243).
+export function krInScope(countryCsv: string): boolean {
+  return countryCsv.split(",").some((c) => c.trim().toUpperCase() === "KR");
+}
+
 interface QueueFilterOpts {
   countryOpts: PickerOption[];
   industryOpts: PickerOption[];
   markets: string[]; // 시장 보드 어휘 — BE 계약 확장 전엔 빈 배열(호출부가 폴백 처리).
+  regionOpts: PickerOption[]; // 지역 어휘(KR 시/도, 실측값만) — 데이터 없으면 빈 배열.
 }
 
 // 검증 직원용 필터 옵션(국가+업종+시장)을 마운트 시 1회 로드한다.
@@ -35,6 +46,7 @@ export function useQueueFilterOpts(onError?: (msg: string) => void): QueueFilter
     countryOpts: [],
     industryOpts: [],
     markets: [],
+    regionOpts: [],
   });
   useEffect(() => {
     let alive = true;
@@ -45,6 +57,7 @@ export function useQueueFilterOpts(onError?: (msg: string) => void): QueueFilter
           countryOpts: toCountryOpts(f.countries),
           industryOpts: withUnclassified(f.industries),
           markets: f.markets ?? [],
+          regionOpts: toRegionOpts(f.regions ?? []),
         });
       })
       .catch((e) => {

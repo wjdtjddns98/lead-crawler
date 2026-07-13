@@ -214,6 +214,21 @@ def test_save_discovered_fills_unknown_listed_on_rediscovery(session: Session) -
     assert (row.listed, row.market) == ("listed", "KOSPI")
 
 
+def test_save_discovered_upgrades_missdefault_unlisted(session: Session) -> None:
+    # NPS 조인 미스 기본값(unlisted, 미검증)은 검증 재발견이 상장으로 승격한다(자가치유).
+    save_discovered(session, DiscoveredCompany(
+        canonical_key="name:kr:foo", name="Foo", source="nps", listed="unlisted",
+    ))
+    session.commit()
+    save_discovered(session, DiscoveredCompany(
+        canonical_key="name:kr:foo", name="Foo", source="dart",
+        listed="listed", market="KOSDAQ", listed_verified=True,
+    ))
+    session.commit()
+    row = session.get(DiscoveredCompanyRow, "name:kr:foo")
+    assert (row.listed, row.market) == ("listed", "KOSDAQ")
+
+
 def test_no_duplicate_company_for_same_key(session: Session) -> None:
     # canonical_key 가 같으면 결정적 PK 라 회사 행은 항상 1개(M1 회귀가드).
     save_lead(session, _lead("x.com"), source="dart")

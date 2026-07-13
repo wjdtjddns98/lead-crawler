@@ -157,7 +157,9 @@ def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompan
     제약 ①: 이미 존재하는 ``canonical_key`` 의 식별정보는 덮어쓰지 않고 그대로 둔다.
     단, ``last_crawled_at`` 은 신규/기존 모두 매 발견 시각으로 갱신(재크롤 추적용).
     예외: 상장여부(listed)·시장(market)가 **미상인 기존 행**은 재발견분이 **사실 조회로
-    확인한**(``listed_verified``) 값으로 채운다(미상 전용 — 확정된 값은 절대 덮지 않음,
+    확인한**(``listed_verified``) 값으로 채운다. '미상'에는 NPS 조인 미스 기본값
+    ``unlisted``(미검증 추론)도 포함 — 검증 상장 이벤트가 승격시킨다(자가치유).
+    확정 ``listed`` 만 불변(강등 금지,
     :func:`backfill_domain` 과 동일 규약). 미검증 값(크롤 스코프 segment.listed 통과분 —
     검색·집계원 다수)은 백필하지 않는다: 스코프가 사실로 고착되는 편도 오염 방지.
     최초 발견 시점에 DART 캐시 미비 등으로 unknown 이 박제된 행이 다음 랩 재발견에서
@@ -165,7 +167,13 @@ def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompan
     """
     row = session.get(DiscoveredCompanyRow, dc.canonical_key)
     if row is not None and dc.listed_verified:
-        if dc.listed and dc.listed != "unknown" and row.listed in (None, "", "unknown"):
+        # 'unlisted' 도 백필 대상 — NPS 조인 미스 기본값(미검증)이 박힌 행을 검증
+        # 재발견이 자가치유한다. listed_verified 는 비영속(런타임 전용)이라 기존 값의
+        # 검증 여부는 구분 불가하지만, 검증 이벤트끼리는 나중 실측이 이기는 게 옳다
+        # (상장 전환·구값 스테일). ponytail: provenance 컬럼 영속화는 필요해지면.
+        if dc.listed and dc.listed != "unknown" and row.listed in (
+            None, "", "unknown", "unlisted",
+        ):
             row.listed = dc.listed
             # market 은 같은 검증 이벤트(corp_cls·거래소 필드)에서만 쌍으로 채운다 —
             # 근거가 다른 listed/market 조합(예: unlisted+KOSPI)이 생기지 않게.

@@ -127,6 +127,20 @@ const HAND_MARKET: Record<string, string> = {
 // 합성 상장분 보드 주기 — 국내외 보드가 골고루 보이게.
 const MARKET_CYCLE = ["KOSPI", "KOSDAQ", "NASDAQ", "NYSE"];
 
+// 지역(KR 시/도, #243) — leadcrawler/region.py KR_REGIONS 와 동일 목록·순서. ReviewItem 자체엔
+// 없는 필드라(BE 도 필터 전용, 응답엔 안 실음) id→지역 맵으로 따로 들고 매칭에만 쓴다.
+const KR_REGIONS = [
+  "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
+  "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+];
+// 실측 KR 샘플의 소재지 인근 시/도(수기표) — 합성분은 seed() 가 KR_REGIONS 순환 배정.
+const HAND_REGION: Record<string, string> = {
+  c1: "인천", c11: "경기", c2: "경기", c3: "경기", c4: "경기",
+  c5: "경기", c6: "충남", c7: "부산", c8: "충북", c9: "경기", c10: "경기",
+};
+// 비KR 행은 지역 없음(BE DiscoveredCompanyRow.region 미기입과 동일 — 필터 걸면 자연 배제).
+let regionById = new Map<string, string>();
+
 function cand(
   value: string,
   email_status: string | null = "valid",
@@ -317,20 +331,27 @@ function synthSamples(count: number): ReviewItem[] {
 
 // 전체 큐 시드 = 실측 11건 + 합성 89건(총 100건). 합성분 상장여부는 3주기로 배정.
 function seed(): ReviewItem[] {
-  const hand = handSamples().map((r) => ({
-    ...r,
-    listed: HAND_LISTED[r.id] ?? r.listed,
-    market: HAND_MARKET[r.id] ?? null,
-  }));
-  const synth = synthSamples(89).map((r, i) => ({
-    ...r,
-    listed: LISTED_CYCLE[i % LISTED_CYCLE.length],
-    // listed(3주기 첫 슬롯)만 보드 부여 — BE 와 동일하게 미상장은 null.
-    market:
-      LISTED_CYCLE[i % LISTED_CYCLE.length] === "listed"
-        ? MARKET_CYCLE[i % MARKET_CYCLE.length]
-        : null,
-  }));
+  regionById = new Map();
+  const hand = handSamples().map((r) => {
+    if (r.country === "KR") regionById.set(r.id, HAND_REGION[r.id] ?? KR_REGIONS[0]);
+    return {
+      ...r,
+      listed: HAND_LISTED[r.id] ?? r.listed,
+      market: HAND_MARKET[r.id] ?? null,
+    };
+  });
+  const synth = synthSamples(89).map((r, i) => {
+    if (r.country === "KR") regionById.set(r.id, KR_REGIONS[i % KR_REGIONS.length]);
+    return {
+      ...r,
+      listed: LISTED_CYCLE[i % LISTED_CYCLE.length],
+      // listed(3주기 첫 슬롯)만 보드 부여 — BE 와 동일하게 미상장은 null.
+      market:
+        LISTED_CYCLE[i % LISTED_CYCLE.length] === "listed"
+          ? MARKET_CYCLE[i % MARKET_CYCLE.length]
+          : null,
+    };
+  });
   return [...hand, ...synth];
 }
 
@@ -520,6 +541,8 @@ function matches(it: ReviewItem, f: ClaimFilter): boolean {
   if (f.listed && it.listed !== f.listed) return false;
   const markets = csvSet(f.market ?? "");
   if (markets.size && !markets.has((it.market ?? "").toLowerCase())) return false;
+  const regions = csvSet(f.region);
+  if (regions.size && !regions.has((regionById.get(it.id) ?? "").toLowerCase())) return false;
   return true;
 }
 
@@ -536,6 +559,7 @@ function readFilter(u: URL, init?: RequestInit): ClaimFilter {
     industry: u.searchParams.get("industry") ?? body.industry ?? "",
     listed: (u.searchParams.get("listed") as "" | Listed | null) ?? body.listed ?? "",
     market: u.searchParams.get("market") ?? body.market ?? "",
+    region: u.searchParams.get("region") ?? body.region ?? "",
   };
 }
 
@@ -572,6 +596,8 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
       listed: ["listed", "unlisted", "unknown"],
       // 시장 어휘 — BE 계약(distinct market)과 동일하게 데이터 실측분만 정렬해 내려준다.
       markets: [...new Set(db.map((x) => x.market).filter((m): m is string => !!m))].sort(),
+      // 지역 어휘 — BE 계약(distinct region)과 동일하게 실제 배정된 KR 시/도만 정렬해 내려준다.
+      regions: [...new Set(regionById.values())].sort(),
     });
   }
 
