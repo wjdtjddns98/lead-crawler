@@ -14,21 +14,18 @@ dry_run 은 네트워크 없이 결정적 더미를 반환한다(다른 소스�
 
 from __future__ import annotations
 
-import html
-import re
-
 from ..config import Settings
 from ..cost_ledger import SupportsCostLedger
 from ..logging import get_logger
 from .base import DiscoveredCompany, DiscoverySource, Segment, build_company, is_country
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import is_broad_industry
+from .search_provider import clean_search_text
 
 log = get_logger("sources.naver_local")
 
 _LOCAL_URL = "https://openapi.naver.com/v1/search/local.json"
 _DISPLAY = 5  # local.json display 상한(하드 캡 — 올려도 5까지만 온다).
-_TAG_RE = re.compile(r"</?b>")  # title 의 <b> 강조 태그 제거용.
 _KR = {"kr", "kor", "korea", "south korea", "대한민국", "한국"}
 
 
@@ -141,7 +138,7 @@ class NaverLocalSource(DiscoverySource):
                     continue
                 # <b> 태그 제거 + HTML 엔티티 복원("AT&amp;T"→"AT&T") — 엔티티를 남기면
                 # name: canonical_key 가 오염돼 동일기업 dedup(제약①)이 어긋난다.
-                name = html.unescape(_TAG_RE.sub("", str(it.get("title") or ""))).strip()
+                name = clean_search_text(str(it.get("title") or ""))
                 if not name or name in seen_names:
                     continue
                 seen_names.add(name)
