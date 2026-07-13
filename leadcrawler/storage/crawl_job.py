@@ -58,6 +58,9 @@ def crawl_job_dict(row: CrawlJobRow) -> dict[str, object]:
         "industries": row.industries,
         "listed": row.listed,
         "persist": row.persist,
+        "target_count": row.target_count,
+        "regions": row.regions,
+        "discovery_only": row.discovery_only,
         "segments_total": row.segments_total,
         "segments_done": row.segments_done,
         "discovered": row.discovered,
@@ -84,8 +87,15 @@ def create_crawl_job(
     segments_total: int,
     triggered_by: str | None,
     mode: str = MODE_ONCE,
+    target_count: int = 0,
+    regions: str = "",
+    discovery_only: bool = False,
 ) -> CrawlJobRow:
-    """새 크롤 작업 행을 만든다(status='running'). flush 후 행 반환."""
+    """새 크롤 작업 행을 만든다(status='running'). flush 후 행 반환.
+
+    ``target_count``/``regions``/``discovery_only`` 는 실행 조건 스냅샷 — 워치독 재기동이
+    원 요청과 같은 범위·비용으로 복원하기 위해 저장한다.
+    """
     row = CrawlJobRow(
         id=_new_id(),
         status=RUNNING,
@@ -96,6 +106,9 @@ def create_crawl_job(
         segments_total=segments_total,
         triggered_by=triggered_by,
         mode=mode,
+        target_count=target_count,
+        regions=regions.strip(),
+        discovery_only=discovery_only,
     )
     session.add(row)
     session.flush()

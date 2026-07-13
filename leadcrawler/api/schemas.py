@@ -319,6 +319,10 @@ class CrawlJobInfo(BaseModel):
     industries: str = ""
     listed: str = "unknown"
     persist: bool = True
+    # 실행옵션 스냅샷 — pydantic 은 미선언 키를 조용히 버리므로(extra=ignore) 명시 필수.
+    target_count: int = 0
+    regions: str = ""
+    discovery_only: bool = False
     segments_total: int = 0
     segments_done: int = 0
     discovered: int = 0
