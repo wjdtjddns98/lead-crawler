@@ -65,6 +65,9 @@ from .schemas import (
 # 상장 필터 화이트리스트 — 쿼리/본문 검증용(빈값=전체).
 _ListedFilter = Literal["", "listed", "unlisted", "unknown"]
 
+# 큐 목록 서버 정렬 키(#238) — storage 화이트리스트(QUEUE_SORT_KEYS)와 동일 어휘, 빈값=기본.
+_QueueSortKey = Literal["", "name", "country", "industry", "listed", "form", "status"]
+
 log = get_logger("api")
 
 # 프론트 빌드 산출물(web/dist) 위치 — editable install(리포 루트) 기준. 테스트에서 monkeypatch.
@@ -112,6 +115,8 @@ def create_app() -> FastAPI:
         listed: _ListedFilter = Query(default="", description="상장여부, 빈값=전체"),
         region: str = Query(default="", description="쉼표구분 지역(시/도·도시), 빈값=전체"),
         market: str = Query(default="", description="쉼표구분 시장 보드(KOSPI/KOSDAQ…), 빈값=전체"),
+        sort_by: _QueueSortKey = Query(default="", description="정렬 컬럼(#238), 빈값=기본 정렬"),
+        sort_dir: Literal["asc", "desc"] = Query(default="asc", description="정렬 방향"),
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> QueueResponse:
@@ -120,6 +125,8 @@ def create_app() -> FastAPI:
         점유(claim) 중인 행은 목록·``total`` 에서 제외된다(전체큐 = 아직 아무도 안
         받아간 작업). ``total`` 도 동일 필터를 반영해 '이 범위 잔여건수' 표시에 쓴다.
         지역·시장 필터는 미상(주소 없는 소스 유입·시장 미기입) 행을 자연히 제외한다.
+        ``sort_by``/``sort_dir``(#238) 는 전체 결과 기준 서버 정렬이라 페이지를 넘겨도
+        순서가 일관된다(미지정=기존 기본 정렬, 하위호환).
         """
         status_val = status.value if status is not None else None
         countries = _split_csv(country)
@@ -130,7 +137,7 @@ def create_app() -> FastAPI:
         items = query_reviews(
             db, status=status_val, limit=limit, offset=offset,
             countries=countries, industries=industries, listed=listed_val, regions=regions,
-            markets=markets,
+            markets=markets, sort_by=sort_by or None, sort_dir=sort_dir,
         )
         return QueueResponse(
             items=[ReviewItem(**it) for it in items],
@@ -239,6 +246,8 @@ def create_app() -> FastAPI:
         연락처+후보로 등록한 뒤 확정한다(오타 교정·이메일 추가). 형식 오류는 400.
         ``homepage``(#185) 가 주어지면(``None``=변경 없음) 회사 홈페이지를 갱신한다 —
         URL 형식은 ``ConfirmRequest`` 가 이미 검증했으므로(무효면 422) 여기선 그대로 전달.
+        ``has_form``(#241) 은 문의폼 유무 교정값(``None``=변경 없음) — 폼 있음인데
+        홈페이지조차 없어 저장할 URL 이 없으면 400.
         """
         selected = body.selected if body else None
         if selected and selected.strip():
@@ -250,7 +259,11 @@ def create_app() -> FastAPI:
         else:
             selected = None
         homepage = body.homepage if body else None
-        return _set_status(db, review_id, CONFIRMED, user, selected=selected, homepage=homepage)
+        has_form = body.has_form if body else None
+        return _set_status(
+            db, review_id, CONFIRMED, user,
+            selected=selected, homepage=homepage, has_form=has_form,
+        )
 
     @app.post("/queue/{review_id}/reject", response_model=ReviewItem)
     def reject(
@@ -362,6 +375,7 @@ def _set_status(
     *,
     selected: str | None = None,
     homepage: str | None = None,
+    has_form: bool | None = None,
 ) -> ReviewItem:
     """상태 변경 공통 — 담당자=로그인 사용자. 404/후보밖 400/타인점유 409 + 감사기록."""
     try:
@@ -373,6 +387,7 @@ def _set_status(
             assignee_id=actor.id,
             selected=selected,
             homepage=homepage,
+            has_form=has_form,
         )
     except ReviewConflict as exc:  # 타인이 점유 중 → 409(영구 배정 — 시간 경과 무관).
         raise HTTPException(status_code=409, detail=str(exc)) from exc

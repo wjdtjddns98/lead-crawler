@@ -234,6 +234,198 @@ def test_invalid_status_422(client: TestClient) -> None:
     assert client.get("/queue", params={"status": "bogus"}).status_code == 422
 
 
+# --- #241: confirm 본문 has_form(문의폼 유무 교정) -----------------------
+
+def _audit_row(rid: str):
+    from sqlalchemy import select
+
+    from leadcrawler.schema import ReviewAuditRow
+    from leadcrawler.storage.db import session_scope
+
+    with session_scope(get_settings()) as s:
+        row = s.scalars(
+            select(ReviewAuditRow).where(ReviewAuditRow.review_id == rid)
+        ).one()
+        s.expunge(row)
+        return row
+
+
+def test_confirm_has_form_true_stores_homepage_link(client: TestClient) -> None:
+    # 폼 있음 교정인데 실제 폼 URL 미상 → 홈페이지를 진입 링크로 저장(#241 BE 확정안).
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"has_form": True})
+    assert r.status_code == 200
+    assert r.json()["form"] == "https://acme.com"
+    row = _audit_row(rid)
+    assert row.form_before is None
+    assert row.form_after == "https://acme.com"
+
+
+def test_confirm_has_form_true_uses_corrected_homepage(client: TestClient) -> None:
+    # 같은 요청에서 homepage 교정도 하면 폼 진입 링크는 교정된 홈페이지를 쓴다.
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(
+        f"/queue/{rid}/confirm",
+        json={"has_form": True, "homepage": "https://corrected.example.com/"},
+    )
+    assert r.status_code == 200
+    assert r.json()["form"] == "https://corrected.example.com/"
+
+
+def test_confirm_has_form_false_removes_form(client: TestClient) -> None:
+    # 폼 없음 교정 → 저장된 폼 연락처 삭제 + 감사 이력에 전/후 기록.
+    from leadcrawler.schema import ContactRow
+    from leadcrawler.storage.db import session_scope
+    from leadcrawler.storage.repository import contact_id_for
+
+    item = client.get("/queue").json()["items"][0]
+    rid, cid = item["id"], item["company_id"]
+    with session_scope(get_settings()) as s:
+        s.add(
+            ContactRow(
+                id=contact_id_for(cid, "form", "https://acme.com/contact"),
+                company_id=cid,
+                type="form",
+                value="https://acme.com/contact",
+                confidence=0.7,
+            )
+        )
+    assert client.get(f"/queue/{rid}").json()["form"] == "https://acme.com/contact"
+    r = client.post(f"/queue/{rid}/confirm", json={"has_form": False})
+    assert r.status_code == 200
+    assert r.json()["form"] is None
+    row = _audit_row(rid)
+    assert row.form_before == "https://acme.com/contact"
+    assert row.form_after is None
+
+
+def test_confirm_has_form_true_promotes_low_confidence_form(client: TestClient) -> None:
+    # 저신뢰 폴백 폼(0.3)이 있는데 사람이 '폼 있음' 확인 → URL 유지 + 사람확인 승격
+    # (form_low_confidence 해제 — '사람 확인 필요' 재노출 방지, 교차리뷰 반영).
+    from leadcrawler.schema import ContactRow
+    from leadcrawler.storage.db import session_scope
+    from leadcrawler.storage.repository import contact_id_for
+
+    item = client.get("/queue").json()["items"][0]
+    rid, cid = item["id"], item["company_id"]
+    with session_scope(get_settings()) as s:
+        s.add(
+            ContactRow(
+                id=contact_id_for(cid, "form", "https://acme.com/contact"),
+                company_id=cid,
+                type="form",
+                value="https://acme.com/contact",
+                confidence=0.3,
+            )
+        )
+    assert client.get(f"/queue/{rid}").json()["form_low_confidence"] is True
+    r = client.post(f"/queue/{rid}/confirm", json={"has_form": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["form"] == "https://acme.com/contact"  # URL 유지(홈페이지로 덮지 않음)
+    assert body["form_confidence"] == 1.0
+    assert body["form_low_confidence"] is False
+
+
+def test_confirm_has_form_true_without_homepage_400(client: TestClient) -> None:
+    # 홈페이지조차 없으면 저장할 진입 링크가 없다 → 400(조용한 유실 방지).
+    from leadcrawler.models import Company, CompanyLead
+    from leadcrawler.storage.db import session_scope
+    from leadcrawler.storage.repository import save_lead
+
+    with session_scope(get_settings()) as s:
+        save_lead(
+            s,
+            CompanyLead(
+                company=Company(
+                    canonical_key="name:nohome|kr",
+                    name="노홈페이지",
+                    country="KR",
+                    industry="건설",
+                    is_active=True,
+                    site_alive=True,
+                )
+            ),
+            source="test",
+        )
+    items = client.get("/queue").json()["items"]
+    rid = next(it["id"] for it in items if it["name"] == "노홈페이지")
+    r = client.post(f"/queue/{rid}/confirm", json={"has_form": True})
+    assert r.status_code == 400
+
+
+def test_confirm_has_form_null_no_change(client: TestClient) -> None:
+    # has_form 생략/None = 변경 없음(하위호환).
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"selected": "ir@acme.com"})
+    assert r.status_code == 200
+    assert r.json()["form"] is None
+
+
+# --- #238: GET /queue 서버 정렬(sort_by/sort_dir) ------------------------
+
+def _seed_more(names: list[str]) -> None:
+    from leadcrawler.models import Company, CompanyLead
+    from leadcrawler.storage.db import session_scope
+    from leadcrawler.storage.repository import save_lead
+
+    with session_scope(get_settings()) as s:
+        for n in names:
+            save_lead(
+                s,
+                CompanyLead(
+                    company=Company(
+                        canonical_key=f"name:{n}|kr",
+                        name=n,
+                        country="KR",
+                        industry="건설",
+                        homepage=f"https://{n}.example.com",
+                        is_active=True,
+                        site_alive=True,
+                    )
+                ),
+                source="test",
+            )
+
+
+def test_queue_sort_by_name(client: TestClient) -> None:
+    _seed_more(["가나", "하하"])
+    asc = [it["name"] for it in client.get("/queue", params={"sort_by": "name"}).json()["items"]]
+    assert asc == sorted(asc)
+    desc = [
+        it["name"]
+        for it in client.get(
+            "/queue", params={"sort_by": "name", "sort_dir": "desc"}
+        ).json()["items"]
+    ]
+    assert desc == sorted(desc, reverse=True)
+
+
+def test_queue_sort_stable_across_pages(client: TestClient) -> None:
+    # 페이지를 나눠 받아도 전체 정렬 순서가 이어진다(#238 의 존재 이유).
+    _seed_more(["가나", "하하"])
+    whole = [
+        it["id"]
+        for it in client.get("/queue", params={"sort_by": "name", "limit": 200}).json()["items"]
+    ]
+    paged = []
+    for off in range(0, len(whole), 2):
+        paged += [
+            it["id"]
+            for it in client.get(
+                "/queue", params={"sort_by": "name", "limit": 2, "offset": off}
+            ).json()["items"]
+        ]
+    assert paged == whole
+
+
+def test_queue_sort_invalid_key_422(client: TestClient) -> None:
+    assert client.get("/queue", params={"sort_by": "bogus"}).status_code == 422
+    assert client.get(
+        "/queue", params={"sort_by": "name", "sort_dir": "sideways"}
+    ).status_code == 422
+
+
 def test_login_trims_whitespace(anon: TestClient) -> None:
     # QA①: 아이디/비번 앞뒤 공백(복사·모바일 자동완성)이 있어도 로그인 허용.
     r = anon.post("/auth/login", json={"username": f"  {_USER} ", "password": f" {_PW}  "})
