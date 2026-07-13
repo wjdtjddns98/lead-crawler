@@ -325,7 +325,7 @@ def test_llm_arbiter_picks_official() -> None:
         ]}
     )
     r = DomainResolver(_no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k"), fetcher=f)
-    r._arbitrate = lambda dc, cands: 1  # 2번째 후보(공식)를 고르도록 스텁.
+    r._arbitrate = lambda dc, cands: (1, True)  # 2번째 후보(공식)를 고르도록 스텁(왕복=billed).
     dc = DiscoveredCompany(canonical_key="reg:dart:9", name="동양", country="KR")
     assert r.resolve(dc) == "tongyang.com"
 
@@ -336,7 +336,7 @@ def test_llm_arbiter_abstains() -> None:
         {"items": [{"link": "https://random.com", "title": "무관한 페이지"}]}
     )
     r = DomainResolver(_no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k"), fetcher=f)
-    r._arbitrate = lambda dc, cands: -1
+    r._arbitrate = lambda dc, cands: (-1, True)  # 왕복은 했으나 모델이 기권.
     dc = DiscoveredCompany(canonical_key="reg:dart:10", name="동양", country="KR")
     assert r.resolve(dc) is None
 
@@ -355,13 +355,61 @@ def test_llm_arbiter_cap_enforced() -> None:
 
     def _stub(dc, cands):
         calls["n"] += 1
-        return 0
+        return 0, True
 
     r._arbitrate = _stub
     assert r.resolve(DiscoveredCompany(canonical_key="reg:dart:11", name="동양", country="KR")) == "a.com"
     # 2번째는 LLM 캡 초과 → 중재 안 함(폴백: 짧은 이름이라 미채택), _arbitrate 1회만 호출.
     r.resolve(DiscoveredCompany(canonical_key="reg:dart:12", name="삼양", country="KR"))
     assert calls["n"] == 1
+
+
+def test_llm_arbiter_no_billing_when_roundtrip_fails() -> None:
+    """왕복 실패(anthropic 미설치 등)면 과금 0 + 결정적 폴백으로 recall 유지(적대 리뷰 MED)."""
+    class _Ledger:
+        def __init__(self) -> None:
+            self.records: list[str] = []
+
+        def record(self, provider: str, units: int = 1):
+            self.records.append(provider)
+
+        def is_over_budget(self) -> bool:
+            return False
+
+    led = _Ledger()
+    f = FakeFetcher({"items": [{"link": "https://skhynix.com", "title": "에스케이하이닉스 공식"}]})
+    r = DomainResolver(
+        _no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k"),
+        fetcher=f, cost_ledger=led,
+    )
+    r._arbitrate = lambda dc, cands: (-1, False)  # 왕복 자체가 실패(미과금).
+    dc = DiscoveredCompany(canonical_key="reg:dart:13", name="에스케이하이닉스", country="KR")
+    assert r.resolve(dc) == "skhynix.com"  # 토큰일치 결정적 폴백으로 채택(recall 보존).
+    assert led.records == []  # 과금 0 — 왕복 없는 실패에 phantom 청구 안 함.
+
+
+def test_llm_arbiter_bills_once_on_roundtrip() -> None:
+    """왕복 성공(기권 -1 포함)이면 정확히 1회 과금."""
+    class _Ledger:
+        def __init__(self) -> None:
+            self.records: list[str] = []
+
+        def record(self, provider: str, units: int = 1):
+            self.records.append(provider)
+
+        def is_over_budget(self) -> bool:
+            return False
+
+    led = _Ledger()
+    f = FakeFetcher({"items": [{"link": "https://unrelated-portal.com", "title": "무관"}]})
+    r = DomainResolver(
+        _no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k"),
+        fetcher=f, cost_ledger=led,
+    )
+    r._arbitrate = lambda dc, cands: (-1, True)  # 왕복 후 기권.
+    dc = DiscoveredCompany(canonical_key="reg:dart:14", name="동양", country="KR")
+    assert r.resolve(dc) is None
+    assert led.records == ["resolve_llm"]  # 왕복했으니 1회 과금.
 
 
 def test_parse_index_and_strip_tags() -> None:

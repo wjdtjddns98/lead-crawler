@@ -267,15 +267,26 @@ class DomainResolver:
                 return _korean_deterministic_pick(cands, korean_core, tld)
             return None
         shortlist = cands[:_LLM_MAX_CANDIDATES]
-        idx = self._arbitrate(dc, shortlist)
-        if led is not None:  # 왕복이 일어났으면(성공/파싱실패 무관) 과금.
+        idx, billed = self._arbitrate(dc, shortlist)
+        # 실제 API 왕복이 일어났을 때만 과금 — 미설치(ImportError)·키오류·호출 전 실패는
+        # 왕복이 없으므로 과금하지 않는다(llm_judge.ClaudeJudge.billed 패턴, 적대 리뷰 MED).
+        if led is not None and billed:
             led.record("resolve_llm")
-        if 0 <= idx < len(shortlist):
-            return shortlist[idx].domain
+        if billed:
+            if 0 <= idx < len(shortlist):
+                return shortlist[idx].domain
+            return None  # 모델이 기권(-1) — 무근거 채택 금지(제약②).
+        # 왕복 자체가 실패(anthropic 미설치 등)면 결정적 폴백으로라도 recall 을 지킨다.
+        if korean_core is not None:
+            return _korean_deterministic_pick(cands, korean_core, tld)
         return None
 
-    def _arbitrate(self, dc: DiscoveredCompany, cands: list[_Candidate]) -> int:
-        """Claude(Haiku)로 후보 index 를 받는다 — 공식 도메인 없으면 -1. 오류 시 -1(graceful)."""
+    def _arbitrate(self, dc: DiscoveredCompany, cands: list[_Candidate]) -> tuple[int, bool]:
+        """Claude(Haiku)로 후보 index 를 받는다 — (index, billed). 오류 시 (-1, False).
+
+        ``billed`` 는 **실제 API 왕복이 일어났는지**다(과금 판별 단일 출처). 미설치·키오류·
+        호출 전 예외는 (−1, False)=미과금, 응답을 받은 뒤의 파싱실패는 (−1, True)=이미 과금.
+        """
         lines = "\n".join(
             f"{i}) domain={c.domain} title={c.title!r} snippet={c.snippet[:120]!r}"
             for i, c in enumerate(cands)
@@ -292,12 +303,13 @@ class DomainResolver:
                 max_tokens=8,  # 숫자 하나만 필요.
                 messages=[{"role": "user", "content": prompt}],
             )
+            # 여기까지 왔으면 과금 왕복 성공 — 이후 파싱이 실패해도 billed=True(이미 청구됨).
             text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
             log.info("resolve.llm.call", name=dc.name, model=self._settings.resolve_llm_model)
-            return _parse_index(text, len(cands))
-        except Exception as exc:  # 미설치·키오류·호출오류 → 기권(-1).
+            return _parse_index(text, len(cands)), True
+        except Exception as exc:  # 미설치·키오류·호출 전 오류 → 기권·미과금.
             log.info("resolve.llm.error", err=str(exc))
-            return -1
+            return -1, False
 
 
 def _name_slug(name: str) -> str:
@@ -393,6 +405,10 @@ def _korean_deterministic_pick(
 
     substring 이 아닌 토큰 완전일치라, '동양'→동양생명·'한국전력'→한국전력기술 같은
     접두 오탐을 차단한다(제약②). 짧은 상호명은 아예 시도하지 않는다.
+
+    ponytail: 다중어절 상호명(예: '포스코 인터내셔널')은 korean_core 가 토큰을 concat 해
+    ('포스코인터내셔널') title 의 개별 토큰과 안 맞아 여기선 미채택(오탐 대신 miss — 안전).
+    이런 케이스의 recall 은 LLM 중재 경로가 담당한다(resolve_llm_arbiter).
     """
     if len(korean_core) < _KOREAN_TOKEN_MIN:
         return None
