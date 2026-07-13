@@ -477,13 +477,20 @@ def set_review_status(
     귀속이라 **타인이 점유한 항목이면 시간 경과와 무관하게** :class:`ReviewConflict`.
     미점유 동시수정은 FOR UPDATE 행잠금 + 종료상태 재진입 가드로 차단한다(타인이 이미
     확정/거부한 항목의 재확정/재거부도 :class:`ReviewConflict` — 같은 처리자는 허용).
+    처리자 미상(assignee_id NULL)으로 확정된 과거 행도 로그인 사용자의 재처리를 막는다
+    (교차리뷰 MED — 익명 확정분을 아무나 덮지 못하게; 내부 호출끼리(None↔None)는 허용).
     """
     if status not in _VALID_STATUSES:
         raise ValueError(f"허용되지 않은 상태: {status}")
     # FOR UPDATE 행잠금 — 미점유 항목을 두 검수자가 동시에 확정하는 last-write-wins 차단
     # (전수리뷰): 두 번째 트랜잭션은 첫 커밋을 기다렸다가 아래 종료상태 가드에 걸린다.
-    # SQLite(단위테스트)는 FOR UPDATE 를 무시하지만 파일락 직렬화로 등가, PG(운영)가 본선.
-    rq = session.get(ReviewQueueRow, review_id, with_for_update=True)
+    # populate_existing 필수(교차리뷰 HIGH 실측): confirm 라우트가 register_edited_email 로
+    # 같은 세션에 행을 먼저 로드하므로, 없으면 잠금 SELECT 가 나가도 stale 객체가 반환돼
+    # 가드가 무력화된다. SQLite(단위테스트)는 FOR UPDATE 를 무시한다 — 동시성 보장은
+    # PG(운영) 전용이고, 단위테스트는 순차 실행이라 통과할 뿐이다(주석 오해 방지).
+    rq = session.get(
+        ReviewQueueRow, review_id, with_for_update=True, populate_existing=True
+    )
     if rq is None:
         return None
     when = now or datetime.now(timezone.utc)
@@ -497,8 +504,6 @@ def set_review_status(
     if (
         status in (CONFIRMED, REJECTED)
         and rq.status in (CONFIRMED, REJECTED)
-        and rq.assignee_id is not None
-        and assignee_id is not None
         and rq.assignee_id != assignee_id
     ):
         raise ReviewConflict("이미 다른 직원이 처리한 항목입니다. 새로고침 후 확인하세요.")
