@@ -456,6 +456,9 @@ def nps_relink_dart(
         ((r.bizno_prefix or "")[:6], _norm(r.name)[:255]) for r in targets.values()
     ]
     matches = cache.find_matches([p for p in pairs if p[0] and p[1]])
+    if matches is None:  # 조회 실패(미스 아님) — 오판 재연결·허위 nomatch 방지.
+        typer.echo("DART 캐시 조회 실패 — 재연결 중단(재실행하세요)")
+        raise typer.Exit(1)
     with sm() as s:
         for old_key, r in targets.items():
             hit = matches.get(((r.bizno_prefix or "")[:6], _norm(r.name)[:255]))
