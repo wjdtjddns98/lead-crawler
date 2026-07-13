@@ -261,6 +261,7 @@ def test_source_uses_label_path_for_unprefixed_industry(tmp_path) -> None:
     assert src.applies_to(seg)  # 접두표엔 없지만 3층 매핑이 연다.
     out = src.discover(seg)
     assert [d.name for d in out] == ["넥스트게임즈"]
+    assert out[0].listed == "unknown"  # 캐시 미주입 — 조인 미스 기본값(unlisted) 미적용.
 
 
 def test_dart_cache_join_attaches_fields_and_reg_key(tmp_path) -> None:
@@ -303,6 +304,9 @@ def test_dart_cache_join_attaches_fields_and_reg_key(tmp_path) -> None:
     assert hit.listed == "listed" and hit.market == "KOSDAQ"
     miss = by_name["무연고상사"]
     assert miss.domain is None and miss.canonical_key.startswith("name:")
+    # 조인 미스 = 비상장 기본값(PO 결정) — 실측 아님(listed_verified False 유지).
+    assert miss.listed == "unlisted"
+    assert miss.listed_verified is False
 
 
 def test_relink_cli_moves_name_key_to_reg_key(tmp_path, monkeypatch) -> None:
@@ -335,6 +339,9 @@ def test_relink_cli_moves_name_key_to_reg_key(tmp_path, monkeypatch) -> None:
             DiscoveredCompanyRow(
                 canonical_key=old_key, name="대형화학(주)", country="KR",
                 industry="화학·석유화학", source="nps",
+                # 조인 미스 기본값으로 박힌 비상장 — 캐시 완충 후 relink 가 corp_cls
+                # 실측(Y=상장)으로 교정해야 한다(미스 기본값은 실측이 아니므로).
+                listed="unlisted",
             )
         )
         session.commit()

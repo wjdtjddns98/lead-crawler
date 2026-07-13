@@ -167,10 +167,18 @@ class NpsSource(DiscoverySource):
                     )
                 )
                 continue
+            # 조인 미스 = DART 캐시에 없는 법인 → 사실상 비상장(PO 결정 2026-07-13).
+            # 유효한 키(사업자6+정규화명)로 실제 조회하고도 미스일 때만 — 키 불충분·캐시
+            # 미주입이면 세그먼트 기본값 유지. 캐시 미완충기의 오표기(실상장인데 미스)는
+            # nps-relink-dart 가 corp_cls 로 소급 교정한다(unlisted 도 교정 대상).
+            key = row_keys.get(idx)
+            seg = segment
+            if self._dart_cache is not None and key is not None and key[0] and key[1]:
+                seg = segment.model_copy(update={"listed": "unlisted"})
             out.append(
                 build_company(
                     source=self.name,
-                    segment=segment,
+                    segment=seg,
                     name=row.name,
                     address=row.address,
                 )
