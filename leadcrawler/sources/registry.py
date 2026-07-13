@@ -171,6 +171,13 @@ def discover_segment(
         if (segment.region is None or getattr(src, "region_aware", isinstance(src, SearchSource)))
         and src.applies_to(segment)
     ]
+    # KR 발견 = NPS 단독(PO 2026-07-13, kr_discovery_nps_only): DART 등재 법인은 가입
+    # 사업장으로 NPS 에 전부 있고, DART 데이터(홈페이지·상장·업종)는 NPS 캐시 조인·relink 가
+    # 참고용으로 부착한다 — DART 는 발견에서 참고용으로 강등. 검색·지역검색은 뉴스/블로그
+    # 헤드라인이 회사로 유입되는 오탐(2026-07-13 실측)으로 발견에서 제외.
+    # KR 지역 팬아웃 세그먼트(region, 검색 전용)는 applicable 이 비어 자연 no-op.
+    if settings.kr_discovery_nps_only and segment.country == "KR":
+        applicable = [src for src in applicable if isinstance(src, NpsSource)]
     free_srcs = [src for src in applicable if not isinstance(src, SearchSource)]
     workers = min(settings.discovery_source_workers, len(free_srcs))
     found_by_src: dict[int, list[DiscoveredCompany]] = {}

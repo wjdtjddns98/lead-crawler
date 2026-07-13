@@ -28,7 +28,12 @@ from leadcrawler.sources.wikidata import WikidataSource
 
 
 def _dry_settings(**over: object) -> Settings:
-    """dry_run 기본 설정(필요 시 필드 override)."""
+    """dry_run 기본 설정(필요 시 필드 override).
+
+    KR 다소스 발견을 전제로 한 레거시 메커니즘 테스트용으로 NPS 단독 정책은 끈다
+    (정책 기본값 검증은 아래 kr_nps_only_policy 테스트가 명시 Settings 로 수행).
+    """
+    over.setdefault("kr_discovery_nps_only", False)
     return Settings(dry_run=True, **over)
 
 
@@ -582,3 +587,26 @@ def test_discover_segment_skip_disabled_by_default() -> None:
         Segment(country="KR", industry="제조"), _dry_settings(), sources=[free, spy],
     )
     assert spy.calls == 1  # 스킵 비활성 → 검색 호출됨.
+
+
+# ── KR 발견 = NPS 단독 정책(kr_discovery_nps_only, PO 2026-07-13) ────────────
+def test_kr_nps_only_policy_default_on() -> None:
+    """기본값(on)이면 KR 세그먼트 발견은 NPS 소스만 실행된다.
+
+    근거: DART 등재 법인은 NPS 에 전부 있고(가입 사업장) DART 데이터는 캐시 조인·relink 로
+    부착 — 검색/지역검색의 뉴스 헤드라인 오탐 유입(2026-07-13 실측) 차단.
+    """
+    rows = discover_segment(Segment(country="KR", industry="건설"), Settings(dry_run=True))
+    assert rows and {r.source for r in rows} == {"nps"}
+
+
+def test_kr_nps_only_policy_off_restores_multi_source() -> None:
+    """플래그 off 면 기존 다소스 발견 그대로(회귀 0)."""
+    rows = discover_segment(Segment(country="KR", industry="건설"), _dry_settings())
+    assert len({r.source for r in rows}) > 1
+
+
+def test_kr_nps_only_policy_leaves_other_countries() -> None:
+    """비KR 세그먼트는 정책과 무관하게 다소스 발견을 유지한다."""
+    rows = discover_segment(Segment(country="US", industry="전체"), Settings(dry_run=True))
+    assert len({r.source for r in rows}) > 1

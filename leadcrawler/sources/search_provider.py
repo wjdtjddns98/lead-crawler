@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import html
+import re
 import threading
 from typing import Protocol
 
@@ -28,6 +30,14 @@ log = get_logger("sources.search_provider")
 _CSE_URL = "https://customsearch.googleapis.com/customsearch/v1"
 _SERPER_URL = "https://google.serper.dev/search"
 _NAVER_URL = "https://openapi.naver.com/v1/search/webkr.json"
+# 네이버 응답 title/description 은 검색어를 <b>…</b> 로 하이라이트하고 HTML 엔티티
+# (&gt;·&quot;·&amp;)를 이스케이프한 채 온다 — 공급자 계약(정규화된 결과)에 맞춰 여기서
+# 정화한다(안 하면 발견 회사명·도메인해석 토큰매칭에 태그/엔티티가 그대로 유입).
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _clean_text(text: str) -> str:
+    return html.unescape(_HTML_TAG_RE.sub("", text)).strip()
 
 
 class SearchProvider(Protocol):
@@ -205,7 +215,15 @@ class NaverProvider(_BaseProvider):
             log.info("search.naver.error", start=start, err=str(exc))
             return []
         items = payload.get("items") if isinstance(payload, dict) else None
-        return [it for it in (items or []) if isinstance(it, dict)]
+        return [
+            {
+                **it,
+                "title": _clean_text(str(it.get("title") or "")),
+                "description": _clean_text(str(it.get("description") or "")),
+            }
+            for it in (items or [])
+            if isinstance(it, dict)
+        ]
 
 
 def build_naver_provider(

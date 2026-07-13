@@ -19,6 +19,9 @@ SEG = Segment(country="KR", industry="제조")
 
 
 def _settings(**over: object) -> Settings:
+    # KR 다소스 발견을 전제로 한 병렬 메커니즘 테스트라 NPS 단독 정책은 끈다
+    # (정책 자체는 test_sources 의 kr_nps_only_policy 테스트가 검증).
+    over.setdefault("kr_discovery_nps_only", False)
     return Settings(dry_run=True, **over)
 
 
