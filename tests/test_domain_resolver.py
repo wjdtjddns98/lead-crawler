@@ -364,52 +364,43 @@ def test_llm_arbiter_cap_enforced() -> None:
     assert calls["n"] == 1
 
 
-def test_llm_arbiter_no_billing_when_roundtrip_fails() -> None:
-    """왕복 실패(anthropic 미설치 등)면 과금 0 + 결정적 폴백으로 recall 유지(적대 리뷰 MED)."""
-    class _Ledger:
-        def __init__(self) -> None:
-            self.records: list[str] = []
+class _Ledger:
+    """cost_ledger 스파이 — 구독 SDK 경로가 메터드 원장을 건드리지 않는지 검증용."""
 
-        def record(self, provider: str, units: int = 1):
-            self.records.append(provider)
+    def __init__(self) -> None:
+        self.records: list[str] = []
 
-        def is_over_budget(self) -> bool:
-            return False
+    def record(self, provider: str, units: int = 1):
+        self.records.append(provider)
 
+    def is_over_budget(self) -> bool:
+        return False
+
+
+def test_llm_arbiter_roundtrip_failure_falls_back_no_cost() -> None:
+    """왕복 실패(claude CLI 미설치/미인증 등)면 결정적 폴백으로 recall 유지 + 원장 미적재."""
     led = _Ledger()
     f = FakeFetcher({"items": [{"link": "https://skhynix.com", "title": "에스케이하이닉스 공식"}]})
     r = DomainResolver(
-        _no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k"),
-        fetcher=f, cost_ledger=led,
+        _no_naver_settings(resolve_llm_arbiter=True), fetcher=f, cost_ledger=led
     )
-    r._arbitrate = lambda dc, cands: (-1, False)  # 왕복 자체가 실패(미과금).
+    r._arbitrate = lambda dc, cands: (-1, False)  # 왕복 자체가 실패.
     dc = DiscoveredCompany(canonical_key="reg:dart:13", name="에스케이하이닉스", country="KR")
     assert r.resolve(dc) == "skhynix.com"  # 토큰일치 결정적 폴백으로 채택(recall 보존).
-    assert led.records == []  # 과금 0 — 왕복 없는 실패에 phantom 청구 안 함.
+    assert led.records == []  # 구독 SDK — 메터드 원장 미적재.
 
 
-def test_llm_arbiter_bills_once_on_roundtrip() -> None:
-    """왕복 성공(기권 -1 포함)이면 정확히 1회 과금."""
-    class _Ledger:
-        def __init__(self) -> None:
-            self.records: list[str] = []
-
-        def record(self, provider: str, units: int = 1):
-            self.records.append(provider)
-
-        def is_over_budget(self) -> bool:
-            return False
-
+def test_llm_arbiter_subscription_never_records_cost() -> None:
+    """왕복 성공(기권 포함)이어도 구독 SDK 는 cost_ledger(메터드 예산)에 적재하지 않는다."""
     led = _Ledger()
     f = FakeFetcher({"items": [{"link": "https://unrelated-portal.com", "title": "무관"}]})
     r = DomainResolver(
-        _no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k"),
-        fetcher=f, cost_ledger=led,
+        _no_naver_settings(resolve_llm_arbiter=True), fetcher=f, cost_ledger=led
     )
     r._arbitrate = lambda dc, cands: (-1, True)  # 왕복 후 기권.
     dc = DiscoveredCompany(canonical_key="reg:dart:14", name="동양", country="KR")
     assert r.resolve(dc) is None
-    assert led.records == ["resolve_llm"]  # 왕복했으니 1회 과금.
+    assert led.records == []  # 구독 정액 — 과금 기록 없음.
 
 
 def test_llm_arbiter_refunds_cap_on_roundtrip_failure() -> None:

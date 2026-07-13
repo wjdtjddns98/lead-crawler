@@ -46,7 +46,6 @@ DEFAULT_PRICING_KRW: dict[str, int] = {
     "industry_llm": 5,  # Claude 산업분류 1건(Haiku·짧은 텍스트, 보수적)
     "ai_directory": 8,  # Claude 디렉토리 목록추출 1페이지(Haiku, 8k프롬프트+토큰상향 반영 상향)
     "serper": 2,  # Serper.dev 검색 1쿼리(~$1/1K, 보수적)
-    "resolve_llm": 5,  # Claude 도메인 중재 1건(Haiku·후보 몇 개+한 줄 출력, 보수적)
 }
 
 
