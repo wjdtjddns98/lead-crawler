@@ -255,11 +255,12 @@ def test_noise_domains_never_adopted_even_with_matching_title() -> None:
     채택했다. 구조 게이트(_is_noise_domain)가 후보 단계에서 걸러야 한다.
     """
     for link in (
-        "https://edaily.co.kr/article/123",       # 뉴스(root 에 daily)
-        "https://findjob24h.com/post/9",           # 구인(root 에 job)
-        "https://gg.go.kr/board/1",                # 정부(.go.kr)
-        "https://kati.or.kr/news/2",               # 협회(.or.kr)
-        "https://industrynews.co.kr/a/3",          # 업계지(root 에 news)
+        "https://edaily.co.kr/article/123",       # 뉴스(blocklist)
+        "https://findjob24h.com/post/9",           # 구인(blocklist)
+        "https://gg.go.kr/board/1",                # 정부(.go.kr 접미)
+        "https://kati.or.kr/news/2",               # 협회(.or.kr 접미)
+        "https://jobplanet.co.kr/company/1",       # 구인(root 정규식 단독 — blocklist 밖)
+        "https://lab.re.kr/board/2",               # 연구기관(normalize 후 're.kr' 등가)
     ):
         f = FakeFetcher({"items": [{"link": link, "title": "한영타이어 신제품 출시"}]})
         r = DomainResolver(_no_naver_settings(), fetcher=f)
@@ -276,6 +277,20 @@ def test_noise_gate_passes_official_domain_after_noise() -> None:
     r = DomainResolver(_no_naver_settings(), fetcher=f)
     dc = DiscoveredCompany(canonical_key="reg:dart:10", name="한영타이어", country="KR")
     assert r.resolve(dc) == "hanyoungtire.co.kr"
+
+
+def test_noise_root_regex_not_applied_to_latin_slug_path() -> None:
+    """뉴스/구인 root 정규식은 한글 title-매칭 경로 한정 — 라틴 슬러그 경로의 실기업
+    도메인(jobyaviation·americanexpress 류)은 정상 채택된다(교차리뷰 HIGH 회귀가드)."""
+    for name, link, want in (
+        ("Joby Aviation", "https://jobyaviation.com", "jobyaviation.com"),
+        ("American Express", "https://americanexpress.com", "americanexpress.com"),
+    ):
+        f = FakeFetcher(_items(link))
+        # serper 키 명시 차단 — 로컬 .env 라이브키가 프로바이더 선택(serper 우선)에
+        # 새면 FakeFetcher(post_json 없음)와 충돌한다(기존 로컬 베이스라인과 동일 부류).
+        r = DomainResolver(_settings(serper_api_key=""), fetcher=f)
+        assert r.resolve(_dc(name, country="US")) == want, name
 
 
 def test_naver_b_tags_stripped_before_match() -> None:

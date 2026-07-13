@@ -223,6 +223,11 @@ class DomainResolver:
             return None
         use_llm = is_kr and self._settings.resolve_llm_arbiter
         if korean_core is not None:
+            # 한글 경로는 기사/공고 title 에 상호명이 그대로 들어가 오탐 위험이 높다 —
+            # 뉴스/구인 root 후보를 여기서만 제외(라틴 경로는 슬러그 정합이 보호).
+            cands = [c for c in cands if not _is_noise_root(c.domain)]
+            if not cands:
+                return None
             if use_llm:
                 return self._llm_pick(dc, cands, korean_core=korean_core, tld=tld)
             return _korean_deterministic_pick(cands, korean_core, tld)
@@ -371,18 +376,33 @@ class _Candidate(NamedTuple):
 # blocklist 는 개별 나열이라 항상 뒤처진다 — 부류 전체를 게이트로 막는다(2026-07-13
 # 실측: gg.go.kr·gb.go.kr(도청 보도자료)·kpi.or.kr·kati.or.kr(협회)가 홈페이지로 채택됨).
 _NON_COMPANY_SUFFIXES = (".go.kr", ".or.kr", ".ac.kr", ".re.kr", ".hs.kr", ".ms.kr", ".es.kr")
+# normalize_domain 이 2라벨로 접는 접미(re/hs/ms/es 는 dedup 의 two_level_tlds 에 없어
+# 'lab.re.kr'→'re.kr')는 endswith 로 안 잡힌다 — 정규화 산출 등가비교로 부류 전체를 커버
+# (교차리뷰 MED: endswith 단독은 4개 접미가 조용히 죽은 코드였다).
+_NON_COMPANY_EXACT = frozenset(
+    {"go.kr", "or.kr", "ac.kr", "re.kr", "hs.kr", "ms.kr", "es.kr"}
+)
 # 뉴스·구인 어휘가 등록 root 에 든 도메인 — 기사/공고 title 에 상호명이 그대로 들어가
-# 한글 결정 규칙(title 토큰일치)이 오탐하는 주 경로(edaily·fnnews·dailystock·
-# industrynews·findjob24h·jobploy 실측). 실기업 root 에 이 어휘가 드물어 정밀도 우선 차단.
+# **한글 결정 규칙(title 토큰일치)** 이 오탐하는 주 경로(edaily·dailystock·jobplanet·
+# findjob24h 실측). 한글(korean_core) 경로에만 적용한다 — 전 국가 후보 필터로 쓰면
+# americanexpress('press')·jobyaviation('job')·newscorp 같은 실기업을 원천 차단한다
+# (교차리뷰 HIGH — 라틴 경로는 root↔슬러그 경계 정합이 이미 오탐을 막는다).
 _NOISE_ROOT_RE = re.compile(r"news|daily|ilbo|press|recruit|job", re.IGNORECASE)
 
 
 def _is_noise_domain(domain: str) -> bool:
-    """도메인 해석 후보에서 구조적으로 제외할 부류인지(정부/협회/학교 접미·뉴스/구인 root)."""
-    if domain.endswith(_NON_COMPANY_SUFFIXES):
-        return True
-    root = domain.split(".", 1)[0]
-    return bool(_NOISE_ROOT_RE.search(root))
+    """전 경로 공통 제외 부류인지(정부/협회/학교/연구기관 — 기업 공식 도메인 불가)."""
+    return domain in _NON_COMPANY_EXACT or domain.endswith(_NON_COMPANY_SUFFIXES)
+
+
+def _is_noise_root(domain: str) -> bool:
+    """한글 title-매칭 경로 한정 제외(뉴스/구인 어휘 root) — 라틴 경로엔 적용 금지.
+
+    ponytail: substring 매칭이라 root 에 해당 어휘가 든 희귀 KR 실기업(데일리호텔 류)은
+    이 경로에서 miss 된다(오탐 20/60 실측 대비 수용한 트레이드오프 — 리뷰 합의).
+    업그레이드 경로: 어휘 단어경계 앵커링 또는 LLM 중재를 필터보다 먼저 태우기.
+    """
+    return bool(_NOISE_ROOT_RE.search(domain.split(".", 1)[0]))
 
 
 def _strip_tags(text: str) -> str:
