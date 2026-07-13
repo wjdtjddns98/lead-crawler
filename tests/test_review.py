@@ -82,6 +82,24 @@ def test_save_lead_auto_enqueues(session: Session) -> None:
     assert items[0]["email_smtp"] is True
 
 
+def test_default_order_is_lifo_newest_first(session: Session) -> None:
+    # 기본 정렬 = LIFO(2026-07-13 PO 요청): 발견 first_seen 최신이 최상단.
+    from datetime import datetime, timedelta, timezone
+
+    from leadcrawler.schema import DiscoveredCompanyRow
+
+    save_lead(session, _lead(domain="old.com", email="ir@old.com"))
+    save_lead(session, _lead(domain="new.com", email="ir@new.com"))
+    session.flush()
+    base = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    session.get(DiscoveredCompanyRow, "dom:old.com").first_seen = base
+    session.get(DiscoveredCompanyRow, "dom:new.com").first_seen = base + timedelta(days=7)
+    session.flush()
+    assert [it["selected"] for it in query_reviews(session)] == [
+        "ir@new.com", "ir@old.com",
+    ]
+
+
 def test_form_low_confidence_flag(session: Session) -> None:
     # G: 저신뢰 폴백 폼(0.3) → form_low_confidence True; 실폼(0.6) → False. URL·신뢰도도 노출.
     save_lead(session, _lead(domain="low.com", email=None, form="https://low.com/contact",
