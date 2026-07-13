@@ -170,6 +170,7 @@ class EdgarSource:
                 prefixes,
                 listed=listed,
                 market=exchange.upper() or None,
+                listed_verified=bool(exchange),  # 거래소 필드 실측값만 검증 취급.
                 name_fallback=name,
             )
             if dc is None:
@@ -242,9 +243,10 @@ class EdgarSource:
                     except Exception as exc:  # 개별 실패는 건너뛴다.
                         log.info("edgar.submissions.error", cik=cik, err=str(exc))
                         continue
-                    listed, market = _listing_from_submissions(sub, segment.listed)
+                    listed, market, verified = _listing_from_submissions(sub, segment.listed)
                     dc = self._company_from_submissions(
-                        segment, cik, sub, prefixes, listed=listed, market=market
+                        segment, cik, sub, prefixes,
+                        listed=listed, market=market, listed_verified=verified,
                     )
                     if dc is not None:
                         out.append(dc)
@@ -273,6 +275,7 @@ class EdgarSource:
         *,
         listed: str,
         market: str | None,
+        listed_verified: bool = False,
         name_fallback: str = "",
     ) -> DiscoveredCompany | None:
         """submissions 응답 1건 → 후보(형식불일치/SIC 불일치는 None)."""
@@ -299,6 +302,7 @@ class EdgarSource:
             ir_url=opt_str(sub.get("investorWebsite")),
             ticker=(opt_str(tickers[0]) if isinstance(tickers, list) and tickers else None),
             market=market,
+            listed_verified=listed_verified,
         )
 
 
@@ -319,24 +323,25 @@ def _business_address(addresses: Any) -> tuple[str | None, str | None]:
     return address, opt_str(business.get("stateOrCountry"))
 
 
-def _listing_from_submissions(sub: Any, default: str) -> tuple[str, str | None]:
-    """submissions 의 tickers/exchanges → (listed, market) 세분화.
+def _listing_from_submissions(sub: Any, default: str) -> tuple[str, str | None, bool]:
+    """submissions 의 tickers/exchanges → (listed, market, 검증여부) 세분화.
 
     티커 없음=unlisted(비상장 파일러 — SIC 전수 열거의 주 대상), 실거래소=listed,
     OTC 등 그 외=unlisted. 거래소 미상(티커만 있음)은 세그먼트 기본값 유지.
+    검증여부=응답 필드에서 실측 세분화했는지(기본값 통과=False — 원장 백필 게이트).
     """
     if not isinstance(sub, dict):
-        return default, None
+        return default, None, False
     tickers = sub.get("tickers")
     if not (isinstance(tickers, list) and any(tickers)):
-        return "unlisted", None
+        return "unlisted", None, True
     exchanges = sub.get("exchanges")
     first = ""
     if isinstance(exchanges, list):
         first = next((str(e) for e in exchanges if e), "")
     if not first:
-        return default, None
-    return ("listed" if first.lower() in _REAL_EXCHANGES else "unlisted"), first.upper()
+        return default, None, False
+    return ("listed" if first.lower() in _REAL_EXCHANGES else "unlisted"), first.upper(), True
 
 
 def _parse_tickers_exchange(payload: Any) -> list[tuple[int, str, str]]:

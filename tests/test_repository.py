@@ -181,23 +181,33 @@ def test_save_discovered_updates_last_crawled_on_existing(session: Session) -> N
 
 
 def test_save_discovered_fills_unknown_listed_on_rediscovery(session: Session) -> None:
-    # 최초 발견이 unknown 이면 재발견분이 알아온 상장여부·시장을 채운다(미상 전용 백필).
+    # 최초 발견이 unknown 이면 재발견분이 **검증한** 상장여부·시장을 채운다(미상 전용 백필).
     save_discovered(session, DiscoveredCompany(
         canonical_key="dom:x.com", name="A", domain="x.com", source="nps"
     ))
     session.commit()
+
+    # 미검증 값(크롤 스코프 통과 — 검색 등)은 백필하지 않는다(스코프 사실화 오염 방지).
+    save_discovered(session, DiscoveredCompany(
+        canonical_key="dom:x.com", name="A", domain="x.com", source="search",
+        listed="listed", market="KOSPI",
+    ))
+    session.commit()
+    row = session.get(DiscoveredCompanyRow, "dom:x.com")
+    assert (row.listed, row.market) == ("unknown", None)
+
     save_discovered(session, DiscoveredCompany(
         canonical_key="dom:x.com", name="A", domain="x.com", source="dart",
-        listed="listed", market="KOSPI",
+        listed="listed", market="KOSPI", listed_verified=True,
     ))
     session.commit()
     row = session.get(DiscoveredCompanyRow, "dom:x.com")
     assert (row.listed, row.market) == ("listed", "KOSPI")
 
-    # 확정된 값은 재발견이 절대 못 덮는다(제약① 식별정보 보존 — 강등 시도 무시).
+    # 확정된 값은 재발견이(검증값이라도) 절대 못 덮는다(제약① — 강등 시도 무시).
     save_discovered(session, DiscoveredCompany(
         canonical_key="dom:x.com", name="A", domain="x.com", source="gleif",
-        listed="unlisted", market="NASDAQ",
+        listed="unlisted", market="NASDAQ", listed_verified=True,
     ))
     session.commit()
     row = session.get(DiscoveredCompanyRow, "dom:x.com")

@@ -156,17 +156,21 @@ def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompan
 
     제약 ①: 이미 존재하는 ``canonical_key`` 의 식별정보는 덮어쓰지 않고 그대로 둔다.
     단, ``last_crawled_at`` 은 신규/기존 모두 매 발견 시각으로 갱신(재크롤 추적용).
-    예외: 상장여부(listed)·시장(market)가 **미상인 기존 행**은 재발견분이 알아온 값으로
-    채운다(미상 전용 — 확정된 값은 절대 덮지 않음, :func:`backfill_domain` 과 동일 규약).
+    예외: 상장여부(listed)·시장(market)가 **미상인 기존 행**은 재발견분이 **사실 조회로
+    확인한**(``listed_verified``) 값으로 채운다(미상 전용 — 확정된 값은 절대 덮지 않음,
+    :func:`backfill_domain` 과 동일 규약). 미검증 값(크롤 스코프 segment.listed 통과분 —
+    검색·집계원 다수)은 백필하지 않는다: 스코프가 사실로 고착되는 편도 오염 방지.
     최초 발견 시점에 DART 캐시 미비 등으로 unknown 이 박제된 행이 다음 랩 재발견에서
     자가치유되는 경로다(재발견은 dedup 스킵 후 touch 로 여기를 지난다).
     """
     row = session.get(DiscoveredCompanyRow, dc.canonical_key)
-    if row is not None:
+    if row is not None and dc.listed_verified:
         if dc.listed and dc.listed != "unknown" and row.listed in (None, "", "unknown"):
             row.listed = dc.listed
-        if dc.market and not row.market:
-            row.market = _clip(dc.market, 32)
+            # market 은 같은 검증 이벤트(corp_cls·거래소 필드)에서만 쌍으로 채운다 —
+            # 근거가 다른 listed/market 조합(예: unlisted+KOSPI)이 생기지 않게.
+            if dc.market and not row.market:
+                row.market = _clip(dc.market, 32)
     if row is None:
         row = DiscoveredCompanyRow(
             canonical_key=dc.canonical_key,

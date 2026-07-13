@@ -163,6 +163,7 @@ class NpsSource(DiscoverySource):
                         ir_url=str(info.get("ir_url") or "") or None,
                         name_eng=str(info.get("corp_name_eng") or "") or None,
                         market=_MARKET_CLS.get(corp_cls),
+                        listed_verified=corp_cls in _LISTED_CLS,
                     )
                 )
                 continue
