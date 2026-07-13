@@ -358,6 +358,8 @@ def create_app() -> FastAPI:
         app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")
 
     # 24/7 크롤 워치독 — 하트비트 정지한 좀비 잡을 정리·재기동한다(비활성·dry_run 은 no-op).
+    # ⚠️ 단일 uvicorn worker 전제: 크롤 가드·스레드 생존 판정이 프로세스 로컬이라 workers 2+
+    # 로 띄우면 다른 worker 의 워치독이 정상 크롤을 오판 reap 한다(AGENTS.md 운영 제약).
     from ..pipeline.background import start_watchdog
 
     start_watchdog(get_settings())
