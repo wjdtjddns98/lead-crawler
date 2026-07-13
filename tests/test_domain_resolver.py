@@ -247,6 +247,133 @@ def test_korean_name_title_mismatch_rejected() -> None:
     assert r.resolve(dc) is None
 
 
+def test_naver_b_tags_stripped_before_match() -> None:
+    """네이버 title 의 <b> 하이라이트가 매칭 전에 제거된다(#239 리뷰 HIGH #2).
+
+    태그를 안 지우면 정규화 시 'b' 가 상호명 사이에 끼어 정확한 공식 사이트가 탈락한다.
+    """
+    f = FakeFetcher(
+        {"items": [{"link": "https://skhynix.com",
+                    "title": "에스케이<b>하이닉스</b> 반도체 공식"}]}
+    )
+    r = DomainResolver(_no_naver_settings(), fetcher=f)
+    dc = DiscoveredCompany(canonical_key="reg:dart:5", name="에스케이하이닉스", country="KR")
+    assert r.resolve(dc) == "skhynix.com"
+
+
+def test_short_korean_prefix_not_matched_without_llm() -> None:
+    """LLM-off 한글 경로는 토큰 완전일치만 채택 — 접두 오탐(한국전력→한국전력기술) 차단(HIGH #1)."""
+    f = FakeFetcher(
+        {"items": [{"link": "https://kepco-eng.com", "title": "한국전력기술 홈페이지"}]}
+    )
+    r = DomainResolver(_no_naver_settings(), fetcher=f)  # LLM 중재 off(기본).
+    dc = DiscoveredCompany(canonical_key="reg:dart:6", name="한국전력", country="KR")
+    assert r.resolve(dc) is None  # '한국전력' 토큰이 title 에 독립적으로 없음 → 미채택.
+
+
+def test_serper_fallback_on_kr_naver_miss() -> None:
+    """KR 이 네이버에서 miss 하면 Serper 폴백으로 재시도해 후보를 얻는다(수율 레버 ②)."""
+    # 네이버(get_json)=빈 결과, Serper(post_json)=title 매칭되는 후보.
+    class _KrFallbackFetcher:
+        def __init__(self) -> None:
+            self.get_calls = 0
+            self.post_calls = 0
+
+        def get_json(self, url, *, params=None, headers=None):
+            self.get_calls += 1
+            return {"items": []}  # 네이버 miss.
+
+        def post_json(self, url, *, json=None, headers=None):
+            self.post_calls += 1
+            return {"organic": [{"link": "https://skhynix.com", "title": "에스케이하이닉스 공식"}]}
+
+    f = _KrFallbackFetcher()
+    r = DomainResolver(
+        _naver_settings(serper_api_key="sk", resolve_serper_fallback=True), fetcher=f
+    )
+    dc = DiscoveredCompany(canonical_key="reg:dart:7", name="에스케이하이닉스", country="KR")
+    assert r.resolve(dc) == "skhynix.com"
+    assert f.get_calls == 1 and f.post_calls == 1  # 네이버 miss → Serper 1회.
+
+
+def test_serper_fallback_off_by_default() -> None:
+    """폴백 플래그가 꺼져 있으면 네이버 miss 는 그대로 miss(과금 안 함)."""
+    class _KrFetcher:
+        def __init__(self) -> None:
+            self.post_calls = 0
+
+        def get_json(self, url, *, params=None, headers=None):
+            return {"items": []}
+
+        def post_json(self, url, *, json=None, headers=None):
+            self.post_calls += 1
+            return {"organic": [{"link": "https://skhynix.com", "title": "에스케이하이닉스"}]}
+
+    f = _KrFetcher()
+    r = DomainResolver(_naver_settings(serper_api_key="sk"), fetcher=f)  # 폴백 off.
+    dc = DiscoveredCompany(canonical_key="reg:dart:8", name="에스케이하이닉스", country="KR")
+    assert r.resolve(dc) is None
+    assert f.post_calls == 0  # Serper 미호출(과금 0).
+
+
+def test_llm_arbiter_picks_official() -> None:
+    """LLM 중재 on — 후보 중 공식 도메인 index 를 골라 채택(짧은 한글명 구제)."""
+    f = FakeFetcher(
+        {"items": [
+            {"link": "https://news.co.kr", "title": "동양 관련 뉴스"},
+            {"link": "https://tongyang.com", "title": "동양 공식"},
+        ]}
+    )
+    r = DomainResolver(_no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k"), fetcher=f)
+    r._arbitrate = lambda dc, cands: 1  # 2번째 후보(공식)를 고르도록 스텁.
+    dc = DiscoveredCompany(canonical_key="reg:dart:9", name="동양", country="KR")
+    assert r.resolve(dc) == "tongyang.com"
+
+
+def test_llm_arbiter_abstains() -> None:
+    """LLM 이 기권(-1)하면 채택하지 않는다(제약② — 틀린 채택보다 miss)."""
+    f = FakeFetcher(
+        {"items": [{"link": "https://random.com", "title": "무관한 페이지"}]}
+    )
+    r = DomainResolver(_no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k"), fetcher=f)
+    r._arbitrate = lambda dc, cands: -1
+    dc = DiscoveredCompany(canonical_key="reg:dart:10", name="동양", country="KR")
+    assert r.resolve(dc) is None
+
+
+def test_llm_arbiter_cap_enforced() -> None:
+    """LLM 중재 캡(resolve_llm_max) 초과분은 중재하지 않고 폴백한다(과금 상한)."""
+    f = FakeFetcher(
+        {"items": [{"link": "https://a.com", "title": "동양 공식"}]},
+        {"items": [{"link": "https://b.com", "title": "삼양 공식"}]},
+    )
+    r = DomainResolver(
+        _no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k", resolve_llm_max=1),
+        fetcher=f,
+    )
+    calls = {"n": 0}
+
+    def _stub(dc, cands):
+        calls["n"] += 1
+        return 0
+
+    r._arbitrate = _stub
+    assert r.resolve(DiscoveredCompany(canonical_key="reg:dart:11", name="동양", country="KR")) == "a.com"
+    # 2번째는 LLM 캡 초과 → 중재 안 함(폴백: 짧은 이름이라 미채택), _arbitrate 1회만 호출.
+    r.resolve(DiscoveredCompany(canonical_key="reg:dart:12", name="삼양", country="KR"))
+    assert calls["n"] == 1
+
+
+def test_parse_index_and_strip_tags() -> None:
+    from leadcrawler.sources.domain_resolver import _parse_index, _strip_tags
+
+    assert _strip_tags("에스케이<b>하이닉스</b>") == "에스케이하이닉스"
+    assert _parse_index("1", 3) == 1
+    assert _parse_index("-1", 3) == -1
+    assert _parse_index("5", 3) == -1  # 범위 밖 → 기권.
+    assert _parse_index("없음", 3) == -1  # 숫자 없음 → 기권.
+
+
 # ── 네이버 검색 API 라우팅(KR 전용·무료) ────────────────────────────────────
 
 
