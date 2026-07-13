@@ -412,6 +412,27 @@ def test_llm_arbiter_bills_once_on_roundtrip() -> None:
     assert led.records == ["resolve_llm"]  # 왕복했으니 1회 과금.
 
 
+def test_llm_arbiter_refunds_cap_on_roundtrip_failure() -> None:
+    """왕복 실패는 캡 슬롯을 환급 — 전이 장애가 남은 런의 중재를 영구 불능화하지 않게(적대 리뷰 MED)."""
+    f = FakeFetcher(
+        {"items": [{"link": "https://acme-corp.com", "title": "동양 공식"}]},
+        {"items": [{"link": "https://acme-corp.com", "title": "동양 공식"}]},
+    )
+    r = DomainResolver(
+        _no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k", resolve_llm_max=1),
+        fetcher=f,
+    )
+    # 1번째: 왕복 실패(예: 미설치) → 환급되어 캡이 소진되지 않아야 한다.
+    r._arbitrate = lambda dc, cands: (-1, False)
+    assert r.resolve(DiscoveredCompany(canonical_key="reg:dart:15", name="동양", country="KR")) is None
+    assert r._llm_used == 0  # 환급됨.
+    # 2번째: 캡이 살아있어 정상 중재 → 채택.
+    r._arbitrate = lambda dc, cands: (0, True)
+    assert r.resolve(
+        DiscoveredCompany(canonical_key="reg:dart:16", name="동양", country="KR")
+    ) == "acme-corp.com"
+
+
 def test_parse_index_and_strip_tags() -> None:
     from leadcrawler.sources.domain_resolver import _parse_index, _strip_tags
 

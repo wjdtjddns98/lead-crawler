@@ -268,18 +268,26 @@ class DomainResolver:
             return None
         shortlist = cands[:_LLM_MAX_CANDIDATES]
         idx, billed = self._arbitrate(dc, shortlist)
-        # 실제 API 왕복이 일어났을 때만 과금 — 미설치(ImportError)·키오류·호출 전 실패는
-        # 왕복이 없으므로 과금하지 않는다(llm_judge.ClaudeJudge.billed 패턴, 적대 리뷰 MED).
-        if led is not None and billed:
+        if not billed:
+            # 왕복 자체가 실패(anthropic 미설치·전이 429/타임아웃 등) — 과금 안 하고 캡 슬롯을
+            # 환급한다. 안 그러면 일시적 장애가 남은 배치/런의 중재를 영구 불능화한다(적대
+            # 리뷰 MED). 폴백으로라도 recall 을 지킨다(한글=토큰일치, 라틴=None).
+            self._refund_llm()
+            if korean_core is not None:
+                return _korean_deterministic_pick(cands, korean_core, tld)
+            return None
+        # 실제 API 왕복이 일어났을 때만 과금(llm_judge.ClaudeJudge.billed 패턴, 적대 리뷰 MED).
+        if led is not None:
             led.record("resolve_llm")
-        if billed:
-            if 0 <= idx < len(shortlist):
-                return shortlist[idx].domain
-            return None  # 모델이 기권(-1) — 무근거 채택 금지(제약②).
-        # 왕복 자체가 실패(anthropic 미설치 등)면 결정적 폴백으로라도 recall 을 지킨다.
-        if korean_core is not None:
-            return _korean_deterministic_pick(cands, korean_core, tld)
-        return None
+        if 0 <= idx < len(shortlist):
+            return shortlist[idx].domain
+        return None  # 모델이 기권(-1) — 무근거 채택 금지(제약②).
+
+    def _refund_llm(self) -> None:
+        """왕복 실패로 소모된 LLM 캡 슬롯 1건을 되돌린다(전이 장애가 캡을 영구 소진하지 않게)."""
+        with self._lock:
+            if self._llm_used > 0:
+                self._llm_used -= 1
 
     def _arbitrate(self, dc: DiscoveredCompany, cands: list[_Candidate]) -> tuple[int, bool]:
         """Claude(Haiku)로 후보 index 를 받는다 — (index, billed). 오류 시 (-1, False).
@@ -303,13 +311,18 @@ class DomainResolver:
                 max_tokens=8,  # 숫자 하나만 필요.
                 messages=[{"role": "user", "content": prompt}],
             )
-            # 여기까지 왔으면 과금 왕복 성공 — 이후 파싱이 실패해도 billed=True(이미 청구됨).
-            text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
-            log.info("resolve.llm.call", name=dc.name, model=self._settings.resolve_llm_model)
-            return _parse_index(text, len(cands)), True
-        except Exception as exc:  # 미설치·키오류·호출 전 오류 → 기권·미과금.
+        except Exception as exc:  # 미설치·키오류·호출 전 오류 → 기권·미과금(왕복 없음).
             log.info("resolve.llm.error", err=str(exc))
             return -1, False
+        # 왕복 성공 → billed 확정. 응답 파싱은 예외-safe 하지만, 만일 실패해도 이미 청구됐으니
+        # billed=True 를 유지한다(과금 판별 단일 출처가 왕복 여부라는 계약 정합).
+        log.info("resolve.llm.call", name=dc.name, model=self._settings.resolve_llm_model)
+        try:
+            text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+            return _parse_index(text, len(cands)), True
+        except Exception as exc:  # 응답 형태 이탈 → 기권하되 과금은 유지.
+            log.info("resolve.llm.parse_error", err=str(exc))
+            return -1, True
 
 
 def _name_slug(name: str) -> str:
