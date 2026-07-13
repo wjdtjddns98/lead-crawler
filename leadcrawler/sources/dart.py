@@ -376,6 +376,7 @@ class DartSource:
             ir_url=opt_str(info.get("ir_url")),
             name_eng=opt_str(info.get("corp_name_eng")),
             market=_MARKET_CLS.get(info.get("corp_cls", "")),
+            listed_verified=info.get("corp_cls", "") in _LISTED_CLS,
         )
 
     def _recent_filed_pairs(self, key: str, spent: dict[str, int]) -> list[tuple[str, str]]:

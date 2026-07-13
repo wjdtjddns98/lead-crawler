@@ -159,6 +159,7 @@ class ExchangeSource:
                 build_company(
                     source=self.name, segment=listed_seg, name=name, domain=None,
                     registry=self.registry, registry_id=symbol, market=self.name.upper(),
+                    listed_verified=True,  # 상장목록 원천 — listed 는 항상 실측.
                 )
             )
             if len(out) >= cap:
@@ -231,6 +232,7 @@ class PseSource(ExchangeSource):
                         registry=self.registry,
                         registry_id=symbol,
                         market=self.name.upper(),
+                        listed_verified=True,  # 상장목록 원천 — listed 는 항상 실측.
                     )
                 )
                 if len(out) >= cap:
@@ -317,6 +319,7 @@ class SgxSource(ExchangeSource):
                     source=self.name, segment=listed_seg, name=name,
                     domain=None, registry=self.registry, registry_id=symbol,
                     market=self.name.upper(),
+                    listed_verified=True,  # 상장목록 원천 — listed 는 항상 실측.
                 )
             )
             if len(out) >= cap:
@@ -376,6 +379,7 @@ class IdxSource(ExchangeSource):
                         source=self.name, segment=listed_seg, name=name,
                         domain=None, registry=self.registry, registry_id=symbol,
                         market=self.name.upper(),
+                        listed_verified=True,  # 상장목록 원천 — listed 는 항상 실측.
                     )
                 )
                 if len(out) >= cap:

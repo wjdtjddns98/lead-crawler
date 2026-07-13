@@ -68,6 +68,10 @@ class DiscoveredCompany(BaseModel):
     # 상장 시장(보드) 세분화 — 예: KOSPI/KOSDAQ/KONEX(DART corp_cls)·NASDAQ/NYSE(EDGAR)·
     # PSE/SGX(거래소 소스). listed 3값(listed/unlisted/unknown)의 세부 라벨(None=미상).
     market: str | None = None
+    # listed 가 **사실 조회로 확인된 값**인지(DART corp_cls·EDGAR 거래소 필드·거래소
+    # 상장목록). False=크롤 스코프(segment.listed) 통과값 — 검색·집계원 다수가 여기 해당.
+    # 원장 백필(save_discovered)은 True 인 값만 신뢰한다(스코프값 사실 고착 방지).
+    listed_verified: bool = False
 
 
 class DiscoverySource(Protocol):
@@ -190,6 +194,7 @@ def build_company(
     ir_url: str | None = None,
     name_eng: str | None = None,
     market: str | None = None,
+    listed_verified: bool = False,
 ) -> DiscoveredCompany:
     """식별 정보로 ``canonical_key`` 를 산정해 :class:`DiscoveredCompany` 를 만든다.
 
@@ -227,6 +232,7 @@ def build_company(
         ir_url=ir_url,
         name_eng=name_eng,
         market=market,
+        listed_verified=listed_verified,
     )
 
 
