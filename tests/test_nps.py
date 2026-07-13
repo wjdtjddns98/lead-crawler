@@ -325,7 +325,7 @@ def test_relink_cli_moves_name_key_to_reg_key(tmp_path, monkeypatch) -> None:
     DbDartCorpCache(sm).put_many([
         _FetchedCorp(
             "00012345", "주식회사 대형화학", "000",
-            {"status": "000", "corp_name": "주식회사 대형화학",
+            {"status": "000", "corp_name": "주식회사 대형화학", "corp_cls": "Y",
              "bizr_no": "1234567890", "hm_url": "http://bigchem.co.kr"},
         ),
     ])
@@ -348,5 +348,9 @@ def test_relink_cli_moves_name_key_to_reg_key(tmp_path, monkeypatch) -> None:
         config_mod.get_settings.cache_clear()  # 다른 테스트 오염 방지.
     assert result.exit_code == 0, result.output
     with sm() as session:
-        keys = list(session.scalars(sa_select(DiscoveredCompanyRow.canonical_key)))
-    assert keys == ["reg:dart:00012345"]
+        rows = list(session.scalars(sa_select(DiscoveredCompanyRow)))
+    assert [r.canonical_key for r in rows] == ["reg:dart:00012345"]
+    # 재연결하면서 캐시 원문(corp_cls=Y)으로 상장여부·시장·registry 도 채운다(미상 전용).
+    row = rows[0]
+    assert (row.listed, row.market) == ("listed", "KOSPI")
+    assert (row.registry, row.registry_id) == ("dart", "00012345")
