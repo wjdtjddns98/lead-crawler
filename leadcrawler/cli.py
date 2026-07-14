@@ -525,8 +525,9 @@ def nps_relink_dart(
 def nps_map_industries() -> None:
     """스냅샷의 업종코드(~1.6천)를 택소노미 42로 통합 매핑한다(3층 — 코드 단위 1회).
 
-    규칙(industry_from_ksic) 우선, 잔여만 LLM(닫힌 택소노미 분류기 — 셋 밖 값 불가,
-    abstain=미분류). 멱등: 이미 매핑된 코드는 건너뛴다(월간 재실행 시 신규 코드만).
+    전 코드 LLM(닫힌 택소노미 분류기 — 셋 밖 값 불가, abstain=미분류). NPS 코드는 KSIC
+    10차가 아니어서 10차 접두 규칙 매핑은 전면 오라벨 사고(2026-07-14)로 폐지됐다.
+    멱등: 이미 매핑된 코드는 건너뛴다(월간 재실행 시 신규 코드만).
     실행 후 NpsSource 가 매핑 라벨 전체(사각 63% 포함)를 발견 대상으로 연다.
     """
     from .config import get_settings
@@ -539,8 +540,8 @@ def nps_map_industries() -> None:
     classifier = build_classifier(settings, ledger=CostLedger(settings, persist=True))
     stats = map_industry_codes(get_sessionmaker(), classifier)
     typer.echo(
-        f"규칙 {stats['rule']:,} · LLM {stats['llm']:,} · 미분류 {stats['unclassified']:,}"
-        f" · 기매핑 {stats['already']:,}"
+        f"LLM {stats['llm']:,} · 미분류 {stats['unclassified']:,}"
+        f" · 일시실패 재시도대기 {stats['skipped']:,} · 기매핑 {stats['already']:,}"
     )
 
 

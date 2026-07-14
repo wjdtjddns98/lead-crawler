@@ -42,8 +42,6 @@ _KR = {"kr", "kor", "korea", "south korea", "대한민국", "한국"}
 class SupportsNpsStore(Protocol):
     """스냅샷 조회 계약(구현: storage.nps.NpsStore) — 실패는 빈 결과로 삼켜야 한다."""
 
-    def page(self, prefixes: tuple[str, ...], *, offset: int, limit: int) -> list: ...
-
     def page_by_label(self, label: str, *, offset: int, limit: int) -> list: ...
 
     def mapped_labels(self) -> frozenset[str]: ...
@@ -92,10 +90,13 @@ class NpsSource(DiscoverySource):
         return self._labels
 
     def applies_to(self, segment: Segment) -> bool:
-        """KR + (KSIC 접두 매핑 or 3층 통합매핑 보유 라벨) + (라이브면) 스토어 주입 시.
+        """KR + 3층 통합매핑 보유 라벨 + (라이브면) 스토어 주입 시.
 
-        3층(ksic_industry_map)이 채워지면 KSIC 접두표에 없는 30개 라벨(게임·은행 등)도
-        열린다 — 매핑 없던 시절의 사각 63% 개방(적대 검토 HIGH-1 소비 경로).
+        라이브는 3층(ksic_industry_map) 라벨 매핑만 쓴다 — NPS 업종코드는 KSIC 10차가
+        아니라 구체계(실측: 61=수상운송·21=제지·26=요업)라, 10차 접두표(ksic_prefixes)
+        필터가 엉뚱한 사업장을 골라낸다(2026-07-14 실사고: 통신 세그먼트에 해운사 유입).
+        접두 폴백 제거 — 매핑은 nps-map-industries 가 42라벨 전체를 커버한다.
+        dry_run 은 네트워크 0 결정성 계약용 게이트로만 접두표를 유지한다(_dry 와 대칭).
         """
         if not is_country(segment, _KR):
             return False
@@ -103,9 +104,7 @@ class NpsSource(DiscoverySource):
             return ksic_prefixes(segment.industry) is not None
         if self._store is None:
             return False
-        if segment.industry in self._mapped_labels():
-            return True
-        return ksic_prefixes(segment.industry) is not None
+        return segment.industry in self._mapped_labels()
 
     def discover(self, segment: Segment) -> list[DiscoveredCompany]:
         if self._settings.dry_run:
@@ -116,14 +115,11 @@ class NpsSource(DiscoverySource):
         offset = 0
         if self._cursor_store is not None:
             offset = max(0, self._cursor_store.get(self.name, segment.label))
-        # 3층 라벨 매핑이 있으면 그 경로(42라벨 전체 커버·코드단위 통합), 없으면 접두 폴백.
-        if segment.industry in self._mapped_labels():
-            rows = self._store.page_by_label(segment.industry, offset=offset, limit=cap)
-        else:
-            prefixes = ksic_prefixes(segment.industry)
-            if prefixes is None:
-                return []
-            rows = self._store.page(prefixes, offset=offset, limit=cap)
+        # 3층 라벨 매핑 경로 단독(42라벨 전체 커버·코드단위 통합) — 10차 접두 폴백은
+        # NPS 코드체계 불일치 오라벨(applies_to docstring)로 제거. 미매핑 라벨은 빈 결과.
+        if segment.industry not in self._mapped_labels():
+            return []
+        rows = self._store.page_by_label(segment.industry, offset=offset, limit=cap)
         # DART 캐시 조인 — (사업자번호 앞6 + 정규화명) 정확 매치만(정밀도 우선). 히트는
         # DART 와 같은 reg: 키(registry_id=corp_code)로 emit 해 과거/미래 DART 발견분과
         # canonical_key 가 완전히 합쳐진다(제약① 강화) + 홈페이지·상장 필드 무쿼터 부착.
