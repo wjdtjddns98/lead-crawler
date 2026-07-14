@@ -73,5 +73,5 @@ def build_row(lead: CompanyLead) -> list[str]:
         defuse(c.industry),                         # I 구분(업종만)
         email_exist,                                # J 이메일 실존 여부
         ox(c.site_alive),                           # K 사이트 실존 여부
-        "",                                          # L 기타(공란)
+        defuse(lead.note),                          # L 기타(검수자 메모 — 수식 인젝션 방어)
     ]

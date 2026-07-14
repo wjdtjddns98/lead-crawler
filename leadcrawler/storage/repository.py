@@ -512,6 +512,7 @@ def load_leads(
                 phone=phone,
                 form=form,
                 email_validation=validation,
+                note=(rq.note or "") if rq is not None else "",
             )
         )
     return leads
