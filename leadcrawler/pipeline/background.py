@@ -101,7 +101,9 @@ def trigger_crawl_job(
     ``target_count`` >0 이면 실존 저장 누계가 그 값에 도달할 때 조기 종료(0=세그먼트 전부 소진).
     ``continuous`` 면 취소 전까지 라운드를 반복한다(mode='continuous' 로 기록).
     ``regions``('all' 또는 쉼표구분)는 KR 세그먼트를 지역별 검색 세그먼트로 팬아웃한다
-    (KR 외 국가는 무시 — :func:`generate_segments`). crawl_job 행에는 따로 기록하지 않는다.
+    (KR 외 국가는 무시 — :func:`generate_segments`).
+    ``target_count``/``regions``/``discovery_only`` 는 crawl_job 행에 스냅샷으로 저장돼
+    워치독 재기동이 원 요청 조건을 그대로 복원한다.
     """
     global _running
     # 발견 모드 — 비싼 이메일 escalation(헤드리스·OCR·이메일API·Vision)을 꺼 static 만으로
@@ -142,6 +144,9 @@ def trigger_crawl_job(
                 segments_total=len(segments),
                 triggered_by=triggered_by,
                 mode=MODE_CONTINUOUS if continuous else MODE_ONCE,
+                target_count=target_count,
+                regions=regions,
+                discovery_only=discovery_only,
             )
             info = crawl_job_dict(row)
             session.commit()
@@ -552,9 +557,9 @@ def _watchdog_tick(
     log.warning("crawl_watchdog.reaped", job=job_id, mode=snap.get("mode"))
     if snap.get("mode") == MODE_CONTINUOUS:
         try:
-            # ponytail: regions 는 crawl_job 행에 미저장(background.py create 주석)이라 재기동 시
-            # 복원 불가 — 지역 팬아웃 크롤은 비-region 으로 재개된다. 지역 크롤 재기동이 필요해지면
-            # CrawlJobRow 에 regions 저장·복원 추가.
+            # 실행 조건 스냅샷 전체 복원 — 미복원 시 지역한정→전국 확대·target_count 상한
+            # 소멸·discovery_only→풀 enrich 로 범위/비용이 원 요청과 달라진다(전수리뷰 HIGH).
+            # target_count 는 라운드 기준 상한이라 재기동 라운드에 그대로 적용한다.
             trigger_crawl_job(
                 settings,
                 countries=str(snap.get("countries") or ""),
@@ -564,6 +569,9 @@ def _watchdog_tick(
                 triggered_by="watchdog",
                 continuous=True,
                 runner=runner,
+                target_count=int(snap.get("target_count") or 0),
+                regions=str(snap.get("regions") or ""),
+                discovery_only=bool(snap.get("discovery_only", False)),
             )
             log.info("crawl_watchdog.restarted", prev=job_id)
         except Exception as exc:  # 재기동 실패해도 정리는 유효(다음 tick·수동 트리거가 이어감).

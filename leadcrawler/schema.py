@@ -386,6 +386,12 @@ class CrawlJobRow(Base):
         String(16), default="unknown", server_default=text("'unknown'")
     )
     persist: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # 잡 실행에 영향 주는 옵션 스냅샷 — 워치독 재기동이 원 요청 조건을 그대로 복원하기 위함
+    # (전수리뷰 HIGH: 미저장이면 재기동 시 지역한정→전국·상한 소멸·discovery_only→풀 enrich).
+    target_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # 512 = AdminCrawlRequest.regions max_length 와 계약 일치(요청 검증 통과 후 DB 절단 500 방지).
+    regions: Mapped[str] = mapped_column(String(512), default="", server_default=text("''"))
+    discovery_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     segments_total: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     segments_done: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     discovered: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
@@ -442,7 +448,9 @@ class EmailSendLogRow(Base):
 
     PK 는 이메일 주소에서 결정적으로 파생해, 같은 주소에 두 번 발송하지 않도록 한다
     (status='sent' 면 스킵). 실패(status='failed')는 재시도 시 덮어쓴다. dry-run 은
-    status='dryrun' 으로 남겨 미리보기 추적(실발송 카운트와 구분).
+    status='dryrun' 으로 남겨 미리보기 추적(실발송 카운트와 구분). status='sending' 은
+    발송 직전 원자 선점(outreach._reserve_send) 예약 — 확정 시 sent/failed 로 전이되고,
+    좌초분은 stale 창(10분) 이후 재예약된다.
     """
 
     __tablename__ = "email_send_log"

@@ -244,6 +244,7 @@ class SendResult(BaseModel):
     attempted: int = 0
     sent: int = 0
     failed: int = 0
+    skipped: int = 0  # 동시 캠페인 선점/기발송 스킵(pydantic 이 조용히 드롭하지 않게 명시)
     capped: int = 0  # 일일 상한 초과로 미발송
 
 
@@ -318,6 +319,10 @@ class CrawlJobInfo(BaseModel):
     industries: str = ""
     listed: str = "unknown"
     persist: bool = True
+    # 실행옵션 스냅샷 — pydantic 은 미선언 키를 조용히 버리므로(extra=ignore) 명시 필수.
+    target_count: int = 0
+    regions: str = ""
+    discovery_only: bool = False
     segments_total: int = 0
     segments_done: int = 0
     discovered: int = 0

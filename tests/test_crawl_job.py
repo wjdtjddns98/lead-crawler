@@ -308,11 +308,11 @@ _DEAD = lambda _jid: False  # 스레드 부재(소멸) 시뮬.  # noqa: E731
 _ALIVE = lambda _jid: True  # 스레드 생존 시뮬.  # noqa: E731
 
 
-def _make_continuous(settings, mode: str = "continuous") -> str:
+def _make_continuous(settings, mode: str = "continuous", **snap) -> str:
     with session_scope(settings) as db:
         row = create_crawl_job(
             db, countries="KR", industries="건설", listed="unknown",
-            persist=True, segments_total=1, triggered_by="x", mode=mode,
+            persist=True, segments_total=1, triggered_by="x", mode=mode, **snap,
         )
         return row.id
 
@@ -590,3 +590,46 @@ def test_dry_run_does_not_spawn_domain_backfill_consumer(settings, monkeypatch) 
         with bg._guard:
             bg._running = False
     assert calls["resolve"] == 0
+
+
+def test_watchdog_restart_restores_option_snapshot(settings, monkeypatch) -> None:
+    """재기동이 target_count·regions·discovery_only 스냅샷을 복원한다(전수리뷰 HIGH).
+
+    미복원 구동작: 지역한정→전국 확대·상한 소멸·discovery_only→풀 enrich 로
+    범위·비용이 원 요청과 달라졌다.
+    """
+    monkeypatch.setattr(settings, "crawl_watchdog_grace_misses", 1)
+    dead = _make_continuous(
+        settings, target_count=7, regions="서울특별시", discovery_only=True
+    )
+    captured: list[int] = []
+
+    def _capture(_s, _jid, _segs, _persist, target, _continuous) -> None:
+        captured.append(target)
+
+    assert bg._watchdog_tick(settings, runner=_capture, misses={}, alive_check=_DEAD) is True
+    assert captured == [7]  # target_count 상한 복원.
+    with session_scope(settings) as db:
+        alive = active_crawl_job(db)
+        assert alive is not None and alive.id != dead
+        # 새 잡 행에도 스냅샷이 그대로 이어진다(다음 재기동 체인 보존).
+        assert alive.target_count == 7
+        assert alive.regions == "서울특별시"
+        assert alive.discovery_only is True
+
+
+def test_crawl_job_info_exposes_option_snapshot(settings) -> None:
+    """API 응답모델이 스냅샷 3필드를 실제로 노출한다(교차리뷰 HIGH — pydantic extra 드롭).
+
+    미선언이면 crawl_job_dict 가 값을 실어도 CrawlJobInfo(**dict) 가 조용히 버린다.
+    """
+    from leadcrawler.api.schemas import CrawlJobInfo
+    from leadcrawler.storage.crawl_job import crawl_job_dict, get_crawl_job
+
+    jid = _make_continuous(settings, target_count=5, regions="부산광역시", discovery_only=True)
+    with session_scope(settings) as db:
+        info = CrawlJobInfo(**crawl_job_dict(get_crawl_job(db, jid)))
+    dumped = info.model_dump()
+    assert dumped["target_count"] == 5
+    assert dumped["regions"] == "부산광역시"
+    assert dumped["discovery_only"] is True
