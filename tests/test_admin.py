@@ -105,8 +105,10 @@ def test_worker_cannot_list_users(worker: TestClient) -> None:
     assert worker.get("/admin/users").status_code == 403
 
 
-def test_worker_cannot_export(worker: TestClient) -> None:
-    assert worker.get("/export").status_code == 403
+def test_worker_can_export_own_scope(worker: TestClient) -> None:
+    """export 개방(PO 2026-07-14): worker 도 200 — 내용 스코프(자기 확정분만) 검증은
+    tests/test_api.py::test_export_worker_own_scope_admin_full 쪽."""
+    assert worker.get("/export").status_code == 200
 
 
 def test_worker_can_review(worker: TestClient) -> None:
