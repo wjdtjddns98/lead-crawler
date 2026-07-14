@@ -524,6 +524,8 @@ def set_review_status(
         session, rq.company_id, has_form, homepage=homepage, company=company
     )
     if note is not None:
+        # ponytail: note 는 감사이력(before/after) 미기록 — 최종값만 의미 있는 자유
+        # 메모라 의도적 생략. 책임추적이 필요해지면 ReviewAuditRow 에 컬럼 추가.
         rq.note = note.strip() or None  # 빈 문자열=메모 지움.
     rq.status = status
     if status in (CONFIRMED, REJECTED):
@@ -867,8 +869,9 @@ def _to_dict(
         "market": market,
         "homepage": company.homepage if company else None,
         "site_alive": company.site_alive if company else False,
-        # 문의폼 URL + 신뢰도(없으면 None) — 저신뢰(폴백 0.3)면 리뷰레인서 '사람 확인' 표기.
+        # 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼.
         "note": rq.note,
+        # 문의폼 URL + 신뢰도(없으면 None) — 저신뢰(폴백 0.3)면 리뷰레인서 '사람 확인' 표기.
         "form": form_url,
         "form_confidence": form_conf,
         "form_low_confidence": form_url is not None and form_conf is not None
