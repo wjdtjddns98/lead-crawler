@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { claimWork, confirmReview, fetchMyWork, fetchQueue, rejectReview } from "../api";
 import { errMsg } from "../format";
 import { krInScope, LISTED_FILTER_OPTIONS, useQueueFilterOpts } from "../filterOptions";
+import { ExportSection } from "./admin/ExportSection";
 import { QueueTable } from "./QueueTable";
 import { TableSkeleton } from "./TableSkeleton";
 import { FilterPopover, pickSummary } from "./FilterPopover";
@@ -273,6 +274,9 @@ export function MyWork() {
           </p>
         </>
       )}
+
+      {/* 내 확정분 다운로드(#273) — 관리자 전용이던 엑셀 내보내기를 worker 에게 개방(본인 확정분만). */}
+      {tab === "confirmed" && <ExportSection title="내 확정분 다운로드" />}
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
         <p className="text-muted my-2 tabular-nums">
