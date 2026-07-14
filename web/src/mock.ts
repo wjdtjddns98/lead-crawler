@@ -692,6 +692,15 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
   }
   if (path === "/admin/audit")
     return jsonRes(audit.slice(0, Number(u.searchParams.get("limit") ?? 100) || 100));
+  // 직원별 일일 처리량(#279) — mock 은 단일 사용자라 db 전체 확정/거부 카운트를 그대로 노출.
+  if (path === "/admin/stats/review-daily" && method === "GET") {
+    const confirmed = db.filter((x) => x.status === "confirmed").length;
+    const rejected = db.filter((x) => x.status === "rejected").length;
+    return jsonRes({
+      date: u.searchParams.get("date") ?? new Date().toLocaleDateString("sv-SE"),
+      items: confirmed || rejected ? [{ username: "mock-admin", confirmed, rejected }] : [],
+    });
+  }
   // 크롤 타깃 픽커 옵션 — BE 와 동일하게 국가/업종 표준 목록 전량(/queue/filters 와 같은 출처).
   if (path === "/admin/countries") return jsonRes(MOCK_COUNTRIES);
   if (path === "/admin/industries") return jsonRes(MOCK_INDUSTRIES);
