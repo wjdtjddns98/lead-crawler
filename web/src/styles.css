@@ -30,6 +30,14 @@
      가운데 정렬(mx-auto) 콘텐츠가 좌우로 튀는 레이아웃 시프트 방지. */
   html {
     scrollbar-gutter: stable;
+    /* 앱이 다크 전용(라이트 토글 없음) — 네이티브 폼 컨트롤(달력 아이콘·팝업, 스크롤바)도
+       라이트 기본값 대신 다크로 렌더링되게 브라우저에 알린다. */
+    color-scheme: dark;
+  }
+
+  /* 기본이 cursor:default 라 클릭 가능한 아이콘으로 안 읽힘. */
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
   }
 
   body {
