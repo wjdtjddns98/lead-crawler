@@ -4,12 +4,13 @@ import {
   changeUserRole,
   createUser,
   fetchAudit,
+  fetchReviewDaily,
   fetchUsers,
   getUser,
   reclaimUser,
   setUserActive,
 } from "../../api";
-import type { AuditEntry, Role, UserStats } from "../../types";
+import type { AuditEntry, ReviewDailyStats, Role, UserStats } from "../../types";
 import { errMsg } from "../../format";
 import { ErrorBox } from "../ErrorBox";
 import { TableSkeleton } from "../TableSkeleton";
@@ -244,6 +245,8 @@ export function AccountsSection() {
         )}
       </section>
 
+      <ReviewDailySection />
+
       <AuditSection audit={audit} loading={loading} />
     </>
   );
@@ -263,6 +266,78 @@ const DATE_PRESETS: [string, number | null][] = [
   ["최근 30일", 29],
   ["전체", null],
 ];
+
+// 직원별 일일 처리량(확정/거부) — GET /admin/stats/review-daily(#279). date=""면 BE 기본(오늘 KST).
+function ReviewDailySection() {
+  const [date, setDate] = useState("");
+  const [stats, setStats] = useState<ReviewDailyStats | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetchReviewDaily(date || undefined)
+      .then((s) => {
+        if (!cancelled) setStats(s);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(errMsg(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [date]);
+
+  return (
+    <section>
+      <h2 className={SECTION_H2}>직원별 일일 처리량</h2>
+      <div className="flex gap-2 mb-3.5 items-center">
+        <input
+          type="date"
+          className={INPUT}
+          value={date}
+          max={DATE_MAX}
+          onChange={(e) => setDate(e.target.value)}
+          aria-label="집계 일자"
+        />
+        <button type="button" className={date === "" ? BTN_FILTER_ACTIVE : BTN} onClick={() => setDate("")}>
+          오늘
+        </button>
+        {stats && <span className="text-muted text-[13px]">{stats.date} 기준</span>}
+      </div>
+      {error && <ErrorBox>{error}</ErrorBox>}
+      {loading && !stats ? (
+        <TableSkeleton rows={3} />
+      ) : !stats || stats.items.length === 0 ? (
+        <p className={EMPTY}>집계할 처리 이력이 없습니다.</p>
+      ) : (
+        <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
+          <thead>
+            <tr>
+              <th className={TH}>담당자</th>
+              <th className={TH}>확정</th>
+              <th className={TH}>거부</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stats.items.map((it) => (
+              <tr key={it.username}>
+                <td className={`${TD} font-semibold`}>{it.username}</td>
+                <td className={`${TD} tabular-nums`}>{it.confirmed}</td>
+                <td className={`${TD} tabular-nums`}>{it.rejected}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
 
 // 최근 검증 이력 — 담당자·액션·업체명 필터 + 페이지네이션.
 // fetchAudit 이 BE 상한(500건)까지 받아오므로 필터/페이지는 전부 클라이언트에서 계산한다.
