@@ -195,6 +195,8 @@ class ReviewQueueRow(Base):
     selected_by_human: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false()
     )
+    # 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼으로 export 된다.
+    note: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
 
 class ReviewAuditRow(Base):
