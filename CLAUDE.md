@@ -72,3 +72,14 @@
   먼저 보여주지 않는다), 두 안이 나오면 메인 세션(Opus 4.8)이 비교·종합해 최종안 확정 후 구현.
 - Codex 호출: codex MCP(`.mcp.json` 등록, `mcp__codex__*`) 우선, 미가용 시 `codex exec` CLI 폴백.
   Codex 왕복 실패는 결과에 "Codex 미가동"으로 명시(교차검증 안 된 결과를 숨기지 않는다).
+
+## 8. 버전관리 (SemVer-lite, 2026-07-14 도입) *(공통 — 승격 수행자가 집행)*
+- **버전 단일 출처 = `pyproject.toml` 의 `version` + prod 머지커밋의 annotated git tag
+  `vX.Y.Z`**(둘은 항상 일치). `web/package.json` 의 version 은 동결(어디에도 소비 안 됨 —
+  올리지 않는다).
+- **올리는 시점 = dev→prod 승격 PR에서만**(승격=릴리스 단위. dev 대상 개별 PR에선 안 올림):
+  기능 포함=MINOR↑ · 픽스/운영수정만=PATCH↑ · 호환 깨는 대개편=MAJOR↑.
+- 절차: 승격 PR 안에 pyproject version bump 커밋을 포함 → 머지 후 prod 머지커밋에
+  `git tag -a vX.Y.Z -m "<릴리스 요약>"` + `git push origin vX.Y.Z`.
+- 시작점: MVP 완료 선언(PO, 2026-07-14) 기준 **다음 승격 = v1.0.0**(현 0.1.0 에서 점프 —
+  0.0.x 로 역행 금지).
