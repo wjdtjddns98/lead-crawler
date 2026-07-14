@@ -10,7 +10,8 @@ import { SECTION_H2, FIELD, CRAWL_TARGET } from "./shared";
 
 // 확정분 엑셀 추출 — 국가/업종을 골라 선택 추출(빈 선택=전체). 전체 추출도 여기서
 // (선택 없이 다운로드). 헤더의 '전체 확정분' 버튼은 중복이라 제거됨(2026-07-02).
-export function ExportSection() {
+// admin 콘솔 전용이 아니다 — MyWork(worker)도 재사용(#273, BE 가 role 로 본인 확정분만 내려줌).
+export function ExportSection({ title = "확정분 엑셀 추출" }: { title?: string }) {
   const [countries, setCountries] = useState("");
   const [industries, setIndustries] = useState("");
   const [busy, setBusy] = useState(false);
@@ -33,7 +34,7 @@ export function ExportSection() {
 
   return (
     <section>
-      <h2 className={SECTION_H2}>확정분 엑셀 추출</h2>
+      <h2 className={SECTION_H2}>{title}</h2>
       {err && <ErrorBox>{err}</ErrorBox>}
       <div className={CRAWL_TARGET}>
         <div className={FIELD}>
