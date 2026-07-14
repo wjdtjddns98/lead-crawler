@@ -60,6 +60,18 @@ export interface UserStats {
   last_action_at: string | null;
 }
 
+export interface ReviewDailyStatsItem {
+  username: string;
+  confirmed: number;
+  rejected: number;
+}
+
+// GET /admin/stats/review-daily 응답 — 직원별 하루(KST) 확정/거부 건수(reclaim 등 제외).
+export interface ReviewDailyStats {
+  date: string; // YYYY-MM-DD(KST)
+  items: ReviewDailyStatsItem[];
+}
+
 export interface AuditEntry {
   id: string;
   review_id: string;
