@@ -182,6 +182,21 @@ class AuditEntry(BaseModel):
     at: str | None = None
 
 
+class ReviewDailyStatsItem(BaseModel):
+    """직원 1명의 하루 처리량(확정/거부)."""
+
+    username: str
+    confirmed: int = 0
+    rejected: int = 0
+
+
+class ReviewDailyStats(BaseModel):
+    """직원별 하루(KST) 처리 통계 — GET /admin/stats/review-daily 응답."""
+
+    date: str  # 집계 일자(YYYY-MM-DD, KST)
+    items: list[ReviewDailyStatsItem]
+
+
 class CountryOption(BaseModel):
     """지원 국가 1건 — 크롤 타깃 국가 선택 UI(검색+리스트)용."""
 

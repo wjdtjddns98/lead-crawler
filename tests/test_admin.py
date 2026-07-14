@@ -248,6 +248,24 @@ def test_worker_cannot_view_audit(worker: TestClient) -> None:
     assert worker.get("/admin/audit").status_code == 403
 
 
+# --- 직원별 일일 처리 통계 -------------------------------------------
+
+def test_review_daily_stats(admin: TestClient) -> None:
+    rid = admin.get("/queue").json()["items"][0]["id"]
+    admin.post(f"/queue/{rid}/reject")
+    admin.post(f"/queue/{rid}/confirm")  # 재처리 — 오늘 확정 1·거부 1 누적.
+    body = admin.get("/admin/stats/review-daily").json()
+    assert body["items"] == [{"username": _ADMIN, "confirmed": 1, "rejected": 1}]
+    # 다른 일자로 조회하면 빈 목록 — date 파라미터의 하루 경계 스코프 검증.
+    old = admin.get("/admin/stats/review-daily", params={"date": "2020-01-01"}).json()
+    assert old["date"] == "2020-01-01"
+    assert old["items"] == []
+
+
+def test_worker_cannot_view_daily_stats(worker: TestClient) -> None:
+    assert worker.get("/admin/stats/review-daily").status_code == 403
+
+
 # --- 크롤 타깃(웹앱 관리자 설정) ------------------------------------
 
 def test_get_crawl_target_default(admin: TestClient) -> None:

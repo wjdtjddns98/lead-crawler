@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from datetime import date
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy import select
@@ -25,7 +26,7 @@ from ..security import (
 )
 from ..sources.countries import korean_label, supported_countries
 from ..sources.industry import supported_industries
-from ..storage.audit import recent_audit, user_stats
+from ..storage.audit import daily_review_stats, recent_audit, user_stats
 from ..storage.review import admin_reclaim
 from ..storage.crawl_job import (
     active_crawl_job,
@@ -44,6 +45,7 @@ from .schemas import (
     CrawlTargetRequest,
     CreateUserRequest,
     IndustryOption,
+    ReviewDailyStats,
     RoleUpdateRequest,
     UserStatsItem,
 )
@@ -178,6 +180,17 @@ def register_admin(
             raise HTTPException(status_code=404, detail="계정을 찾을 수 없습니다")
         n = admin_reclaim(db, user_id, actor_id=admin.id, actor_username=admin.username)
         return {"reclaimed": n}
+
+    @app.get("/admin/stats/review-daily", response_model=ReviewDailyStats)
+    def review_daily(
+        stat_date: date | None = Query(
+            default=None, alias="date", description="집계 일자(YYYY-MM-DD, KST 기준·기본 오늘)"
+        ),
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> ReviewDailyStats:
+        """직원별 하루 처리량(확정/거부) — 검수 생산성 조회. reclaim 등 운영 액션 제외."""
+        return ReviewDailyStats(**daily_review_stats(db, day=stat_date))
 
     @app.get("/admin/audit", response_model=list[AuditEntry])
     def audit(
