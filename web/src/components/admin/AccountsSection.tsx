@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, HelpCircle } from "lucide-react";
 import {
   changeUserRole,
   createUser,
   fetchAudit,
+  fetchReviewDaily,
   fetchUsers,
   getUser,
   reclaimUser,
   setUserActive,
 } from "../../api";
-import type { AuditEntry, Role, UserStats } from "../../types";
+import type { AuditEntry, ReviewDailyStatsItem, Role, UserStats } from "../../types";
 import { errMsg } from "../../format";
 import { ErrorBox } from "../ErrorBox";
 import { TableSkeleton } from "../TableSkeleton";
-import { BTN, BTN_CONFIRM, BTN_REJECT, EMPTY, INPUT, TD, TH } from "../../ui";
+import { BTN, BTN_CONFIRM, BTN_FILTER_ACTIVE, BTN_REJECT, EMPTY, INPUT, TD, TH } from "../../ui";
 import { SECTION_H2, fmt } from "./shared";
 import { ConfirmDialog } from "./ConfirmDialog";
 
@@ -35,6 +36,7 @@ type PendingAction =
 export function AccountsSection() {
   const [users, setUsers] = useState<UserStats[]>([]);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [today, setToday] = useState<Map<string, ReviewDailyStatsItem>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null); // 회수 등 액션 성공 피드백
   const [loading, setLoading] = useState(false);
@@ -48,6 +50,13 @@ export function AccountsSection() {
       const [u, a] = await Promise.all([fetchUsers(), fetchAudit()]);
       setUsers(u);
       setAudit(a);
+      try {
+        const rd = await fetchReviewDaily();
+        setToday(new Map(rd.items.map((i) => [i.username, i])));
+      } catch {
+        // #279 미승격 서버(dev 전용 배포)엔 없는 엔드포인트일 수 있다 — 오늘란 0/0 폴백 유지,
+        // 계정·이력 로드는 정상 진행(CrawlHistory 와 동일 패턴).
+      }
     } catch (e) {
       setError(errMsg(e));
     } finally {
@@ -154,9 +163,24 @@ export function AccountsSection() {
                 <th className={TH}>아이디</th>
                 <th className={TH}>권한</th>
                 <th className={TH}>상태</th>
-                <th className={TH}>확정</th>
-                <th className={TH}>거부</th>
-                <th className={TH}>점유</th>
+                <th className={TH}>
+                  <span className="relative inline-flex items-center gap-1 group">
+                    오늘 처리량
+                    <HelpCircle size={13} className="text-muted cursor-help" aria-hidden />
+                    {/* 네이티브 title 은 hover 후 뜨기까지 지연이 있어 CSS 만으로 즉시 표시.
+                        위/아래가 아닌 오른쪽 배치 — 테이블 자체가 rounded-lg overflow-hidden 이라
+                        위쪽으로 벗어나는 배치는 테이블 경계에 잘린다(이 컬럼은 마지막 컬럼이 아니라
+                        오른쪽으로는 안 잘림). */}
+                    <span
+                      role="tooltip"
+                      className="pointer-events-none absolute left-full top-1/2 z-10 ml-1.5 hidden w-max max-w-[220px]
+                        -translate-y-1/2 whitespace-normal rounded-md border border-line bg-canvas px-2 py-1 text-xs
+                        font-normal normal-case tracking-normal text-ink shadow-lg group-hover:block"
+                    >
+                      오늘 확정+거부 건수 / 오늘 배정 건수(확정+거부+대기)
+                    </span>
+                  </span>
+                </th>
                 <th className={TH}>마지막 처리</th>
                 <th className={TH}>액션</th>
               </tr>
@@ -165,6 +189,9 @@ export function AccountsSection() {
               {users.map((u) => {
                 const self = u.username === me;
                 const inactive = !u.is_active;
+                const t = today.get(u.username);
+                const done = (t?.confirmed ?? 0) + (t?.rejected ?? 0);
+                const assigned = done + u.claimed; // 오늘 검증(확정+거부) + 아직 남은 점유(대기)
                 return (
                   <tr key={u.id} className={inactive ? "text-muted" : ""}>
                     <td className={`${TD} font-semibold`}>{u.username}</td>
@@ -186,9 +213,9 @@ export function AccountsSection() {
                         {u.is_active ? "활성" : "비활성"}
                       </span>
                     </td>
-                    <td className={`${TD} tabular-nums`}>{u.confirmed}</td>
-                    <td className={`${TD} tabular-nums`}>{u.rejected}</td>
-                    <td className={`${TD} tabular-nums`}>{u.claimed}</td>
+                    <td className={`${TD} tabular-nums`} title="오늘 확정+거부 건수 / 오늘 배정 건수(확정+거부+대기)">
+                      {done} / {assigned}
+                    </td>
                     <td className={`${TD} text-muted whitespace-nowrap`}>{fmt(u.last_action_at)}</td>
                     <td className={TD}>
                       <div className="flex gap-1.5 flex-wrap">
@@ -252,22 +279,54 @@ export function AccountsSection() {
 // 한 페이지에 보여줄 이력 건수
 const AUDIT_PAGE = 20;
 
+// 연도 필드에 4자리 상한을 걸어야 브라우저가 5번째 숫자부터 다음 칸(월)으로 넘긴다.
+// (max 없이 비워두면 연도 세그먼트가 6자리까지 계속 먹는다 — 네이티브 date input 스펙 동작.)
+const DATE_MAX = "9999-12-31";
+
+// 날짜 필터 프리셋 — [라벨, 오늘로부터 며칠 전]. null=전체(필터 해제).
+const DATE_PRESETS: [string, number | null][] = [
+  ["오늘", 0],
+  ["최근 7일", 6],
+  ["최근 30일", 29],
+  ["전체", null],
+];
+
 // 최근 검증 이력 — 담당자·액션·업체명 필터 + 페이지네이션.
 // fetchAudit 이 BE 상한(500건)까지 받아오므로 필터/페이지는 전부 클라이언트에서 계산한다.
 function AuditSection({ audit, loading }: { audit: AuditEntry[]; loading: boolean }) {
   const [actor, setActor] = useState(""); // ""=전체
   const [action, setAction] = useState(""); // ""=전체
   const [q, setQ] = useState(""); // 업체명 부분일치 검색
+  const [dateFrom, setDateFrom] = useState(""); // ""=제한 없음, YYYY-MM-DD
+  const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(0);
 
   const actors = [...new Set(audit.map((a) => a.actor_username).filter(Boolean))];
   const needle = q.trim().toLowerCase();
-  const filtered = audit.filter(
-    (a) =>
+  // fmt()와 동일하게 로컬 타임존 날짜로 비교 — ISO(UTC) 슬라이스는 자정 근처에서 표시일과 하루 어긋난다.
+  const localDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("sv-SE") : "");
+  const daysAgoLocal = (n: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return d.toLocaleDateString("sv-SE");
+  };
+  const setPreset = (days: number | null) =>
+    applyFilter(() => {
+      setDateFrom(days === null ? "" : daysAgoLocal(days));
+      setDateTo(days === null ? "" : daysAgoLocal(0));
+    });
+  const isPreset = (days: number | null) =>
+    days === null ? !dateFrom && !dateTo : dateFrom === daysAgoLocal(days) && dateTo === daysAgoLocal(0);
+  const filtered = audit.filter((a) => {
+    const d = localDate(a.at);
+    return (
       (!actor || a.actor_username === actor) &&
       (!action || a.action === action) &&
-      (!needle || (a.company_name || "").toLowerCase().includes(needle)),
-  );
+      (!needle || (a.company_name || "").toLowerCase().includes(needle)) &&
+      (!dateFrom || (d && d >= dateFrom)) &&
+      (!dateTo || (d && d <= dateTo))
+    );
+  });
   const pages = Math.max(1, Math.ceil(filtered.length / AUDIT_PAGE));
   const cur = Math.min(page, pages - 1); // 필터로 결과가 줄어 페이지가 범위를 벗어나면 마지막 페이지로 보정
   const rows = filtered.slice(cur * AUDIT_PAGE, (cur + 1) * AUDIT_PAGE);
@@ -321,6 +380,34 @@ function AuditSection({ audit, loading }: { audit: AuditEntry[]; loading: boolea
               onChange={(e) => applyFilter(() => setQ(e.target.value))}
               aria-label="업체명 검색"
             />
+            <input
+              type="date"
+              className={INPUT}
+              value={dateFrom}
+              max={dateTo || DATE_MAX}
+              onChange={(e) => applyFilter(() => setDateFrom(e.target.value))}
+              aria-label="시작일"
+            />
+            <span className="text-muted text-[13px]">~</span>
+            <input
+              type="date"
+              className={INPUT}
+              value={dateTo}
+              min={dateFrom || undefined}
+              max={DATE_MAX}
+              onChange={(e) => applyFilter(() => setDateTo(e.target.value))}
+              aria-label="종료일"
+            />
+            {DATE_PRESETS.map(([label, days]) => (
+              <button
+                key={label}
+                type="button"
+                className={isPreset(days) ? BTN_FILTER_ACTIVE : BTN}
+                onClick={() => setPreset(days)}
+              >
+                {label}
+              </button>
+            ))}
             <span className="text-muted text-[13px] tabular-nums">총 {filtered.length}건</span>
           </div>
           {/* table-fixed: 컬럼 폭을 헤더에서 고정 — 필터로 행 내용이 바뀌어도 폭이 출렁이지 않는다.

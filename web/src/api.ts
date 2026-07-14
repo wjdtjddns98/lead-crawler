@@ -12,6 +12,7 @@ import type {
   LoginResponse,
   QueueFilters,
   QueueResponse,
+  ReviewDailyStats,
   ReviewItem,
   ReviewStatus,
   Role,
@@ -195,11 +196,13 @@ export async function confirmReview(
   selected?: string,
   homepage?: string,
   hasForm?: boolean,
+  note?: string,
 ): Promise<ReviewItem> {
   return apiSend("POST", `/queue/${id}/confirm`, {
     selected: selected ?? null,
     homepage: homepage ?? null,
     has_form: hasForm ?? null,
+    note: note ?? null,
   });
 }
 
@@ -238,6 +241,11 @@ export async function reclaimUser(id: string): Promise<{ reclaimed: number }> {
 // ponytail: BE 에 필터 파라미터가 없어 클라이언트 처리 — 이력이 500건을 넘어 잘리면 BE 계약 확장(offset·필터) 제안.
 export async function fetchAudit(limit = 500): Promise<AuditEntry[]> {
   return apiGet(`/admin/audit?limit=${limit}`);
+}
+
+// 직원별 하루 처리량(확정/거부) — date 생략 시 BE 기본(오늘 KST).
+export async function fetchReviewDaily(date?: string): Promise<ReviewDailyStats> {
+  return apiGet(`/admin/stats/review-daily${date ? `?date=${date}` : ""}`);
 }
 
 export async function fetchCountries(): Promise<CountryOption[]> {

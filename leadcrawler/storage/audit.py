@@ -6,11 +6,16 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta, timezone
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..schema import CompanyRow, ReviewAuditRow, ReviewQueueRow, UserRow
 from .review import CONFIRMED, PENDING, REJECTED
+
+# KST 고정 오프셋(무DST) — zoneinfo/tzdata 의존 없이 '오늘' 경계를 계산한다.
+_KST = timezone(timedelta(hours=9))
 
 
 def user_stats(session: Session) -> list[dict]:
@@ -68,6 +73,34 @@ def user_stats(session: Session) -> list[dict]:
             }
         )
     return out
+
+
+def daily_review_stats(session: Session, *, day: date | None = None) -> dict:
+    """직원별 하루(KST) 처리 통계 — 확정/거부 건수. 운영 액션(reclaim)은 제외.
+
+    ``actor_username`` 스냅샷으로 집계해 계정이 삭제돼도 그날 작업량은 남는다.
+    저장 규약이 aware UTC 라(SQLite 는 오프셋 포함 문자열) 경계도 UTC 로 변환해 비교한다.
+    """
+    day = day or datetime.now(_KST).date()
+    start = datetime(day.year, day.month, day.day, tzinfo=_KST).astimezone(timezone.utc)
+    end = start + timedelta(days=1)
+    rows = session.execute(
+        select(ReviewAuditRow.actor_username, ReviewAuditRow.action, func.count())
+        .where(ReviewAuditRow.at >= start, ReviewAuditRow.at < end)
+        .where(ReviewAuditRow.action.in_((CONFIRMED, REJECTED)))
+        .group_by(ReviewAuditRow.actor_username, ReviewAuditRow.action)
+    ).all()
+    per: dict[str, dict[str, int]] = {}
+    for username, action, n in rows:
+        item = per.setdefault(username, {"confirmed": 0, "rejected": 0})
+        item["confirmed" if action == CONFIRMED else "rejected"] = n
+    items = [
+        {"username": u, "confirmed": v["confirmed"], "rejected": v["rejected"]}
+        for u, v in sorted(
+            per.items(), key=lambda kv: -(kv[1]["confirmed"] + kv[1]["rejected"])
+        )
+    ]
+    return {"date": day.isoformat(), "items": items}
 
 
 def recent_audit(session: Session, *, limit: int = 100, offset: int = 0) -> list[dict]:

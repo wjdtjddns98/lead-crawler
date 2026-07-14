@@ -144,3 +144,5 @@ class CompanyLead(BaseModel):
     email_validation: EmailValidation = Field(default_factory=EmailValidation)
     # 후보 주소값 → 검증결과. 후보별 신호를 검증 UI 에 보이기 위해 보관.
     email_validations: dict[str, EmailValidation] = Field(default_factory=dict)
+    # 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼에 기입.
+    note: str = ""

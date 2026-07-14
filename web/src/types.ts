@@ -26,6 +26,7 @@ export interface ReviewItem {
   homepage: string | null;
   site_alive: boolean;
   form: string | null;
+  note: string | null; // 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼.
   email_status: string | null;
   email_mx: boolean | null;
   email_smtp: boolean | null;
@@ -58,6 +59,18 @@ export interface UserStats {
   rejected: number;
   claimed: number; // 현재 점유 중인 pending 건수 — 관리자 회수 판단용
   last_action_at: string | null;
+}
+
+export interface ReviewDailyStatsItem {
+  username: string;
+  confirmed: number;
+  rejected: number;
+}
+
+// GET /admin/stats/review-daily 응답 — 직원별 하루(KST) 확정/거부 건수(reclaim 등 제외).
+export interface ReviewDailyStats {
+  date: string; // YYYY-MM-DD(KST)
+  items: ReviewDailyStatsItem[];
 }
 
 export interface AuditEntry {

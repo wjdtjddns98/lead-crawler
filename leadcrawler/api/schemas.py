@@ -45,6 +45,7 @@ class ReviewItem(BaseModel):
     homepage: str | None = None
     site_alive: bool = False
     form: str | None = None  # 문의폼 URL(이메일 없을 때 폼으로 처리)
+    note: str | None = None  # 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼
     form_confidence: float | None = None  # 폼 신뢰도(없으면 None)
     form_low_confidence: bool = False  # 저신뢰 폴백 폼(사람 확인 필요) — 리뷰레인 표기용
     # 선택된 후보의 검증 신호(이메일 컬럼 표시용, 없으면 None).
@@ -83,11 +84,14 @@ class ConfirmRequest(BaseModel):
     빈 문자열("")도 형식 위반이라 422 로 거부된다. ``has_form``(#241) 은 문의폼 유무
     교정값(``None`` = 변경 없음): ``False`` = 폼 없음(저장된 폼 삭제), ``True`` = 폼 있음
     (URL 미상이면 홈페이지를 진입 링크로 저장 — 홈페이지도 없으면 400).
+    ``note`` 는 검수자 기타 메모(문의폼 미발송 사유 등, 엑셀 L 컬럼): ``None`` = 변경
+    없음, 빈 문자열 = 메모 지움.
     """
 
     selected: str | None = None
     homepage: str | None = Field(default=None, max_length=512)
     has_form: bool | None = None
+    note: str | None = Field(default=None, max_length=512)
 
     @field_validator("homepage")
     @classmethod
@@ -180,6 +184,21 @@ class AuditEntry(BaseModel):
     selected: str | None = None
     company_name: str = ""
     at: str | None = None
+
+
+class ReviewDailyStatsItem(BaseModel):
+    """직원 1명의 하루 처리량(확정/거부)."""
+
+    username: str
+    confirmed: int = 0
+    rejected: int = 0
+
+
+class ReviewDailyStats(BaseModel):
+    """직원별 하루(KST) 처리 통계 — GET /admin/stats/review-daily 응답."""
+
+    date: str  # 집계 일자(YYYY-MM-DD, KST)
+    items: list[ReviewDailyStatsItem]
 
 
 class CountryOption(BaseModel):

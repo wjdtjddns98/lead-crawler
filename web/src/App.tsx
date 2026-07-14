@@ -186,15 +186,16 @@ function Workbench({
     selected?: string,
     homepage?: string,
     hasForm?: boolean,
+    note?: string,
   ): Promise<boolean> => {
     setBusyIds((prev) => new Set(prev).add(id));
     setError(null);
     let ok = false;
     try {
-      // 담당자는 서버가 로그인 사용자로 자동 기록. 확정 시 사람이 고른 이메일·사이트·문의폼 수정값을 보낸다.
+      // 담당자는 서버가 로그인 사용자로 자동 기록. 확정 시 사람이 고른 이메일·사이트·문의폼·메모 수정값을 보낸다.
       const updated =
         kind === "confirm"
-          ? await confirmReview(id, selected, homepage, hasForm)
+          ? await confirmReview(id, selected, homepage, hasForm, note)
           : await rejectReview(id);
       // 현재 필터에서 벗어난 항목은 목록에서 빠지므로 재조회, 아니면 제자리 갱신.
       if (filter && updated.status !== filter) {
@@ -358,8 +359,8 @@ function Workbench({
           remaining={total}
           // 전체 큐는 admin 전용 뷰(탭 자체가 admin 에게만 노출) — worker 의 직접 처리는
           // claim(내 작업) 경유만이라 미점유 항목 동시 중복 검토가 원천 차단된다.
-          onConfirm={(id, selected, homepage, hasForm) =>
-            act(id, "confirm", selected, homepage, hasForm)
+          onConfirm={(id, selected, homepage, hasForm, note) =>
+            act(id, "confirm", selected, homepage, hasForm, note)
           }
           onReject={(id) => act(id, "reject")}
           // 전체큐는 점유 항목이 서버에서 제외됨 — pending 0 = "받아갈 수 있는 작업 없음".
@@ -396,7 +397,7 @@ function Workbench({
   );
 
   return (
-    <div className="mx-auto max-w-[1400px] p-6">
+    <div className="mx-auto max-w-[1680px] p-6">
       <header className="flex items-center justify-between mb-5">
         <h1 className="text-xl font-semibold tracking-tight m-0">검증 워크벤치</h1>
         <div className="flex items-center gap-2.5 text-muted">

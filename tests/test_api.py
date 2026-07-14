@@ -362,6 +362,43 @@ def test_confirm_has_form_null_no_change(client: TestClient) -> None:
     assert r.json()["form"] is None
 
 
+# --- 확정 본문 note(기타 메모 — 문의폼 미발송 사유 등, 엑셀 L 컬럼) ----------
+
+
+def _export_ws(client: TestClient):
+    import io
+
+    from openpyxl import load_workbook
+
+    return load_workbook(io.BytesIO(client.get("/export").content)).active
+
+
+def test_confirm_note_stored_and_exported(client: TestClient) -> None:
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"note": "문의폼 접수 오류로 미발송"})
+    assert r.status_code == 200
+    assert r.json()["note"] == "문의폼 접수 오류로 미발송"
+    ws = _export_ws(client)
+    assert ws.cell(row=1, column=12).value == "기타"
+    assert ws.cell(row=2, column=12).value == "문의폼 접수 오류로 미발송"
+
+
+def test_confirm_note_none_no_change_and_empty_clears(client: TestClient) -> None:
+    rid = client.get("/queue").json()["items"][0]["id"]
+    client.post(f"/queue/{rid}/confirm", json={"note": "사유"})
+    # None(생략)=변경 없음 — 같은 처리자의 재확정은 허용된다.
+    assert client.post(f"/queue/{rid}/confirm", json={}).json()["note"] == "사유"
+    # 공백뿐인 문자열=지움(트림 후 빈값 → NULL).
+    assert client.post(f"/queue/{rid}/confirm", json={"note": " "}).json()["note"] is None
+
+
+def test_confirm_note_formula_defused_in_export(client: TestClient) -> None:
+    # 검수자 자유텍스트도 수식 인젝션 방어 대상(L 컬럼 defuse).
+    rid = client.get("/queue").json()["items"][0]["id"]
+    client.post(f"/queue/{rid}/confirm", json={"note": '=HYPERLINK("x")'})
+    assert _export_ws(client).cell(row=2, column=12).value == '\'=HYPERLINK("x")'
+
+
 # --- #238: GET /queue 서버 정렬(sort_by/sort_dir) ------------------------
 
 def _seed_more(names: list[str]) -> None:

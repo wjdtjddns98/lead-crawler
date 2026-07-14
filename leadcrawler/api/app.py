@@ -251,7 +251,8 @@ def create_app() -> FastAPI:
         ``homepage``(#185) 가 주어지면(``None``=변경 없음) 회사 홈페이지를 갱신한다 —
         URL 형식은 ``ConfirmRequest`` 가 이미 검증했으므로(무효면 422) 여기선 그대로 전달.
         ``has_form``(#241) 은 문의폼 유무 교정값(``None``=변경 없음) — 폼 있음인데
-        홈페이지조차 없어 저장할 URL 이 없으면 400.
+        홈페이지조차 없어 저장할 URL 이 없으면 400. ``note`` 는 검수자 기타 메모
+        (문의폼 미발송 사유 등, ``None``=변경 없음·빈 문자열=지움) — 엑셀 L 컬럼.
         """
         selected = body.selected if body else None
         if selected and selected.strip():
@@ -264,9 +265,10 @@ def create_app() -> FastAPI:
             selected = None
         homepage = body.homepage if body else None
         has_form = body.has_form if body else None
+        note = body.note if body else None
         return _set_status(
             db, review_id, CONFIRMED, user,
-            selected=selected, homepage=homepage, has_form=has_form,
+            selected=selected, homepage=homepage, has_form=has_form, note=note,
         )
 
     @app.post("/queue/{review_id}/reject", response_model=ReviewItem)
@@ -386,6 +388,7 @@ def _set_status(
     selected: str | None = None,
     homepage: str | None = None,
     has_form: bool | None = None,
+    note: str | None = None,
 ) -> ReviewItem:
     """상태 변경 공통 — 담당자=로그인 사용자. 404/후보밖 400/타인점유 409 + 감사기록."""
     try:
@@ -398,6 +401,7 @@ def _set_status(
             selected=selected,
             homepage=homepage,
             has_form=has_form,
+            note=note,
         )
     except ReviewConflict as exc:  # 타인이 점유 중 → 409(영구 배정 — 시간 경과 무관).
         raise HTTPException(status_code=409, detail=str(exc)) from exc

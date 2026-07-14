@@ -460,6 +460,7 @@ def set_review_status(
     selected: str | None = None,
     homepage: str | None = None,
     has_form: bool | None = None,
+    note: str | None = None,
     now: datetime | None = None,
 ) -> dict | None:
     """큐 항목 상태(확정/거부/보류)와 선택 후보를 갱신하고 감사 이력을 적재한다.
@@ -471,7 +472,8 @@ def set_review_status(
     없음)이 주어지면 문의폼 유무를 교정한다: ``False`` 는 저장된 폼 연락처를 삭제하고,
     ``True`` 인데 폼이 없으면 실제 폼 URL 을 모르므로(FE 는 유무만 교정) **홈페이지를
     진입 링크로 저장**한다(엑셀 E 컬럼=클릭 이동 목적과 정합 — 홈페이지도 없으면
-    ValueError). 처리자(assignee/assignee_id)와
+    ValueError). ``note`` 는 검수자 기타 메모(문의폼 미발송 사유 등, ``None``=변경 없음·
+    빈 문자열=지움) — 엑셀 L(기타) 컬럼으로 export 된다. 처리자(assignee/assignee_id)와
     시각(reviewed_at)을 큐 행에 남기고, 변경 1건마다 :class:`ReviewAuditRow` 를 append 해
     책임추적 이력을 보존한다(홈페이지·폼 변경 전/후 값도 같은 행에 기록). 점유는 영구
     귀속이라 **타인이 점유한 항목이면 시간 경과와 무관하게** :class:`ReviewConflict`.
@@ -521,6 +523,10 @@ def set_review_status(
     form_before, form_after = _apply_form_correction(
         session, rq.company_id, has_form, homepage=homepage, company=company
     )
+    if note is not None:
+        # ponytail: note 는 감사이력(before/after) 미기록 — 최종값만 의미 있는 자유
+        # 메모라 의도적 생략. 책임추적이 필요해지면 ReviewAuditRow 에 컬럼 추가.
+        rq.note = note.strip() or None  # 빈 문자열=메모 지움.
     rq.status = status
     if status in (CONFIRMED, REJECTED):
         # 종료 상태로 가면 점유는 무의미 — 정리(귀속은 assignee/reviewed_at 가 보존).
@@ -863,6 +869,8 @@ def _to_dict(
         "market": market,
         "homepage": company.homepage if company else None,
         "site_alive": company.site_alive if company else False,
+        # 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼.
+        "note": rq.note,
         # 문의폼 URL + 신뢰도(없으면 None) — 저신뢰(폴백 0.3)면 리뷰레인서 '사람 확인' 표기.
         "form": form_url,
         "form_confidence": form_conf,

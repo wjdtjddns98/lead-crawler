@@ -28,6 +28,7 @@ const COL_W = [
   "", // 메일(뱃지·MX·SMTP — 단위 사이에서만 줄바꿈)
   "", // 사이트
   "whitespace-nowrap", // 문의폼 유무
+  "min-w-[140px]", // 기타 메모(엑셀 L 컬럼)
   "", // 상태(뱃지는 자체 nowrap — 담당자·시각이 아래로 접힘)
   "min-w-[120px]", // 액션(버튼 2개 가로 고정 — flex 줄바꿈 없음)
 ];
@@ -40,6 +41,7 @@ const HEADERS = [
   "메일",
   "사이트",
   "문의폼",
+  "기타 메모",
   "상태",
   "액션",
 ];
@@ -63,7 +65,7 @@ const SORT_KEY: Record<number, (it: ReviewItem) => string | number> = {
   2: (it) => it.industry,
   3: (it) => LISTED_RANK[it.listed],
   7: (it) => (it.form ? 0 : 1), // 문의폼 있음이 먼저
-  8: (it) => STATUS_RANK[it.status],
+  9: (it) => STATUS_RANK[it.status],
 };
 
 type Sort = { col: number; dir: "asc" | "desc" };
@@ -76,7 +78,14 @@ interface Props {
   // 성공(처리 완료) 시 true 를 resolve — 팝업에서 '성공해야 다음 행 전진' 판단에 쓴다.
   // homepage = 사람이 수정한 사이트 URL(유효 http(s)·원본과 다를 때만, 없으면 undefined).
   // hasForm = 사람이 교정한 문의폼 유무(감지값과 다를 때만, 없으면 undefined).
-  onConfirm: (id: string, selected?: string, homepage?: string, hasForm?: boolean) => Promise<boolean>;
+  // note = 사람이 수정한 기타 메모(원본과 다를 때만, 없으면 undefined — 빈 문자열은 메모 삭제).
+  onConfirm: (
+    id: string,
+    selected?: string,
+    homepage?: string,
+    hasForm?: boolean,
+    note?: string,
+  ) => Promise<boolean>;
   onReject: (id: string) => Promise<boolean>;
   emptyText?: string; // 빈 목록 안내 — 화면 맥락별 문구(생략 시 기본).
 }
@@ -117,10 +126,12 @@ interface RowProps {
   // 사용자가 편집 중인 사이트 URL — undefined 면 편집기 닫힘(기본 한 줄 유지).
   site: string | undefined;
   formChecked: boolean; // 문의폼 유무 체크박스 표시값(override 없으면 감지값).
+  note: string; // 기타 메모 표시값(override 없으면 원본, 없으면 "").
   onPick: (id: string, value: string) => void;
   onEditSite: (id: string, value: string) => void;
   onCancelSite: (id: string) => void; // 편집 취소 — 입력을 닫고 원본 링크로 복귀.
   onToggleForm: (id: string, value: boolean) => void;
+  onEditNote: (id: string, value: string) => void;
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
   onOpen: (id: string, tab: SiteTab) => void;
@@ -137,10 +148,12 @@ const QueueRow = memo(
     choice,
     site,
     formChecked,
+    note,
     onPick,
     onEditSite,
     onCancelSite,
     onToggleForm,
+    onEditNote,
     onConfirm,
     onReject,
     onOpen,
@@ -271,10 +284,21 @@ const QueueRow = memo(
           </div>
         </td>
         <td className={`${TD} ${COL_W[8]}`}>
+          <input
+            className="w-full bg-canvas border border-line text-ink text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+            type="text"
+            value={note}
+            disabled={locked}
+            maxLength={512}
+            placeholder="기타 메모(문의폼 미발송 사유 등)"
+            title="확정 시 엑셀 '기타' 컬럼에 반영됩니다"
+            onChange={(e) => onEditNote(item.id, e.target.value)}
+          />
+        </td>
+        <td className={`${TD} ${COL_W[9]}`}>
           <StatusBadge status={item.status} />
           {item.assignee && (
-            <span className="text-muted text-xs" title={item.reviewed_at ?? undefined}>
-              {" · "}
+            <span className="text-muted text-xs block" title={item.reviewed_at ?? undefined}>
               {item.assignee}
               {item.reviewed_at && (
                 <small className="text-muted text-[11px] ml-0.5"> {fmtTime(item.reviewed_at)}</small>
@@ -282,7 +306,7 @@ const QueueRow = memo(
             </span>
           )}
         </td>
-        <td className={`${TD} ${COL_W[9]}`}>
+        <td className={`${TD} ${COL_W[10]}`}>
           {/* 버튼 라벨은 TD 의 overflow-wrap:anywhere 상속으로 '확/정' 처럼 세로로
               접힐 수 있어 nowrap 으로 잠근다(액션 셀 한정). */}
           <div className="flex gap-1.5 whitespace-nowrap">
@@ -310,7 +334,8 @@ const QueueRow = memo(
     prev.busy === next.busy &&
     prev.choice === next.choice &&
     prev.site === next.site &&
-    prev.formChecked === next.formChecked,
+    prev.formChecked === next.formChecked &&
+    prev.note === next.note,
 );
 
 // 검증 큐 표 — 회사/이메일 후보(다중 선택)/메일 검증 신호/상태/액션.
@@ -369,6 +394,24 @@ export function QueueTable({
       return v === undefined || v === !!it.form ? undefined : v;
     },
     [formOverride],
+  );
+
+  // 행별 기타 메모 편집값 — 원본과 다를 때만 override 를 갖는다(이메일 입력과 같은 상시 입력).
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const onEditNote = useCallback((id: string, value: string) => {
+    setNotes((p) => ({ ...p, [id]: value }));
+  }, []);
+  const note = useCallback((it: ReviewItem): string => notes[it.id] ?? it.note ?? "", [notes]);
+  // 확정에 실릴 메모 수정값 — 원본과 다를 때만(그 외 undefined = 변경 없음). 빈 문자열은
+  // 메모 삭제 의도이므로 원본에 메모가 있었을 때만 유효한 변경으로 취급된다.
+  const editedNote = useCallback(
+    (it: ReviewItem): string | undefined => {
+      const v = notes[it.id];
+      if (v === undefined) return undefined;
+      const trimmed = v.trim();
+      return trimmed === (it.note ?? "") ? undefined : trimmed;
+    },
+    [notes],
   );
 
   // 컬럼 정렬 — 같은 컬럼 재클릭 시 asc↔desc 토글, 3번째 클릭이면 해제(원본 순서 복귀).
@@ -449,11 +492,17 @@ export function QueueTable({
   const popupConfirm = useCallback(
     (id: string, selected?: string) =>
       advanceAfter(id, () => {
-        // 표에서 편집해 둔 사이트 URL·문의폼 유무가 있으면 팝업 확정에도 함께 실린다(편집 유실 방지).
+        // 표에서 편집해 둔 사이트 URL·문의폼 유무·메모가 있으면 팝업 확정에도 함께 실린다(편집 유실 방지).
         const it = itemsRef.current.find((x) => x.id === id);
-        return onConfirm(id, selected, it ? editedSite(it) : undefined, it ? editedForm(it) : undefined);
+        return onConfirm(
+          id,
+          selected,
+          it ? editedSite(it) : undefined,
+          it ? editedForm(it) : undefined,
+          it ? editedNote(it) : undefined,
+        );
       }),
-    [advanceAfter, onConfirm, editedSite, editedForm],
+    [advanceAfter, onConfirm, editedSite, editedForm, editedNote],
   );
   const popupReject = useCallback(
     (id: string) => advanceAfter(id, () => onReject(id)),
@@ -475,6 +524,8 @@ export function QueueTable({
   const modalSiteRaw = modalItem ? sites[modalItem.id]?.trim() : undefined;
   // 확정에 실릴 문의폼 유무 수정값(없으면 undefined).
   const modalForm = modalItem ? editedForm(modalItem) : undefined;
+  // 확정에 실릴 메모 수정값(없으면 undefined — 빈 문자열은 메모 삭제).
+  const modalNote = modalItem ? editedNote(modalItem) : undefined;
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
@@ -524,10 +575,12 @@ export function QueueTable({
               choice={picked[it.id] ?? it.selected ?? it.candidates[0]?.value}
               site={sites[it.id]}
               formChecked={formChecked(it)}
+              note={note(it)}
               onPick={onPick}
               onEditSite={onEditSite}
               onCancelSite={onCancelSite}
               onToggleForm={onToggleForm}
+              onEditNote={onEditNote}
               onConfirm={(id) => setModal({ id, action: "confirm" }) /* 즉시 확정 대신 확인 모달 */}
               // confirmed 행 거부 = 확정 번복 — 확인 모달 경유. pending 거부는 기존대로 1클릭.
               onReject={(id) =>
@@ -575,6 +628,11 @@ export function QueueTable({
                       문의폼 → {modalForm ? "있음" : "없음"}
                     </span>
                   )}
+                  {modalNote !== undefined && (
+                    <span className="block mt-1 text-xs text-muted [overflow-wrap:anywhere]">
+                      메모 → {modalNote || "(삭제)"}
+                    </span>
+                  )}
                   {/* 편집했지만 반영될 변경이 없는 경우(무효 URL·정규화 후 원본과 동일)
                       — 조용히 버리지 않고 미반영을 알린다. */}
                   {modalSiteRaw !== undefined &&
@@ -611,7 +669,13 @@ export function QueueTable({
                 onClick={() => {
                   setModal(null);
                   if (modal.action === "confirm")
-                    void onConfirm(modalItem.id, modalChoice || undefined, modalSite, modalForm);
+                    void onConfirm(
+                      modalItem.id,
+                      modalChoice || undefined,
+                      modalSite,
+                      modalForm,
+                      modalNote,
+                    );
                   else void onReject(modalItem.id);
                 }}
               >
@@ -632,10 +696,14 @@ export function QueueTable({
           tab={open.tab}
           choice={picked[openItem.id] ?? openItem.selected ?? openItem.candidates[0]?.value}
           site={sites[openItem.id]}
+          formChecked={formChecked(openItem)}
+          note={note(openItem)}
           busy={busyIds.has(openItem.id)}
           onTab={(tab) => setOpen({ id: openItem.id, tab })}
           onPick={onPick}
           onEditSite={onEditSite}
+          onToggleForm={onToggleForm}
+          onEditNote={onEditNote}
           onConfirm={popupConfirm}
           onReject={popupReject}
           onClose={() => setOpen(null)}
