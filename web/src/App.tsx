@@ -396,7 +396,7 @@ function Workbench({
   );
 
   return (
-    <div className="mx-auto max-w-[1400px] p-6">
+    <div className="mx-auto max-w-[1680px] p-6">
       <header className="flex items-center justify-between mb-5">
         <h1 className="text-xl font-semibold tracking-tight m-0">검증 워크벤치</h1>
         <div className="flex items-center gap-2.5 text-muted">
