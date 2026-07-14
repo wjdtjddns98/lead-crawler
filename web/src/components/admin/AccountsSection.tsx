@@ -13,7 +13,7 @@ import type { AuditEntry, Role, UserStats } from "../../types";
 import { errMsg } from "../../format";
 import { ErrorBox } from "../ErrorBox";
 import { TableSkeleton } from "../TableSkeleton";
-import { BTN, BTN_CONFIRM, BTN_REJECT, EMPTY, INPUT, TD, TH } from "../../ui";
+import { BTN, BTN_CONFIRM, BTN_FILTER_ACTIVE, BTN_REJECT, EMPTY, INPUT, TD, TH } from "../../ui";
 import { SECTION_H2, fmt } from "./shared";
 import { ConfirmDialog } from "./ConfirmDialog";
 
@@ -252,22 +252,54 @@ export function AccountsSection() {
 // 한 페이지에 보여줄 이력 건수
 const AUDIT_PAGE = 20;
 
+// 연도 필드에 4자리 상한을 걸어야 브라우저가 5번째 숫자부터 다음 칸(월)으로 넘긴다.
+// (max 없이 비워두면 연도 세그먼트가 6자리까지 계속 먹는다 — 네이티브 date input 스펙 동작.)
+const DATE_MAX = "9999-12-31";
+
+// 날짜 필터 프리셋 — [라벨, 오늘로부터 며칠 전]. null=전체(필터 해제).
+const DATE_PRESETS: [string, number | null][] = [
+  ["오늘", 0],
+  ["최근 7일", 6],
+  ["최근 30일", 29],
+  ["전체", null],
+];
+
 // 최근 검증 이력 — 담당자·액션·업체명 필터 + 페이지네이션.
 // fetchAudit 이 BE 상한(500건)까지 받아오므로 필터/페이지는 전부 클라이언트에서 계산한다.
 function AuditSection({ audit, loading }: { audit: AuditEntry[]; loading: boolean }) {
   const [actor, setActor] = useState(""); // ""=전체
   const [action, setAction] = useState(""); // ""=전체
   const [q, setQ] = useState(""); // 업체명 부분일치 검색
+  const [dateFrom, setDateFrom] = useState(""); // ""=제한 없음, YYYY-MM-DD
+  const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(0);
 
   const actors = [...new Set(audit.map((a) => a.actor_username).filter(Boolean))];
   const needle = q.trim().toLowerCase();
-  const filtered = audit.filter(
-    (a) =>
+  // fmt()와 동일하게 로컬 타임존 날짜로 비교 — ISO(UTC) 슬라이스는 자정 근처에서 표시일과 하루 어긋난다.
+  const localDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("sv-SE") : "");
+  const daysAgoLocal = (n: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return d.toLocaleDateString("sv-SE");
+  };
+  const setPreset = (days: number | null) =>
+    applyFilter(() => {
+      setDateFrom(days === null ? "" : daysAgoLocal(days));
+      setDateTo(days === null ? "" : daysAgoLocal(0));
+    });
+  const isPreset = (days: number | null) =>
+    days === null ? !dateFrom && !dateTo : dateFrom === daysAgoLocal(days) && dateTo === daysAgoLocal(0);
+  const filtered = audit.filter((a) => {
+    const d = localDate(a.at);
+    return (
       (!actor || a.actor_username === actor) &&
       (!action || a.action === action) &&
-      (!needle || (a.company_name || "").toLowerCase().includes(needle)),
-  );
+      (!needle || (a.company_name || "").toLowerCase().includes(needle)) &&
+      (!dateFrom || (d && d >= dateFrom)) &&
+      (!dateTo || (d && d <= dateTo))
+    );
+  });
   const pages = Math.max(1, Math.ceil(filtered.length / AUDIT_PAGE));
   const cur = Math.min(page, pages - 1); // 필터로 결과가 줄어 페이지가 범위를 벗어나면 마지막 페이지로 보정
   const rows = filtered.slice(cur * AUDIT_PAGE, (cur + 1) * AUDIT_PAGE);
@@ -321,6 +353,34 @@ function AuditSection({ audit, loading }: { audit: AuditEntry[]; loading: boolea
               onChange={(e) => applyFilter(() => setQ(e.target.value))}
               aria-label="업체명 검색"
             />
+            <input
+              type="date"
+              className={INPUT}
+              value={dateFrom}
+              max={dateTo || DATE_MAX}
+              onChange={(e) => applyFilter(() => setDateFrom(e.target.value))}
+              aria-label="시작일"
+            />
+            <span className="text-muted text-[13px]">~</span>
+            <input
+              type="date"
+              className={INPUT}
+              value={dateTo}
+              min={dateFrom || undefined}
+              max={DATE_MAX}
+              onChange={(e) => applyFilter(() => setDateTo(e.target.value))}
+              aria-label="종료일"
+            />
+            {DATE_PRESETS.map(([label, days]) => (
+              <button
+                key={label}
+                type="button"
+                className={isPreset(days) ? BTN_FILTER_ACTIVE : BTN}
+                onClick={() => setPreset(days)}
+              >
+                {label}
+              </button>
+            ))}
             <span className="text-muted text-[13px] tabular-nums">총 {filtered.length}건</span>
           </div>
           {/* table-fixed: 컬럼 폭을 헤더에서 고정 — 필터로 행 내용이 바뀌어도 폭이 출렁이지 않는다.
