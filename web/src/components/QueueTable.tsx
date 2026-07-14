@@ -273,8 +273,7 @@ const QueueRow = memo(
         <td className={`${TD} ${COL_W[8]}`}>
           <StatusBadge status={item.status} />
           {item.assignee && (
-            <span className="text-muted text-xs" title={item.reviewed_at ?? undefined}>
-              {" · "}
+            <span className="text-muted text-xs block" title={item.reviewed_at ?? undefined}>
               {item.assignee}
               {item.reviewed_at && (
                 <small className="text-muted text-[11px] ml-0.5"> {fmtTime(item.reviewed_at)}</small>
