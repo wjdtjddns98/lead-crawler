@@ -26,6 +26,7 @@ from ..logging import get_logger
 from ..outreach import preview as outreach_preview
 from ..outreach import send_campaign
 from ..schema import CompanyRow, ReviewQueueRow, UserRow
+from ..security import ROLE_ADMIN
 from ..sources.countries import country_match_set, korean_label, supported_countries
 from ..sources.taxonomy import INDUSTRY_TAXONOMY, UNCLASSIFIED
 from ..storage.db import get_engine, get_sessionmaker
@@ -96,7 +97,7 @@ def create_app() -> FastAPI:
         log.warning("api.sqlite_no_concurrency_guard")  # 멀티유저면 PG 필수.
     # 인증: /health·/auth/login 외 모든 데이터 라우트는 require_user 로 보호.
     require_user = make_require_user(get_db)
-    require_admin = make_require_admin(require_user)  # 관리자 전용(계정관리·export).
+    require_admin = make_require_admin(require_user)  # 관리자 전용(계정관리·발송 등).
     register_auth(app, get_db, require_user)
     register_admin(app, get_db, require_admin)
     register_dedup(app, get_db, require_user, require_admin)  # 중복후보 워크벤치(C4).
@@ -282,10 +283,12 @@ def create_app() -> FastAPI:
         country: str = Query(default="", description="쉼표구분 국가(ISO2) 필터, 빈값=전체"),
         industry: str = Query(default="", description="쉼표구분 업종 필터, 빈값=전체"),
         db: Session = Depends(get_db),
-        _admin: UserRow = Depends(require_admin),
+        user: UserRow = Depends(require_user),
     ) -> FileResponse:
-        """확정(confirmed) 리드를 고정 12컬럼 엑셀로 내려받는다(관리자 전용).
+        """확정(confirmed) 리드를 고정 12컬럼 엑셀로 내려받는다.
 
+        권한 범위(PO 결정 2026-07-14): 관리자=전체 확정분, 일반 사용자(worker)=자기가
+        처리한 확정분만(assignee_id 귀속 — ``/queue/mine?status=confirmed`` 와 동일 기준).
         ``country``/``industry`` 로 국가·업종별 선택 추출(빈값=전체). 국가는 별칭까지
         대소문자 무시 매칭('KR'↔'대한민국'), 업종은 대소문자 무시 매칭.
         """
@@ -294,6 +297,8 @@ def create_app() -> FastAPI:
             .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
             .where(ReviewQueueRow.status == CONFIRMED)
         )
+        if user.role != ROLE_ADMIN:
+            stmt = stmt.where(ReviewQueueRow.assignee_id == user.id)
         countries = _split_csv(country)
         industries = _split_csv(industry)
         if countries:

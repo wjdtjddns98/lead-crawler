@@ -551,6 +551,35 @@ def test_queue_filters_accessible_to_worker(worker_client: TestClient) -> None:
     assert worker_client.get("/admin/countries").status_code == 403
 
 
+def test_export_worker_own_scope_admin_full(worker_client: TestClient) -> None:
+    """export 개방(PO 2026-07-14): worker=200 이지만 자기 확정분(assignee_id)만,
+    admin=전체(현행 유지). /send 계열은 여전히 admin 전용(403)."""
+    import io
+
+    from openpyxl import load_workbook
+
+    def data_rows(resp) -> int:
+        assert resp.status_code == 200
+        return load_workbook(io.BytesIO(resp.content)).active.max_row - 1  # 헤더 제외.
+
+    # admin 이 미점유 1건 먼저 확정(이후 worker claim 과 충돌 없게 선행).
+    admin = TestClient(worker_client.app)
+    r = admin.post("/auth/login", json={"username": _ADMIN, "password": _PW})
+    admin.headers.update({"Authorization": f"Bearer {r.json()['token']}"})
+    items = admin.get("/queue").json()["items"]
+    assert len(items) >= 2
+    assert admin.post(f"/queue/{items[0]['id']}/confirm").status_code == 200
+
+    # worker 가 잔여를 점유해 1건 확정 → 자기 export 엔 그 1건만.
+    claimed = worker_client.post("/queue/claim").json()
+    assert worker_client.post(f"/queue/{claimed[0]['id']}/confirm").status_code == 200
+    assert data_rows(worker_client.get("/export")) == 1  # 타인(admin) 확정분 미포함.
+    assert data_rows(admin.get("/export")) == 2  # admin=전체.
+
+    # 발송은 권한 완화 범위 밖 — worker 여전히 403.
+    assert worker_client.get("/send/preview").status_code == 403
+
+
 def test_claim_with_country_filter_body(worker_client: TestClient) -> None:
     """POST /queue/claim 본문 필터 — US 만 당겨온다."""
     r = worker_client.post("/queue/claim", json={"country": "US"})
