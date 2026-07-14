@@ -164,6 +164,7 @@ function mk(p: Partial<ReviewItem> & { id: string; name: string }): ReviewItem {
     homepage: null,
     site_alive: true,
     form: null,
+    note: null,
     email_status: null,
     email_mx: null,
     email_smtp: null,
@@ -492,6 +493,7 @@ function setStatus(
   selected?: string | null,
   homepage?: string | null,
   hasForm?: boolean | null,
+  note?: string | null,
 ): ReviewItem | null {
   const it = db.find((x) => x.id === id);
   if (!it) return null;
@@ -501,6 +503,8 @@ function setStatus(
   // ponytail: 문의폼 URL 자체는 모른다(체크박스는 유무만 교정) — 있음 표기는 사이트 홈으로
   // 대체 링크, 없음 표기는 null. 실 BE 는 URL 미상 상태를 어떻게 저장/노출할지 별도 결정 필요.
   if (hasForm !== undefined && hasForm !== null) it.form = hasForm ? (it.form ?? it.homepage) : null;
+  // note: null=변경 없음(BE 계약과 동일), 빈 문자열=메모 삭제.
+  if (note !== undefined && note !== null) it.note = note.trim() === "" ? null : note.trim();
   it.assignee = "mock-admin";
   it.reviewed_at = new Date().toISOString();
   claimedIds.delete(id); // 처리 완료 — 점유 종료.
@@ -646,19 +650,22 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     let selected: string | null = null;
     let homepage: string | null = null;
     let hasForm: boolean | null = null;
+    let note: string | null = null;
     try {
       const body = JSON.parse(String(init?.body ?? "{}")) as {
         selected?: string | null;
         homepage?: string | null;
         has_form?: boolean | null;
+        note?: string | null;
       };
       selected = body.selected ?? null;
       homepage = body.homepage ?? null;
       hasForm = body.has_form ?? null;
+      note = body.note ?? null;
     } catch {
       // 본문 없음/파싱 실패 — 선택 없이 확정.
     }
-    const it = setStatus(confirm[1], "confirmed", selected, homepage, hasForm);
+    const it = setStatus(confirm[1], "confirmed", selected, homepage, hasForm, note);
     return it ? jsonRes(it) : jsonRes({ detail: "검증 항목을 찾을 수 없습니다" }, 404);
   }
   const reject = path.match(/^\/queue\/([^/]+)\/reject$/);

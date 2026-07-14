@@ -26,6 +26,7 @@ export interface ReviewItem {
   homepage: string | null;
   site_alive: boolean;
   form: string | null;
+  note: string | null; // 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼.
   email_status: string | null;
   email_mx: boolean | null;
   email_smtp: boolean | null;

@@ -49,11 +49,13 @@ interface Props {
   // 여기서 고치면 표에도 이어져 보이고, 확정 시 부모(popupConfirm)가 함께 싣는다.
   site: string | undefined;
   formChecked: boolean; // 문의폼 유무 체크박스 표시값 — 표(QueueTable)의 formOverride 와 같은 소스.
+  note: string; // 기타 메모 표시값 — 표(QueueTable)의 notes 맵과 같은 소스.
   busy: boolean;
   onTab: (tab: SiteTab) => void;
   onPick: (id: string, value: string) => void;
   onEditSite: (id: string, value: string) => void;
   onToggleForm: (id: string, value: boolean) => void;
+  onEditNote: (id: string, value: string) => void;
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
   onClose: () => void;
@@ -70,11 +72,13 @@ export function SiteExplorer({
   choice,
   site,
   formChecked,
+  note,
   busy,
   onTab,
   onPick,
   onEditSite,
   onToggleForm,
+  onEditNote,
   onConfirm,
   onReject,
   onClose,
@@ -141,6 +145,8 @@ export function SiteExplorer({
   const changedHome = editedHome && editedHome !== item.homepage ? editedHome : undefined;
   // 문의폼 유무 변경분 — 감지값과 다를 때만(QueueTable 의 editedForm 과 동일 판정).
   const changedForm = formChecked !== !!item.form ? formChecked : undefined;
+  // 메모 변경분 — 원본과 다를 때만(QueueTable 의 editedNote 와 동일 판정, 빈 문자열=삭제).
+  const changedNote = note.trim() !== (item.note ?? "") ? note.trim() : undefined;
   // 프리뷰 적용된 수정 URL — 키 입력마다 팝업이 이동하지 않도록 Enter/blur 시점에만 반영.
   const [previewHome, setPreviewHome] = useState<string | null>(null);
   useEffect(() => setPreviewHome(null), [item.id]); // 자동 전진으로 항목이 바뀌면 원복.
@@ -309,6 +315,11 @@ export function SiteExplorer({
                   {changedForm !== undefined && (
                     <span className="block mt-1 text-xs text-muted">
                       문의폼 → {changedForm ? "있음" : "없음"}
+                    </span>
+                  )}
+                  {changedNote !== undefined && (
+                    <span className="block mt-1 text-xs text-muted [overflow-wrap:anywhere]">
+                      메모 → {changedNote || "(삭제)"}
                     </span>
                   )}
                   {/* 편집했지만 반영될 변경이 없는 경우(무효 URL·정규화 후 원본과 동일)
@@ -533,6 +544,20 @@ export function SiteExplorer({
                 onChange={(e) => onToggleForm(item.id, e.target.checked)}
               />
               <span className="text-muted text-xs">문의폼 있음</span>
+            </label>
+
+            {/* 기타 메모 — 표(QueueTable)와 같은 소스, 확정 시 함께 반영(엑셀 L 컬럼). */}
+            <label className="flex flex-col gap-1">
+              <span className="text-muted text-xs">기타 메모(문의폼 미발송 사유 등)</span>
+              <input
+                className="w-full bg-canvas border border-line text-ink text-sm py-1.5 px-2 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+                type="text"
+                value={note}
+                disabled={item.status === "confirmed"}
+                maxLength={512}
+                placeholder="예: 문의폼 스팸 방지로 미발송"
+                onChange={(e) => onEditNote(item.id, e.target.value)}
+              />
             </label>
 
             {/* 하단 클러스터 — 세션 진행률 바 + 확정/거부. mt-auto 로 사이드바 바닥에 고정,

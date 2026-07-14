@@ -196,11 +196,13 @@ export async function confirmReview(
   selected?: string,
   homepage?: string,
   hasForm?: boolean,
+  note?: string,
 ): Promise<ReviewItem> {
   return apiSend("POST", `/queue/${id}/confirm`, {
     selected: selected ?? null,
     homepage: homepage ?? null,
     has_form: hasForm ?? null,
+    note: note ?? null,
   });
 }
 
