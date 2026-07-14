@@ -158,17 +158,18 @@ def ingest_nps_csv(sm: sessionmaker[Session], path: str | Path) -> tuple[int, in
 def map_industry_codes(sm: sessionmaker[Session], classifier) -> dict[str, int]:
     """스냅샷의 미등재 업종코드를 택소노미로 분류해 3층(ksic_industry_map)에 적재한다.
 
-    ① 규칙 패스 — :func:`industry_from_ksic` (최장접두·동률 None·저정밀 차단이 이미
-    들어있는 결정론 역매핑, 적대 검토 H2)로 풀리는 코드는 method='rule'.
-    ② 잔여만 LLM — 닫힌 택소노미 분류기(classifier.classify)에 업종코드명 + 그 코드의
+    **전 코드 LLM 배치** — NPS 업종코드는 KSIC 10차가 아니라 구체계다(2026-07-14 실측:
+    61xxxx=수상운송·21xxxx=제지·26xxxx=요업·20xxxx=목재). DART(10차)용 접두 역매핑
+    (industry_from_ksic)을 여기 적용했던 구 규칙 패스는 546개 코드를 전면 오라벨
+    (해운사→통신·네트워크 등)로 만들어 폐지했다 — 코드 자릿수 의미에 기대지 말 것.
+    닫힌 택소노미 분류기(classifier.classify)에 업종코드명(한국어, 항상 존재) + 그 코드의
     대표 사업장명(가입자수 상위 3, 신뢰불가 원문이지만 분류기의 인젝션 프레이밍·닫힌집합
     게이트가 방어)을 근거로 넘긴다. abstain 은 '미분류'로 기록(닫힌 집합 밖 값 불가).
     미등재 코드만 처리(멱등 — 월간 재실행 시 신규 코드만 분류, 기존 재분류 0).
     """
-    from ..sources.industry import industry_from_ksic
     from ..sources.taxonomy import UNCLASSIFIED
 
-    stats = {"rule": 0, "llm": 0, "unclassified": 0, "already": 0}
+    stats = {"llm": 0, "unclassified": 0, "already": 0}
     with sm() as session:
         rows = session.execute(
             select(
@@ -185,25 +186,22 @@ def map_industry_codes(sm: sessionmaker[Session], classifier) -> dict[str, int]:
     stats["already"] = len(rows) - len(todo)
 
     for code, code_name in todo:
-        label = industry_from_ksic(code)
-        method = "rule"
-        if label is None:
-            method = "llm"
-            with sm() as session:
-                samples = session.scalars(
-                    select(NpsWorkplaceRow.name)
-                    .where(NpsWorkplaceRow.industry_code == code)
-                    .where(NpsWorkplaceRow.pending.is_(False))
-                    .order_by(NpsWorkplaceRow.subscribers.desc())
-                    .limit(3)
-                ).all()
-            verdict = classifier.classify(
-                name=f"업종: {code_name}",
-                domain=None,
-                text="이 업종(한국 표준산업분류 기반 업종코드 %s)의 대표 사업장: %s"
-                % (code, ", ".join(samples)),
-            )
-            label = verdict.label  # 닫힌 집합 게이트 통과분만, abstain=None.
+        method = "llm"
+        with sm() as session:
+            samples = session.scalars(
+                select(NpsWorkplaceRow.name)
+                .where(NpsWorkplaceRow.industry_code == code)
+                .where(NpsWorkplaceRow.pending.is_(False))
+                .order_by(NpsWorkplaceRow.subscribers.desc())
+                .limit(3)
+            ).all()
+        verdict = classifier.classify(
+            name=f"업종: {code_name}",
+            domain=None,
+            text="이 업종(한국 표준산업분류 기반 업종코드 %s)의 대표 사업장: %s"
+            % (code, ", ".join(samples)),
+        )
+        label = verdict.label  # 닫힌 집합 게이트 통과분만, abstain=None.
         if label is None:
             label = UNCLASSIFIED
             stats["unclassified"] += 1

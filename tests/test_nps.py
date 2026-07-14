@@ -8,7 +8,7 @@ from leadcrawler.config import Settings
 from leadcrawler.sources.base import Segment
 from leadcrawler.sources.nps import NpsSource
 from leadcrawler.storage.db import get_sessionmaker, init_db
-from leadcrawler.storage.nps import NpsStore, ingest_nps_csv
+from leadcrawler.storage.nps import NpsStore, ingest_nps_csv, map_industry_codes
 
 _HEADER = (
     "자료생성년월,사업장명,사업자등록번호,사업장가입상태코드,사업장도로명상세주소,"
@@ -84,7 +84,31 @@ class DictCursor:
         self.data[(source, key)] = position
 
 
+class FakeVerdict:
+    def __init__(self, label):
+        self.label = label
+
+
+class FakeClassifier:
+    """닫힌 택소노미 분류기 더블 — 코드명 키워드로 결정적 라벨."""
+
+    model = "stub"
+
+    def __init__(self):
+        self.calls = 0
+
+    def classify(self, name: str, domain, text):  # noqa: ARG002
+        self.calls += 1
+        if "게임" in name:
+            return FakeVerdict("게임")
+        if "화학" in name:
+            return FakeVerdict("화학·석유화학")
+        return FakeVerdict(None)  # abstain → 미분류.
+
+
 def test_source_discover_emits_with_cursor_and_wraps(tmp_path) -> None:
+    from leadcrawler.storage.nps import map_industry_codes
+
     s = Settings(
         database_url=f"sqlite:///{tmp_path}/nps.db", dry_run=False,
         discovery_max_per_source=1,
@@ -92,10 +116,15 @@ def test_source_discover_emits_with_cursor_and_wraps(tmp_path) -> None:
     init_db(s)
     sm = get_sessionmaker(s)
     ingest_nps_csv(sm, _csv(tmp_path, _rows()))
+    map_industry_codes(sm, FakeClassifier())  # 라이브 발견은 3층 라벨 매핑 단독 경로.
     cursor = DictCursor()
     src = NpsSource(s, nps_store=NpsStore(sm), cursor_store=cursor)
     seg = Segment(country="KR", industry="화학·석유화학")
     assert src.applies_to(seg)
+    # 미매핑 라벨은 접두 폴백 없이 미적용/빈 결과(오라벨 방지 게이트).
+    unmapped = Segment(country="KR", industry="통신·네트워크")
+    assert not src.applies_to(unmapped)
+    assert src.discover(unmapped) == []
 
     out1 = src.discover(seg)
     assert [d.name for d in out1] == ["대형화학(주)"]  # 대형 우선.
@@ -191,47 +220,30 @@ def test_ingest_empty_keeps_active_snapshot(tmp_path) -> None:
     assert inserted == 0 and NpsStore(sm).count() == 4
 
 
-class FakeVerdict:
-    def __init__(self, label):
-        self.label = label
-
-
-class FakeClassifier:
-    """닫힌 택소노미 분류기 더블 — 코드명 키워드로 결정적 라벨."""
-
-    model = "stub"
-
-    def __init__(self):
-        self.calls = 0
-
-    def classify(self, name: str, domain, text):  # noqa: ARG002
-        self.calls += 1
-        if "게임" in name:
-            return FakeVerdict("게임")
-        return FakeVerdict(None)  # abstain → 미분류.
-
-
-def test_map_industry_codes_rule_llm_and_idempotent(tmp_path) -> None:
-    """3층 매핑: 규칙(industry_from_ksic) 우선, 잔여만 LLM, 재실행 멱등(리뷰 H2 반영)."""
+def test_map_industry_codes_llm_only_and_idempotent(tmp_path) -> None:
+    """3층 매핑: 전 코드 LLM(10차 접두 규칙 폐지 — NPS 코드체계 불일치), 재실행 멱등."""
     from leadcrawler.storage.nps import map_industry_codes
 
     s = _settings(tmp_path)
     init_db(s)
     sm = get_sessionmaker(s)
     rows = _rows() + [
-        # 888888: 규칙 역매핑에 없는 코드 → LLM 경로(코드명에 '게임' → FakeClassifier 매칭).
         "202606,넥스트게임즈,345670,1,서울 강남구 게임로 1,,888888,게임 아이템 중개업,120,5000000,",
         "202606,알수없는업,345671,1,서울 중구 모호로 2,,999999,기타 분류 안된 업,30,100000,",
     ]
     ingest_nps_csv(sm, _csv(tmp_path, rows))
     clf = FakeClassifier()
     stats = map_industry_codes(sm, clf)
-    # 화학·반도체 코드는 규칙으로, 888888(게임)은 LLM, 999999 는 abstain → 미분류.
-    assert stats["rule"] >= 1 and stats["llm"] == 1 and stats["unclassified"] >= 1
+    # 201234(화학)·888888(게임)은 LLM 매칭, 261111(반도체)·999999 는 abstain → 미분류.
+    # 구 규칙 패스였다면 261111 이 '반도체·디스플레이'로 확정됐을 것 — 10차 접두 규칙이
+    # 다시 살아나면 여기서 llm/미분류 수가 어긋나 잡힌다(회귀 가드).
+    assert stats["llm"] == 2 and stats["unclassified"] == 2
+    assert "rule" not in stats  # 규칙 패스 폐지.
     calls_first = clf.calls
+    assert calls_first == 4  # 전 코드가 LLM 을 거친다.
 
     stats2 = map_industry_codes(sm, clf)
-    assert stats2["rule"] == stats2["llm"] == stats2["unclassified"] == 0  # 전부 기매핑.
+    assert stats2["llm"] == stats2["unclassified"] == 0  # 전부 기매핑.
     assert clf.calls == calls_first  # 재실행 LLM 재호출 0(멱등).
 
     store = NpsStore(sm)
@@ -284,6 +296,7 @@ def test_dart_cache_join_attaches_fields_and_reg_key(tmp_path) -> None:
         "202606,번호손상상사,123,1,서울 중구 손상로 3,,201234,화학제품 제조업,20,900000,",
     ]
     ingest_nps_csv(sm, _csv(tmp_path, rows))
+    map_industry_codes(sm, FakeClassifier())  # 라이브 발견은 3층 라벨 매핑 단독 경로.
     cache = DbDartCorpCache(sm)
     cache.put_many([
         _FetchedCorp(
@@ -329,6 +342,7 @@ def test_cache_lookup_failure_keeps_segment_default(tmp_path) -> None:
     init_db(s)
     sm = get_sessionmaker(s)
     ingest_nps_csv(sm, _csv(tmp_path, _rows()[:1]))  # 유효 사업자번호(123456) 행.
+    map_industry_codes(sm, FakeClassifier())  # 라이브 발견은 3층 라벨 매핑 단독 경로.
     src = NpsSource(
         s, nps_store=NpsStore(sm), cursor_store=DictCursor(), dart_cache=FailingCache()
     )
