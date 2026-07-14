@@ -541,7 +541,7 @@ def nps_map_industries() -> None:
     stats = map_industry_codes(get_sessionmaker(), classifier)
     typer.echo(
         f"LLM {stats['llm']:,} · 미분류 {stats['unclassified']:,}"
-        f" · 기매핑 {stats['already']:,}"
+        f" · 일시실패 재시도대기 {stats['skipped']:,} · 기매핑 {stats['already']:,}"
     )
 
 

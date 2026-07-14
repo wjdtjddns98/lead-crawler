@@ -169,7 +169,7 @@ def map_industry_codes(sm: sessionmaker[Session], classifier) -> dict[str, int]:
     """
     from ..sources.taxonomy import UNCLASSIFIED
 
-    stats = {"llm": 0, "unclassified": 0, "already": 0}
+    stats = {"llm": 0, "unclassified": 0, "skipped": 0, "already": 0}
     with sm() as session:
         rows = session.execute(
             select(
@@ -202,6 +202,12 @@ def map_industry_codes(sm: sessionmaker[Session], classifier) -> dict[str, int]:
             % (code, ", ".join(samples)),
         )
         label = verdict.label  # 닫힌 집합 게이트 통과분만, abstain=None.
+        # 라이브에서 과금 왕복 없이 abstain(예산캡·API 오류 등 일시 실패)이면 기록하지
+        # 않는다 — 멱등 필터가 '미분류'를 영구 박제하는 것 방지, 다음 실행에 재시도
+        # (교차리뷰 MED). 실왕복 후 abstain(진짜 판정불가)·스텁은 종전대로 미분류 기록.
+        if label is None and classifier.model != "stub" and not getattr(verdict, "billed", True):
+            stats["skipped"] += 1
+            continue
         if label is None:
             label = UNCLASSIFIED
             stats["unclassified"] += 1

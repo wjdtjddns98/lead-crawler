@@ -246,6 +246,40 @@ def test_map_industry_codes_llm_only_and_idempotent(tmp_path) -> None:
     assert stats2["llm"] == stats2["unclassified"] == 0  # 전부 기매핑.
     assert clf.calls == calls_first  # 재실행 LLM 재호출 0(멱등).
 
+
+def test_map_industry_codes_unbilled_abstain_retries(tmp_path) -> None:
+    """라이브 abstain 이 과금 왕복 없이(billed=False) 나면 기록하지 않는다 — 예산캡·API
+    일시 실패가 멱등 필터로 영구 '미분류' 박제되는 것 방지(교차리뷰 MED). 다음 실행 재시도."""
+    from leadcrawler.storage.nps import map_industry_codes
+
+    class UnbilledFlakyClassifier:
+        model = "claude-haiku-test"  # 비스텁(라이브) — billed 게이트 대상.
+
+        def __init__(self):
+            self.calls = 0
+            self.fail = True
+
+        def classify(self, name, domain, text):  # noqa: ARG002
+            self.calls += 1
+            v = FakeVerdict(None if self.fail else "게임")
+            v.billed = not self.fail  # 실패 = 호출 전 캡/오류(무과금).
+            return v
+
+    s = _settings(tmp_path)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    rows = [
+        "202606,넥스트게임즈,345670,1,서울 강남구 게임로 1,,888888,게임 아이템 중개업,120,5000000,",
+    ]
+    ingest_nps_csv(sm, _csv(tmp_path, rows))
+    clf = UnbilledFlakyClassifier()
+    stats = map_industry_codes(sm, clf)
+    assert stats["skipped"] == 1 and stats["unclassified"] == 0  # 미기록(박제 방지).
+
+    clf.fail = False
+    stats2 = map_industry_codes(sm, clf)  # 미등재로 남아 재시도 → 정상 매핑.
+    assert stats2["llm"] == 1 and clf.calls == 2
+
     store = NpsStore(sm)
     assert "게임" in store.mapped_labels()
     hits = store.page_by_label("게임", offset=0, limit=10)
