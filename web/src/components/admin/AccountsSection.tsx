@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, HelpCircle } from "lucide-react";
 import {
   changeUserRole,
   createUser,
@@ -148,7 +148,6 @@ export function AccountsSection() {
         <h2 className={SECTION_H2}>
           계정 {loading && <span className="text-muted">· 불러오는 중…</span>}
         </h2>
-        <p className="text-muted text-[13px] mt-[-8px] mb-2">확정·거부 = 오늘 처리량 / 전체 누적</p>
         <CreateUserForm onCreate={(u, p, r) => act(() => createUser(u, p, r))} />
         {msg && (
           <p className="text-ok-fg text-[13px] my-2" role="status">
@@ -164,9 +163,24 @@ export function AccountsSection() {
                 <th className={TH}>아이디</th>
                 <th className={TH}>권한</th>
                 <th className={TH}>상태</th>
-                <th className={TH}>확정</th>
-                <th className={TH}>거부</th>
-                <th className={TH}>점유</th>
+                <th className={TH}>
+                  <span className="relative inline-flex items-center gap-1 group">
+                    오늘 처리량
+                    <HelpCircle size={13} className="text-muted cursor-help" aria-hidden />
+                    {/* 네이티브 title 은 hover 후 뜨기까지 지연이 있어 CSS 만으로 즉시 표시.
+                        위/아래가 아닌 오른쪽 배치 — 테이블 자체가 rounded-lg overflow-hidden 이라
+                        위쪽으로 벗어나는 배치는 테이블 경계에 잘린다(이 컬럼은 마지막 컬럼이 아니라
+                        오른쪽으로는 안 잘림). */}
+                    <span
+                      role="tooltip"
+                      className="pointer-events-none absolute left-full top-1/2 z-10 ml-1.5 hidden w-max max-w-[220px]
+                        -translate-y-1/2 whitespace-normal rounded-md border border-line bg-canvas px-2 py-1 text-xs
+                        font-normal normal-case tracking-normal text-ink shadow-lg group-hover:block"
+                    >
+                      오늘 확정+거부 건수 / 오늘 배정 건수(확정+거부+대기)
+                    </span>
+                  </span>
+                </th>
                 <th className={TH}>마지막 처리</th>
                 <th className={TH}>액션</th>
               </tr>
@@ -176,6 +190,8 @@ export function AccountsSection() {
                 const self = u.username === me;
                 const inactive = !u.is_active;
                 const t = today.get(u.username);
+                const done = (t?.confirmed ?? 0) + (t?.rejected ?? 0);
+                const assigned = done + u.claimed; // 오늘 검증(확정+거부) + 아직 남은 점유(대기)
                 return (
                   <tr key={u.id} className={inactive ? "text-muted" : ""}>
                     <td className={`${TD} font-semibold`}>{u.username}</td>
@@ -197,9 +213,9 @@ export function AccountsSection() {
                         {u.is_active ? "활성" : "비활성"}
                       </span>
                     </td>
-                    <td className={`${TD} tabular-nums`}>{t?.confirmed ?? 0} / {u.confirmed}</td>
-                    <td className={`${TD} tabular-nums`}>{t?.rejected ?? 0} / {u.rejected}</td>
-                    <td className={`${TD} tabular-nums`}>{u.claimed}</td>
+                    <td className={`${TD} tabular-nums`} title="오늘 확정+거부 건수 / 오늘 배정 건수(확정+거부+대기)">
+                      {done} / {assigned}
+                    </td>
                     <td className={`${TD} text-muted whitespace-nowrap`}>{fmt(u.last_action_at)}</td>
                     <td className={TD}>
                       <div className="flex gap-1.5 flex-wrap">
