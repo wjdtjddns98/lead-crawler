@@ -48,10 +48,12 @@ interface Props {
   // 사이트 URL 편집값 — 표(QueueTable)의 sites 맵과 같은 소스(미편집이면 undefined).
   // 여기서 고치면 표에도 이어져 보이고, 확정 시 부모(popupConfirm)가 함께 싣는다.
   site: string | undefined;
+  formChecked: boolean; // 문의폼 유무 체크박스 표시값 — 표(QueueTable)의 formOverride 와 같은 소스.
   busy: boolean;
   onTab: (tab: SiteTab) => void;
   onPick: (id: string, value: string) => void;
   onEditSite: (id: string, value: string) => void;
+  onToggleForm: (id: string, value: boolean) => void;
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
   onClose: () => void;
@@ -67,10 +69,12 @@ export function SiteExplorer({
   tab,
   choice,
   site,
+  formChecked,
   busy,
   onTab,
   onPick,
   onEditSite,
+  onToggleForm,
   onConfirm,
   onReject,
   onClose,
@@ -135,6 +139,8 @@ export function SiteExplorer({
   // 사이트 편집값 — 정규화 통과분(무효면 null). 원본과 다를 때만 확정에 실리는 변경분이다.
   const editedHome = site !== undefined ? normSiteUrl(site.trim()) : null;
   const changedHome = editedHome && editedHome !== item.homepage ? editedHome : undefined;
+  // 문의폼 유무 변경분 — 감지값과 다를 때만(QueueTable 의 editedForm 과 동일 판정).
+  const changedForm = formChecked !== !!item.form ? formChecked : undefined;
   // 프리뷰 적용된 수정 URL — 키 입력마다 팝업이 이동하지 않도록 Enter/blur 시점에만 반영.
   const [previewHome, setPreviewHome] = useState<string | null>(null);
   useEffect(() => setPreviewHome(null), [item.id]); // 자동 전진으로 항목이 바뀌면 원복.
@@ -298,6 +304,11 @@ export function SiteExplorer({
                   {changedHome && (
                     <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
                       사이트 → {changedHome}
+                    </span>
+                  )}
+                  {changedForm !== undefined && (
+                    <span className="block mt-1 text-xs text-muted">
+                      문의폼 → {changedForm ? "있음" : "없음"}
                     </span>
                   )}
                   {/* 편집했지만 반영될 변경이 없는 경우(무효 URL·정규화 후 원본과 동일)
@@ -510,6 +521,18 @@ export function SiteExplorer({
                   }
                 }}
               />
+            </label>
+
+            {/* 문의폼 유무 직접 교정 — 표(QueueTable) 체크박스와 같은 소스, 확정 시 함께 반영. */}
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={formChecked}
+                disabled={item.status === "confirmed"}
+                title="문의폼 유무를 직접 교정합니다(확정 시 함께 반영)"
+                onChange={(e) => onToggleForm(item.id, e.target.checked)}
+              />
+              <span className="text-muted text-xs">문의폼 있음</span>
             </label>
 
             {/* 하단 클러스터 — 세션 진행률 바 + 확정/거부. mt-auto 로 사이드바 바닥에 고정,

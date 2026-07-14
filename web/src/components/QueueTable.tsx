@@ -631,10 +631,12 @@ export function QueueTable({
           tab={open.tab}
           choice={picked[openItem.id] ?? openItem.selected ?? openItem.candidates[0]?.value}
           site={sites[openItem.id]}
+          formChecked={formChecked(openItem)}
           busy={busyIds.has(openItem.id)}
           onTab={(tab) => setOpen({ id: openItem.id, tab })}
           onPick={onPick}
           onEditSite={onEditSite}
+          onToggleForm={onToggleForm}
           onConfirm={popupConfirm}
           onReject={popupReject}
           onClose={() => setOpen(null)}
