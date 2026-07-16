@@ -1,90 +1,70 @@
 # lead-crawler
 
-전 산업·전 기업(상장+비상장)의 **IR 연락처·이메일·문의폼**을 24/7 자동 추출하고, 직원이
-최소 인원으로 **검증만** 하도록 만드는 B2B 리드 수집 시스템. 결과는 고정 엑셀 서식으로 산출한다.
+전 산업·전 기업(상장+비상장)의 IR 연락처(이메일·전화·문의폼)를 자동 수집하고,
+웹앱에서 사람이 검증한 뒤 고정 엑셀 서식으로 내보내는 B2B 리드 수집 시스템.
+이메일 발송은 범위 밖이다(외부 메일 솔루션 사용).
 
-> 자산운용사의 IR 콜드메일 대상 DB 구축용. **이메일 발송은 본 시스템 밖**(외부 메일솔루션).
+파이프라인은 discover → dedup → enrich → verify → export 순서로 돈다.
 
-## 핵심 원칙
-
-- **dry_run 우선** — `LEADCRAWLER_DRY_RUN=true`(기본)면 외부 키 없이 전 파이프라인이 결정적 시뮬레이션.
-- **중복 금지** — 이미 검색한 기업(기존 엑셀/CSV import 포함)은 `canonical_key` 로 재추출하지 않음.
-- **실존만** — 등록처 active + 도메인/홈페이지 생존 검증 통과분만 저장.
-- **고품질** — 멀티소스 교차검증 + 신뢰도(confidence)로 사람 검증 부담 최소화.
+- `LEADCRAWLER_DRY_RUN=true`(기본값)면 외부 API 키 없이 전 과정이 시뮬레이션으로 동작한다.
+- 한 번 수집한 기업은 `canonical_key` 기준으로 다시 추출하지 않는다.
+- 등록처 active + 사이트 생존 검증을 통과한 기업만 저장한다.
 
 ## 구조
 
 ```
 leadcrawler/
-  config.py logging.py models.py dedup.py emailrules.py excel_format.py importer.py
-  sources/   발견 어댑터(EDGAR/DART/거래소/CH/디렉터리/검색API)
-  enrich/    IR이메일·전화·문의폼 추출(BFS→헤드리스→OCR/비전→폼)
-  verify/    실존성·이메일 유효성 검증
-  pipeline/  discover→dedup→enrich→verify→lead
-  scheduler/ 24/7 오케스트레이션
-  storage/   export(고정 엑셀 서식)
-  integrations/ notion(자동 리포팅)
-  api/       FastAPI 검증 웹앱
-web/         React(Vite) 프론트 → Vercel
+  sources/      발견 어댑터 (EDGAR, DART, 거래소, Companies House, 디렉터리, 검색 API)
+  enrich/       이메일·전화·문의폼 추출 (정적 BFS → 헤드리스 → OCR/비전)
+  verify/       실존성·이메일 유효성 검증
+  pipeline/     discover → dedup → enrich → verify → lead
+  scheduler/    24/7 크롤 오케스트레이션
+  storage/      엑셀 export
+  integrations/ Notion 자동 리포팅
+  api/          FastAPI 검증 웹앱
+web/            React(Vite) 프론트
 ```
 
 ## 개발
 
-의존성 관리는 [uv](https://docs.astral.sh/uv/). `uv sync` 가 `.venv` 생성·의존성 설치·
-프로젝트(editable)·dev 그룹까지 한 번에 처리한다(락파일 `uv.lock` 기준 재현).
+의존성 관리는 [uv](https://docs.astral.sh/uv/)를 쓴다.
 
 ```bash
-uv sync                 # .venv + 런타임 + dev 그룹(pytest·ruff·mypy) 설치
+uv sync                 # .venv 생성 + 런타임 + dev 그룹(pytest, ruff, mypy)
 uv run ruff check .
 uv run pytest -q
 ```
 
-기능 extra 는 필요할 때 추가한다: `uv sync --extra api` (FastAPI 웹앱),
-`--extra db`(psycopg), `--extra crawl`(headless), `--extra ocr`, `--all-extras`(전부).
-운영 설치는 dev 제외: `uv sync --no-dev --extra api --extra db`.
+기능별 extra: `--extra api`(웹앱), `--extra db`(psycopg), `--extra crawl`(헤드리스),
+`--extra ocr`, `--all-extras`. 운영 설치는 `uv sync --no-dev --extra api --extra db`.
 
 ## 데이터베이스
 
-운영/로컬은 PostgreSQL, 단위 테스트는 SQLite(스키마 양립 설계). 스키마 변경은 Alembic 으로 관리.
+운영은 PostgreSQL, 단위 테스트는 SQLite. 스키마는 Alembic으로 관리한다.
 
 ```bash
-docker compose up -d            # 로컬 PostgreSQL 기동
-uv sync --extra db              # psycopg 드라이버
-uv run leadcrawler db-upgrade   # = alembic upgrade head
-# 스키마 변경 시: alembic revision --autogenerate -m "변경요약"
+docker compose up -d            # 로컬 PostgreSQL
+uv run leadcrawler db-upgrade   # alembic upgrade head
 ```
 
 ## CLI
 
 ```bash
 leadcrawler run --country KR --industry 건설 --out exports/leads.xlsx
-leadcrawler run --country KR --industry 건설 --persist   # 결과를 DB 에 영속화
-leadcrawler db-upgrade                                    # DB 마이그레이션 적용
+leadcrawler run --country KR --industry 건설 --persist   # DB에 영속화
 leadcrawler import-existing "기존목록.xlsx"
-leadcrawler report 2026-06-18 --done "..." --next "..."   # Notion 자동 리포팅
+leadcrawler report 2026-06-18 --done "..." --next "..."  # Notion 리포팅
 ```
 
-## 내부망 배포 (HTTPS)
+## 배포 (내부망 HTTPS)
 
-**원커맨드**: 리포 루트의 `serve-https.bat` 더블클릭(또는 터미널에서 실행). 첫 실행 때
-자체서명 인증서를 자동 생성(호스트명·로컬 IP 가 SAN 에 자동 포함)하고 `0.0.0.0:8000` 에
-HTTPS 로 띄운다. 이후 실행은 기존 인증서 재사용.
+리포 루트의 `serve-https.bat` 실행. 첫 실행 때 자체서명 인증서를 만들고
+(호스트명·로컬 IP를 SAN에 포함) `0.0.0.0:8000`에 HTTPS로 띄운다. 포트 변경은
+`serve-https.bat -Port 8443`.
 
-```powershell
-serve-https.bat            # 포트 변경: serve-https.bat -Port 8443
-```
+프론트를 빌드해 두면(`cd web && npm install && npm run build`) 백엔드가
+`web/dist`를 루트에 같이 서빙하므로 CORS나 `VITE_API_BASE` 설정이 필요 없다.
+빌드가 없으면 API(`/docs`)만 동작한다.
 
-수동으로 하려면(동일 동작을 단계별로):
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\gen-ssl-cert.ps1
-leadcrawler web --host 0.0.0.0 --ssl-certfile certs\cert.pem --ssl-keyfile certs\key.pem
-```
-
-**UI 포함 원스톱**: 프론트를 한 번 빌드해 두면(`cd web && npm install && npm run build`)
-백엔드가 `web/dist` 를 루트(`/`)에 같이 서빙한다 — 같은 출처라 CORS·`VITE_API_BASE`
-설정이 필요 없다. 빌드가 없으면 `/` 는 404 이고 API(`/docs` 등)만 동작한다.
-
-접속: `https://<서버IP>:8000`. 자체서명이라 브라우저 최초 접속 시 경고 1회 — 내부망 용도로는
-"고급 → 계속"으로 충분하고, 경고 없이 쓰려면 `certs\cert.pem` 을 각 클라이언트의
-"신뢰할 수 있는 루트 인증 기관"에 설치한다.
+자체서명이라 브라우저 최초 접속 시 경고가 한 번 뜬다. 경고 없이 쓰려면
+`certs\cert.pem`을 각 클라이언트의 신뢰할 수 있는 루트 인증 기관에 설치한다.
