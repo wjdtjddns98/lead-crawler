@@ -46,36 +46,9 @@ API(`/docs`)만 동작한다.
 
 ## 아키텍처
 
-```mermaid
-flowchart LR
-    subgraph ENTRY["실행 진입점"]
-        direction TB
-        E1["CLI"]
-        E2["일일 스케줄러<br/>(APScheduler cron)"]
-        E3["웹 관리자 크롤 트리거<br/>연속 라운드 · 워치독 · 취소"]
-    end
-
-    subgraph SRC["발견 소스"]
-        direction TB
-        S1["등록처·거래소<br/>EDGAR · DART · Companies House<br/>아시아 거래소 7종"]
-        S2["집계·공공 데이터<br/>GLEIF · Wikidata · OpenCorporates · NPS"]
-        S3["검색·디렉터리<br/>검색 API(Serper/CSE/네이버)<br/>네이버 지역검색 · AI 디렉터리"]
-    end
-
-    subgraph PIPE["파이프라인 (run_pipeline)"]
-        direction LR
-        P1["discover"] --> P2["dedup<br/>+ 도메인 해석"] --> P3["enrich<br/>정적 BFS → 헤드리스 → OCR<br/>→ 이메일 API → Vision"] --> P4["verify<br/>사이트 실존 · 이메일 MX/SMTP"]
-    end
-
-    ENTRY --> PIPE
-    S1 & S2 & S3 --> P1
-    P2 -. "전 후보 기록" .-> LG[("발견 원장<br/>discovered_company")]
-    P4 -- "사이트 생존 통과만" --> DB[("company · contact<br/>review_queue")]
-    DB --> API["FastAPI"]
-    API <--> FE["React 검수 워크벤치<br/>클레임 · 확정/거부"]
-    API -- "확정분" --> OUT["엑셀 export · 이메일 발송"]
-    PIPE -.-> NT["Notion 리포팅<br/>일일보고 · 스크럼 · 현황"]
-```
+<p align="center">
+  <img src="docs/architecture.svg" alt="lead-crawler 아키텍처" width="920">
+</p>
 
 ```
 leadcrawler/
