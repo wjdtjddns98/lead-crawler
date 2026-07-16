@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 656" font-family="'Segoe UI','Apple SD Gothic Neo','Malgun Gothic',sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrowA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <!-- background -->
+  <rect x="0" y="0" width="1080" height="656" rx="14" fill="#0f172a"/>
+
+  <!-- ═══════════ column: 발견 소스 ═══════════ -->
+  <text x="36" y="66" font-size="11" font-weight="700" letter-spacing="2.5" fill="#94a3b8">발견 소스</text>
+
+  <g>
+    <rect x="36" y="80" width="240" height="92" rx="10" fill="#1e293b" stroke="#334155"/>
+    <rect x="36" y="88" width="3.5" height="76" rx="1.75" fill="#60a5fa"/>
+    <text x="156" y="108" font-size="13.5" font-weight="700" fill="#93c5fd" text-anchor="middle">등록처 · 거래소</text>
+    <text x="156" y="131" font-size="11.5" fill="#cbd5e1" text-anchor="middle">EDGAR · DART · Companies House</text>
+    <text x="156" y="150" font-size="11.5" fill="#cbd5e1" text-anchor="middle">아시아 거래소 7종</text>
+  </g>
+  <g>
+    <rect x="36" y="188" width="240" height="92" rx="10" fill="#1e293b" stroke="#334155"/>
+    <rect x="36" y="196" width="3.5" height="76" rx="1.75" fill="#60a5fa"/>
+    <text x="156" y="216" font-size="13.5" font-weight="700" fill="#93c5fd" text-anchor="middle">집계 · 공공 데이터</text>
+    <text x="156" y="239" font-size="11.5" fill="#cbd5e1" text-anchor="middle">GLEIF · Wikidata</text>
+    <text x="156" y="258" font-size="11.5" fill="#cbd5e1" text-anchor="middle">OpenCorporates · NPS</text>
+  </g>
+  <g>
+    <rect x="36" y="296" width="240" height="92" rx="10" fill="#1e293b" stroke="#334155"/>
+    <rect x="36" y="304" width="3.5" height="76" rx="1.75" fill="#60a5fa"/>
+    <text x="156" y="324" font-size="13.5" font-weight="700" fill="#93c5fd" text-anchor="middle">검색 · 디렉터리</text>
+    <text x="156" y="347" font-size="11.5" fill="#cbd5e1" text-anchor="middle">Serper · CSE · 네이버 검색/지역</text>
+    <text x="156" y="366" font-size="11.5" fill="#cbd5e1" text-anchor="middle">AI 디렉터리 (Claude)</text>
+  </g>
+
+  <!-- source arrows → discover -->
+  <path d="M276,126 C316,126 306,168 338,172" fill="none" stroke="#475569" stroke-width="1.6" marker-end="url(#arrowA)"/>
+  <path d="M276,234 C310,234 310,196 338,182" fill="none" stroke="#475569" stroke-width="1.6" marker-end="url(#arrowA)"/>
+  <path d="M276,342 C316,342 300,212 338,190" fill="none" stroke="#475569" stroke-width="1.6" marker-end="url(#arrowA)"/>
+
+  <!-- ═══════════ 실행 진입점 ═══════════ -->
+  <g>
+    <rect x="340" y="36" width="380" height="44" rx="10" fill="#1e293b" stroke="#f59e0b" stroke-opacity="0.55"/>
+    <text x="530" y="57" font-size="12.5" font-weight="700" fill="#fbbf24" text-anchor="middle">실행 진입점</text>
+    <text x="530" y="72" font-size="11" fill="#cbd5e1" text-anchor="middle">CLI  ·  일일 스케줄러  ·  웹 크롤 잡 (연속 라운드 · 워치독)</text>
+  </g>
+  <line x1="530" y1="80" x2="530" y2="106" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- ═══════════ 파이프라인 컨테이너 ═══════════ -->
+  <rect x="340" y="110" width="380" height="400" rx="12" fill="#16203a" stroke="#3b4a6b" stroke-dasharray="5 4"/>
+  <text x="360" y="134" font-size="11" font-weight="700" letter-spacing="2" fill="#94a3b8">파이프라인 — RUN_PIPELINE</text>
+
+  <g>
+    <rect x="364" y="146" width="332" height="56" rx="9" fill="#1e293b" stroke="#334155"/>
+    <text x="530" y="170" font-size="13.5" font-weight="700" fill="#4ade80" text-anchor="middle">discover</text>
+    <text x="530" y="189" font-size="11" fill="#cbd5e1" text-anchor="middle">세그먼트(국가×업종×상장) 단위 발견</text>
+  </g>
+  <line x1="530" y1="202" x2="530" y2="218" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <g>
+    <rect x="364" y="220" width="332" height="56" rx="9" fill="#1e293b" stroke="#334155"/>
+    <text x="530" y="244" font-size="13.5" font-weight="700" fill="#4ade80" text-anchor="middle">dedup</text>
+    <text x="530" y="263" font-size="11" fill="#cbd5e1" text-anchor="middle">canonical_key · 도메인 중복 차단 + 도메인 해석</text>
+  </g>
+  <line x1="530" y1="276" x2="530" y2="292" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <g>
+    <rect x="364" y="294" width="332" height="72" rx="9" fill="#1e293b" stroke="#334155"/>
+    <text x="530" y="318" font-size="13.5" font-weight="700" fill="#4ade80" text-anchor="middle">enrich</text>
+    <text x="530" y="337" font-size="11" fill="#cbd5e1" text-anchor="middle">정적 BFS → 헤드리스 → OCR</text>
+    <text x="530" y="353" font-size="11" fill="#cbd5e1" text-anchor="middle">→ 이메일 API → Vision (조건부 에스컬레이션)</text>
+  </g>
+  <line x1="530" y1="366" x2="530" y2="382" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <g>
+    <rect x="364" y="384" width="332" height="56" rx="9" fill="#1e293b" stroke="#334155"/>
+    <text x="530" y="408" font-size="13.5" font-weight="700" fill="#4ade80" text-anchor="middle">verify</text>
+    <text x="530" y="427" font-size="11" fill="#cbd5e1" text-anchor="middle">사이트 실존(HTTP·DNS·등록처) · 이메일 MX/SMTP</text>
+  </g>
+  <text x="530" y="470" font-size="10.5" fill="#64748b" text-anchor="middle">dry-run 기본 — 키 없이 전 단계 시뮬레이션</text>
+
+  <!-- Notion -->
+  <path d="M440,510 C440,536 440,540 440,548" fill="none" stroke="#475569" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#arrowA)"/>
+  <g>
+    <rect x="340" y="552" width="380" height="52" rx="10" fill="#1e293b" stroke="#334155"/>
+    <text x="530" y="574" font-size="12.5" font-weight="700" fill="#e2e8f0" text-anchor="middle">Notion 자동 리포팅</text>
+    <text x="530" y="592" font-size="11" fill="#94a3b8" text-anchor="middle">일일보고 · 스크럼 · 현황</text>
+  </g>
+
+  <!-- ═══════════ column: 저장 · 검수 · 산출 ═══════════ -->
+  <text x="780" y="66" font-size="11" font-weight="700" letter-spacing="2.5" fill="#94a3b8">저장 · 검수 · 산출</text>
+
+  <!-- 발견 원장 -->
+  <g>
+    <rect x="780" y="146" width="260" height="66" rx="10" fill="#1e293b" stroke="#334155"/>
+    <rect x="780" y="154" width="3.5" height="50" rx="1.75" fill="#c084fc"/>
+    <text x="910" y="174" font-size="13" font-weight="700" fill="#d8b4fe" text-anchor="middle">발견 원장</text>
+    <text x="910" y="193" font-size="11" fill="#cbd5e1" text-anchor="middle">discovered_company — 전 후보 기록</text>
+  </g>
+  <path d="M696,248 C740,248 740,196 778,184" fill="none" stroke="#475569" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#arrowA)"/>
+  <text x="726" y="220" font-size="10.5" fill="#94a3b8" text-anchor="middle">전 후보</text>
+
+  <!-- 활성 리드 -->
+  <g>
+    <rect x="780" y="268" width="260" height="80" rx="10" fill="#1e293b" stroke="#334155"/>
+    <rect x="780" y="276" width="3.5" height="64" rx="1.75" fill="#c084fc"/>
+    <text x="910" y="296" font-size="13" font-weight="700" fill="#d8b4fe" text-anchor="middle">활성 리드</text>
+    <text x="910" y="315" font-size="11" fill="#cbd5e1" text-anchor="middle">company · contact · email_validation</text>
+    <text x="910" y="333" font-size="11" fill="#cbd5e1" text-anchor="middle">→ review_queue (검수 대기)</text>
+  </g>
+  <path d="M696,412 C744,412 744,330 778,312" fill="none" stroke="#64748b" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <text x="738" y="370" font-size="10.5" fill="#94a3b8" text-anchor="middle">생존 통과만</text>
+
+  <!-- 워크벤치 -->
+  <line x1="910" y1="348" x2="910" y2="374" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <g>
+    <rect x="780" y="376" width="260" height="80" rx="10" fill="#1e293b" stroke="#334155"/>
+    <rect x="780" y="384" width="3.5" height="64" rx="1.75" fill="#fb7185"/>
+    <text x="910" y="404" font-size="13" font-weight="700" fill="#fda4af" text-anchor="middle">검수 워크벤치</text>
+    <text x="910" y="423" font-size="11" fill="#cbd5e1" text-anchor="middle">FastAPI + React</text>
+    <text x="910" y="441" font-size="11" fill="#cbd5e1" text-anchor="middle">클레임 · 확정 / 거부 · 관리자</text>
+  </g>
+
+  <!-- 산출 -->
+  <line x1="910" y1="456" x2="910" y2="482" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="938" y="474" font-size="10.5" fill="#94a3b8">확정분</text>
+  <g>
+    <rect x="780" y="484" width="260" height="66" rx="10" fill="#1e293b" stroke="#334155"/>
+    <rect x="780" y="492" width="3.5" height="50" rx="1.75" fill="#fbbf24"/>
+    <text x="910" y="512" font-size="13" font-weight="700" fill="#fcd34d" text-anchor="middle">산출</text>
+    <text x="910" y="531" font-size="11" fill="#cbd5e1" text-anchor="middle">고정 서식 엑셀 export · 이메일 발송(선택)</text>
+  </g>
+</svg>
