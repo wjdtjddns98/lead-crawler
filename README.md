@@ -45,7 +45,30 @@ uv run leadcrawler web
 같은 출처로 서빙하므로 CORS나 `VITE_API_BASE` 설정이 필요 없다. 빌드가 없으면
 API(`/docs`)만 동작한다.
 
-## 구조
+## 아키텍처
+
+```mermaid
+flowchart LR
+    subgraph SRC["발견 소스"]
+        direction TB
+        S1["EDGAR · DART · 거래소"]
+        S2["Companies House · 디렉터리"]
+        S3["검색 API"]
+    end
+
+    subgraph PIPE["크롤 파이프라인 — 24/7 스케줄러"]
+        direction LR
+        P1["discover"] --> P2["dedup"] --> P3["enrich<br/>정적 BFS → 헤드리스 → OCR/비전"] --> P4["verify"]
+    end
+
+    S1 & S2 & S3 --> P1
+    P4 --> DB[("PostgreSQL")]
+    DB --> API["FastAPI 웹앱"]
+    API --> FE["React 검증 워크벤치"]
+    FE -- "사람 검증·확정" --> API
+    DB --> XLSX["엑셀 export"]
+    PIPE -.-> NT["Notion 자동 리포팅"]
+```
 
 ```
 leadcrawler/
