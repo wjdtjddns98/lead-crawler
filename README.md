@@ -1,90 +1,113 @@
 # lead-crawler
 
-전 산업·전 기업(상장+비상장)의 **IR 연락처·이메일·문의폼**을 24/7 자동 추출하고, 직원이
-최소 인원으로 **검증만** 하도록 만드는 B2B 리드 수집 시스템. 결과는 고정 엑셀 서식으로 산출한다.
+[![CI](https://github.com/wjdtjddns98/lead-crawler/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/wjdtjddns98/lead-crawler/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![FastAPI](https://img.shields.io/badge/FastAPI-webapp-009688?logo=fastapi&logoColor=white)](leadcrawler/api)
+[![React](https://img.shields.io/badge/React-Vite-61DAFB?logo=react&logoColor=black)](web)
 
-> 자산운용사의 IR 콜드메일 대상 DB 구축용. **이메일 발송은 본 시스템 밖**(외부 메일솔루션).
+전 산업·전 기업(상장+비상장)의 IR 연락처 — 이메일·전화·문의폼 — 를 자동 수집하고,
+웹앱에서 사람이 검증한 뒤 고정 엑셀 서식으로 내보내는 B2B 리드 수집 시스템.
 
-## 핵심 원칙
+```
+discover → dedup → enrich → verify → 저장 → 사람 검수 → export
+```
 
-- **dry_run 우선** — `LEADCRAWLER_DRY_RUN=true`(기본)면 외부 키 없이 전 파이프라인이 결정적 시뮬레이션.
-- **중복 금지** — 이미 검색한 기업(기존 엑셀/CSV import 포함)은 `canonical_key` 로 재추출하지 않음.
-- **실존만** — 등록처 active + 도메인/홈페이지 생존 검증 통과분만 저장.
-- **고품질** — 멀티소스 교차검증 + 신뢰도(confidence)로 사람 검증 부담 최소화.
+- 기본값이 dry-run — `LEADCRAWLER_DRY_RUN=true`면 외부 API 키 없이 전 과정이 시뮬레이션으로 동작
+- 한 번 수집한 기업은 `canonical_key`·도메인 기준으로 다시 추출하지 않음
+- 사이트 생존 검증을 통과한 기업만 검수 큐로 승격(전 후보는 발견 원장에 기록)
 
-## 구조
+## 빠른 시작
+
+의존성 관리는 [uv](https://docs.astral.sh/uv/)를 쓴다.
+
+```bash
+uv sync                 # .venv + 런타임 + dev 도구(pytest, ruff, mypy)
+uv run pytest -q        # 단위 테스트는 네트워크 없이 통과
+uv run leadcrawler run --country KR --industry 건설 --out exports/leads.xlsx
+```
+
+기능별 extra: `--extra api`(웹앱) · `--extra db`(psycopg) · `--extra crawl`(헤드리스) ·
+`--extra ocr` · `--all-extras`. 운영 설치는 `uv sync --no-dev --extra api --extra db`.
+
+## 검증 웹앱
+
+운영 DB는 PostgreSQL(단위 테스트는 SQLite), 스키마는 Alembic으로 관리한다.
+
+```bash
+docker compose up -d               # 로컬 PostgreSQL
+uv sync --extra api --extra db
+uv run leadcrawler db-upgrade      # alembic upgrade head
+uv run leadcrawler web
+```
+
+프론트를 빌드해 두면(`cd web && npm install && npm run build`) 백엔드가 `web/dist`를
+같은 출처로 서빙하므로 CORS나 `VITE_API_BASE` 설정이 필요 없다. 빌드가 없으면
+API(`/docs`)만 동작한다.
+
+## 아키텍처
+
+```mermaid
+flowchart LR
+    subgraph ENTRY["실행 진입점"]
+        direction TB
+        E1["CLI"]
+        E2["일일 스케줄러<br/>(APScheduler cron)"]
+        E3["웹 관리자 크롤 트리거<br/>연속 라운드 · 워치독 · 취소"]
+    end
+
+    subgraph SRC["발견 소스"]
+        direction TB
+        S1["등록처·거래소<br/>EDGAR · DART · Companies House<br/>아시아 거래소 7종"]
+        S2["집계·공공 데이터<br/>GLEIF · Wikidata · OpenCorporates · NPS"]
+        S3["검색·디렉터리<br/>검색 API(Serper/CSE/네이버)<br/>네이버 지역검색 · AI 디렉터리"]
+    end
+
+    subgraph PIPE["파이프라인 (run_pipeline)"]
+        direction LR
+        P1["discover"] --> P2["dedup<br/>+ 도메인 해석"] --> P3["enrich<br/>정적 BFS → 헤드리스 → OCR<br/>→ 이메일 API → Vision"] --> P4["verify<br/>사이트 실존 · 이메일 MX/SMTP"]
+    end
+
+    ENTRY --> PIPE
+    S1 & S2 & S3 --> P1
+    P2 -. "전 후보 기록" .-> LG[("발견 원장<br/>discovered_company")]
+    P4 -- "사이트 생존 통과만" --> DB[("company · contact<br/>review_queue")]
+    DB --> API["FastAPI"]
+    API <--> FE["React 검수 워크벤치<br/>클레임 · 확정/거부"]
+    API -- "확정분" --> OUT["엑셀 export · 이메일 발송"]
+    PIPE -.-> NT["Notion 리포팅<br/>일일보고 · 스크럼 · 현황"]
+```
 
 ```
 leadcrawler/
-  config.py logging.py models.py dedup.py emailrules.py excel_format.py importer.py
-  sources/   발견 어댑터(EDGAR/DART/거래소/CH/디렉터리/검색API)
-  enrich/    IR이메일·전화·문의폼 추출(BFS→헤드리스→OCR/비전→폼)
-  verify/    실존성·이메일 유효성 검증
-  pipeline/  discover→dedup→enrich→verify→lead
-  scheduler/ 24/7 오케스트레이션
-  storage/   export(고정 엑셀 서식)
-  integrations/ notion(자동 리포팅)
-  api/       FastAPI 검증 웹앱
-web/         React(Vite) 프론트 → Vercel
-```
-
-## 개발
-
-의존성 관리는 [uv](https://docs.astral.sh/uv/). `uv sync` 가 `.venv` 생성·의존성 설치·
-프로젝트(editable)·dev 그룹까지 한 번에 처리한다(락파일 `uv.lock` 기준 재현).
-
-```bash
-uv sync                 # .venv + 런타임 + dev 그룹(pytest·ruff·mypy) 설치
-uv run ruff check .
-uv run pytest -q
-```
-
-기능 extra 는 필요할 때 추가한다: `uv sync --extra api` (FastAPI 웹앱),
-`--extra db`(psycopg), `--extra crawl`(headless), `--extra ocr`, `--all-extras`(전부).
-운영 설치는 dev 제외: `uv sync --no-dev --extra api --extra db`.
-
-## 데이터베이스
-
-운영/로컬은 PostgreSQL, 단위 테스트는 SQLite(스키마 양립 설계). 스키마 변경은 Alembic 으로 관리.
-
-```bash
-docker compose up -d            # 로컬 PostgreSQL 기동
-uv sync --extra db              # psycopg 드라이버
-uv run leadcrawler db-upgrade   # = alembic upgrade head
-# 스키마 변경 시: alembic revision --autogenerate -m "변경요약"
+  sources/      발견 어댑터 — 등록처·거래소·공공데이터·검색·AI 디렉터리 + 도메인 해석
+  enrich/       연락처 추출 체인 (정적 BFS → 헤드리스 → OCR → 이메일 API → Vision)
+  verify/       사이트 실존성 · 이메일 유효성(MX/SMTP/도달성) 검증
+  pipeline/     run_pipeline 오케스트레이션 + 웹 크롤 잡(연속 라운드·워치독·후속 채움)
+  scheduler/    일일 정기 크롤 + Notion 리포팅 (APScheduler)
+  storage/      DB 저장소 — 발견 원장·검수 큐·크롤 잡·커서·감사 로그 + 엑셀 export
+  dedup_resolve/ 근접 중복 탐지·병합 (렉시컬 + LLM 판정)
+  integrations/ Notion 클라이언트
+  api/          FastAPI — 인증·검수 큐·관리자·중복 워크벤치·export·발송
+web/            React(Vite) 검수 워크벤치 UI
 ```
 
 ## CLI
 
 ```bash
-leadcrawler run --country KR --industry 건설 --out exports/leads.xlsx
-leadcrawler run --country KR --industry 건설 --persist   # 결과를 DB 에 영속화
-leadcrawler db-upgrade                                    # DB 마이그레이션 적용
-leadcrawler import-existing "기존목록.xlsx"
-leadcrawler report 2026-06-18 --done "..." --next "..."   # Notion 자동 리포팅
+leadcrawler run --country KR --industry 건설 --persist   # 수집 결과를 DB에 영속화
+leadcrawler import-existing "기존목록.xlsx"               # 기존 목록 시드(중복 방지 기준)
+leadcrawler report 2026-06-18 --done "..." --next "..."  # Notion 리포팅
 ```
 
-## 내부망 배포 (HTTPS)
+## 배포 (내부망 HTTPS)
 
-**원커맨드**: 리포 루트의 `serve-https.bat` 더블클릭(또는 터미널에서 실행). 첫 실행 때
-자체서명 인증서를 자동 생성(호스트명·로컬 IP 가 SAN 에 자동 포함)하고 `0.0.0.0:8000` 에
-HTTPS 로 띄운다. 이후 실행은 기존 인증서 재사용.
+리포 루트의 `serve-https.bat` 실행 — 첫 실행 때 자체서명 인증서를 만들고
+(호스트명·로컬 IP를 SAN에 포함) `0.0.0.0:8000`에 HTTPS로 띄운다.
+포트 변경은 `serve-https.bat -Port 8443`.
 
-```powershell
-serve-https.bat            # 포트 변경: serve-https.bat -Port 8443
-```
+자체서명이라 브라우저 최초 접속 시 경고가 한 번 뜬다. 경고 없이 쓰려면
+`certs\cert.pem`을 각 클라이언트의 신뢰할 수 있는 루트 인증 기관에 설치한다.
 
-수동으로 하려면(동일 동작을 단계별로):
+## 기술 스택
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\gen-ssl-cert.ps1
-leadcrawler web --host 0.0.0.0 --ssl-certfile certs\cert.pem --ssl-keyfile certs\key.pem
-```
-
-**UI 포함 원스톱**: 프론트를 한 번 빌드해 두면(`cd web && npm install && npm run build`)
-백엔드가 `web/dist` 를 루트(`/`)에 같이 서빙한다 — 같은 출처라 CORS·`VITE_API_BASE`
-설정이 필요 없다. 빌드가 없으면 `/` 는 404 이고 API(`/docs` 등)만 동작한다.
-
-접속: `https://<서버IP>:8000`. 자체서명이라 브라우저 최초 접속 시 경고 1회 — 내부망 용도로는
-"고급 → 계속"으로 충분하고, 경고 없이 쓰려면 `certs\cert.pem` 을 각 클라이언트의
-"신뢰할 수 있는 루트 인증 기관"에 설치한다.
+Python 3.10+ · Pydantic v2 · SQLAlchemy 2 + Alembic · FastAPI · PostgreSQL · React + Vite · uv
