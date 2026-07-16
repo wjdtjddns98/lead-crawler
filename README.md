@@ -7,15 +7,14 @@
 
 전 산업·전 기업(상장+비상장)의 IR 연락처 — 이메일·전화·문의폼 — 를 자동 수집하고,
 웹앱에서 사람이 검증한 뒤 고정 엑셀 서식으로 내보내는 B2B 리드 수집 시스템.
-이메일 발송은 범위 밖이다(외부 메일 솔루션 사용).
 
 ```
-discover → dedup → enrich → verify → export
+discover → dedup → enrich → verify → 저장 → 사람 검수 → export
 ```
 
 - 기본값이 dry-run — `LEADCRAWLER_DRY_RUN=true`면 외부 API 키 없이 전 과정이 시뮬레이션으로 동작
-- 한 번 수집한 기업은 `canonical_key` 기준으로 다시 추출하지 않음
-- 등록처 active + 사이트 생존 검증을 통과한 기업만 저장
+- 한 번 수집한 기업은 `canonical_key`·도메인 기준으로 다시 추출하지 않음
+- 사이트 생존 검증을 통과한 기업만 검수 큐로 승격(전 후보는 발견 원장에 기록)
 
 ## 빠른 시작
 
@@ -49,38 +48,47 @@ API(`/docs`)만 동작한다.
 
 ```mermaid
 flowchart LR
+    subgraph ENTRY["실행 진입점"]
+        direction TB
+        E1["CLI"]
+        E2["일일 스케줄러<br/>(APScheduler cron)"]
+        E3["웹 관리자 크롤 트리거<br/>연속 라운드 · 워치독 · 취소"]
+    end
+
     subgraph SRC["발견 소스"]
         direction TB
-        S1["EDGAR · DART · 거래소"]
-        S2["Companies House · 디렉터리"]
-        S3["검색 API"]
+        S1["등록처·거래소<br/>EDGAR · DART · Companies House<br/>아시아 거래소 7종"]
+        S2["집계·공공 데이터<br/>GLEIF · Wikidata · OpenCorporates · NPS"]
+        S3["검색·디렉터리<br/>검색 API(Serper/CSE/네이버)<br/>네이버 지역검색 · AI 디렉터리"]
     end
 
-    subgraph PIPE["크롤 파이프라인 — 24/7 스케줄러"]
+    subgraph PIPE["파이프라인 (run_pipeline)"]
         direction LR
-        P1["discover"] --> P2["dedup"] --> P3["enrich<br/>정적 BFS → 헤드리스 → OCR/비전"] --> P4["verify"]
+        P1["discover"] --> P2["dedup<br/>+ 도메인 해석"] --> P3["enrich<br/>정적 BFS → 헤드리스 → OCR<br/>→ 이메일 API → Vision"] --> P4["verify<br/>사이트 실존 · 이메일 MX/SMTP"]
     end
 
+    ENTRY --> PIPE
     S1 & S2 & S3 --> P1
-    P4 --> DB[("PostgreSQL")]
-    DB --> API["FastAPI 웹앱"]
-    API --> FE["React 검증 워크벤치"]
-    FE -- "사람 검증·확정" --> API
-    DB --> XLSX["엑셀 export"]
-    PIPE -.-> NT["Notion 자동 리포팅"]
+    P2 -. "전 후보 기록" .-> LG[("발견 원장<br/>discovered_company")]
+    P4 -- "사이트 생존 통과만" --> DB[("company · contact<br/>review_queue")]
+    DB --> API["FastAPI"]
+    API <--> FE["React 검수 워크벤치<br/>클레임 · 확정/거부"]
+    API -- "확정분" --> OUT["엑셀 export · 이메일 발송"]
+    PIPE -.-> NT["Notion 리포팅<br/>일일보고 · 스크럼 · 현황"]
 ```
 
 ```
 leadcrawler/
-  sources/      발견 어댑터 (EDGAR, DART, 거래소, Companies House, 디렉터리, 검색 API)
-  enrich/       이메일·전화·문의폼 추출 (정적 BFS → 헤드리스 → OCR/비전)
-  verify/       실존성·이메일 유효성 검증
-  pipeline/     discover → dedup → enrich → verify → lead
-  scheduler/    24/7 크롤 오케스트레이션
-  storage/      엑셀 export
-  integrations/ Notion 자동 리포팅
-  api/          FastAPI 검증 웹앱
-web/            React(Vite) 프론트
+  sources/      발견 어댑터 — 등록처·거래소·공공데이터·검색·AI 디렉터리 + 도메인 해석
+  enrich/       연락처 추출 체인 (정적 BFS → 헤드리스 → OCR → 이메일 API → Vision)
+  verify/       사이트 실존성 · 이메일 유효성(MX/SMTP/도달성) 검증
+  pipeline/     run_pipeline 오케스트레이션 + 웹 크롤 잡(연속 라운드·워치독·후속 채움)
+  scheduler/    일일 정기 크롤 + Notion 리포팅 (APScheduler)
+  storage/      DB 저장소 — 발견 원장·검수 큐·크롤 잡·커서·감사 로그 + 엑셀 export
+  dedup_resolve/ 근접 중복 탐지·병합 (렉시컬 + LLM 판정)
+  integrations/ Notion 클라이언트
+  api/          FastAPI — 인증·검수 큐·관리자·중복 워크벤치·export·발송
+web/            React(Vite) 검수 워크벤치 UI
 ```
 
 ## CLI
