@@ -10,7 +10,7 @@ import {
   reclaimUser,
   setUserActive,
 } from "../../api";
-import type { AuditEntry, ReviewDailyStatsItem, Role, UserStats } from "../../types";
+import type { AuditEntry, ReviewDailyStats, ReviewDailyStatsItem, Role, UserStats } from "../../types";
 import { errMsg } from "../../format";
 import { ErrorBox } from "../ErrorBox";
 import { TableSkeleton } from "../TableSkeleton";
@@ -271,8 +271,90 @@ export function AccountsSection() {
         )}
       </section>
 
+      <DailyReviewSection />
+
       <AuditSection audit={audit} loading={loading} />
     </>
+  );
+}
+
+// 로컬(브라우저) 날짜를 YYYY-MM-DD 로 — 사용자가 전부 KST 라 별도 타임존 변환 없이 이걸로 충분.
+function todayLocal(): string {
+  return new Date().toLocaleDateString("sv-SE");
+}
+
+// #303 — 관리탭 일별 직원별 확정/거부 집계. 날짜를 골라 GET /admin/stats/review-daily 를 재조회한다.
+// AccountsSection 의 "오늘 처리량" 컬럼(오늘 고정)과 별개로, 임의 과거 날짜를 볼 수 있는 뷰.
+function DailyReviewSection() {
+  const [date, setDate] = useState(todayLocal());
+  const [stats, setStats] = useState<ReviewDailyStats | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetchReviewDaily(date)
+      .then((r) => {
+        if (!cancelled) setStats(r);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(errMsg(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [date]);
+
+  const items = stats?.items ?? [];
+
+  return (
+    <section>
+      <h2 className={SECTION_H2}>
+        일별 처리량 {loading && <span className="text-muted">· 불러오는 중…</span>}
+      </h2>
+      <div className="flex gap-2 mb-3.5 flex-wrap items-center">
+        <input
+          type="date"
+          className={INPUT}
+          value={date}
+          max={todayLocal()}
+          onChange={(e) => e.target.value && setDate(e.target.value)}
+          aria-label="조회 날짜"
+        />
+      </div>
+      {error && <ErrorBox>{error}</ErrorBox>}
+      {loading && !stats ? (
+        <TableSkeleton rows={4} />
+      ) : !error && items.length === 0 ? (
+        <p className={EMPTY}>{date} 처리 이력이 없습니다.</p>
+      ) : items.length > 0 ? (
+        <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
+          <thead>
+            <tr>
+              <th className={TH}>담당자</th>
+              <th className={TH}>확정</th>
+              <th className={TH}>거부</th>
+              <th className={TH}>합계</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((i) => (
+              <tr key={i.username}>
+                <td className={`${TD} font-semibold`}>{i.username}</td>
+                <td className={`${TD} tabular-nums`}>{i.confirmed}</td>
+                <td className={`${TD} tabular-nums`}>{i.rejected}</td>
+                <td className={`${TD} tabular-nums`}>{i.confirmed + i.rejected}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+    </section>
   );
 }
 
