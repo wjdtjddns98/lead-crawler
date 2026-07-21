@@ -312,12 +312,14 @@ def create_app() -> FastAPI:
             stmt = stmt.where(func.lower(CompanyRow.country).in_(country_match_set(countries)))
         if industries:
             stmt = stmt.where(func.lower(CompanyRow.industry).in_({i.lower() for i in industries}))
-        if date_from:
-            stmt = stmt.where(ReviewQueueRow.reviewed_at >= _kst_day_start_utc(date_from))
-        if date_to:
-            stmt = stmt.where(
-                ReviewQueueRow.reviewed_at < _kst_day_start_utc(date_to) + timedelta(days=1)
-            )
+        start = _kst_day_start_utc(date_from) if date_from else None
+        end = _kst_day_start_utc(date_to) + timedelta(days=1) if date_to else None
+        if start is not None and end is not None and start >= end:
+            raise HTTPException(status_code=422, detail="date_from 이 date_to 보다 늦습니다")
+        if start is not None:
+            stmt = stmt.where(ReviewQueueRow.reviewed_at >= start)
+        if end is not None:
+            stmt = stmt.where(ReviewQueueRow.reviewed_at < end)
         company_ids = list(db.scalars(stmt).all())
         leads = load_leads(db, company_ids=company_ids)
         # 요청마다 고유 임시파일 — 동시 export 의 파일 경합 방지. 응답 후 삭제.
@@ -395,12 +397,18 @@ _KST = timezone(timedelta(hours=9))
 
 
 def _kst_day_start_utc(day: str) -> datetime:
-    """YYYY-MM-DD(KST 하루 시작)를 UTC aware datetime 으로. 형식 오류는 422."""
+    """YYYY-MM-DD(KST 하루 시작)를 UTC aware datetime 으로. 형식·범위 오류는 422.
+
+    라운드트립 검사로 콤팩트(20260721)·주차(2026-W29-1) 등 비표준 표기를 거부하고,
+    극단 연도의 KST→UTC 변환 OverflowError 도 422 로 수렴시킨다(500 방지).
+    """
     try:
         d = date.fromisoformat(day)
-    except ValueError as exc:
+        if d.isoformat() != day:
+            raise ValueError(day)
+        return datetime(d.year, d.month, d.day, tzinfo=_KST).astimezone(timezone.utc)
+    except (ValueError, OverflowError) as exc:
         raise HTTPException(status_code=422, detail="날짜 형식은 YYYY-MM-DD") from exc
-    return datetime(d.year, d.month, d.day, tzinfo=_KST).astimezone(timezone.utc)
 
 
 def _set_status(

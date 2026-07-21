@@ -136,26 +136,45 @@ def test_export_filter_by_country_industry(client: TestClient) -> None:
 
 def test_export_filter_by_date(client: TestClient) -> None:
     import io
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
 
     from openpyxl import load_workbook
 
+    from leadcrawler.schema import ReviewQueueRow
+    from leadcrawler.storage.db import session_scope
+
     rid = client.get("/queue").json()["items"][0]["id"]
-    client.post(f"/queue/{rid}/confirm")  # reviewed_at=지금(오늘 KST) 스탬프.
+    client.post(f"/queue/{rid}/confirm")
 
     def data_rows(resp) -> int:
+        assert resp.status_code == 200
         return load_workbook(io.BytesIO(resp.content)).active.max_row - 1  # 헤더 제외.
 
-    kst_today = datetime.now(timezone(timedelta(hours=9))).date()
-    today = kst_today.isoformat()
-    yesterday = (kst_today - timedelta(days=1)).isoformat()
-    tomorrow = (kst_today + timedelta(days=1)).isoformat()
-    # 오늘 확정분 — 당일 범위(포함)면 잡히고, 과거/미래 범위면 0행.
-    assert data_rows(client.get(f"/export?date_from={today}&date_to={today}")) == 1
-    assert data_rows(client.get(f"/export?date_to={yesterday}")) == 0
-    assert data_rows(client.get(f"/export?date_from={tomorrow}")) == 0
-    # 형식 오류는 422.
+    def set_reviewed_at(value) -> None:
+        with session_scope(get_settings()) as s:
+            s.get(ReviewQueueRow, rid).reviewed_at = value
+
+    # KST 2026-07-21 하루 = UTC [07-20 15:00, 07-21 15:00) — 벽시계 의존 없이
+    # reviewed_at 을 고정 UTC 값으로 세팅해 경계 4점 + NULL 을 정밀 검증한다.
+    day = "date_from=2026-07-21&date_to=2026-07-21"
+    for utc_at, expected in [
+        (datetime(2026, 7, 20, 14, 59, 59, 999999, tzinfo=timezone.utc), 0),  # 경계 직전
+        (datetime(2026, 7, 20, 15, 0, 0, tzinfo=timezone.utc), 1),  # KST 자정(포함)
+        (datetime(2026, 7, 21, 14, 59, 59, 999999, tzinfo=timezone.utc), 1),  # 하루 끝(포함)
+        (datetime(2026, 7, 21, 15, 0, 0, tzinfo=timezone.utc), 0),  # 다음날 자정(제외)
+        (None, 0),  # 구데이터(reviewed_at NULL)는 날짜 필터 시 제외
+    ]:
+        set_reviewed_at(utc_at)
+        assert data_rows(client.get(f"/export?{day}")) == expected, utc_at
+    # 단독 지정 — from 만 / to 만.
+    set_reviewed_at(datetime(2026, 7, 21, 0, 0, tzinfo=timezone.utc))
+    assert data_rows(client.get("/export?date_from=2026-07-21")) == 1
+    assert data_rows(client.get("/export?date_to=2026-07-20")) == 0
+    # 형식·범위 오류는 전부 422 — 비ISO/콤팩트 표기/극단 연도(Overflow)/역전 범위.
     assert client.get("/export?date_from=21-07-2026").status_code == 422
+    assert client.get("/export?date_from=20260721").status_code == 422
+    assert client.get("/export?date_from=0001-01-01").status_code == 422
+    assert client.get("/export?date_from=2026-07-22&date_to=2026-07-21").status_code == 422
 
 
 def test_send_preview_and_dry_run(client: TestClient) -> None:
