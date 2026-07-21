@@ -699,14 +699,25 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
   }
   if (path === "/admin/audit")
     return jsonRes(audit.slice(0, Number(u.searchParams.get("limit") ?? 100) || 100));
-  // 직원별 일일 처리량(#279) — mock 은 단일 사용자라 db 전체 확정/거부 카운트를 그대로 노출.
+  // 직원별 일일 처리량(#279·#303) — audit 로그를 처리일(로컬 날짜) 기준으로 담당자별 집계.
+  // 시드 audit 이 최근 25시간에 걸쳐 mock-admin/worker1/worker2 로 흩어져 있어 날짜를 바꿔가며
+  // 다중 담당자·빈 날짜 케이스를 mock 만으로 확인할 수 있다(BE 계약과 동일: 처리량 많은 순 정렬).
   if (path === "/admin/stats/review-daily" && method === "GET") {
-    const confirmed = db.filter((x) => x.status === "confirmed").length;
-    const rejected = db.filter((x) => x.status === "rejected").length;
-    return jsonRes({
-      date: u.searchParams.get("date") ?? new Date().toLocaleDateString("sv-SE"),
-      items: confirmed || rejected ? [{ username: "mock-admin", confirmed, rejected }] : [],
-    });
+    const date = u.searchParams.get("date") ?? new Date().toLocaleDateString("sv-SE");
+    const localDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("sv-SE") : "");
+    const byUser = new Map<string, { confirmed: number; rejected: number }>();
+    audit
+      .filter((a) => (a.action === "confirmed" || a.action === "rejected") && localDate(a.at) === date)
+      .forEach((a) => {
+        const stat = byUser.get(a.actor_username) ?? { confirmed: 0, rejected: 0 };
+        if (a.action === "confirmed") stat.confirmed++;
+        else stat.rejected++;
+        byUser.set(a.actor_username, stat);
+      });
+    const items = [...byUser.entries()]
+      .map(([username, stat]) => ({ username, ...stat }))
+      .sort((a, b) => b.confirmed + b.rejected - (a.confirmed + a.rejected));
+    return jsonRes({ date, items });
   }
   // 크롤 타깃 픽커 옵션 — BE 와 동일하게 국가/업종 표준 목록 전량(/queue/filters 와 같은 출처).
   if (path === "/admin/countries") return jsonRes(MOCK_COUNTRIES);
