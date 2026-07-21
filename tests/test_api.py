@@ -134,6 +134,30 @@ def test_export_filter_by_country_industry(client: TestClient) -> None:
     assert data_rows(client.get("/export?industry=반도체")) == 0
 
 
+def test_export_filter_by_date(client: TestClient) -> None:
+    import io
+    from datetime import datetime, timedelta, timezone
+
+    from openpyxl import load_workbook
+
+    rid = client.get("/queue").json()["items"][0]["id"]
+    client.post(f"/queue/{rid}/confirm")  # reviewed_at=지금(오늘 KST) 스탬프.
+
+    def data_rows(resp) -> int:
+        return load_workbook(io.BytesIO(resp.content)).active.max_row - 1  # 헤더 제외.
+
+    kst_today = datetime.now(timezone(timedelta(hours=9))).date()
+    today = kst_today.isoformat()
+    yesterday = (kst_today - timedelta(days=1)).isoformat()
+    tomorrow = (kst_today + timedelta(days=1)).isoformat()
+    # 오늘 확정분 — 당일 범위(포함)면 잡히고, 과거/미래 범위면 0행.
+    assert data_rows(client.get(f"/export?date_from={today}&date_to={today}")) == 1
+    assert data_rows(client.get(f"/export?date_to={yesterday}")) == 0
+    assert data_rows(client.get(f"/export?date_from={tomorrow}")) == 0
+    # 형식 오류는 422.
+    assert client.get("/export?date_from=21-07-2026").status_code == 422
+
+
 def test_send_preview_and_dry_run(client: TestClient) -> None:
     # 확정 후 발송 미리보기/발송 — email_send_enabled 기본 false 라 dry-run(실발송 0).
     rid = client.get("/queue").json()["items"][0]["id"]

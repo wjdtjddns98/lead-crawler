@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Iterator
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from typing import Literal
@@ -284,6 +285,8 @@ def create_app() -> FastAPI:
     def export(
         country: str = Query(default="", description="쉼표구분 국가(ISO2) 필터, 빈값=전체"),
         industry: str = Query(default="", description="쉼표구분 업종 필터, 빈값=전체"),
+        date_from: str = Query(default="", description="확정 처리일 시작(YYYY-MM-DD, KST)"),
+        date_to: str = Query(default="", description="확정 처리일 끝·포함(YYYY-MM-DD, KST)"),
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> FileResponse:
@@ -293,6 +296,8 @@ def create_app() -> FastAPI:
         처리한 확정분만(assignee_id 귀속 — ``/queue/mine?status=confirmed`` 와 동일 기준).
         ``country``/``industry`` 로 국가·업종별 선택 추출(빈값=전체). 국가는 별칭까지
         대소문자 무시 매칭('KR'↔'대한민국'), 업종은 대소문자 무시 매칭.
+        ``date_from``/``date_to`` 는 확정 처리 시각(``reviewed_at``) 기준 KST 하루 경계
+        필터(포함 범위) — 컬럼 도입 전 구데이터(reviewed_at NULL)는 날짜 필터 시 제외된다.
         """
         stmt = (
             select(ReviewQueueRow.company_id)
@@ -307,6 +312,12 @@ def create_app() -> FastAPI:
             stmt = stmt.where(func.lower(CompanyRow.country).in_(country_match_set(countries)))
         if industries:
             stmt = stmt.where(func.lower(CompanyRow.industry).in_({i.lower() for i in industries}))
+        if date_from:
+            stmt = stmt.where(ReviewQueueRow.reviewed_at >= _kst_day_start_utc(date_from))
+        if date_to:
+            stmt = stmt.where(
+                ReviewQueueRow.reviewed_at < _kst_day_start_utc(date_to) + timedelta(days=1)
+            )
         company_ids = list(db.scalars(stmt).all())
         leads = load_leads(db, company_ids=company_ids)
         # 요청마다 고유 임시파일 — 동시 export 의 파일 경합 방지. 응답 후 삭제.
@@ -377,6 +388,19 @@ def create_app() -> FastAPI:
 def _split_csv(value: str) -> list[str]:
     """쉼표구분 문자열을 트림된 토큰 목록으로(빈 토큰 제거)."""
     return [t.strip() for t in (value or "").split(",") if t.strip()]
+
+
+# 날짜 필터 경계 — 관리탭 일별 집계(storage/audit.py)와 동일한 KST 고정 오프셋 기준.
+_KST = timezone(timedelta(hours=9))
+
+
+def _kst_day_start_utc(day: str) -> datetime:
+    """YYYY-MM-DD(KST 하루 시작)를 UTC aware datetime 으로. 형식 오류는 422."""
+    try:
+        d = date.fromisoformat(day)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="날짜 형식은 YYYY-MM-DD") from exc
+    return datetime(d.year, d.month, d.day, tzinfo=_KST).astimezone(timezone.utc)
 
 
 def _set_status(
