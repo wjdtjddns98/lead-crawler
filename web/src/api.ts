@@ -337,10 +337,18 @@ export async function cancelCrawl(): Promise<CrawlJob> {
 
 // 확정분 엑셀 다운로드. 인증 헤더가 필요해 평범한 링크 대신 fetch→blob 으로 받아 저장한다.
 // country/industry(쉼표구분)로 국가·업종별 선택 추출(빈값=전체).
-export async function exportConfirmed(country = "", industry = ""): Promise<void> {
+// dateFrom/dateTo(YYYY-MM-DD)=확정 처리일(KST, 포함) 필터, 빈값=전체(#308).
+export async function exportConfirmed(
+  country = "",
+  industry = "",
+  dateFrom = "",
+  dateTo = "",
+): Promise<void> {
   const q = new URLSearchParams();
   if (country) q.set("country", country);
   if (industry) q.set("industry", industry);
+  if (dateFrom) q.set("date_from", dateFrom);
+  if (dateTo) q.set("date_to", dateTo);
   const qs = q.toString();
   const res = await fetch(`${BASE}/export${qs ? `?${qs}` : ""}`, { headers: authHeaders() });
   handle401(res);
