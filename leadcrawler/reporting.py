@@ -219,7 +219,14 @@ def auto_report(
         try:
             out["nutti"] = reporter.post_nutti_daily(daily_model)
         except Exception as exc:
-            log.warning("reporting.nutti_failed", error=str(exc))
+            log.warning(
+                "reporting.nutti_failed",
+                date=date,
+                db=settings.notion_nutti_daily_db,
+                error_type=type(exc).__name__,
+                error=str(exc),
+                exc_info=True,
+            )
     log.info(
         "reporting.auto",
         date=date,

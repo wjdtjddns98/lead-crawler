@@ -194,8 +194,9 @@ class Settings(BaseSettings):
     notion_daily_db: str = Field(default="4709a56a55614147a264e68dc7e521b8")
     notion_scrum_db: str = Field(default="850215969daa4b648a8713055356053a")
     notion_status_db: str = Field(default="dd74e2f7c25f425cbf030117031c9f92")
-    # Nutti 팀스페이스 일일 업무보고 DB — 그날 페이지에 lead-crawler 섹션을 병기한다(빈 값=끔).
-    notion_nutti_daily_db: str = Field(default="36ea47166046806eaab4f838bfe9b485")
+    # Nutti 팀스페이스 일일 업무보고 DB id — 설정한 배포만 그날 페이지에 lead-crawler 섹션을
+    # 병기한다(빈 값=끔, 옵트인). 타 팀 DB 쓰기라 기본 활성화하지 않는다.
+    notion_nutti_daily_db: str = Field(default="")
 
     # 라이브 발견 제어(예산·레이트리밋)
     # 무료/등록처 소스(EDGAR·DART·CompaniesHouse·거래소·GLEIF·Wikidata·OpenCorporates)의
