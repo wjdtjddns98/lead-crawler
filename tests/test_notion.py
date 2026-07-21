@@ -32,3 +32,19 @@ def test_scrum_and_status_payloads() -> None:
     assert scrum["properties"]["오늘 할 일"]["rich_text"][0]["text"]["content"] == "할 일"
     status = reporter.post_status(StatusTask(task="T1", milestone="M0", status="진행중"))
     assert status["properties"]["상태"]["select"]["name"] == "진행중"
+
+
+def test_nutti_daily_payload_shape() -> None:
+    reporter = NotionReporter(get_settings())
+    payload = reporter.post_nutti_daily(
+        DailyReport(date="2026-07-21", done="줄1\n- 줄2", next="다음 계획")
+    )
+    assert payload["database_id"] == get_settings().notion_nutti_daily_db
+    assert payload["title"] == "Daily Report 07.21"
+    kids = payload["children"]
+    assert kids[0]["heading_3"]["rich_text"][0]["text"]["content"] == "lead-crawler(자동)"
+    texts = [b["bulleted_list_item"]["rich_text"][0]["text"]["content"] for b in kids[1:]]
+    assert "줄1" in texts
+    assert "줄2" in texts  # '- ' 프리픽스 제거 확인
+    assert "내일: 다음 계획" in texts
+    assert texts[-1].startswith("이슈: ")

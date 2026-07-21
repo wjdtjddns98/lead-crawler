@@ -209,11 +209,17 @@ def auto_report(
     if commits is None:
         commits = git_commits_since(date)
     reporter = NotionReporter(settings)
-    daily = reporter.post_daily_report(
-        build_daily_report(date, stats, commits, milestone=milestone, next_plan=next_plan)
-    )
+    daily_model = build_daily_report(date, stats, commits, milestone=milestone, next_plan=next_plan)
+    daily = reporter.post_daily_report(daily_model)
     scrum = reporter.post_scrum(build_scrum(date, stats, commits, next_plan=next_plan))
     status = reporter.post_status(build_status_task(date, stats, milestone=milestone))
+    out = {"daily": daily, "scrum": scrum, "status": status}
+    if settings.notion_nutti_daily_db:
+        # 부가 기입(타 팀스페이스) 실패가 본 리포트 3종을 막지 않게 격리한다.
+        try:
+            out["nutti"] = reporter.post_nutti_daily(daily_model)
+        except Exception as exc:
+            log.warning("reporting.nutti_failed", error=str(exc))
     log.info(
         "reporting.auto",
         date=date,
@@ -221,4 +227,4 @@ def auto_report(
         with_email=stats.with_email,
         sent=reporter.enabled,
     )
-    return {"daily": daily, "scrum": scrum, "status": status}
+    return out

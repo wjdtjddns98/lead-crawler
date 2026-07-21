@@ -17,6 +17,8 @@ from ..logging import get_logger
 log = get_logger("notion")
 
 _API = "https://api.notion.com/v1/pages"
+_QUERY_API = "https://api.notion.com/v1/databases/{db}/query"
+_BLOCKS_API = "https://api.notion.com/v1/blocks/{page_id}/children"
 
 
 class DailyReport(BaseModel):
@@ -152,3 +154,101 @@ class NotionReporter:
     def post_status(self, task: StatusTask) -> dict:
         """현황 보드 태스크 1건을 기입한다."""
         return self._post(self.status_payload(task), what="status")
+
+    # ── Nutti 팀 일일 업무보고 병기 ──────────────────────────────────────────
+    # Nutti 서식은 "하루 한 페이지(Daily Report MM.DD) + 사람별 ### 섹션" 구조라,
+    # 행 추가가 아니라 그날 페이지 본문에 lead-crawler 섹션 블록을 append 한다.
+
+    @staticmethod
+    def _nutti_page_title(date: str) -> str:
+        """Nutti 서식 관례 제목 — 'Daily Report MM.DD'."""
+        return f"Daily Report {date[5:7]}.{date[8:10]}"
+
+    def nutti_daily_blocks(self, report: DailyReport) -> list[dict]:
+        """그날 Nutti 페이지에 붙일 lead-crawler 섹션 블록 목록(결정적)."""
+
+        def _bullet(text: str) -> dict:
+            return {
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"text": {"content": text}}]},
+            }
+
+        blocks: list[dict] = [
+            {
+                "object": "block",
+                "type": "heading_3",
+                "heading_3": {"rich_text": [{"text": {"content": "lead-crawler(자동)"}}]},
+            }
+        ]
+        for line in report.done.splitlines():
+            line = line.strip().removeprefix("- ")
+            if line:
+                blocks.append(_bullet(line))
+        if report.next:
+            blocks.append(_bullet(f"내일: {report.next}"))
+        blocks.append(_bullet(f"이슈: {report.issues} · 상태: {report.status}"))
+        return blocks
+
+    def post_nutti_daily(self, report: DailyReport) -> dict:
+        """Nutti 일일 업무보고의 그날 페이지에 lead-crawler 섹션을 병기한다.
+
+        페이지 탐색(작성일=날짜)이 필요해 :meth:`_post` 와 달리 2단계다: 있으면 본문에
+        블록 append, 없으면 섹션을 본문으로 갖는 페이지를 새로 만든다. dry_run 이면
+        네트워크 없이 결정적 payload(제목·블록)를 반환한다.
+        """
+        db = self.settings.notion_nutti_daily_db
+        blocks = self.nutti_daily_blocks(report)
+        if not self.enabled:
+            log.info("notion.dry_run", what="nutti_daily", db=db)
+            return {
+                "database_id": db,
+                "date": report.date,
+                "title": self._nutti_page_title(report.date),
+                "children": blocks,
+            }
+        import httpx
+
+        headers = {
+            "Authorization": f"Bearer {self.settings.notion_token}",
+            "Notion-Version": self.settings.notion_version,
+            "Content-Type": "application/json",
+        }
+        query = httpx.post(
+            _QUERY_API.format(db=db),
+            json={
+                "filter": {"property": "작성일", "date": {"equals": report.date}},
+                "page_size": 1,
+            },
+            headers=headers,
+            timeout=30.0,
+        )
+        if query.status_code >= 400:
+            raise RuntimeError(f"notion nutti_daily 조회 실패: HTTP {query.status_code}")
+        results = query.json().get("results", [])
+        if results:
+            resp = httpx.patch(
+                _BLOCKS_API.format(page_id=results[0]["id"]),
+                json={"children": blocks},
+                headers=headers,
+                timeout=30.0,
+            )
+        else:
+            resp = httpx.post(
+                _API,
+                json={
+                    "parent": {"database_id": db},
+                    "properties": {
+                        "제목": _title(self._nutti_page_title(report.date)),
+                        "작성일": _date(report.date),
+                        "Tag": {"multi_select": [{"name": "업무보고"}]},
+                    },
+                    "children": blocks,
+                },
+                headers=headers,
+                timeout=30.0,
+            )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"notion nutti_daily 전송 실패: HTTP {resp.status_code}")
+        log.info("notion.posted", what="nutti_daily")
+        return resp.json()
