@@ -342,6 +342,51 @@ def test_confirm_has_form_false_removes_form(client: TestClient) -> None:
     assert row.form_after is None
 
 
+def test_confirm_remove_emails_leaves_form_only(client: TestClient) -> None:
+    # 실존하지 않는 이메일 삭제 → 후보 비고 감사이력에 삭제 주소 기록(폼만 남는 리드).
+    import json
+
+    from leadcrawler.schema import ContactRow
+    from leadcrawler.storage.db import session_scope
+    from leadcrawler.storage.repository import contact_id_for
+
+    item = client.get("/queue").json()["items"][0]
+    rid, cid = item["id"], item["company_id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"remove_emails": ["ir@acme.com"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["candidates"] == [] and body["selected"] is None
+    with session_scope(get_settings()) as s:
+        assert s.get(ContactRow, contact_id_for(cid, "email", "ir@acme.com")) is None
+    assert json.loads(_audit_row(rid).emails_removed) == ["ir@acme.com"]
+
+
+def test_reject_remove_emails(client: TestClient) -> None:
+    # 거부 경로도 같은 삭제를 지원한다(본문 없이 호출하면 기존대로 상태만 변경).
+    from leadcrawler.schema import ContactRow
+    from leadcrawler.storage.db import session_scope
+    from leadcrawler.storage.repository import contact_id_for
+
+    item = client.get("/queue").json()["items"][0]
+    rid, cid = item["id"], item["company_id"]
+    r = client.post(f"/queue/{rid}/reject", json={"remove_emails": ["ir@acme.com"]})
+    assert r.status_code == 200
+    assert r.json()["status"] == "rejected"
+    with session_scope(get_settings()) as s:
+        assert s.get(ContactRow, contact_id_for(cid, "email", "ir@acme.com")) is None
+
+
+def test_reject_without_body_still_works(client: TestClient) -> None:
+    rid = client.get("/queue").json()["items"][0]["id"]
+    assert client.post(f"/queue/{rid}/reject").json()["status"] == "rejected"
+
+
+def test_confirm_remove_emails_too_long_422(client: TestClient) -> None:
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(f"/queue/{rid}/confirm", json={"remove_emails": ["a" * 321 + "@x.com"]})
+    assert r.status_code == 422
+
+
 def test_confirm_has_form_true_promotes_low_confidence_form(client: TestClient) -> None:
     # 저신뢰 폴백 폼(0.3)이 있는데 사람이 '폼 있음' 확인 → URL 유지 + 사람확인 승격
     # (form_low_confidence 해제 — '사람 확인 필요' 재노출 방지, 교차리뷰 반영).
