@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.orm import Session, aliased
 
 from ..logging import get_logger
@@ -461,6 +461,7 @@ def set_review_status(
     homepage: str | None = None,
     has_form: bool | None = None,
     note: str | None = None,
+    remove_emails: Sequence[str] | None = None,
     now: datetime | None = None,
 ) -> dict | None:
     """큐 항목 상태(확정/거부/보류)와 선택 후보를 갱신하고 감사 이력을 적재한다.
@@ -472,7 +473,10 @@ def set_review_status(
     없음)이 주어지면 문의폼 유무를 교정한다: ``False`` 는 저장된 폼 연락처를 삭제하고,
     ``True`` 인데 폼이 없으면 실제 폼 URL 을 모르므로(FE 는 유무만 교정) **홈페이지를
     진입 링크로 저장**한다(엑셀 E 컬럼=클릭 이동 목적과 정합 — 홈페이지도 없으면
-    ValueError). ``note`` 는 검수자 기타 메모(문의폼 미발송 사유 등, ``None``=변경 없음·
+    ValueError). ``remove_emails`` 는 **실제로 존재하지 않는 이메일** 삭제 목록으로,
+    후보와 연락처 행을 함께 지운다(:func:`_apply_email_removals`) — 삭제 후 남은 이메일이
+    없고 문의폼이 있으면 엑셀 J 가 자연히 "사이트 내 문의폼"이 된다. ``note`` 는 검수자
+    기타 메모(문의폼 미발송 사유 등, ``None``=변경 없음·
     빈 문자열=지움) — 엑셀 L(기타) 컬럼으로 export 된다. 처리자(assignee/assignee_id)와
     시각(reviewed_at)을 큐 행에 남기고, 변경 1건마다 :class:`ReviewAuditRow` 를 append 해
     책임추적 이력을 보존한다(홈페이지·폼 변경 전/후 값도 같은 행에 기록). 점유는 영구
@@ -509,6 +513,9 @@ def set_review_status(
         and rq.assignee_id != assignee_id
     ):
         raise ReviewConflict("이미 다른 직원이 처리한 항목입니다. 새로고침 후 확인하세요.")
+    # 삭제 먼저 — 같은 요청에서 '죽은 이메일 삭제 + 남은 후보 선택'이 한 번에 되도록
+    # selected 검증보다 앞에 둔다(삭제된 주소를 selected 로 보내면 아래에서 400).
+    removed = _apply_email_removals(session, rq, remove_emails)
     if selected is not None:
         if selected not in _parse_candidates(rq):
             raise ValueError(f"후보에 없는 선택: {selected}")
@@ -552,11 +559,61 @@ def set_review_status(
                 homepage_after=homepage_after,
                 form_before=form_before,
                 form_after=form_after,
+                emails_removed=json.dumps(removed, ensure_ascii=False) if removed else None,
                 at=when,
             )
         )
     session.flush()
     return get_review(session, review_id)
+
+
+def _apply_email_removals(
+    session: Session, rq: ReviewQueueRow, emails: Sequence[str] | None
+) -> list[str]:
+    """실존하지 않는 이메일을 큐 후보 + 연락처에서 삭제하고 실제 삭제된 주소를 돌려준다.
+
+    검수자가 발송 테스트 등으로 '이 주소는 없다'를 확인했을 때 쓰는 교정이다. 후보에서만
+    빼면 export(load_leads)가 남은 연락처로 폴백해 같은 주소가 다시 나가므로 **연락처
+    행까지** 지운다(비교: 이메일이 하나도 안 남고 문의폼이 있으면 엑셀 J 가 "사이트 내
+    문의폼"으로 떨어진다 — 피드백의 목적). 후보에 없던 이메일 연락처(role 배제분 등)도
+    값이 일치하면 지운다 — export 폴백이 그것까지 집어들기 때문이다.
+    비교는 대소문자 무시. 삭제된 주소가 현재 선택이면 선택을 해제한다.
+    자식 ``EmailValidationRow`` 를 먼저 명시 삭제한다 — 두 테이블 사이에 ORM
+    relationship 이 없어 flush 삭제 순서가 보장되지 않기 때문이다(save_lead 의 stale
+    연락처 정리와 동일 패턴).
+    감사행 적재는 호출부(set_review_status)의 처리자(assignee) 게이트를 따른다 —
+    처리자 없는 내부 호출에 remove_emails 를 넘기지 말 것(삭제 기록이 안 남는다).
+    """
+    targets = {e.strip().lower() for e in emails or () if e and e.strip()}
+    if not targets:
+        return []
+    dead = [
+        row
+        for row in session.scalars(
+            select(ContactRow)
+            .where(ContactRow.company_id == rq.company_id)
+            .where(ContactRow.type == ContactType.EMAIL.value)
+        )
+        if row.value.lower() in targets
+    ]
+    removed: list[str] = [row.value for row in dead]
+    if dead:
+        ids = [row.id for row in dead]
+        session.execute(
+            delete(EmailValidationRow).where(EmailValidationRow.contact_id.in_(ids))
+        )
+        session.execute(delete(ContactRow).where(ContactRow.id.in_(ids)))
+    cands = _parse_candidates(rq)
+    kept = [c for c in cands if c.lower() not in targets]
+    if len(kept) != len(cands):
+        rq.candidates = json.dumps(kept, ensure_ascii=False)
+        removed.extend(c for c in cands if c.lower() in targets and c not in removed)
+    if rq.selected is not None and rq.selected.lower() in targets:
+        rq.selected = None  # 대표 선택은 남은 후보의 선두로 자연 회귀(effective_selected).
+        rq.selected_by_human = False
+    if removed:
+        log.info("review.emails_removed", company_id=rq.company_id, emails=removed)
+    return removed
 
 
 def _apply_form_correction(

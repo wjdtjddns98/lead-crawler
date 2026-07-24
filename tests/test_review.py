@@ -332,6 +332,54 @@ def test_multi_candidate_save_select_export(session: Session) -> None:
     assert load_leads(session, company_ids=[cid])[0].email.value == "info@acme.com"
 
 
+def test_remove_email_falls_back_to_form(session: Session) -> None:
+    # 피드백: 수집된 이메일이 실제로 없으면 지운다 → 이메일 0 + 폼 有 → 엑셀 J="사이트 내 문의폼".
+    from leadcrawler.excel_format import FORM_ONLY_NOTE, build_row
+    from leadcrawler.storage.repository import contact_id_for
+
+    save_lead(session, _lead(form="https://acme.com/contact", form_confidence=0.7))
+    session.flush()
+    item = query_reviews(session)[0]
+    rid, cid = item["id"], item["company_id"]
+    set_review_status(
+        session, rid, CONFIRMED, assignee="심사원",
+        remove_emails=["IR@ACME.COM"],  # 대소문자 무시 매칭
+    )
+    session.flush()
+    lead = load_leads(session, company_ids=[cid])[0]
+    assert lead.email is None
+    assert lead.form.value == "https://acme.com/contact"
+    assert build_row(lead)[9] == FORM_ONLY_NOTE
+    # 후보뿐 아니라 연락처 행까지 지워져야 export 폴백이 같은 주소를 다시 집지 않는다.
+    email_cid = contact_id_for(cid, "email", "ir@acme.com")
+    assert session.get(ContactRow, email_cid) is None
+    assert session.get(EmailValidationRow, email_cid) is None
+    assert get_review(session, rid)["candidates"] == []
+
+
+def test_remove_email_keeps_other_candidate(session: Session) -> None:
+    # 죽은 후보 1건만 지우면 남은 후보가 대표로 승계된다(선택 해제 → effective_selected).
+    save_lead(session, _multi_lead())
+    session.flush()
+    item = query_reviews(session)[0]
+    rid, cid = item["id"], item["company_id"]
+    set_review_status(session, rid, CONFIRMED, assignee="심사원", remove_emails=["ir@acme.com"])
+    session.flush()
+    assert get_review(session, rid)["selected"] == "info@acme.com"
+    assert load_leads(session, company_ids=[cid])[0].email.value == "info@acme.com"
+
+
+def test_remove_email_then_select_removed_raises(session: Session) -> None:
+    # 같은 요청에서 지운 주소를 고르면 모순 → 후보 검증에서 거절(API 는 400).
+    save_lead(session, _multi_lead())
+    session.flush()
+    rid = query_reviews(session)[0]["id"]
+    with pytest.raises(ValueError, match="후보에 없는 선택"):
+        set_review_status(
+            session, rid, CONFIRMED, selected="ir@acme.com", remove_emails=["ir@acme.com"]
+        )
+
+
 def test_null_selected_dto_export_consistent(session: Session) -> None:
     # selected 가 NULL 인 레거시 상황에서도 DTO 표시와 export 이메일이 같은 폴백을 쓴다.
     from leadcrawler.schema import ReviewQueueRow

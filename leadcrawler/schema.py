@@ -227,6 +227,9 @@ class ReviewAuditRow(Base):
     # ContactRow.value(Text)와 동일 타입(폼 URL 은 512 를 넘을 수 있음 — 절단 방지).
     form_before: Mapped[str | None] = mapped_column(Text, nullable=True)
     form_after: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 실존하지 않아 삭제한 이메일 목록(JSON 배열). NULL = 이 처리에 이메일 삭제 없음.
+    # 연락처 행 자체를 지우는 파괴적 교정이라 '무엇을 지웠는지'를 이력에 남긴다.
+    emails_removed: Mapped[str | None] = mapped_column(Text, nullable=True)
     at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now(), index=True
     )
