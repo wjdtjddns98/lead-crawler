@@ -191,18 +191,23 @@ export async function fetchMyWork(status?: ReviewStatus): Promise<ReviewItem[]> 
 // homepage = 사람이 수정한 사이트 URL(null=변경 없음) — BE 계약 확장 제안분. hasForm = 사람이
 // 교정한 문의폼 유무(undefined=변경 없음) — 마찬가지로 BE 계약 확장 제안분. Pydantic 기본이
 // 추가 필드 무시라 미배포 서버에도 안전하다(수정만 반영 안 됨). PR 본문 계약 명세 참조.
+// removeEmails = 실존하지 않아 삭제할 이메일(후보+연락처에서 제거, 최대 50건·각 320자 — BE
+// PR#314). 다 지우고 문의폼이 있으면 엑셀 J 가 "사이트 내 문의폼"이 된다. 지운 주소를
+// selected 로 함께 보내면 BE 가 400(모순) — 호출측이 selected 에서 제외해 보낸다.
 export async function confirmReview(
   id: string,
   selected?: string,
   homepage?: string,
   hasForm?: boolean,
   note?: string,
+  removeEmails?: string[],
 ): Promise<ReviewItem> {
   return apiSend("POST", `/queue/${id}/confirm`, {
     selected: selected ?? null,
     homepage: homepage ?? null,
     has_form: hasForm ?? null,
     note: note ?? null,
+    remove_emails: removeEmails && removeEmails.length ? removeEmails : null,
   });
 }
 

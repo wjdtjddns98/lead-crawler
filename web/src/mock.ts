@@ -494,9 +494,18 @@ function setStatus(
   homepage?: string | null,
   hasForm?: boolean | null,
   note?: string | null,
+  removeEmails?: string[] | null,
 ): ReviewItem | null {
   const it = db.find((x) => x.id === id);
   if (!it) return null;
+  // 실존하지 않는 이메일 삭제(BE PR#314) — 후보에서 제거(대소문자 무시). selected 반영보다
+  // 먼저 실행해 "죽은 주소 삭제 + 남은 후보 선택"이 한 요청에 처리된다. 지운 주소가 현재
+  // 선택이면 해제(FE 가 선택에서 제외해 보내므로 아래 selected 로 남은 후보가 승계된다).
+  if (removeEmails && removeEmails.length) {
+    const rm = new Set(removeEmails.map((e) => e.toLowerCase()));
+    it.candidates = it.candidates.filter((c) => !rm.has(c.value.toLowerCase()));
+    if (it.selected && rm.has(it.selected.toLowerCase())) it.selected = null;
+  }
   it.status = status;
   if (selected !== undefined) it.selected = selected;
   if (homepage) it.homepage = homepage; // null=변경 없음(FE 확정 계약과 동일)
@@ -651,26 +660,40 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     let homepage: string | null = null;
     let hasForm: boolean | null = null;
     let note: string | null = null;
+    let removeEmails: string[] | null = null;
     try {
       const body = JSON.parse(String(init?.body ?? "{}")) as {
         selected?: string | null;
         homepage?: string | null;
         has_form?: boolean | null;
         note?: string | null;
+        remove_emails?: string[] | null;
       };
       selected = body.selected ?? null;
       homepage = body.homepage ?? null;
       hasForm = body.has_form ?? null;
       note = body.note ?? null;
+      removeEmails = body.remove_emails ?? null;
     } catch {
       // 본문 없음/파싱 실패 — 선택 없이 확정.
     }
-    const it = setStatus(confirm[1], "confirmed", selected, homepage, hasForm, note);
+    // 삭제 대상을 selected 로 함께 보내면 모순 — BE 처럼 400(FE 는 선택에서 제외해 보낸다).
+    if (selected && removeEmails?.some((e) => e.toLowerCase() === selected!.toLowerCase()))
+      return jsonRes({ detail: "삭제 대상 이메일을 선택할 수 없습니다" }, 400);
+    const it = setStatus(confirm[1], "confirmed", selected, homepage, hasForm, note, removeEmails);
     return it ? jsonRes(it) : jsonRes({ detail: "검증 항목을 찾을 수 없습니다" }, 404);
   }
   const reject = path.match(/^\/queue\/([^/]+)\/reject$/);
   if (reject && method === "POST") {
-    const it = setStatus(reject[1], "rejected");
+    // 거부 본문도 remove_emails 를 지원(선택) — BE RejectRequest 와 동일. 없으면 상태만 변경.
+    let removeEmails: string[] | null = null;
+    try {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { remove_emails?: string[] | null };
+      removeEmails = body.remove_emails ?? null;
+    } catch {
+      // 본문 없음/파싱 실패 — 삭제 없이 거부.
+    }
+    const it = setStatus(reject[1], "rejected", undefined, undefined, undefined, undefined, removeEmails);
     return it ? jsonRes(it) : jsonRes({ detail: "검증 항목을 찾을 수 없습니다" }, 404);
   }
 
