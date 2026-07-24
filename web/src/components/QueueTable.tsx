@@ -79,12 +79,14 @@ interface Props {
   // homepage = 사람이 수정한 사이트 URL(유효 http(s)·원본과 다를 때만, 없으면 undefined).
   // hasForm = 사람이 교정한 문의폼 유무(감지값과 다를 때만, 없으면 undefined).
   // note = 사람이 수정한 기타 메모(원본과 다를 때만, 없으면 undefined — 빈 문자열은 메모 삭제).
+  // removeEmails = 실존하지 않아 삭제할 이메일(후보+연락처, 없으면 undefined) — BE PR#314.
   onConfirm: (
     id: string,
     selected?: string,
     homepage?: string,
     hasForm?: boolean,
     note?: string,
+    removeEmails?: string[],
   ) => Promise<boolean>;
   onReject: (id: string) => Promise<boolean>;
   emptyText?: string; // 빈 목록 안내 — 화면 맥락별 문구(생략 시 기본).
@@ -127,7 +129,9 @@ interface RowProps {
   site: string | undefined;
   formChecked: boolean; // 문의폼 유무 체크박스 표시값(override 없으면 감지값).
   note: string; // 기타 메모 표시값(override 없으면 원본, 없으면 "").
+  removed: string[] | undefined; // 삭제 표시된 이메일(없으면 undefined — 참조 안정성 위해 [] 대신).
   onPick: (id: string, value: string) => void;
+  onToggleRemove: (id: string, value: string) => void;
   onEditSite: (id: string, value: string) => void;
   onCancelSite: (id: string) => void; // 편집 취소 — 입력을 닫고 원본 링크로 복귀.
   onToggleForm: (id: string, value: boolean) => void;
@@ -149,7 +153,9 @@ const QueueRow = memo(
     site,
     formChecked,
     note,
+    removed,
     onPick,
+    onToggleRemove,
     onEditSite,
     onCancelSite,
     onToggleForm,
@@ -180,7 +186,10 @@ const QueueRow = memo(
           {item.market && <span className="text-muted text-xs ml-1">{item.market}</span>}
         </td>
         <td className={`${TD} ${COL_W[4]} font-mono text-[13px]`}>
-          {item.candidates.length > 1 && (
+          {/* 후보가 하나여도 목록을 보인다 — 단독 후보도 "없음"으로 삭제할 수 있어야 하기
+              때문(폼만 남으면 엑셀 J=문의폼). 라디오는 후보가 여럿일 때만 의미가 있지만
+              단독일 땐 삭제 토글 진입점으로 쓰인다. */}
+          {item.candidates.length > 0 && (
             <div className="flex flex-col gap-1">
               <CandidateRadios
                 candidates={item.candidates}
@@ -188,6 +197,8 @@ const QueueRow = memo(
                 choice={choice}
                 disabled={locked}
                 onPick={(v) => onPick(item.id, v)}
+                removed={removed}
+                onToggleRemove={(v) => onToggleRemove(item.id, v)}
               />
             </div>
           )}
@@ -335,7 +346,10 @@ const QueueRow = memo(
     prev.choice === next.choice &&
     prev.site === next.site &&
     prev.formChecked === next.formChecked &&
-    prev.note === next.note,
+    prev.note === next.note &&
+    // removed 는 행별 removals[id] 참조를 그대로 넘겨 안정적(변경 시에만 새 배열) — 삭제
+    // 토글 시 참조가 바뀌어 재렌더된다.
+    prev.removed === next.removed,
 );
 
 // 검증 큐 표 — 회사/이메일 후보(다중 선택)/메일 검증 신호/상태/액션.
@@ -412,6 +426,50 @@ export function QueueTable({
       return trimmed === (it.note ?? "") ? undefined : trimmed;
     },
     [notes],
+  );
+
+  // 행별 "실존하지 않는 이메일" 삭제 표시 — 후보/연락처에서 지울 주소 목록(BE PR#314).
+  // 값은 항상 후보(item.candidates) 원형이라 사람이 자유 입력한 주소는 섞이지 않는다. 비면
+  // 키를 지운다(undefined 를 넘겨 행 memo 참조 안정성 유지). 토글은 대소문자 무시로 대조.
+  const [removals, setRemovals] = useState<Record<string, string[]>>({});
+  const onToggleRemove = useCallback((id: string, value: string) => {
+    setRemovals((prev) => {
+      const cur = prev[id] ?? [];
+      const lc = value.toLowerCase();
+      const next = cur.some((e) => e.toLowerCase() === lc)
+        ? cur.filter((e) => e.toLowerCase() !== lc)
+        : [...cur, value];
+      if (next.length === 0) {
+        const { [id]: _drop, ...rest } = prev;
+        return rest;
+      }
+      return { ...prev, [id]: next };
+    });
+  }, []);
+  const removedSet = useCallback(
+    (it: ReviewItem): Set<string> => new Set((removals[it.id] ?? []).map((e) => e.toLowerCase())),
+    [removals],
+  );
+  // 확정에 실을 삭제 목록 — 비면 undefined(변경 없음).
+  const removeEmailsOf = useCallback(
+    (it: ReviewItem): string[] | undefined => {
+      const list = removals[it.id];
+      return list && list.length ? list : undefined;
+    },
+    [removals],
+  );
+
+  // 행에 표시·전송할 이메일 — 사용자 선택 > 서버 선택 > 남은 후보 선두. 단 삭제 표시된
+  // 주소는 건너뛴다: 지운 주소를 selected 로 함께 보내면 BE 가 모순으로 400 하기 때문.
+  // 사람이 자유 입력한 주소(후보 아님)는 삭제 대상에 없으니 그대로 유지된다.
+  const choiceOf = useCallback(
+    (it: ReviewItem): string | undefined => {
+      const removed = removedSet(it);
+      const raw = picked[it.id] ?? it.selected ?? undefined;
+      if (raw && !removed.has(raw.toLowerCase())) return raw;
+      return it.candidates.find((c) => !removed.has(c.value.toLowerCase()))?.value;
+    },
+    [picked, removedSet],
   );
 
   // 컬럼 정렬 — 같은 컬럼 재클릭 시 asc↔desc 토글, 3번째 클릭이면 해제(원본 순서 복귀).
@@ -492,7 +550,8 @@ export function QueueTable({
   const popupConfirm = useCallback(
     (id: string, selected?: string) =>
       advanceAfter(id, () => {
-        // 표에서 편집해 둔 사이트 URL·문의폼 유무·메모가 있으면 팝업 확정에도 함께 실린다(편집 유실 방지).
+        // 표에서 편집해 둔 사이트 URL·문의폼 유무·메모·삭제 이메일이 있으면 팝업 확정에도
+        // 함께 실린다(편집 유실 방지).
         const it = itemsRef.current.find((x) => x.id === id);
         return onConfirm(
           id,
@@ -500,9 +559,10 @@ export function QueueTable({
           it ? editedSite(it) : undefined,
           it ? editedForm(it) : undefined,
           it ? editedNote(it) : undefined,
+          it ? removeEmailsOf(it) : undefined,
         );
       }),
-    [advanceAfter, onConfirm, editedSite, editedForm, editedNote],
+    [advanceAfter, onConfirm, editedSite, editedForm, editedNote, removeEmailsOf],
   );
   const popupReject = useCallback(
     (id: string) => advanceAfter(id, () => onReject(id)),
@@ -515,10 +575,11 @@ export function QueueTable({
   // 처리·필터 변경으로 항목이 목록에서 빠지면 창도 자연히 닫힌다(find 결과 없음).
   const openItem = open ? items.find((it) => it.id === open.id) : undefined;
   const modalItem = modal ? items.find((it) => it.id === modal.id) : undefined;
-  // 모달에 보여주고 실제 확정에 쓸 이메일 — 행 버튼과 동일한 우선순위(사용자 선택→서버→첫 후보).
-  const modalChoice = modalItem
-    ? (picked[modalItem.id] ?? modalItem.selected ?? modalItem.candidates[0]?.value)?.trim()
-    : undefined;
+  // 모달에 보여주고 실제 확정에 쓸 이메일 — 행 버튼과 동일한 우선순위(사용자 선택→서버→
+  // 남은 후보 선두). 삭제 표시된 주소는 choiceOf 가 이미 건너뛴다.
+  const modalChoice = modalItem ? choiceOf(modalItem)?.trim() : undefined;
+  // 확정에 실릴 삭제 이메일(없으면 undefined) — 모달에 삭제 대상으로 미리보기.
+  const modalRemovals = modalItem ? removeEmailsOf(modalItem) : undefined;
   // 확정에 실릴 사이트 수정값(없으면 undefined). raw 는 무효 입력 경고 판단용.
   const modalSite = modalItem ? editedSite(modalItem) : undefined;
   const modalSiteRaw = modalItem ? sites[modalItem.id]?.trim() : undefined;
@@ -572,11 +633,13 @@ export function QueueTable({
               key={it.id}
               item={it}
               busy={busyIds.has(it.id)}
-              choice={picked[it.id] ?? it.selected ?? it.candidates[0]?.value}
+              choice={choiceOf(it)}
               site={sites[it.id]}
               formChecked={formChecked(it)}
               note={note(it)}
+              removed={removals[it.id]}
               onPick={onPick}
+              onToggleRemove={onToggleRemove}
               onEditSite={onEditSite}
               onCancelSite={onCancelSite}
               onToggleForm={onToggleForm}
@@ -633,6 +696,12 @@ export function QueueTable({
                       메모 → {modalNote || "(삭제)"}
                     </span>
                   )}
+                  {/* 실존하지 않아 삭제할 이메일 — 후보·연락처에서 지운다(파괴적이라 명시). */}
+                  {modalRemovals && modalRemovals.length > 0 && (
+                    <span className="block mt-1 text-xs text-danger-fg [overflow-wrap:anywhere]">
+                      이메일 삭제 → {modalRemovals.join(", ")}
+                    </span>
+                  )}
                   {/* 편집했지만 반영될 변경이 없는 경우(무효 URL·정규화 후 원본과 동일)
                       — 조용히 버리지 않고 미반영을 알린다. */}
                   {modalSiteRaw !== undefined &&
@@ -675,6 +744,7 @@ export function QueueTable({
                       modalSite,
                       modalForm,
                       modalNote,
+                      modalRemovals,
                     );
                   else void onReject(modalItem.id);
                 }}
@@ -694,13 +764,15 @@ export function QueueTable({
           doneCount={doneCount}
           remaining={remaining}
           tab={open.tab}
-          choice={picked[openItem.id] ?? openItem.selected ?? openItem.candidates[0]?.value}
+          choice={choiceOf(openItem)}
           site={sites[openItem.id]}
           formChecked={formChecked(openItem)}
           note={note(openItem)}
+          removed={removals[openItem.id]}
           busy={busyIds.has(openItem.id)}
           onTab={(tab) => setOpen({ id: openItem.id, tab })}
           onPick={onPick}
+          onToggleRemove={onToggleRemove}
           onEditSite={onEditSite}
           onToggleForm={onToggleForm}
           onEditNote={onEditNote}

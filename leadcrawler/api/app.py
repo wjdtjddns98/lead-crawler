@@ -57,6 +57,7 @@ from .schemas import (
     IndustryOption,
     QueueFilterOptions,
     QueueResponse,
+    RejectRequest,
     ReviewItem,
     ReviewStatus,
     SendPreview,
@@ -254,6 +255,9 @@ def create_app() -> FastAPI:
         ``has_form``(#241) 은 문의폼 유무 교정값(``None``=변경 없음) — 폼 있음인데
         홈페이지조차 없어 저장할 URL 이 없으면 400. ``note`` 는 검수자 기타 메모
         (문의폼 미발송 사유 등, ``None``=변경 없음·빈 문자열=지움) — 엑셀 L 컬럼.
+        ``remove_emails`` 는 실존하지 않아 삭제할 이메일 목록 — 후보·연락처에서 지운다
+        (삭제 후 이메일이 없고 폼이 있으면 엑셀 J="사이트 내 문의폼"). 같은 요청의
+        ``selected`` 는 삭제 후 남은 후보여야 한다(삭제한 주소를 고르면 400).
         """
         selected = body.selected if body else None
         if selected and selected.strip():
@@ -270,16 +274,25 @@ def create_app() -> FastAPI:
         return _set_status(
             db, review_id, CONFIRMED, user,
             selected=selected, homepage=homepage, has_form=has_form, note=note,
+            remove_emails=body.remove_emails if body else None,
         )
 
     @app.post("/queue/{review_id}/reject", response_model=ReviewItem)
     def reject(
         review_id: str,
+        body: RejectRequest | None = None,
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> ReviewItem:
-        """후보를 거부한다(발송 제외). 담당자=로그인 사용자."""
-        return _set_status(db, review_id, REJECTED, user)
+        """후보를 거부한다(발송 제외). 담당자=로그인 사용자.
+
+        ``remove_emails`` 가 주어지면 실존하지 않는 이메일을 후보·연락처에서 삭제한다
+        (본문 없이 호출하면 상태만 변경 — 하위호환).
+        """
+        return _set_status(
+            db, review_id, REJECTED, user,
+            remove_emails=body.remove_emails if body else None,
+        )
 
     @app.get("/export")
     def export(
@@ -421,6 +434,7 @@ def _set_status(
     homepage: str | None = None,
     has_form: bool | None = None,
     note: str | None = None,
+    remove_emails: list[str] | None = None,
 ) -> ReviewItem:
     """상태 변경 공통 — 담당자=로그인 사용자. 404/후보밖 400/타인점유 409 + 감사기록."""
     try:
@@ -434,6 +448,7 @@ def _set_status(
             homepage=homepage,
             has_form=has_form,
             note=note,
+            remove_emails=remove_emails,
         )
     except ReviewConflict as exc:  # 타인이 점유 중 → 409(영구 배정 — 시간 경과 무관).
         raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -86,12 +86,17 @@ class ConfirmRequest(BaseModel):
     (URL 미상이면 홈페이지를 진입 링크로 저장 — 홈페이지도 없으면 400).
     ``note`` 는 검수자 기타 메모(문의폼 미발송 사유 등, 엑셀 L 컬럼): ``None`` = 변경
     없음, 빈 문자열 = 메모 지움.
+    ``remove_emails`` 는 실제로 존재하지 않아 삭제할 이메일 목록(빈 목록/``None`` = 삭제
+    없음) — 후보와 연락처에서 지운다. 남은 이메일이 없고 문의폼이 있으면 엑셀 J 가
+    "사이트 내 문의폼"이 된다. 삭제 대상은 저장된 값과 대조되므로 형식 검증 대신 개수·
+    길이 상한만 둔다(과대 페이로드 차단).
     """
 
     selected: str | None = None
     homepage: str | None = Field(default=None, max_length=512)
     has_form: bool | None = None
     note: str | None = Field(default=None, max_length=512)
+    remove_emails: list[str] | None = Field(default=None, max_length=50)
 
     @field_validator("homepage")
     @classmethod
@@ -102,6 +107,33 @@ class ConfirmRequest(BaseModel):
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             raise ValueError("올바른 홈페이지 URL 이 아닙니다(http/https, 호스트 필요)")
         return v
+
+    @field_validator("remove_emails")
+    @classmethod
+    def _check_remove_emails(cls, v: list[str] | None) -> list[str] | None:
+        return _check_email_lengths(v)
+
+
+def _check_email_lengths(v: list[str] | None) -> list[str] | None:
+    """삭제 대상 이메일 길이 상한 — 저장된 주소(String(320))보다 길면 422 로 조기 거절."""
+    if v is not None and any(len(e) > 320 for e in v):
+        raise ValueError("이메일 주소가 너무 깁니다(최대 320자)")
+    return v
+
+
+class RejectRequest(BaseModel):
+    """거부 요청 본문(선택) — 실존하지 않는 이메일 삭제만 지원한다.
+
+    본문 없이 호출하면 기존과 동일하게 상태만 거부로 바꾼다(하위호환). ``remove_emails``
+    의 의미·상한은 :class:`ConfirmRequest` 와 같다.
+    """
+
+    remove_emails: list[str] | None = Field(default=None, max_length=50)
+
+    @field_validator("remove_emails")
+    @classmethod
+    def _check_remove_emails(cls, v: list[str] | None) -> list[str] | None:
+        return _check_email_lengths(v)
 
 
 class LoginRequest(BaseModel):
