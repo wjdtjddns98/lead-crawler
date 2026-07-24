@@ -50,9 +50,11 @@ interface Props {
   site: string | undefined;
   formChecked: boolean; // 문의폼 유무 체크박스 표시값 — 표(QueueTable)의 formOverride 와 같은 소스.
   note: string; // 기타 메모 표시값 — 표(QueueTable)의 notes 맵과 같은 소스.
+  removed: string[] | undefined; // 삭제 표시된 이메일 — 표(QueueTable)의 removals 맵과 같은 소스.
   busy: boolean;
   onTab: (tab: SiteTab) => void;
   onPick: (id: string, value: string) => void;
+  onToggleRemove: (id: string, value: string) => void;
   onEditSite: (id: string, value: string) => void;
   onToggleForm: (id: string, value: boolean) => void;
   onEditNote: (id: string, value: string) => void;
@@ -73,9 +75,11 @@ export function SiteExplorer({
   site,
   formChecked,
   note,
+  removed,
   busy,
   onTab,
   onPick,
+  onToggleRemove,
   onEditSite,
   onToggleForm,
   onEditNote,
@@ -147,6 +151,8 @@ export function SiteExplorer({
   const changedForm = formChecked !== !!item.form ? formChecked : undefined;
   // 메모 변경분 — 원본과 다를 때만(QueueTable 의 editedNote 와 동일 판정, 빈 문자열=삭제).
   const changedNote = note.trim() !== (item.note ?? "") ? note.trim() : undefined;
+  // 삭제 표시된 이메일 — 확정 오버레이에 삭제 대상으로 미리보기(파괴적 교정이라 명시).
+  const removedList = removed ?? [];
   // 프리뷰 적용된 수정 URL — 키 입력마다 팝업이 이동하지 않도록 Enter/blur 시점에만 반영.
   const [previewHome, setPreviewHome] = useState<string | null>(null);
   useEffect(() => setPreviewHome(null), [item.id]); // 자동 전진으로 항목이 바뀌면 원복.
@@ -322,6 +328,12 @@ export function SiteExplorer({
                       메모 → {changedNote || "(삭제)"}
                     </span>
                   )}
+                  {/* 실존하지 않아 삭제할 이메일 — 후보·연락처에서 지운다(파괴적이라 명시). */}
+                  {removedList.length > 0 && (
+                    <span className="block mt-1 text-xs text-danger-fg [overflow-wrap:anywhere]">
+                      이메일 삭제 → {removedList.join(", ")}
+                    </span>
+                  )}
                   {/* 편집했지만 반영될 변경이 없는 경우(무효 URL·정규화 후 원본과 동일)
                       — 조용히 버리지 않고 미반영을 알린다. */}
                   {site !== undefined && !changedHome && site.trim() !== (item.homepage ?? "") && (
@@ -485,6 +497,8 @@ export function SiteExplorer({
                   choice={choice}
                   disabled={item.status === "confirmed"}
                   onPick={(v) => onPick(item.id, v)}
+                  removed={removed}
+                  onToggleRemove={(v) => onToggleRemove(item.id, v)}
                 />
               </div>
             )}
