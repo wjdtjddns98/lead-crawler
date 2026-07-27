@@ -160,11 +160,13 @@ def fill_batch(
 
 
 # 대상 = 도메인 미보유 + 미승격(company 행 없음) 발견 행. 기본은 **국가 무관**(전세계 —
-# 이 프로젝트는 전 산업·전 국가 IR 연락처 추출이 목적)이되, 크롤 companion 은 크롤이
-# 국가를 명시 선택했으면 ``{scope}`` 로 그 국가들만 되짚는다(2026-07-27: KR 제외 크롤에
-# 옛 KR 물량이 승격·큐 유입되던 사고 — 원장 정렬이 last_crawled_at desc 라 직전 KR 크롤
-# 물량이 맨 앞에 왔다). 최초 발견 때 도메인을 못 준 소스(GLEIF·NPS 등)가 dedup 시드로
-# 영원히 정체되는 사각(위 backfill_domain 독스트링 참고)을 최근 발견 우선으로 재시도한다.
+# 이 프로젝트는 전 산업·전 국가 IR 연락처 추출이 목적)이되, ``countries`` 를 넘기면
+# ``{scope}`` 로 그 국가들만 되짚는다(2026-07-27: KR 제외 크롤에 옛 KR 물량이 승격·큐
+# 유입되던 사고 — 원장 정렬이 last_crawled_at desc 라 직전 KR 크롤 물량이 맨 앞에 왔다.
+# 당시 크롤 병행 companion 은 이후 제거됐고, 현 유일 호출자인 CLI
+# ``backfill-resolve-domains`` 는 전세계로만 호출 — 스코프는 향후 CLI 옵션 노출용).
+# 최초 발견 때 도메인을 못 준 소스(GLEIF·NPS 등)가 dedup 시드로 영원히 정체되는
+# 사각(위 backfill_domain 독스트링 참고)을 최근 발견 우선으로 재시도한다.
 _RESOLVE_TARGET_SQL = """
     select d.canonical_key, d.name, d.country, d.industry, d.listed, d.domain,
            d.registry, d.registry_id, d.source, d.segment, d.reg_no, d.region,
@@ -197,8 +199,8 @@ def resolve_batch(
 ) -> tuple[int, int, int]:
     """대상 최대 ``limit`` 개의 도메인을 해석해 채우고, 실존이면 승격까지 시도한다.
 
-    기본(``countries=None``)은 전세계, 크롤 companion 은 크롤의 국가 명시선택을 넘겨
-    그 국가 발견행만 되짚는다(비선택 국가가 승격돼 큐에 섞이는 것 방지).
+    기본(``countries=None``)은 전세계, ``countries`` 지정 시 그 국가 발견행만 되짚는다
+    (비선택 국가가 승격돼 큐에 섞이는 것 방지 — 현 유일 호출자 CLI 는 전세계로만 호출).
 
     반환 (처리수, 도메인해석수, 신규승격수). enrich/existence/validate 는 워커별 독립
     인스턴스로 병렬화하지만(``fill_batch`` 와 동일 스레드로컬 관례), **도메인 해석기는
@@ -207,7 +209,7 @@ def resolve_batch(
     (2026-07-10 적대 리뷰 MED-1). 캡 체크는 ``DomainResolver`` 내부 락으로 원자화돼
     있어(스레드 안전) 공유해도 실제 네트워크 호출은 병렬로 나간다.
     ``resolve_batch`` 호출마다 새 인스턴스를 만들므로 이 캡은 **배치당** 상한이지
-    "런"(CLI ``--loop``·크롤 companion 은 배치를 계속 반복 호출) 전체 상한은 아니다 —
+    "런"(CLI ``--loop`` 는 배치를 계속 반복 호출) 전체 상한은 아니다 —
     무료 CSE(100/일)는 큰 문제 없고, 유료 Serper 는 별도 ``cost_budget_enforce``/
     ``monthly_budget_krw`` 예산가드가 실제 과금 상한이다(``domain_resolve_max`` 는
     배치 단위 페이싱 목적, 예산 하드캡이 아님). 진짜 런/일 단위 상한이 필요해지면

@@ -163,10 +163,11 @@ def test_resolve_batch_domain_recorded_even_when_no_match(tmp_path, monkeypatch)
 
 
 def test_resolve_batch_country_scope_excludes_unselected(tmp_path, monkeypatch) -> None:
-    """국가 스코프 — KR 제외 크롤 companion 은 KR('대한민국' 자유표기 포함)을 되짚지 않는다.
+    """국가 스코프 — ``countries`` 지정 시 KR('대한민국' 자유표기 포함)을 되짚지 않는다.
 
-    2026-07-27 사고: 원장 정렬(last_crawled_at desc)상 직전 KR 크롤 물량이 맨 앞이라,
-    KR 제외 크롤에서도 companion 이 KR 을 승격시켜 큐에 섞였다.
+    2026-07-27 사고(당시 크롤 병행 companion): 원장 정렬(last_crawled_at desc)상 직전
+    KR 크롤 물량이 맨 앞이라, KR 제외 크롤에서도 KR 이 승격돼 큐에 섞였다. companion 은
+    이후 제거됐지만 국가 스코프는 향후 CLI 옵션 노출용으로 유지.
     """
     _patch(monkeypatch)
     s = Settings(database_url=f"sqlite:///{tmp_path}/rb4.db", dry_run=False, resolve_domains=True)
