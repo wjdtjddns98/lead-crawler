@@ -142,6 +142,55 @@ def test_serper_error_returns_empty() -> None:
     assert src.discover(Segment(country="KR", industry="건설")) == []
 
 
+# --- Serper 크레딧 소진 latch ---------------------------------------------
+
+class _HttpError(RuntimeError):
+    """httpx.HTTPStatusError 더블 — .response(status_code·text)만 흉내."""
+
+    def __init__(self, status: int, text: str = "") -> None:
+        super().__init__(f"HTTP {status}")
+        from types import SimpleNamespace
+
+        self.response = SimpleNamespace(status_code=status, text=text)
+
+
+def _latch_provider(exc: Exception) -> tuple[SerperProvider, list[int]]:
+    calls: list[int] = []
+
+    def _post(url, body, headers):
+        calls.append(1)
+        raise exc
+
+    return SerperProvider(_settings(serper_api_key="k"), fetcher=FakeFetcher(post_json=_post)), calls
+
+
+def test_serper_credits_exhausted_400_latches() -> None:
+    """400 "Not enough credits"(라이브 실측 응답) 첫 감지 후 재발송하지 않는다."""
+    p, calls = _latch_provider(_HttpError(400, '{"message":"Not enough credits","statusCode":400}'))
+    assert p.fetch_page("q", gl="", lr="", start=1) == []
+    assert p.fetch_page("q", gl="", lr="", start=1) == []
+    assert len(calls) == 1  # 두 번째 호출은 latch 로 발송 자체가 없다.
+
+
+def test_serper_402_latches() -> None:
+    p, calls = _latch_provider(_HttpError(402))
+    p.fetch_page("q", gl="", lr="", start=1)
+    p.fetch_page("q", gl="", lr="", start=1)
+    assert len(calls) == 1
+
+
+def test_serper_generic_error_does_not_latch() -> None:
+    """일반 400(잘못된 요청)·네트워크 오류는 일시 장애 — 영구 차단하면 안 된다."""
+    p, calls = _latch_provider(_HttpError(400, '{"message":"query too long"}'))
+    p.fetch_page("q", gl="", lr="", start=1)
+    p.fetch_page("q", gl="", lr="", start=1)
+    assert len(calls) == 2  # latch 없음 — 매 호출 발송.
+    p2, calls2 = _latch_provider(RuntimeError("conn reset"))  # response 없는 예외.
+    p2.fetch_page("q", gl="", lr="", start=1)
+    p2.fetch_page("q", gl="", lr="", start=1)
+    assert len(calls2) == 2
+
+
 # --- Naver 다중앱 로테이션 -------------------------------------------------
 
 class NaverFakeFetcher:
