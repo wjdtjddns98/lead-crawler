@@ -162,6 +162,51 @@ def test_resolve_batch_domain_recorded_even_when_no_match(tmp_path, monkeypatch)
     assert fill_mod.count_resolve_targets(sm) == 1
 
 
+def test_resolve_batch_country_scope_excludes_unselected(tmp_path, monkeypatch) -> None:
+    """국가 스코프 — KR 제외 크롤 companion 은 KR('대한민국' 자유표기 포함)을 되짚지 않는다.
+
+    2026-07-27 사고: 원장 정렬(last_crawled_at desc)상 직전 KR 크롤 물량이 맨 앞이라,
+    KR 제외 크롤에서도 companion 이 KR 을 승격시켜 큐에 섞였다.
+    """
+    _patch(monkeypatch)
+    s = Settings(database_url=f"sqlite:///{tmp_path}/rb4.db", dry_run=False, resolve_domains=True)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    with sm() as session:
+        session.add(
+            DiscoveredCompanyRow(
+                canonical_key="name:kr:살아있는상사", name="살아있는상사", country="KR",
+                industry="화학·석유화학", source="nps",
+            )
+        )
+        session.add(  # 원장 자유표기('대한민국')도 KR 별칭으로 접혀 제외돼야 한다.
+            DiscoveredCompanyRow(
+                canonical_key="name:kr:살아있는무역", name="살아있는무역", country="대한민국",
+                industry="화학·석유화학", source="import",
+            )
+        )
+        session.add(
+            DiscoveredCompanyRow(
+                canonical_key="name:us:살아있는inc", name="살아있는inc", country="US",
+                industry="화학·석유화학", source="gleif",
+            )
+        )
+        session.commit()
+
+    assert fill_mod.count_resolve_targets(sm, ["US", "JP"]) == 1  # KR 2건 제외.
+    assert fill_mod.count_resolve_targets(sm) == 3  # 무스코프=전세계(현행).
+
+    processed, resolved, promoted = fill_mod.resolve_batch(
+        s, sm, limit=50, workers=2, countries=["US", "JP"]
+    )
+    assert (processed, resolved, promoted) == (1, 1, 1)  # US 만 처리·승격.
+    with sm() as session:
+        assert session.get(DiscoveredCompanyRow, "name:kr:살아있는상사").domain is None
+        assert session.get(DiscoveredCompanyRow, "name:kr:살아있는무역").domain is None
+        [co] = session.query(CompanyRow).all()
+        assert co.canonical_key == "name:us:살아있는inc"  # KR 승격 0.
+
+
 def test_resolve_batch_skips_promotion_on_domain_collision(tmp_path, monkeypatch) -> None:
     """이미 원장에 있는 도메인과 겹치면 도메인은 기록하되 company 승격은 스킵(제약① 중복방지)."""
     _patch(monkeypatch)
