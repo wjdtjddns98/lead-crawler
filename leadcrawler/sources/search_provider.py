@@ -135,9 +135,16 @@ class SerperProvider(_BaseProvider):
     name = "serper"
     page_size = 100  # 호출당 최대 100건 → 세그먼트당 쿼리 수 최소화(CSE 대비 비용·쿼터 유리).
     max_start = 100  # 캡(≤100)이 1페이지에 들어와 페이지네이션 거의 불필요.
+    # 크레딧 소진 latch — Serper 는 크레딧이 바닥나면 400 "Not enough credits" 를 돌려준다
+    # (2026-07-27 라이브 실측·402 아님). 소진 후에도 KR 도메인해석 폴백 등이 miss 마다
+    # 죽은 API 를 계속 때리던 낭비(호출+로그 스팸)를 첫 감지에서 차단한다.
+    # ponytail: 인스턴스 수명 latch — 소스 객체(SearchSource·DomainResolver·AiDirectory)가
+    # 각자 provider 를 만들고 연속크롤은 라운드마다 전체 재생성하므로, 소진 재감지 호출은
+    # 라운드×소스(×워커)당 1회 남는다(miss 마다 때리던 기존 대비 충분). 충전 후 자연 복귀.
+    _credits_exhausted = False
 
     def fetch_page(self, query: str, *, gl: str, lr: str, start: int) -> list[dict]:
-        if self._budget_blocked():
+        if self._credits_exhausted or self._budget_blocked():
             return []
         page = (start - 1) // self.page_size + 1  # 1-base 오프셋 → Serper page 번호.
         body: dict = {"q": query, "num": self.page_size}
@@ -152,11 +159,38 @@ class SerperProvider(_BaseProvider):
         try:
             payload = self._fetcher().post_json(_SERPER_URL, json=body, headers=headers)
         except Exception as exc:
+            if self._is_credits_exhausted(exc):
+                # 소진은 재시도가 무의미 — latch 를 걸어 이후 호출을 전부 즉시 빈 페이지로.
+                # 호출부(KR 네이버 1차 등 무료 경로)는 그대로 동작하고 낭비 호출만 사라진다.
+                # 락 불필요: 단방향 bool(False→True)이라 RMW 경합이 없다(Naver 는 idx+=1 라 락).
+                self._credits_exhausted = True
+                log.warning("search.serper.credits_exhausted")
+                return []
             log.info("search.serper.error", page=page, err=str(exc))
             return []
         self._record()  # 호출 1건 = 1 크레딧.
         organic = payload.get("organic") if isinstance(payload, dict) else None
         return [it for it in (organic or []) if isinstance(it, dict)]
+
+    @staticmethod
+    def _is_credits_exhausted(exc: Exception) -> bool:
+        """크레딧 소진 응답인가 — 400 "Not enough credits"(실측) 또는 402(표준 결제요구).
+
+        일반 400(잘못된 요청)과 구분하려고 본문 메시지까지 확인한다. 응답 객체가 없는
+        예외(네트워크 오류 등)는 소진이 아니다(일시 장애를 영구 차단하면 안 됨).
+        """
+        resp = getattr(exc, "response", None)
+        status = getattr(resp, "status_code", None)
+        if status == 402:
+            return True
+        if status != 400:
+            return False
+        try:
+            # str() 강제 + 판정 전체를 try 안에 — 비-httpx 페처가 text 로 bytes 등을 줘도
+            # 예외가 새지 않는다(오판 시 latch 안 함이 안전측, 호출부 계약 "에러=빈 페이지" 보존).
+            return "not enough credits" in str(resp.text or "").lower()
+        except Exception:
+            return False
 
     def _budget_blocked(self) -> bool:
         """예산 가드 — 원장 있고 enforce 켜졌고 월 누계가 예산 이상이면 차단."""
