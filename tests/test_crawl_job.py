@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from leadcrawler.config import get_settings
@@ -509,16 +511,14 @@ def test_continuous_rounds_accumulate_counters(settings, monkeypatch) -> None:
     assert d["rounds_done"] == 2
 
 
-def test_persist_crawl_spawns_domain_backfill_consumer(settings, monkeypatch) -> None:
-    # persist=True(라이브) + resolve_domains opt-in → 발견 스레드 + 도메인 백필 consumer 둘 다 스폰
-    # (discovery_only 무관).
+def test_crawl_never_spawns_domain_backfill_companion(settings, monkeypatch) -> None:
+    # 크롤 실행 = 딱 크롤만(운영 지시 2026-07-27) — resolve_domains opt-in 이어도 도메인 백필
+    # companion 은 병행 스폰하지 않는다(백필은 별도 CLI backfill-resolve-domains 로 명시 실행).
+    assert not hasattr(bg, "_spawn_domain_backfill_thread")  # 스포너 자체가 제거됨(회귀 가드).
     live = settings.model_copy(update={"dry_run": False, "resolve_domains": True})
-    calls = {"crawl": 0, "resolve": 0}
+    calls = {"crawl": 0}
     monkeypatch.setattr(bg, "_spawn_thread", lambda *a, **k: calls.__setitem__("crawl", calls["crawl"] + 1))
-    monkeypatch.setattr(
-        bg, "_spawn_domain_backfill_thread",
-        lambda *a, **k: calls.__setitem__("resolve", calls["resolve"] + 1),
-    )
+    before = {t.name for t in threading.enumerate()}
     try:
         trigger_crawl_job(
             live, countries="KR", industries="건설", listed="unknown",
@@ -527,69 +527,8 @@ def test_persist_crawl_spawns_domain_backfill_consumer(settings, monkeypatch) ->
     finally:
         with bg._guard:
             bg._running = False
-    assert calls["crawl"] == 1 and calls["resolve"] == 1
-
-
-def test_persist_crawl_without_resolve_domains_opt_in_skips_domain_backfill(
-    settings, monkeypatch
-) -> None:
-    # persist=True 지만 resolve_domains=False(기본값, CLI·run.py 와 동일 게이트) → 도메인 백필
-    # consumer 는 스폰 안 함(2026-07-10 적대 리뷰 MED-2 — opt-in 안 한 운영자 과금 방지).
-    live = settings.model_copy(update={"dry_run": False, "resolve_domains": False})
-    calls = {"resolve": 0}
-    monkeypatch.setattr(bg, "_spawn_thread", lambda *a, **k: None)
-    monkeypatch.setattr(
-        bg, "_spawn_domain_backfill_thread",
-        lambda *a, **k: calls.__setitem__("resolve", calls["resolve"] + 1),
-    )
-    try:
-        trigger_crawl_job(
-            live, countries="KR", industries="건설", listed="unknown",
-            persist=True, triggered_by="x", discovery_only=False,
-        )
-    finally:
-        with bg._guard:
-            bg._running = False
-    assert calls["resolve"] == 0
-
-
-def test_non_persist_crawl_does_not_spawn_domain_backfill_consumer(settings, monkeypatch) -> None:
-    # persist=False(원장 미적재) → 백필 대상이 애초에 안 남으므로 consumer 미스폰.
-    live = settings.model_copy(update={"dry_run": False})
-    calls = {"resolve": 0}
-    monkeypatch.setattr(bg, "_spawn_thread", lambda *a, **k: None)
-    monkeypatch.setattr(
-        bg, "_spawn_domain_backfill_thread",
-        lambda *a, **k: calls.__setitem__("resolve", calls["resolve"] + 1),
-    )
-    try:
-        trigger_crawl_job(
-            live, countries="KR", industries="건설", listed="unknown",
-            persist=False, triggered_by="x", discovery_only=False,
-        )
-    finally:
-        with bg._guard:
-            bg._running = False
-    assert calls["resolve"] == 0
-
-
-def test_dry_run_does_not_spawn_domain_backfill_consumer(settings, monkeypatch) -> None:
-    # dry_run(기본 fixture) → 어떤 consumer 도 스폰 안 됨(결정적 유지).
-    calls = {"resolve": 0}
-    monkeypatch.setattr(bg, "_spawn_thread", lambda *a, **k: None)
-    monkeypatch.setattr(
-        bg, "_spawn_domain_backfill_thread",
-        lambda *a, **k: calls.__setitem__("resolve", calls["resolve"] + 1),
-    )
-    try:
-        trigger_crawl_job(
-            settings, countries="KR", industries="건설", listed="unknown",
-            persist=True, triggered_by="x", discovery_only=False,
-        )
-    finally:
-        with bg._guard:
-            bg._running = False
-    assert calls["resolve"] == 0
+    spawned = {t.name for t in threading.enumerate()} - before
+    assert calls["crawl"] == 1 and not any(n.startswith("resolve-") for n in spawned)
 
 
 def test_watchdog_restart_restores_option_snapshot(settings, monkeypatch) -> None:
