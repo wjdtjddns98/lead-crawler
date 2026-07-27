@@ -11,9 +11,10 @@ CLI ``leadcrawler fill-emails [--loop]`` 가 이 모듈을 구동한다.
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.orm import sessionmaker
 
 from ..config import Settings
@@ -23,6 +24,7 @@ from ..enrich.enricher import Enricher
 from ..enrich.industry_classify import build_classifier
 from ..logging import get_logger
 from ..sources.base import DiscoveredCompany
+from ..sources.countries import country_match_set
 from ..sources.domain_resolver import DomainResolver
 from ..sources.http import HostRateLimiters
 from ..storage.repository import backfill_domain, load_seen_domains
@@ -35,8 +37,10 @@ log = get_logger("pipeline.fill")
 
 # 대상 = site_alive(실존)·도메인 보유·이메일 연락처 없음. discovered_company 를 조인해
 # enrich 에 필요한 발견필드(도메인·등록처·업종 등)를 함께 가져온다. 채워지면 자동 이탈(멱등).
-_TARGET_SQL = text(
-    """
+# {scope} = 국가 스코프 슬롯(아래 _scoped) — 크롤 companion 이 국가 명시선택 크롤이면 그
+# 국가들로 제한한다(2026-07-27: KR 제외 크롤에 옛 KR 물량이 승격·큐 유입되던 사고). CLI
+# 단독 백필·무선택(전체) 크롤은 빈 슬롯(전세계, 현행 유지).
+_TARGET_SQL = """
     select d.canonical_key, d.name, d.country, d.industry, d.listed, d.domain,
            d.registry, d.registry_id, d.source, d.segment, d.reg_no, d.region,
            d.ticker, d.phone, d.ir_url, d.name_eng, d.address
@@ -46,19 +50,34 @@ _TARGET_SQL = text(
       and coalesce(d.domain, '') <> ''
       and not exists (
           select 1 from contact ct where ct.company_id = co.id and ct.type = 'email'
-      )
+      ){scope}
     order by co.id
     limit :limit
     """
-)
-_COUNT_SQL = text(
-    """
+_COUNT_SQL = """
     select count(*) from company co
     join discovered_company d on d.canonical_key = co.canonical_key
     where co.site_alive is true and coalesce(d.domain, '') <> ''
       and not exists (select 1 from contact ct where ct.company_id = co.id and ct.type = 'email')
+      {scope}
     """
-)
+
+_SCOPE_CLAUSE = "and lower(d.country) in :country_scope"
+
+
+def _scoped(sql_tpl: str, countries: Iterable[str] | None):
+    """SQL 템플릿의 ``{scope}`` 슬롯에 국가 필터를 주입한다 — (stmt, params) 반환.
+
+    선택 국가는 :func:`country_match_set` 별칭 집합으로 확장해 원장의 자유표기
+    ('KR'/'대한민국' 혼재)를 같은 국가로 접는다. countries 가 비면 필터 없음(전세계).
+    """
+    match = country_match_set(countries) if countries else set()
+    if not match:
+        return text(sql_tpl.format(scope="")), {}
+    stmt = text(sql_tpl.format(scope=_SCOPE_CLAUSE)).bindparams(
+        bindparam("country_scope", expanding=True)
+    )
+    return stmt, {"country_scope": sorted(match)}
 
 
 def _dc_from_row(r) -> DiscoveredCompany:  # noqa: ANN001 (SQLAlchemy Row)
@@ -71,20 +90,26 @@ def _dc_from_row(r) -> DiscoveredCompany:  # noqa: ANN001 (SQLAlchemy Row)
     )
 
 
-def count_targets(sm: sessionmaker) -> int:
-    """현재 이메일 채우기 대상(실존·무이메일) 회사 수."""
+def count_targets(sm: sessionmaker, countries: Iterable[str] | None = None) -> int:
+    """현재 이메일 채우기 대상(실존·무이메일) 회사 수(``countries`` 지정 시 그 국가만)."""
+    stmt, params = _scoped(_COUNT_SQL, countries)
     with sm() as s:
-        return int(s.execute(_COUNT_SQL).scalar() or 0)
+        return int(s.execute(stmt, params).scalar() or 0)
 
 
-def fill_batch(settings: Settings, sm: sessionmaker, *, limit: int, workers: int) -> tuple[int, int]:
+def fill_batch(
+    settings: Settings, sm: sessionmaker, *, limit: int, workers: int,
+    countries: Iterable[str] | None = None,
+) -> tuple[int, int]:
     """대상 최대 ``limit`` 개를 ``workers`` 병렬로 enrich 해 이메일을 채운다.
 
     반환 (처리수, 신규이메일수). enrich(_build_lead)는 워커스레드에서, DB 적재(_persist_lead)는
     메인스레드 단독(파이프라인 계약). 1건 실패는 격리(배치 전체 보호). 멱등이라 재호출 안전.
+    ``countries`` 지정 시(크롤 companion — 국가 명시선택 크롤) 그 국가 회사만 채운다.
     """
+    stmt, params = _scoped(_TARGET_SQL, countries)
     with sm() as rd:
-        targets = [_dc_from_row(r) for r in rd.execute(_TARGET_SQL, {"limit": limit}).all()]
+        targets = [_dc_from_row(r) for r in rd.execute(stmt, {**params, "limit": limit}).all()]
     if not targets:
         return 0, 0
 
@@ -134,39 +159,46 @@ def fill_batch(settings: Settings, sm: sessionmaker, *, limit: int, workers: int
     return processed, emails
 
 
-# 대상 = 도메인 미보유 + 미승격(company 행 없음) 발견 행 — **국가 무관**(전세계 대상,
-# KR/NPS 로 좁힐 이유 없음: 이 프로젝트는 전 산업·전 국가 IR 연락처 추출이 목적).
-# 최초 발견 때 도메인을 못 준 소스(GLEIF·NPS 등)가 dedup 시드로 영원히 정체되는
-# 사각(위 backfill_domain 독스트링 참고)을 최근 발견 우선으로 되짚어 재시도한다.
-_RESOLVE_TARGET_SQL = text(
-    """
+# 대상 = 도메인 미보유 + 미승격(company 행 없음) 발견 행. 기본은 **국가 무관**(전세계 —
+# 이 프로젝트는 전 산업·전 국가 IR 연락처 추출이 목적)이되, 크롤 companion 은 크롤이
+# 국가를 명시 선택했으면 ``{scope}`` 로 그 국가들만 되짚는다(2026-07-27: KR 제외 크롤에
+# 옛 KR 물량이 승격·큐 유입되던 사고 — 원장 정렬이 last_crawled_at desc 라 직전 KR 크롤
+# 물량이 맨 앞에 왔다). 최초 발견 때 도메인을 못 준 소스(GLEIF·NPS 등)가 dedup 시드로
+# 영원히 정체되는 사각(위 backfill_domain 독스트링 참고)을 최근 발견 우선으로 재시도한다.
+_RESOLVE_TARGET_SQL = """
     select d.canonical_key, d.name, d.country, d.industry, d.listed, d.domain,
            d.registry, d.registry_id, d.source, d.segment, d.reg_no, d.region,
            d.ticker, d.phone, d.ir_url, d.name_eng, d.address
     from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
     where coalesce(d.domain, '') = '' and co.id is null
+      {scope}
     order by d.last_crawled_at desc
     limit :limit
     """
-)
-_RESOLVE_COUNT_SQL = text(
-    """
+_RESOLVE_COUNT_SQL = """
     select count(*) from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
     where coalesce(d.domain, '') = '' and co.id is null
+      {scope}
     """
-)
 
 
-def count_resolve_targets(sm: sessionmaker) -> int:
-    """현재 도메인 해석 대상(도메인없음·미승격) 회사 수."""
+def count_resolve_targets(sm: sessionmaker, countries: Iterable[str] | None = None) -> int:
+    """현재 도메인 해석 대상(도메인없음·미승격) 회사 수(``countries`` 지정 시 그 국가만)."""
+    stmt, params = _scoped(_RESOLVE_COUNT_SQL, countries)
     with sm() as s:
-        return int(s.execute(_RESOLVE_COUNT_SQL).scalar() or 0)
+        return int(s.execute(stmt, params).scalar() or 0)
 
 
-def resolve_batch(settings: Settings, sm: sessionmaker, *, limit: int, workers: int) -> tuple[int, int, int]:
-    """대상 최대 ``limit`` 개(전세계)의 도메인을 해석해 채우고, 실존이면 승격까지 시도한다.
+def resolve_batch(
+    settings: Settings, sm: sessionmaker, *, limit: int, workers: int,
+    countries: Iterable[str] | None = None,
+) -> tuple[int, int, int]:
+    """대상 최대 ``limit`` 개의 도메인을 해석해 채우고, 실존이면 승격까지 시도한다.
+
+    기본(``countries=None``)은 전세계, 크롤 companion 은 크롤의 국가 명시선택을 넘겨
+    그 국가 발견행만 되짚는다(비선택 국가가 승격돼 큐에 섞이는 것 방지).
 
     반환 (처리수, 도메인해석수, 신규승격수). enrich/existence/validate 는 워커별 독립
     인스턴스로 병렬화하지만(``fill_batch`` 와 동일 스레드로컬 관례), **도메인 해석기는
@@ -188,8 +220,9 @@ def resolve_batch(settings: Settings, sm: sessionmaker, *, limit: int, workers: 
     (다음 배치가 재시도 — 적대 리뷰 HIGH-MED: 일시적 크래시로 도메인만 기록되고 승격
     기회가 영구 소멸하던 결함).
     """
+    stmt, params = _scoped(_RESOLVE_TARGET_SQL, countries)
     with sm() as rd:
-        targets = [_dc_from_row(r) for r in rd.execute(_RESOLVE_TARGET_SQL, {"limit": limit}).all()]
+        targets = [_dc_from_row(r) for r in rd.execute(stmt, {**params, "limit": limit}).all()]
     if not targets:
         return 0, 0, 0
 
