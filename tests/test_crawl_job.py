@@ -514,11 +514,17 @@ def test_continuous_rounds_accumulate_counters(settings, monkeypatch) -> None:
 def test_crawl_never_spawns_domain_backfill_companion(settings, monkeypatch) -> None:
     # 크롤 실행 = 딱 크롤만(운영 지시 2026-07-27) — resolve_domains opt-in 이어도 도메인 백필
     # companion 은 병행 스폰하지 않는다(백필은 별도 CLI backfill-resolve-domains 로 명시 실행).
-    assert not hasattr(bg, "_spawn_domain_backfill_thread")  # 스포너 자체가 제거됨(회귀 가드).
+    assert not hasattr(bg, "_spawn_domain_backfill_thread")  # 이름 재도입 가드.
     live = settings.model_copy(update={"dry_run": False, "resolve_domains": True})
     calls = {"crawl": 0}
+    spawned: list[str] = []  # bg 모듈이 띄우는 모든 스레드 스파이 — 다른 이름 재도입도 잡는다.
+
+    class _SpyThread(threading.Thread):
+        def start(self) -> None:  # 실제 스폰 없이 기록만.
+            spawned.append(self.name)
+
+    monkeypatch.setattr(bg.threading, "Thread", _SpyThread)
     monkeypatch.setattr(bg, "_spawn_thread", lambda *a, **k: calls.__setitem__("crawl", calls["crawl"] + 1))
-    before = {t.name for t in threading.enumerate()}
     try:
         trigger_crawl_job(
             live, countries="KR", industries="건설", listed="unknown",
@@ -527,8 +533,27 @@ def test_crawl_never_spawns_domain_backfill_companion(settings, monkeypatch) -> 
     finally:
         with bg._guard:
             bg._running = False
-    spawned = {t.name for t in threading.enumerate()} - before
-    assert calls["crawl"] == 1 and not any(n.startswith("resolve-") for n in spawned)
+    # 발견 스레드(monkeypatch 경유) 1회 외에 bg 가 어떤 부수 스레드도 만들지 않아야 한다.
+    assert calls["crawl"] == 1 and spawned == []
+
+
+def test_dry_run_discovery_only_does_not_spawn_email_consumer(settings, monkeypatch) -> None:
+    # dry_run(기본 fixture) → discovery_only 여도 이메일 consumer 미스폰(결정적 유지, §2 계약).
+    calls = {"consumer": 0}
+    monkeypatch.setattr(bg, "_spawn_thread", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bg, "_spawn_consumer_thread",
+        lambda *a, **k: calls.__setitem__("consumer", calls["consumer"] + 1),
+    )
+    try:
+        trigger_crawl_job(
+            settings, countries="KR", industries="건설", listed="unknown",
+            persist=True, triggered_by="x", discovery_only=True,
+        )
+    finally:
+        with bg._guard:
+            bg._running = False
+    assert calls["consumer"] == 0
 
 
 def test_watchdog_restart_restores_option_snapshot(settings, monkeypatch) -> None:
