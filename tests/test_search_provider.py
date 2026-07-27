@@ -174,21 +174,35 @@ def test_serper_credits_exhausted_400_latches() -> None:
 
 def test_serper_402_latches() -> None:
     p, calls = _latch_provider(_HttpError(402))
-    p.fetch_page("q", gl="", lr="", start=1)
-    p.fetch_page("q", gl="", lr="", start=1)
+    assert p.fetch_page("q", gl="", lr="", start=1) == []
+    assert p.fetch_page("q", gl="", lr="", start=1) == []
     assert len(calls) == 1
 
 
 def test_serper_generic_error_does_not_latch() -> None:
-    """일반 400(잘못된 요청)·네트워크 오류는 일시 장애 — 영구 차단하면 안 된다."""
+    """일반 400(잘못된 요청)·429(일시 rate-limit)·네트워크 오류는 영구 차단하면 안 된다."""
     p, calls = _latch_provider(_HttpError(400, '{"message":"query too long"}'))
-    p.fetch_page("q", gl="", lr="", start=1)
-    p.fetch_page("q", gl="", lr="", start=1)
+    assert p.fetch_page("q", gl="", lr="", start=1) == []
+    assert p.fetch_page("q", gl="", lr="", start=1) == []
     assert len(calls) == 2  # latch 없음 — 매 호출 발송.
     p2, calls2 = _latch_provider(RuntimeError("conn reset"))  # response 없는 예외.
     p2.fetch_page("q", gl="", lr="", start=1)
     p2.fetch_page("q", gl="", lr="", start=1)
     assert len(calls2) == 2
+    p3, calls3 = _latch_provider(_HttpError(429))  # 402/400 이 아닌 상태코드 arm.
+    p3.fetch_page("q", gl="", lr="", start=1)
+    p3.fetch_page("q", gl="", lr="", start=1)
+    assert len(calls3) == 2
+
+
+def test_serper_latch_is_per_instance() -> None:
+    """latch 는 인스턴스 격리 — 클래스 기본값을 오염시키면 형제 provider 까지 전염된다."""
+    a, _ = _latch_provider(_HttpError(402))
+    a.fetch_page("q", gl="", lr="", start=1)  # a 만 latch.
+    assert SerperProvider._credits_exhausted is False  # 클래스 기본값 무오염.
+    b, calls_b = _latch_provider(_HttpError(402))
+    b.fetch_page("q", gl="", lr="", start=1)
+    assert len(calls_b) == 1  # 새 인스턴스는 정상 발송.
 
 
 # --- Naver 다중앱 로테이션 -------------------------------------------------

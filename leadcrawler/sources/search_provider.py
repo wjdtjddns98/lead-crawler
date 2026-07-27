@@ -160,6 +160,7 @@ class SerperProvider(_BaseProvider):
             if self._is_credits_exhausted(exc):
                 # 소진은 재시도가 무의미 — latch 를 걸어 이후 호출을 전부 즉시 빈 페이지로.
                 # 호출부(KR 네이버 1차 등 무료 경로)는 그대로 동작하고 낭비 호출만 사라진다.
+                # 락 불필요: 단방향 bool(False→True)이라 RMW 경합이 없다(Naver 는 idx+=1 라 락).
                 self._credits_exhausted = True
                 log.warning("search.serper.credits_exhausted")
                 return []
