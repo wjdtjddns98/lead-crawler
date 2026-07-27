@@ -167,16 +167,11 @@ def trigger_crawl_job(
         # discovery_only 크롤은 이메일을 미루므로, 같은 트리거로 채우기 consumer 를 병행 스폰한다
         # (웹앱 '크롤 실행' 한 번 = 발견+이메일 병렬). runner 주입(테스트)·dry_run 은 스폰 안 함.
         if discovery_only and runner is None and not settings.dry_run:
-            _spawn_consumer_thread(settings, job_id)
-        # 도메인 백필 consumer — discovery_only 여부·국가 무관, persist 크롤이면 항상 병행.
-        # 발견 시점 inline 해석(run.py)이 실패/스킵한(쿼터 소진 등) 회사를 재시도해 승격
-        # 기회를 살린다. 웹앱 '크롤 실행' 버튼 하나로 발견+이메일+도메인재시도가 전부
-        # 자동으로 돈다 — 사용자가 별도 CLI(backfill-resolve-domains 등)를 몰라도 된다.
-        # resolve_domains opt-in 게이트 — CLI(cli.py)·run.py 인라인 해석과 동일하게 지켜야
-        # 한다(2026-07-10 적대 리뷰 MED-2: 게이트 없으면 opt-in 안 한 운영자도 persist 크롤마다
-        # 유료 검색키가 있으면 과금이 도는 사고).
-        if persist and runner is None and not settings.dry_run and settings.resolve_domains:
-            _spawn_domain_backfill_thread(settings, job_id)
+            _spawn_consumer_thread(settings, job_id, countries=ctys)
+        # 도메인 백필 companion 은 크롤과 병행 스폰하지 않는다(운영 지시 2026-07-27:
+        # "크롤 실행 = 딱 크롤만"). 정체분 재해석은 별도 CLI `backfill-resolve-domains` 로
+        # 필요할 때 명시 실행한다 — 크롤 로그에 무관 국가 백로그(직전 KR 물량 등) 검색이
+        # 섞이던 혼선 제거. 발견 시점 inline 해석(run.py)은 크롤 본체 일부라 유지.
     except Exception as exc:  # 스레드 spawn 실패 — 가드 누수 방지 + 작업을 failed 로.
         log.warning("crawl_job.spawn_failed", job=job_id, err=str(exc))
         _finalize(get_sessionmaker(settings), job_id, status=FAILED, error=f"실행 시작 실패: {exc}")
@@ -206,13 +201,16 @@ _FILL_BATCH = 200      # 배치당 최대 회사 수.
 _FILL_IDLE_SEC = 15.0  # 대상 부족/실패 시 폴링 대기.
 
 
-def _spawn_consumer_thread(settings: Settings, job_id: str) -> None:
+def _spawn_consumer_thread(
+    settings: Settings, job_id: str, countries: list[str] | None = None
+) -> None:
     """발견 크롤과 병행하는 이메일 채우기 consumer 데몬을 띄운다(discovery_only 크롤 전용).
 
     발견(producer)이 회사+홈페이지를 큐에 쌓는 동안, 이 consumer 가 '실존·무이메일' 회사를
     배치 병렬로 잡아 헤드리스/OCR 로 이메일을 채운다. 크롤 잡 생명주기에 결속 — 크롤이
     취소되거나(``is_cancel_requested``) 더 이상 active 가 아니면 함께 종료한다. 워커는 발견보다
     낮게(헤드리스 경합 방지). 웹앱 '크롤 실행' 한 번으로 발견+이메일이 병렬로 돈다.
+    ``countries``(크롤의 국가 명시선택)가 있으면 그 국가 회사만 채운다(무선택=전세계).
     """
     def _run() -> None:
         from .fill import count_targets, fill_batch  # 지연 import(순환 회피).
@@ -228,59 +226,17 @@ def _spawn_consumer_thread(settings: Settings, job_id: str) -> None:
                 session.close()
             if active is None or active.id != job_id:
                 break
-            if count_targets(sm) < _FILL_MIN_QUEUE:  # 임계 미만 → 더 쌓일 때까지 대기.
+            if count_targets(sm, countries) < _FILL_MIN_QUEUE:  # 임계 미만 → 대기.
                 time.sleep(_FILL_IDLE_SEC)
                 continue
             try:
-                fill_batch(settings, sm, limit=_FILL_BATCH, workers=workers)
+                fill_batch(settings, sm, limit=_FILL_BATCH, workers=workers, countries=countries)
             except Exception as exc:  # 배치 실패가 consumer 를 안 죽이게(폭주 방지 대기).
                 log.info("consumer.batch.error", job=job_id, err=str(exc))
                 time.sleep(_FILL_IDLE_SEC)
         log.info("consumer.stop", job=job_id)
 
     threading.Thread(target=_run, name=f"fill-{job_id}", daemon=True).start()
-
-
-# 도메인 백필 consumer 상수 — 검색 API(Naver/CSE/Serper) 라 이메일 채우기보다 보수적.
-_RESOLVE_MIN_QUEUE = 20
-_RESOLVE_BATCH = 100
-_RESOLVE_IDLE_SEC = 30.0
-
-
-def _spawn_domain_backfill_thread(settings: Settings, job_id: str) -> None:
-    """크롤과 병행하는 도메인 재해석 consumer 데몬을 띄운다(전세계, discovery_only 무관).
-
-    발견 시점 inline 도메인 해석(``run.py`` — 도메인 없는 기업을 회사명으로 1회 시도)이
-    쿼터 소진 등으로 실패하면 그 회사는 dedup 원장에 이름 키로만 남아 재크롤로도
-    다시 안 잡힌다(제약①). 이 consumer 가 그 정체분을 주기적으로 되짚어 재시도한다.
-    크롤 잡 생명주기에 결속(취소·종료 시 함께 종료) — ``_spawn_consumer_thread`` 와
-    동일 관례. 워커는 발견/이메일채우기보다 낮게(검색 API 레이트 보수적).
-    """
-    def _run() -> None:
-        from .fill import count_resolve_targets, resolve_batch  # 지연 import(순환 회피).
-
-        sm = get_sessionmaker(settings)
-        workers = max(1, settings.enrich_workers // 3)
-        log.info("resolve_backfill.start", job=job_id, workers=workers)
-        while not _read_cancel(sm, job_id):
-            session = sm()
-            try:
-                active = active_crawl_job(session)
-            finally:
-                session.close()
-            if active is None or active.id != job_id:
-                break
-            if count_resolve_targets(sm) < _RESOLVE_MIN_QUEUE:
-                time.sleep(_RESOLVE_IDLE_SEC)
-                continue
-            try:
-                resolve_batch(settings, sm, limit=_RESOLVE_BATCH, workers=workers)
-            except Exception as exc:  # 배치 실패가 consumer 를 안 죽이게(폭주 방지 대기).
-                log.info("resolve_backfill.batch.error", job=job_id, err=str(exc))
-                time.sleep(_RESOLVE_IDLE_SEC)
-        log.info("resolve_backfill.stop", job=job_id)
-
-    threading.Thread(target=_run, name=f"resolve-{job_id}", daemon=True).start()
 
 
 def run_crawl_job(
