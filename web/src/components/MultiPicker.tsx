@@ -33,13 +33,18 @@ export function MultiPicker({
   );
   const isSelected = (o: PickerOption) => selectedLower.has(o.value.toLowerCase());
 
-  const toggle = (target: PickerOption) => {
-    // options 순서(우선순위)를 보존해 재직렬화 — 토글 대상만 뒤집고 나머지는 유지.
-    const next = options
-      .filter((o) => (o.value === target.value ? !isSelected(target) : isSelected(o)))
-      .map((o) => o.value);
-    onChange(next.join(","));
-  };
+  // options 순서(우선순위)를 보존해 선택 토큰을 csv 로 재직렬화 — 토글 계열 공통 골격.
+  const commit = (isChosen: (o: PickerOption) => boolean) =>
+    onChange(
+      options
+        .filter(isChosen)
+        .map((o) => o.value)
+        .join(","),
+    );
+
+  // 토글 대상만 뒤집고 나머지 선택은 유지.
+  const toggle = (target: PickerOption) =>
+    commit((o) => (o.value === target.value ? !isSelected(target) : isSelected(o)));
 
   const q = search.trim().toLowerCase();
   const filtered = q
@@ -54,6 +59,18 @@ export function MultiPicker({
     : options;
   const selectedOpts = options.filter(isSelected);
 
+  // 마스터 체크박스 상태 — 대상(검색 중이면 보이는 것 filtered, 아니면 전체 options) 기준.
+  // 대상 전부 선택 시에만 체크(부분선택은 빈 상태로 두고 라벨로 안내).
+  const allSelected = filtered.length > 0 && filtered.every(isSelected);
+  const bulkLabel = `${q ? "검색결과 " : ""}${allSelected ? "전체 해제" : "전체 선택"}`;
+
+  // 전체 선택↔해제 토글 — 대상이 모두 선택돼 있으면 대상만 해제, 아니면 대상 선택.
+  // 대상 밖 기존 선택은 유지.
+  const toggleAll = () => {
+    const scope = new Set(filtered.map((o) => o.value));
+    commit((o) => (scope.has(o.value) ? !allSelected : isSelected(o)));
+  };
+
   return (
     <div className="flex flex-col gap-1.5 w-[340px]">
       <input
@@ -63,8 +80,8 @@ export function MultiPicker({
         placeholder={placeholder}
       />
       {selectedOpts.length > 0 ? (
-        // 너비 고정(w-[280px]) + 칩은 아래로 줄바꿈 — 가로로 안 늘어 옆 UI 안 밀림. 칩 많으면
-        // 피커만 세로로 길어진다(내부 스크롤 없음). 전체 해제는 칩 끝에 따라와 항상 보인다.
+        // 너비 고정 + 칩은 아래로 줄바꿈 — 가로로 안 늘어 옆 UI 안 밀림. 칩 많으면 피커만
+        // 세로로 길어진다(내부 스크롤 없음). 전체 해제는 리스트 위 마스터 체크박스로 통합.
         <div className="flex flex-wrap gap-1.5 items-center min-h-[24px]">
           {selectedOpts.map((o) => (
             <button
@@ -79,16 +96,22 @@ export function MultiPicker({
               </span>
             </button>
           ))}
-          <button
-            type="button"
-            className="bg-transparent border-0 text-muted text-xs cursor-pointer underline"
-            onClick={() => onChange("")}
-          >
-            전체 해제
-          </button>
         </div>
       ) : (
         <p className="text-muted m-0 text-xs flex items-center min-h-[24px]">{emptyHint}</p>
+      )}
+      {filtered.length > 0 && (
+        // 마스터 체크박스 — 리스트 항목과 같은 라벨 스타일. 대상 전부 선택 시 체크되고
+        // 라벨이 "전체 해제"로 바뀐다. 클릭 시 대상 전체 선택↔해제 토글.
+        <label className="flex flex-row items-center gap-2 py-[5px] px-1.5 self-start cursor-pointer text-ink text-[13px]">
+          <input
+            type="checkbox"
+            className="min-w-0 m-0 flex-none"
+            checked={allSelected}
+            onChange={toggleAll}
+          />
+          <span>{bulkLabel}</span>
+        </label>
       )}
       <ul className="list-none m-0 p-1 h-[200px] overflow-y-auto border border-line rounded-md bg-canvas">
         {filtered.map((o) => (
