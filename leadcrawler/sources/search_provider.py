@@ -138,7 +138,9 @@ class SerperProvider(_BaseProvider):
     # 크레딧 소진 latch — Serper 는 크레딧이 바닥나면 400 "Not enough credits" 를 돌려준다
     # (2026-07-27 라이브 실측·402 아님). 소진 후에도 KR 도메인해석 폴백 등이 miss 마다
     # 죽은 API 를 계속 때리던 낭비(호출+로그 스팸)를 첫 감지에서 차단한다.
-    # ponytail: 프로세스 수명 latch(인스턴스 속성) — 크레딧 충전 후 서버 재시작하면 복귀.
+    # ponytail: 인스턴스 수명 latch — 소스 객체(SearchSource·DomainResolver·AiDirectory)가
+    # 각자 provider 를 만들고 연속크롤은 라운드마다 전체 재생성하므로, 소진 재감지 호출은
+    # 라운드×소스(×워커)당 1회 남는다(miss 마다 때리던 기존 대비 충분). 충전 후 자연 복귀.
     _credits_exhausted = False
 
     def fetch_page(self, query: str, *, gl: str, lr: str, start: int) -> list[dict]:
@@ -184,10 +186,11 @@ class SerperProvider(_BaseProvider):
         if status != 400:
             return False
         try:
-            body = resp.text or ""
+            # str() 강제 + 판정 전체를 try 안에 — 비-httpx 페처가 text 로 bytes 등을 줘도
+            # 예외가 새지 않는다(오판 시 latch 안 함이 안전측, 호출부 계약 "에러=빈 페이지" 보존).
+            return "not enough credits" in str(resp.text or "").lower()
         except Exception:
-            body = ""
-        return "not enough credits" in body.lower()
+            return False
 
     def _budget_blocked(self) -> bool:
         """예산 가드 — 원장 있고 enforce 켜졌고 월 누계가 예산 이상이면 차단."""
