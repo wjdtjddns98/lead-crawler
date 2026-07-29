@@ -10,7 +10,19 @@ from __future__ import annotations
 
 import re
 
-from .models import ACCEPTED_EMAIL_ROLES, Contact, ContactType, EmailRole
+from collections.abc import Mapping
+
+from .models import (
+    ACCEPTED_EMAIL_ROLES,
+    Contact,
+    ContactType,
+    EmailRole,
+    ValidationStatus,
+)
+
+# 기업당 저장하는 이메일 상한(PO 확정 2026-07-29). 한 회사에서 수십 개(실측 최대 92개)가
+# 딸려 오면 검증 워크벤치에서 사람이 고르기만 어려워지고 DB·export 만 부푼다.
+MAX_EMAILS = 3
 
 # local-part 키워드 → role. 가장 구체적인 것부터 검사한다.
 # 짧은 ascii 키('ir'·'hr'·'pr')는 **토큰 완전일치**로만 매칭한다(아래 _matches 참조) —
@@ -78,6 +90,16 @@ def is_accepted(role: EmailRole) -> bool:
     return role in ACCEPTED_EMAIL_ROLES
 
 
+_KEPT_STATUSES = (ValidationStatus.VALID, ValidationStatus.RISKY)
+
+
+def _validation_tier(contact: Contact, status: ValidationStatus) -> int:
+    """0=IR 정상, 1=그 외 정상, 2=주의."""
+    if status is ValidationStatus.VALID:
+        return 0 if contact.role is EmailRole.IR else 1
+    return 2
+
+
 def accepted_emails(contacts: list[Contact]) -> list[Contact]:
     """채택 규칙에 맞는 이메일 후보 전부를 **우선순위 내림차순**으로 반환한다.
 
@@ -99,6 +121,26 @@ def accepted_emails(contacts: list[Contact]) -> list[Contact]:
     candidates.sort(key=lambda c: c.value)
     candidates.sort(key=lambda c: (1 if c.role is EmailRole.IR else 0, c.confidence), reverse=True)
     return candidates
+
+
+def cap_emails(
+    candidates: list[Contact],
+    statuses: Mapping[str, ValidationStatus],
+    *,
+    limit: int = MAX_EMAILS,
+) -> list[Contact]:
+    """검증등급 우선으로 재정렬하고 ``limit`` 개까지만 남긴다 (PO 확정 2026-07-29).
+
+    우선순위: **IR 정상 > 그 외 정상 > 주의**. ``INVALID``(무효)와 등급 미상은 제외한다 —
+    파이프라인은 후보 전건을 :meth:`EmailValidator.validate` 로 판정하므로(항상
+    valid/risky/invalid 중 하나) 등급 미상은 검증을 아예 안 돌린 경로뿐이다.
+
+    입력은 :func:`accepted_emails` 가 이미 (role·confidence·주소) 로 결정적 정렬한 목록을
+    전제한다. 여기서는 **안정정렬**로 등급 축만 덧씌우므로 동급 내 순서는 그대로 보존된다.
+    """
+    ranked = [c for c in candidates if statuses.get(c.value) in _KEPT_STATUSES]
+    ranked.sort(key=lambda c: _validation_tier(c, statuses[c.value]))
+    return ranked[:limit]
 
 
 def select_best_email(contacts: list[Contact]) -> Contact | None:

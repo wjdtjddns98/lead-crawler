@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings, get_settings
 from ..cost_ledger import CostLedger
-from ..emailrules import accepted_emails
+from ..emailrules import accepted_emails, cap_emails
 from ..enrich.enricher import Enricher
 from ..enrich.industry_classify import SupportsClassifier, build_classifier
 from ..logging import get_logger
@@ -171,6 +171,21 @@ def _build_lead(
         )
         for c in candidates
     }
+    # 검증등급 우선 재정렬 + 상한(IR정상 > 그외정상 > 주의, 무효 제외, 최대 MAX_EMAILS).
+    # 등급은 위 validate 결과라 여기서 처음 확정된다 → role 정렬(accepted_emails) 뒤에 온다.
+    provisional = email
+    candidates = cap_emails(candidates, {v: ev.status for v, ev in validations.items()})
+    email = candidates[0] if candidates else None
+    # 상한 밖 후보의 검증결과는 버린다(저장 대상이 아니므로 email_validations 도 동기화).
+    validations = {c.value: validations[c.value] for c in candidates}
+    # 재정렬로 선택 이메일이 바뀌었는데 얕게만 검증됐다면, 최종 선택분은 심층검증한다
+    # (선택 이메일은 SMTP/딜리버러빌리티까지 본다는 기존 계약 유지).
+    if (
+        email is not None
+        and not deep_all
+        and (provisional is None or email.value != provisional.value)
+    ):
+        validations[email.value] = email_validator.validate(email.value, dc.domain, deep=True)
     validation = (
         validations.get(email.value, EmailValidation()) if email else EmailValidation()
     )
