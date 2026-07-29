@@ -185,3 +185,110 @@ def test_should_cancel_midway_preserves_processed(monkeypatch) -> None:
     )
     assert len(leads) == 1
     assert leads[0].company.canonical_key == "dom:a.com"
+
+
+# --- 이메일 상한(MAX_EMAILS) 통합 경로 -------------------------------------
+
+
+class _RecordingValidator:
+    """호출 순서·deep 플래그를 기록하는 가짜 검증기(네트워크 없음)."""
+
+    def __init__(self, statuses: dict[str, ValidationStatus], settings: Settings) -> None:
+        self._statuses = statuses
+        self.settings = settings
+        self.calls: list[tuple[str, bool]] = []
+
+    def validate(self, email: str, domain: str | None = None, *, deep: bool = True):  # noqa: ARG002
+        from leadcrawler.models import EmailValidation
+
+        self.calls.append((email, deep))
+        return EmailValidation(status=self._statuses[email])
+
+
+class _StubEnricher:
+    """고정 후보를 돌려주는 가짜 enricher(_build_lead 계약 최소 구현)."""
+
+    last_home_html = ""
+    last_home_rendered_html = ""
+
+    def __init__(self, contacts: list) -> None:
+        self._contacts = contacts
+
+    def enrich(self, dc):  # noqa: ARG002
+        return self._contacts
+
+
+class _StubExistence:
+    def verify(self, *a, **kw):  # noqa: ARG002
+        from leadcrawler.verify.existence import ExistenceResult
+
+        return ExistenceResult(is_active=True, confidence=1.0, site_alive=True)
+
+
+class _StubClassifier:
+    def classify(self, *a, **kw):  # noqa: ARG002
+        raise AssertionError("홈페이지 텍스트가 없으면 분류기를 부르지 않아야 한다")
+
+
+def _mk_contacts(values: list[str]) -> list:
+    from leadcrawler.models import Contact, ContactType
+
+    return [Contact(type=ContactType.EMAIL, value=v, confidence=0.5) for v in values]
+
+
+def _run_build_lead(statuses: dict[str, ValidationStatus], *, deep_all: bool):
+    """_build_lead 를 가짜 컴포넌트로 1회 실행하고 (lead, validator) 반환."""
+    from leadcrawler.pipeline.run import _build_lead
+
+    settings = Settings(dry_run=False, validate_all_candidates=deep_all)
+    validator = _RecordingValidator(statuses, settings)
+    dc = DiscoveredCompany(
+        canonical_key="k1", name="X Ltd", country="KR", industry="건설", domain="x.com"
+    )
+    lead = _build_lead(
+        dc,
+        enricher=_StubEnricher(_mk_contacts(list(statuses))),
+        existence=_StubExistence(),
+        email_validator=validator,
+        classifier=_StubClassifier(),
+    )
+    return lead, validator
+
+
+def test_build_lead_caps_candidates_and_syncs_validations() -> None:
+    """후보가 상한(3)까지 줄고, email_validations 키가 저장 대상과 정확히 일치한다."""
+    statuses = {
+        "ir@x.com": ValidationStatus.VALID,
+        "info@x.com": ValidationStatus.VALID,
+        "sales@x.com": ValidationStatus.VALID,
+        "office@x.com": ValidationStatus.RISKY,
+        "admin@x.com": ValidationStatus.INVALID,
+    }
+    lead, _ = _run_build_lead(statuses, deep_all=True)
+
+    assert len(lead.email_candidates) == 3
+    assert lead.email is not None and lead.email.value == "ir@x.com"  # IR 정상 최우선
+    # 저장 대상(email_candidates)과 검증결과(email_validations)가 1:1 — stale 검증행 방지.
+    assert set(lead.email_validations) == {c.value for c in lead.email_candidates}
+    # INVALID 는 어디에도 남지 않는다.
+    assert "admin@x.com" not in lead.email_validations
+
+
+def test_build_lead_deep_all_skips_extra_revalidation() -> None:
+    """라이브 기본값(validate_all_candidates=True)에선 재검증 분기를 타지 않는다."""
+    statuses = {"info@x.com": ValidationStatus.VALID, "ir@x.com": ValidationStatus.VALID}
+    _, validator = _run_build_lead(statuses, deep_all=True)
+
+    assert all(deep for _, deep in validator.calls)  # 전건 deep
+    assert len(validator.calls) == len(statuses)  # 후보 수만큼, 추가 호출 없음
+
+
+def test_build_lead_revalidates_only_when_selection_changed() -> None:
+    """얕은 검증 모드에서 선택이 바뀌면 그 1건만 추가 심층검증한다(곱셈 아님)."""
+    # accepted_emails 는 IR 을 앞세우지만, 등급이 상위 축이라 최종 선택은 info(정상)로 바뀐다.
+    statuses = {"ir@x.com": ValidationStatus.RISKY, "info@x.com": ValidationStatus.VALID}
+    lead, validator = _run_build_lead(statuses, deep_all=False)
+
+    assert lead.email is not None and lead.email.value == "info@x.com"
+    deep_calls = [v for v, deep in validator.calls if deep]
+    assert deep_calls == ["ir@x.com", "info@x.com"]  # 잠정선택 1 + 최종선택 1

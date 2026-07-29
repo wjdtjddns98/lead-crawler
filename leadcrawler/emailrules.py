@@ -135,6 +135,11 @@ def cap_emails(
     파이프라인은 후보 전건을 :meth:`EmailValidator.validate` 로 판정하므로(항상
     valid/risky/invalid 중 하나) 등급 미상은 검증을 아예 안 돌린 경로뿐이다.
 
+    ⚠ 이 "등급 미상 제외"는 ``validate`` 가 ``UNKNOWN`` 을 절대 안 돌려준다는 현재 사실에
+    의존한다(``ValidationStatus.UNKNOWN`` 자체는 enum 에 있고 seed 경로가 쓴다). ``validate``
+    가 UNKNOWN 을 반환하도록 바뀌면 **여기서 전량 조용히 드롭**되므로 그때 이 함수도 같이
+    고쳐야 한다(UNKNOWN 을 tier 2 로 흡수하는 쪽이 안전).
+
     입력은 :func:`accepted_emails` 가 이미 (role·confidence·주소) 로 결정적 정렬한 목록을
     전제한다. 여기서는 **안정정렬**로 등급 축만 덧씌우므로 동급 내 순서는 그대로 보존된다.
     """

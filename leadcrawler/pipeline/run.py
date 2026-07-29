@@ -186,6 +186,13 @@ def _build_lead(
         and (provisional is None or email.value != provisional.value)
     ):
         validations[email.value] = email_validator.validate(email.value, dc.domain, deep=True)
+        # 심층검증은 등급을 **떨어뜨릴 수 있다**(SMTP 미배달·딜리버러빌리티 → INVALID).
+        # 그대로 두면 방금 '무효 제외'로 거른 계약이 깨져 INVALID 이메일이 선택으로 남는다
+        # → 상한·정렬을 한 번 더 적용한다. 재적용은 1회뿐이라 루프가 아니며, 새 선두가
+        # 얕은 등급이면 그대로 둔다(선택 안 된 후보와 같은 취급 — 기존 동작).
+        candidates = cap_emails(candidates, {v: ev.status for v, ev in validations.items()})
+        email = candidates[0] if candidates else None
+        validations = {c.value: validations[c.value] for c in candidates}
     validation = (
         validations.get(email.value, EmailValidation()) if email else EmailValidation()
     )
