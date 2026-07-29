@@ -249,8 +249,11 @@ def save_lead(session: Session, lead: CompanyLead, *, source: str = "") -> Compa
     company.site_alive = c.site_alive
     session.flush()  # company 행 확정(연락처 FK 용)
 
-    # 채택 연락처와 각자의 결정적 id 산정. 이메일은 **전체 후보**를 저장한다(사람이 검증
-    # 웹앱에서 최종 선택). email_candidates 가 비면 단일 email 로 폴백(하위호환).
+    # 채택 연락처와 각자의 결정적 id 산정. 이메일은 **채택 후보(최대 emailrules.MAX_EMAILS
+    # 건)** 를 저장한다(사람이 검증 웹앱에서 최종 선택) — 상한·우선순위는 파이프라인의
+    # cap_emails 가 이미 적용해 넘긴다. email_candidates 가 비면 단일 email 로 폴백(하위호환).
+    # 후보에 없는 기존 연락처는 아래 stale 삭제로 정리되므로, 상한 도입 전에 과다 저장된
+    # 기업도 재저장 시점에 상한까지 줄어든다.
     email_contacts = lead.email_candidates or ([lead.email] if lead.email else [])
     desired: list[tuple[Contact, str]] = [
         (ct, contact_id_for(cid, ct.type.value, ct.value))

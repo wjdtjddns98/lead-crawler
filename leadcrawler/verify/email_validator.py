@@ -44,8 +44,16 @@ def _format_ok(email: str) -> bool:
     return bool(email) and email.count("@") == 1 and "." in email.split("@", 1)[1]
 
 
-def _resolve_mx(domain: str, settings: Settings) -> tuple[bool, list[str]]:
+def _resolve_mx(domain: str, settings: Settings) -> tuple[bool | None, list[str]]:
     """MX 존재 여부 + 우선순위 정렬된 MX 호스트 목록을 반환한다.
+
+    첫 값은 **3상태**다: ``True``=MX 있음, ``False``=**확정 부재**(도메인 없음/MX 레코드
+    없음), ``None``=**조회 실패**(타임아웃·SERVFAIL 등 일시 장애 가능 — 판정 불가).
+
+    구분하는 이유: 예전엔 모든 예외를 ``False`` 로 뭉개 일시적 DNS 장애가 곧 INVALID 가
+    됐고, 이메일 상한(emailrules.cap_emails)이 INVALID 를 제외하면서 **일시 장애 한 번에
+    그 회사 이메일이 통째로 삭제**될 수 있었다(2026-07-29 리뷰 지적). 확정 부재만 무효로
+    본다.
 
     dry_run 이면 네트워크 없이 형식 휴리스틱(호스트 목록은 빈 채로).
     """
@@ -61,8 +69,11 @@ def _resolve_mx(domain: str, settings: Settings) -> tuple[bool, list[str]]:
             if str(r.exchange).strip(".")
         ]
         return (bool(hosts), hosts)
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        return (False, [])  # 확정: 도메인 부재 또는 MX 레코드 없음.
     except Exception:
-        return (False, [])
+        # 타임아웃·SERVFAIL·리졸버 오류 등 — 일시 장애일 수 있어 무효로 확정하지 않는다.
+        return (None, [])
 
 
 class SupportsSmtpProbe(Protocol):
@@ -125,7 +136,7 @@ class EmailValidator:
         # 도메인 MX 조회 메모이즈 — 같은 회사 도메인 후보 N개의 DNS MX 왕복을 1회로 축약.
         self._mx_cache: dict[str, tuple[bool, list[str]]] = {}
 
-    def _mx(self, email_domain: str) -> tuple[bool, list[str]]:
+    def _mx(self, email_domain: str) -> tuple[bool | None, list[str]]:
         """도메인 MX 조회를 인스턴스 범위로 메모이즈한다(같은 도메인 후보 N회→1회).
 
         같은 회사 도메인의 이메일 후보가 여럿이면 동일 MX 를 반복 조회하던 DNS 왕복을
@@ -136,7 +147,10 @@ class EmailValidator:
         cached = self._mx_cache.get(email_domain)
         if cached is None:
             cached = _resolve_mx(email_domain, self.settings)
-            self._mx_cache[email_domain] = cached
+            # 조회 실패(None)는 캐시하지 않는다 — 일시 장애를 런 내내 박제하면 그 도메인의
+            # 뒤 후보까지 전부 판정불가로 끌고 간다. 확정 결과(True/False)만 메모이즈.
+            if cached[0] is not None:
+                self._mx_cache[email_domain] = cached
         return cached
 
     def _prober(self) -> SupportsSmtpProbe:
@@ -212,7 +226,11 @@ class EmailValidator:
         mx, mx_hosts = self._mx(email_domain)
 
         # 1차: MX + 도메인 일치 기반 판정.
-        if not mx:
+        if mx is None:
+            # MX 조회 실패(일시 장애 가능) — 무효로 확정하지 않고 '주의'로 보존한다.
+            # cap_emails 가 INVALID 만 버리므로, 이 이메일은 살아남아 재검증 기회를 얻는다.
+            status = ValidationStatus.RISKY
+        elif not mx:
             status = ValidationStatus.INVALID
         elif domain_match or not company_domain:
             status = ValidationStatus.VALID
@@ -260,7 +278,7 @@ class EmailValidator:
         smtp_flag = {SMTP_DELIVERABLE: True, SMTP_UNDELIVERABLE: False}.get(smtp_result)
         return EmailValidation(
             status=status,
-            mx=mx,
+            mx=bool(mx),  # 조회 실패(None)는 "MX 확인 못 함" → 표시상 False(상태는 RISKY).
             domain_match=domain_match,
             smtp=smtp_flag,
             provider=provider,

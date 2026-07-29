@@ -368,3 +368,53 @@ def test_neverbounce_non_success_is_unknown() -> None:
 def test_neverbounce_error_is_unknown() -> None:
     f = _FakeFetcher(None, boom=True)
     assert NeverBounceChecker("k", fetcher=f).check("ir@acme.com") == UNKNOWN
+
+
+def test_mx_lookup_failure_is_risky_not_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MX **조회 실패**(타임아웃 등)는 '주의' — 무효로 확정하지 않는다.
+
+    일시적 DNS 장애가 INVALID 로 굳으면 이메일 상한(cap_emails)이 그 회사 이메일을
+    통째로 지운다(2026-07-29 리뷰 지적). 확정 부재(NXDOMAIN/NoAnswer)와 구분해야 한다.
+    """
+    monkeypatch.setattr(ev_mod, "_resolve_mx", lambda d, s: (None, []))
+    out = EmailValidator(Settings(dry_run=False)).validate("ir@x.com", "x.com")
+    assert out.status is ValidationStatus.RISKY
+    assert out.mx is False  # 표시상 '확인 못 함' → False, 상태는 무효 아님.
+
+
+def test_resolve_mx_distinguishes_definitive_absence_from_transient_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NXDOMAIN/NoAnswer = 확정 부재(False), 그 외 예외 = 조회 실패(None)."""
+    import dns.resolver
+
+    def _raise(exc):
+        def _f(domain, rdtype):  # noqa: ARG001
+            raise exc
+
+        return _f
+
+    settings = Settings(dry_run=False)
+    for exc, expected in (
+        (dns.resolver.NXDOMAIN(), False),
+        (dns.resolver.NoAnswer(), False),
+        (dns.resolver.Timeout(), None),
+        (RuntimeError("resolver blew up"), None),
+    ):
+        monkeypatch.setattr(dns.resolver, "resolve", _raise(exc))
+        assert ev_mod._resolve_mx("x.com", settings)[0] is expected
+
+
+def test_mx_lookup_failure_is_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    """조회 실패는 캐시하지 않는다 — 런 내내 박제되면 뒤 후보까지 끌고 간다."""
+    calls: list[str] = []
+
+    def _flaky(domain: str, settings) -> tuple[bool | None, list[str]]:  # noqa: ARG001
+        calls.append(domain)
+        return (None, []) if len(calls) == 1 else (True, ["mx1.test"])
+
+    monkeypatch.setattr(ev_mod, "_resolve_mx", _flaky)
+    v = EmailValidator(Settings(dry_run=False))
+    assert v.validate("a@x.com", "x.com").status is ValidationStatus.RISKY  # 1회차 실패.
+    assert v.validate("b@x.com", "x.com").status is ValidationStatus.VALID  # 재조회 성공.
+    assert calls == ["x.com", "x.com"]  # 캐시 안 됨 → 두 번 조회.
