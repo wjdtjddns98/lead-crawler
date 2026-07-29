@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from datetime import date
 from typing import Any
 
 from leadcrawler.config import Settings
@@ -993,12 +994,15 @@ def test_companies_house_sends_incorporation_slices_and_wraps() -> None:
     CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json), cursor_store=store).discover(
         Segment(country="영국", industry="건설")
     )
-    # slice 0 = pre-1980 캐치올(to 만), slice 1 = 1980(양쪽), 마지막 = 현재 연도(from 만).
-    assert "incorporated_from" not in seen[0]
-    assert seen[0]["incorporated_to"] == "1979-12-31"
-    assert seen[1]["incorporated_from"] == "1980-01-01"
-    assert seen[1]["incorporated_to"] == "1980-12-31"
-    assert "incorporated_to" not in seen[-1]
+    # 최신 연도부터: slice 0 = 현재 연도(from 만), slice 1 = 작년(양쪽),
+    # 마지막 = pre-1980 캐치올(to 만).
+    year = date.today().year
+    assert seen[0]["incorporated_from"] == f"{year}-01-01"
+    assert "incorporated_to" not in seen[0]
+    assert seen[1]["incorporated_from"] == f"{year - 1}-01-01"
+    assert seen[1]["incorporated_to"] == f"{year - 1}-12-31"
+    assert "incorporated_from" not in seen[-1]
+    assert seen[-1]["incorporated_to"] == "1979-12-31"
     # 전 슬라이스 소진 → 커서 0(전 사이클 재검증 재개).
     assert store.data[("companies_house", "영국/건설/unknown")] == 0
 
@@ -1006,7 +1010,7 @@ def test_companies_house_sends_incorporation_slices_and_wraps() -> None:
 def test_companies_house_cursor_encodes_slice_and_resumes() -> None:
     """커서 = slice_idx*10000 + start 인코딩 왕복 — 다음 런이 같은 슬라이스·위치 재개."""
     settings = Settings(dry_run=False, companies_house_api_key="k", discovery_max_per_source=1)
-    # slice 2(=1981년) start 300 에서 재개하도록 사전 커서 주입.
+    # slice 2(= 최신 연도부터 세어 재작년) start 300 에서 재개하도록 사전 커서 주입.
     store = FakeCursorStore({("companies_house", "영국/건설/unknown"): 2 * 10_000 + 300})
     seen: list[dict] = []
     page = {"items": [{"company_number": "1", "company_name": "A Ltd",
@@ -1019,9 +1023,10 @@ def test_companies_house_cursor_encodes_slice_and_resumes() -> None:
     out = CompaniesHouseSource(
         settings, fetcher=FakeFetcher(json=_json), cursor_store=store
     ).discover(Segment(country="영국", industry="건설"))
+    year = date.today().year
     assert seen[0]["start_index"] == 300
-    assert seen[0]["incorporated_from"] == "1981-01-01"
-    assert seen[0]["incorporated_to"] == "1981-12-31"
+    assert seen[0]["incorporated_from"] == f"{year - 2}-01-01"
+    assert seen[0]["incorporated_to"] == f"{year - 2}-12-31"
     assert len(out) == 1  # cap=1 즉시 충족.
     # 같은 슬라이스에서 페이지 단위 전진(300+1건).
     assert store.data[("companies_house", "영국/건설/unknown")] == 2 * 10_000 + 301
@@ -1041,12 +1046,13 @@ def test_companies_house_window_edge_hops_to_next_slice() -> None:
     CompaniesHouseSource(settings, fetcher=FakeFetcher(json=_json), cursor_store=store).discover(
         Segment(country="영국", industry="건설")
     )
-    # 첫 요청부터 slice 1(1980)로 홉(9950+100 > 10000).
-    assert seen[0]["incorporated_from"] == "1980-01-01" and seen[0]["start_index"] == 0
+    # 첫 요청부터 slice 1(= 작년)로 홉(9950+100 > 10000).
+    year = date.today().year
+    assert seen[0]["incorporated_from"] == f"{year - 1}-01-01" and seen[0]["start_index"] == 0
 
 
 def test_companies_house_legacy_cursor_reads_as_slice_zero() -> None:
-    """구커서 값(<10000)은 slice 0(pre-1980) 위치로 자연 해석 — 마이그레이션 없음."""
+    """구커서 값(<10000)은 slice 0(= 최신 연도) 위치로 자연 해석 — 마이그레이션 없음."""
     settings = Settings(dry_run=False, companies_house_api_key="k", discovery_max_per_source=5)
     store = FakeCursorStore({("companies_house", "영국/건설/unknown"): 500})
     seen: list[dict] = []
@@ -1059,7 +1065,8 @@ def test_companies_house_legacy_cursor_reads_as_slice_zero() -> None:
         Segment(country="영국", industry="건설")
     )
     assert seen[0]["start_index"] == 500
-    assert seen[0]["incorporated_to"] == "1979-12-31"  # slice 0.
+    assert seen[0]["incorporated_from"] == f"{date.today().year}-01-01"  # slice 0 = 최신 연도.
+    assert "incorporated_to" not in seen[0]
 
 
 def test_companies_house_no_key_is_noop() -> None:

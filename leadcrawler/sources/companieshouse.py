@@ -56,11 +56,21 @@ _SLICE_FIRST_YEAR = 1980
 
 
 def _inc_slices(today: date | None = None) -> list[tuple[str | None, str | None]]:
-    """설립연도 슬라이스(결정적 순서) — 슬라이스마다 독립 ES 10k 윈도가 열린다.
+    """설립연도 슬라이스(결정적 순서, **최신 연도부터**) — 슬라이스마다 독립 ES 10k 윈도.
 
     ``incorporated_from/to``(공식 파라미터)로 모집단을 연 단위로 분할해, 업종당 10k 를
     넘는 대형 모집단(GB 부동산 461k 실측)도 윈도 제한 없이 전수 접근한다. 구성:
-    pre-1980 캐치올 + 1980~현재 연 단위(최신 연도는 to 없음 — 신규 등록 상시 커버).
+    현재연도(to 없음 — 신규 등록 상시 커버) → 과거 연 단위 → pre-1980 캐치올.
+
+    순서가 최신→과거인 이유(2026-07-29 전환): 오래된 순서로는 회사 수가 희박한 1980년대
+    슬라이스를 먼저 훑느라 신규 발견이 사실상 0 이 됐다(GB/부동산 실측: 커서 slice 1
+    도달 후 시간당 신규 0, 반면 search·ai_directory 만 배출). 모집단은 최근 연도에
+    몰려 있고, 최근 설립일수록 사이트 생존(제약②) 가능성도 높다.
+
+    ponytail: 해가 바뀌면 새 연도가 **앞에** 끼어들어 저장된 slice_idx 가 한 칸씩
+    밀린다(1년에 한 번, 그 세그먼트가 한 해 어긋난 구간을 스캔) — dedup 이 self-heal
+    하므로 방치. 정확히 잡으려면 커서 키를 연도 문자열로 바꿔야 하는데 마이그레이션 비용이
+    이득보다 크다.
     ponytail: 한 슬라이스 안에서 10k 를 넘는 꼬리는 여전히 접근 불가(현행 '전체 10k' 대비
     대폭 개선) — 부족하면 분기/월 세분화로 업그레이드.
     """
@@ -68,7 +78,7 @@ def _inc_slices(today: date | None = None) -> list[tuple[str | None, str | None]
     slices: list[tuple[str | None, str | None]] = [(None, f"{_SLICE_FIRST_YEAR - 1}-12-31")]
     for y in range(_SLICE_FIRST_YEAR, year + 1):
         slices.append((f"{y}-01-01", f"{y}-12-31" if y < year else None))
-    return slices
+    return slices[::-1]
 
 
 class CompaniesHouseSource:
@@ -161,7 +171,7 @@ class CompaniesHouseSource:
         out: list[DiscoveredCompany] = []
         # 런 간 커서(딥백필): position = slice_idx*10000 + start_index 인코딩 — 단일 커서에
         # 설립연도 슬라이스 축을 추가한다(start<10000 불변 활용, 키·테이블 마이그레이션 0).
-        # 구커서 값(<10000)은 slice 0(pre-1980)으로 자연 해석되고 dedup 이 self-heal 한다.
+        # 구커서 값(<10000)은 slice 0(=최신 연도)으로 자연 해석되고 dedup 이 self-heal 한다.
         # _MAX_PAGES 캡(레이트리밋 600요청/5분 보호)은 유지 — 커서 영속으로 다음 런이
         # 이어받으므로 캡을 키울 필요 없이 런을 거듭하며 전 슬라이스를 소진한다.
         slices = _inc_slices()
