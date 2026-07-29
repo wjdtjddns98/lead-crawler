@@ -1187,3 +1187,29 @@ def test_kr_search_falls_back_to_global_without_naver_keys() -> None:
     src = SearchSource(s)
     kr = src._provider_for(Segment(country="KR", industry="반도체"))
     assert kr is not None and kr.name == "serper"
+
+
+def test_inc_slices_order_and_year_rollover_loses_no_coverage() -> None:
+    """슬라이스 순서(최신→과거)와 연도 롤오버 시 인덱스 시프트 성질을 고정한다.
+
+    벽시계에 의존하지 않게 `today` 를 주입한다. 롤오버로 저장 커서의 slice_idx 가 한 칸
+    밀리는 건 사실이나, 밀린 idx 가 가리키는 연도는 **이미 스캔한 과거 연도**라 커버리지
+    누락이 없다는 게 핵심(방치 판단의 근거).
+    """
+    from datetime import date
+
+    from leadcrawler.sources.companieshouse import _inc_slices
+
+    y2026 = _inc_slices(date(2026, 7, 29))
+    assert y2026[0] == ("2026-01-01", None)  # 최신 연도가 선두 + 오픈엔드(신규 등록 커버).
+    assert y2026[1] == ("2025-01-01", "2025-12-31")
+    assert y2026[-1] == (None, "1979-12-31")  # pre-1980 캐치올이 맨 뒤.
+
+    y2027 = _inc_slices(date(2027, 1, 1))
+    assert len(y2027) == len(y2026) + 1  # 새 연도가 앞에 끼어 길이 +1.
+    # 저장된 idx k 는 롤오버 후 "한 해 더 최신" 을 가리킨다 = 이미 스캔한 연도(누락 0).
+    assert y2027[2] == y2026[1]
+    # 작년이 된 슬라이스는 오픈엔드에서 **닫힌 구간**으로 바뀐다(그 해 등록분 전체를 덮으므로
+    # 커버리지 손실 없음). 그 아래는 통째로 한 칸 밀릴 뿐 순서·구성 동일.
+    assert y2027[1] == ("2026-01-01", "2026-12-31")
+    assert y2027[2:] == y2026[1:]
