@@ -225,8 +225,10 @@ def test_companies_house_continues_from_cursor_and_resets_on_exhaust() -> None:
 
     def _json(url: str, params: dict) -> Any:
         starts.append(params["start_index"])
-        if params.get("incorporated_to") != "1979-12-31":
-            return {"items": []}  # 모집단은 slice 0(pre-1980)에만 존재.
+        if "incorporated_to" in params:
+            # 모집단은 slice 0 에만 존재. 슬라이스는 최신 연도부터라 slice 0 = 현재연도이며,
+            # 현재연도만 to 가 없다(신규 등록 상시 커버) — 그걸로 slice 0 을 식별한다.
+            return {"items": []}
         return {"items": pages[params["start_index"]]}
 
     store = DictStore()
