@@ -50,6 +50,12 @@ export function EmailBadge({ status }: { status: string | null }) {
 // 선택 상태(choice)와 반영(onPick)은 호출부 몫, name 은 행/모달별 라디오 그룹 구분용.
 // removed(소문자 매칭)·onToggleRemove 를 주면 후보별 "이 주소 없음"(실존하지 않는 이메일
 // 삭제, BE PR#314) 토글을 보인다 — 없으면 삭제 UI 를 숨긴다(하위 화면 하위호환).
+// 표시 상한(maxShown, 기본 3): BE PR#327 로 신규 수집분은 회사당 최대 3개(등급순)로 잘려
+// 내려오지만, 재크롤 전 구식 데이터는 여전히 수십 개가 올 수 있다. BE 후보 순서가 best-first
+// (IR·상위신뢰도 우선)라 앞에서부터 3개만 보여도 좋은 주소가 노출된다. 상한 밖이면 "외 N개"로
+// 알린다(무언 절단 방지).
+const MAX_CANDIDATES_SHOWN = 3;
+
 export function CandidateRadios({
   candidates,
   name,
@@ -58,6 +64,7 @@ export function CandidateRadios({
   onPick,
   removed,
   onToggleRemove,
+  maxShown = MAX_CANDIDATES_SHOWN,
 }: {
   candidates: CandidateInfo[];
   name: string;
@@ -66,12 +73,26 @@ export function CandidateRadios({
   onPick: (value: string) => void;
   removed?: string[];
   onToggleRemove?: (value: string) => void;
+  maxShown?: number;
 }) {
   // 삭제 표시는 대소문자 무시로 대조(BE 매칭과 동일) — 저장값 원형과 표기가 달라도 일치.
   const removedLc = new Set((removed ?? []).map((e) => e.toLowerCase()));
+  // 상위 maxShown 개만 표시. 단, 현재 선택(choice)이 상한 밖이면 그 라디오가 사라지지 않게
+  // 표시 목록에 끼워 넣는다(총 개수는 maxShown 유지) — 구식 데이터에서 사람이 하위 후보를
+  // 골라둔 경우의 "선택 라디오 없음" 혼란 방지.
+  let shown = candidates.slice(0, maxShown);
+  let choiceInserted = false; // 선택 보정으로 상한 밖 후보를 끼워 넣었는지(배너 문구 정확도용).
+  if (choice && !shown.some((c) => c.value === choice)) {
+    const sel = candidates.find((c) => c.value === choice);
+    if (sel) {
+      shown = [...shown.slice(0, Math.max(0, maxShown - 1)), sel];
+      choiceInserted = true;
+    }
+  }
+  const hiddenCount = candidates.length - shown.length;
   return (
     <>
-      {candidates.map((c) => {
+      {shown.map((c) => {
         const isRemoved = removedLc.has(c.value.toLowerCase());
         return (
           <label
@@ -121,6 +142,12 @@ export function CandidateRadios({
           </label>
         );
       })}
+      {hiddenCount > 0 && (
+        <span className="text-muted text-[11px]">
+          {choiceInserted ? "선택 포함 " : "상위 "}
+          {shown.length}개 표시 · 외 {hiddenCount}개(재크롤 시 3개로 정리)
+        </span>
+      )}
     </>
   );
 }
