@@ -304,3 +304,47 @@ def test_resolve_batch_intra_batch_domain_collision_promotes_once(tmp_path, monk
         assert session.get(DiscoveredCompanyRow, "name:kr:회사A").domain == "shared.example.com"
         assert session.get(DiscoveredCompanyRow, "name:kr:회사B").domain == "shared.example.com"
         assert session.query(CompanyRow).count() == 1
+
+
+def test_resolve_batch_advances_past_unresolvable_rows(tmp_path, monkeypatch) -> None:
+    """해석 실패 행이 대기열 선두를 막지 않는다 — 배치마다 다음 구간을 잡아야 한다.
+
+    회귀 가드(2026-07-31 실사고): 실패 행은 아무것도 persist 되지 않아 last_crawled_at 이
+    그대로였고, 정렬이 그 컬럼이라 **같은 200건만 무한 재시도**됐다(1,000건 처리에 대기열
+    6 감소). 시도 시각을 찍어 뒤로 보내는 수정의 가드다.
+    """
+    _patch(monkeypatch)
+    s = Settings(database_url=f"sqlite:///{tmp_path}/adv.db", dry_run=False, resolve_domains=True)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    keys = [f"name:kr:무연고{i}" for i in range(3)]  # 전부 해석 실패(_FakeResolver).
+    with sm() as session:
+        for k in keys:
+            session.add(
+                DiscoveredCompanyRow(
+                    canonical_key=k, name=k.split(":")[-1], country="KR",
+                    industry="화학·석유화학", source="nps",
+                )
+            )
+        session.commit()
+
+    seen: list[str] = []
+    original = fill_mod._dc_from_row
+
+    def _spy(r):
+        dc = original(r)
+        seen.append(dc.canonical_key)
+        return dc
+
+    monkeypatch.setattr(fill_mod, "_dc_from_row", _spy)
+
+    # limit=1 로 3번 — 매번 다른 행을 잡아야 3개 전부 훑는다(구코드는 같은 행 3번).
+    for _ in range(3):
+        processed, resolved, promoted = fill_mod.resolve_batch(s, sm, limit=1, workers=1)
+        assert (processed, resolved, promoted) == (1, 0, 0)  # 해석은 계속 실패.
+
+    assert sorted(seen) == sorted(keys), f"같은 행을 반복 처리함: {seen}"
+    # 실패해도 도메인은 기록되지 않는다 — 한 바퀴 뒤 재시도 기회는 유지.
+    with sm() as session:
+        for k in keys:
+            assert not (session.get(DiscoveredCompanyRow, k).domain or "")
