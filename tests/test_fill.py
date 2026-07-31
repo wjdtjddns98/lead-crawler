@@ -67,3 +67,94 @@ def test_count_targets_country_scope(tmp_path) -> None:
     assert count_targets(sm) == 2  # 무스코프=전세계(현행).
     assert count_targets(sm, ["US"]) == 1  # KR('대한민국' 표기) 제외.
     assert count_targets(sm, ["KR"]) == 1  # 'KR' 선택이 '대한민국' 표기도 잡는다(별칭 확장).
+
+
+def test_fill_batch_advances_past_emailless_rows(tmp_path, monkeypatch) -> None:
+    """이메일을 못 찾은 회사가 대기열 선두를 막지 않는다 — 배치마다 다음 구간을 잡아야 한다.
+
+    회귀 가드(2026-07-31 실사고): 대상은 '이메일 없는 회사'라 못 찾으면 대상에서 안 빠지고,
+    구 정렬 `order by co.id` 는 매번 같은 앞머리를 돌려줬다(800건 처리에 대기열 9 감소 —
+    찾은 이메일 수와 정확히 일치). 처리하면 last_crawled_at 이 밀려 뒤로 가야 한다.
+    """
+    from leadcrawler.pipeline import fill as fill_mod
+    from leadcrawler.schema import CompanyRow, DiscoveredCompanyRow
+    from leadcrawler.storage.db import get_sessionmaker, init_db
+    from leadcrawler.storage.repository import company_id_for
+
+    s = Settings(database_url=f"sqlite:///{tmp_path}/adv.db", dry_run=False)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    keys = [f"dom:kr:x{i}.co.kr" for i in range(3)]
+    with sm() as session:
+        for k in keys:
+            session.add(DiscoveredCompanyRow(
+                canonical_key=k, name=k, country="KR", industry="화학·석유화학",
+                source="nps", domain=k.split(":")[-1],
+            ))
+        session.commit()  # FK 순서 — 발견행 먼저.
+        for k in keys:
+            # id 는 save_lead 와 같은 규칙으로 — 임의값이면 재저장이 UNIQUE 충돌로
+            # 롤백돼(persist.skip.conflict) last_crawled_at 갱신까지 날아간다.
+            session.add(CompanyRow(
+                id=company_id_for(k), canonical_key=k, name=k, country="KR",
+                industry="화학·석유화학", site_alive=True,
+            ))
+        session.commit()
+
+    # enrich 는 이메일을 못 찾는다(대상에서 안 빠지는 상황 재현) — 네트워크 0.
+    class _NoEmailEnricher:
+        def __init__(self, settings, *, cost_ledger=None, **_kw):
+            self.last_home_html = None
+            self.last_home_rendered_html = None
+
+        def enrich(self, dc):
+            return []
+
+        def close(self):
+            pass
+
+    class _Alive:
+        def __init__(self, settings, *, registry_checker=None, **_kw):
+            pass
+
+        def verify(self, domain, **_kw):
+            from leadcrawler.verify.existence import ExistenceResult
+
+            return ExistenceResult(is_active=True, site_alive=True, confidence=0.9)
+
+        def close(self):
+            pass
+
+    class _Val:
+        def __init__(self, settings, *, cost_ledger=None, **_kw):
+            self.settings = settings
+
+        def validate(self, email, company_domain=None, *, deep=True):
+            from leadcrawler.models import EmailValidation
+
+            return EmailValidation()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(fill_mod, "Enricher", _NoEmailEnricher)
+    monkeypatch.setattr(fill_mod, "ExistenceVerifier", _Alive)
+    monkeypatch.setattr(fill_mod, "EmailValidator", _Val)
+    monkeypatch.setattr(fill_mod, "build_classifier", lambda settings, **kw: None)
+    monkeypatch.setattr(fill_mod, "build_registry_checker", lambda settings, **kw: None)
+
+    seen: list[str] = []
+    original = fill_mod._dc_from_row
+
+    def _spy(r):
+        dc = original(r)
+        seen.append(dc.canonical_key)
+        return dc
+
+    monkeypatch.setattr(fill_mod, "_dc_from_row", _spy)
+
+    for _ in range(3):  # limit=1 로 3번 — 매번 다른 회사를 잡아야 한다.
+        processed, emails = fill_mod.fill_batch(s, sm, limit=1, workers=1)
+        assert (processed, emails) == (1, 0)  # 이메일은 계속 0.
+
+    assert sorted(seen) == sorted(keys), f"같은 회사를 반복 처리함: {seen}"

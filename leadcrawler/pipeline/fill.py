@@ -13,6 +13,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import sessionmaker
@@ -51,7 +52,11 @@ _TARGET_SQL = """
       and not exists (
           select 1 from contact ct where ct.company_id = co.id and ct.type = 'email'
       ){scope}
-    order by co.id
+    -- 오래 안 건드린 것부터(라운드로빈). 처리하면 save_lead→save_discovered 가
+    -- last_crawled_at 을 현재시각으로 밀어 **대기열 뒤로 보내므로** 다음 배치가 다음
+    -- 구간을 잡는다. 구 `order by co.id` 는 이메일을 못 찾은 회사가 대상에서 안 빠져
+    -- 앞머리 200건만 무한 반복했다(2026-07-31 실측: 800건 처리에 대기열 9 감소).
+    order by d.last_crawled_at asc, co.id
     limit :limit
     """
 _COUNT_SQL = """
@@ -175,7 +180,7 @@ _RESOLVE_TARGET_SQL = """
     left join company co on co.canonical_key = d.canonical_key
     where coalesce(d.domain, '') = '' and co.id is null
       {scope}
-    order by d.last_crawled_at desc
+    order by d.last_crawled_at asc, d.canonical_key
     limit :limit
     """
 _RESOLVE_COUNT_SQL = """
@@ -280,9 +285,11 @@ def resolve_batch(
     with sm() as ws:
         seen_domains = load_seen_domains(ws)  # 배치 시작 스냅샷 — 이 배치 내 중복도 아래서 누적.
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            missed: list[str] = []  # 해석 실패 — 시도 시각만 남겨 대기열 뒤로 보낸다.
             for dc, found, lead in pool.map(_work, targets):
                 processed += 1
                 if not found:
+                    missed.append(dc.canonical_key)
                     continue
                 if backfill_domain(ws, dc.canonical_key, found):
                     resolved += 1
@@ -300,6 +307,19 @@ def resolve_batch(
                     _persist_lead(ws, dc, lead)
                     if lead.company.is_active:
                         promoted += 1
+            if missed:
+                # 해석 실패 행은 아무것도 persist 되지 않아 last_crawled_at 이 그대로다 →
+                # 정렬(asc)에서 계속 선두라 **같은 200건만 무한 재시도**된다(2026-07-31 실측:
+                # 1,000건 처리에 대기열 6 감소). 시도 시각만 찍어 뒤로 보내면 다음 배치가
+                # 다음 구간을 잡는다. 도메인은 안 건드리므로 한 바퀴 뒤 재시도는 그대로 유지.
+                ws.execute(
+                    text(
+                        "update discovered_company set last_crawled_at = :now"
+                        " where canonical_key in :keys"
+                    ).bindparams(bindparam("keys", expanding=True)),
+                    {"now": datetime.now(timezone.utc), "keys": missed},
+                )
+                ws.commit()
 
     for obj in created:
         close = getattr(obj, "close", None)
