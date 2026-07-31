@@ -48,17 +48,18 @@ _COUNT_SQL = text(
     """
 )
 
-# id 커서로 전진한다. "대상에서 빠지는가"에 기대면 안 된다 — 죽은 사이트는 제약②로
-# company 가 안 생겨 co.id is null 을 계속 만족하므로, 같은 배치가 영원히 재선택된다.
+# canonical_key 커서로 전진한다. "대상에서 빠지는가"에 기대면 안 된다 — 죽은 사이트는
+# 제약②로 company 가 안 생겨 co.id is null 을 계속 만족하므로, 같은 배치가 영원히 재선택된다.
+# discovered_company 의 PK 는 canonical_key 다(id 컬럼 없음 — 2026-07-31 실사고).
 _TARGET_SQL = text(
     """
-    select d.id, d.canonical_key, d.name, d.country, d.industry, d.listed, d.domain,
+    select d.canonical_key, d.name, d.country, d.industry, d.listed, d.domain,
            d.registry, d.registry_id, d.source, d.segment, d.reg_no, d.region,
            d.ticker, d.phone, d.ir_url, d.name_eng, d.address
     from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
-    where co.id is null and coalesce(d.domain, '') <> '' and d.id > :after
-    order by d.id
+    where co.id is null and coalesce(d.domain, '') <> '' and d.canonical_key > :after
+    order by d.canonical_key
     limit :limit
     """
 )
@@ -116,7 +117,7 @@ def main() -> int:
             return dc, None
 
     done = promoted = emails = 0
-    after = 0  # id 커서 — 재실행 시 0 부터 다시 훑되 이미 승격된 행은 쿼리에서 빠진다.
+    after = ""  # 커서 — 재실행 시 처음부터 훑되 이미 승격된 행은 쿼리에서 빠진다.
     t0 = time.monotonic()
     try:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -125,7 +126,7 @@ def main() -> int:
                     rows = rd.execute(_TARGET_SQL, {"limit": batch, "after": after}).all()
                 if not rows:
                     break
-                after = rows[-1].id  # 다음 배치는 이 id 뒤부터(죽은 사이트에 고착 방지).
+                after = rows[-1].canonical_key  # 다음 배치는 이 키 뒤부터(고착 방지).
                 targets = [_dc_from_row(r) for r in rows]
                 with sm() as ws:
                     for dc, lead in pool.map(_work, targets):
