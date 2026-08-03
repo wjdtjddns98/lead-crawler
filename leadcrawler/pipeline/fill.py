@@ -32,7 +32,7 @@ from ..storage.repository import backfill_domain, load_seen_domains
 from ..verify.email_validator import EmailValidator
 from ..verify.existence import ExistenceVerifier
 from ..verify.registry_active import build_registry_checker
-from .run import _build_lead, _persist_lead
+from .run import _build_lead, _close_in_workers, _persist_lead
 
 log = get_logger("pipeline.fill")
 
@@ -83,6 +83,16 @@ def _scoped(sql_tpl: str, countries: Iterable[str] | None):
         bindparam("country_scope", expanding=True)
     )
     return stmt, {"country_scope": sorted(match)}
+
+
+def _close_own(tl: threading.local) -> None:
+    """현재 스레드의 스레드로컬 컴포넌트(enr/exi/val)를 닫는다 — 워커 스레드에서 호출."""
+    for name in ("enr", "exi", "val"):
+        obj = getattr(tl, name, None)
+        if obj is not None:
+            close = getattr(obj, "close", None)
+            if callable(close):
+                close()
 
 
 def _dc_from_row(r) -> DiscoveredCompany:  # noqa: ANN001 (SQLAlchemy Row)
@@ -156,6 +166,9 @@ def fill_batch(
                     _persist_lead(ws, dc, lead)
                     if lead.email is not None:
                         emails += 1
+            # Playwright 보유 컴포넌트는 만든 워커 스레드만 닫을 수 있다(메인스레드 close 는
+            # greenlet.error 로 조용히 no-op → 배치마다 브라우저 누수 = 2026-07-31 OOM 뿌리).
+            _close_in_workers(pool, lambda: _close_own(tl))
 
     for obj in created:
         close = getattr(obj, "close", None)
@@ -320,6 +333,8 @@ def resolve_batch(
                     {"now": datetime.now(timezone.utc), "keys": missed},
                 )
                 ws.commit()
+            # fill_batch 와 동일 — Playwright 보유 컴포넌트는 워커 스레드 자신이 닫는다.
+            _close_in_workers(pool, lambda: _close_own(tl))
 
     for obj in created:
         close = getattr(obj, "close", None)

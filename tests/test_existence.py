@@ -472,6 +472,7 @@ def test_render_reuses_browser_across_calls() -> None:
     page = _FakePage()
     browser = _FakeBrowser(page)
     r._browser = browser  # 기동 우회(_ensure True) — 재사용 검증.
+    r._context = browser  # 컨텍스트 재사용 구조(new_page 는 컨텍스트 소관) — 페이크 겸용.
     assert r.render("a.com") == "<html>rendered</html>"
     assert r.render("b.com") == "<html>rendered</html>"
     assert browser.new_page_calls == 2  # 페이지는 매 호출 생성
@@ -485,7 +486,7 @@ def test_render_falls_back_https_to_http() -> None:
 
     r = PlaywrightRender()
     page = _FakePage(fail_schemes=("https",))
-    r._browser = _FakeBrowser(page)
+    r._browser = r._context = _FakeBrowser(page)  # 컨텍스트 재사용 구조 — 페이크 겸용.
     assert r.render("a.com") == "<html>rendered</html>"
     assert page.gotos == ["https://a.com", "http://a.com"]  # https 실패→http 폴백
     assert page.closed is True  # 페이지 정리(finally)
