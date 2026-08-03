@@ -346,7 +346,7 @@ class PlaywrightRender:
 
     def _ensure(self) -> bool:
         """브라우저를 1회 기동(재사용). 미설치/실패면 False(이후 비활성)."""
-        if self._browser is not None:
+        if self._context is not None:  # 완전 기동 기준 — 부분실패 상태를 살아있다고 오판 금지.
             return True
         if self._unavailable:
             return False
@@ -364,6 +364,7 @@ class PlaywrightRender:
             return True
         except Exception as exc:  # 미설치(ImportError)·브라우저 미설치·기동실패 → graceful.
             log.info("existence.render.unavailable", err=str(exc))
+            self.close()  # launch 후 실패(new_context 등)의 부분 상태 정리 — 브라우저 누수 방지.
             self._unavailable = True
             return False
 

@@ -8,6 +8,8 @@ rem        scripts\windows\run-backfill-loop.bat C
 setlocal
 cd /d "%~dp0..\.."
 set PYTHONUTF8=1
+rem 리다이렉트 대상 폴더가 없으면 cmd 가 python 실행 자체를 건너뛴다(조용한 무한 no-op).
+if not exist "logs" mkdir "logs"
 
 if /i "%1"=="A" (
   set "ARGS=fill-emails --loop --max-batches 20 --workers 2"
@@ -24,5 +26,7 @@ if /i "%1"=="A" (
 echo [%date% %time%] runner: (re)start %1 >> %LOG%
 .venv\Scripts\python.exe -m leadcrawler.cli %ARGS% >> %LOG% 2>&1
 echo [%date% %time%] runner: exited %errorlevel% — 60s 후 재기동 >> %LOG%
-timeout /t 60 /nobreak >nul
+rem timeout /t 는 stdin 리다이렉트(Start-Process·스케줄러)면 즉시 반환(errorlevel 125 실측)
+rem → 백오프가 증발해 타이트 루프가 된다. ping 은 stdin 무관하게 60초를 보장한다.
+ping -n 61 127.0.0.1 >nul
 goto loop

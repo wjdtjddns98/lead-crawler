@@ -95,7 +95,7 @@ def fill_emails(
     interval: float = typer.Option(30.0, help="--loop: 대상 부족/소진 시 폴링 대기(초)"),
     min_queue: int = typer.Option(20, help="--loop: 대상이 이 수 이상 쌓이면 배치 처리(그 전엔 대기)"),
     max_batches: int = typer.Option(
-        0, help="--loop: 이 배치 수 처리 후 정상종료(0=무제한) — 러너 재기동용 메모리 리셋"
+        0, min=0, help="--loop: 이 배치 수 처리 후 정상종료(0=무제한) — 러너 재기동용 메모리 리셋"
     ),
 ) -> None:
     """큐의 '실존·무이메일' 회사에 이메일을 배치 병렬로 채운다(발견 producer 의 consumer).
@@ -147,7 +147,7 @@ def backfill_resolve_domains(
     interval: float = typer.Option(60.0, help="--loop: 대상 부족/소진 시 폴링 대기(초)"),
     min_queue: int = typer.Option(20, help="--loop: 대상이 이 수 이상 쌓이면 배치 처리(그 전엔 대기)"),
     max_batches: int = typer.Option(
-        0, help="--loop: 이 배치 수 처리 후 정상종료(0=무제한) — 러너 재기동용 메모리 리셋"
+        0, min=0, help="--loop: 이 배치 수 처리 후 정상종료(0=무제한) — 러너 재기동용 메모리 리셋"
     ),
 ) -> None:
     """도메인 없이 발견돼 정체된 회사(전세계, GLEIF·NPS 등)에 도메인 해석부터 다시

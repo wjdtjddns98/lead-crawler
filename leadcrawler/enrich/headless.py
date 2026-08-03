@@ -22,14 +22,28 @@ log = get_logger("enrich.headless")
 _BLOCK_RESOURCE_TYPES = ("image", "media", "font")
 
 
+def _route_filter(route) -> None:  # noqa: ANN001 (Playwright Route)
+    """차단 대상이면 abort, 아니면 continue — 예외는 삼킨다(단위테스트 대상).
+
+    핸들러가 예외를 흘리면 Playwright 는 해당 요청을 계속도 중단도 안 해 goto 타임아웃까지
+    스톨한다(라우트가 우리 page.close() 와 경합하는 케이스가 실재 — 리뷰 MED-2).
+    """
+    try:
+        if route.request.resource_type in _BLOCK_RESOURCE_TYPES:
+            route.abort()
+        else:
+            route.continue_()
+    except Exception:  # 경합 시 요청은 어차피 버려짐 — 무시.
+        pass
+
+
 def block_heavy_resources(context) -> None:  # noqa: ANN001 (Playwright BrowserContext)
     """컨텍스트에 이미지·미디어·폰트 요청 차단 라우트를 건다(existence 프로브와 공유)."""
-    context.route(
-        "**/*",
-        lambda route: route.abort()
-        if route.request.resource_type in _BLOCK_RESOURCE_TYPES
-        else route.continue_(),
-    )
+    context.route("**/*", _route_filter)
+
+
+# Playwright 사망 메시지 변형들 — casefold 비교("Playwright connection closed" 는 소문자 c).
+_DEAD_MARKERS = ("has been closed", "connection closed", "target closed", "socket closed")
 
 
 def browser_dead(exc: Exception) -> bool:
@@ -38,8 +52,8 @@ def browser_dead(exc: Exception) -> bool:
     죽은 브라우저를 리셋하지 않으면 이후 모든 렌더가 즉시 실패로 헛돌고, 좀비
     드라이버/Chromium 이 배치마다 누적된다(2026-07-31 백필 5.5GB OOM 의 뿌리).
     """
-    msg = str(exc)
-    return "has been closed" in msg or "Connection closed" in msg
+    msg = str(exc).casefold()
+    return any(marker in msg for marker in _DEAD_MARKERS)
 
 
 class SupportsRender(Protocol):
@@ -66,7 +80,7 @@ class PlaywrightRenderer:
 
     def _ensure(self) -> bool:
         """브라우저를 1회 기동(재사용). 미설치/실패면 False(이후 비활성)."""
-        if self._browser is not None:
+        if self._context is not None:  # 완전 기동 기준 — 부분실패 상태를 살아있다고 오판 금지.
             return True
         if self._unavailable:
             return False
@@ -85,6 +99,7 @@ class PlaywrightRenderer:
             return True
         except Exception as exc:  # 미설치(ImportError)·브라우저 미설치·기동실패.
             log.info("headless.unavailable", err=str(exc))
+            self.close()  # launch 후 실패(new_context 등)의 부분 상태 정리 — 브라우저 누수 방지.
             self._unavailable = True
             return False
 
