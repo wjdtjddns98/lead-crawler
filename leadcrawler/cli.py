@@ -94,6 +94,9 @@ def fill_emails(
     workers: int = typer.Option(6, help="enrich 병렬(헤드리스 경합 방지 위해 발견보다 낮게)"),
     interval: float = typer.Option(30.0, help="--loop: 대상 부족/소진 시 폴링 대기(초)"),
     min_queue: int = typer.Option(20, help="--loop: 대상이 이 수 이상 쌓이면 배치 처리(그 전엔 대기)"),
+    max_batches: int = typer.Option(
+        0, help="--loop: 이 배치 수 처리 후 정상종료(0=무제한) — 러너 재기동용 메모리 리셋"
+    ),
 ) -> None:
     """큐의 '실존·무이메일' 회사에 이메일을 배치 병렬로 채운다(발견 producer 의 consumer).
 
@@ -119,6 +122,7 @@ def fill_emails(
         return
 
     typer.echo(f"[fill] 상시 consumer 시작 (batch={batch} workers={workers} min_queue={min_queue})")
+    batches = 0
     while True:  # 취소 = Ctrl-C / 프로세스 종료.
         pending = count_targets(sm)
         if pending < min_queue:  # 임계 미만 → 더 쌓일 때까지 대기(배치 효율).
@@ -126,6 +130,11 @@ def fill_emails(
             continue
         processed, emails = fill_batch(settings, sm, limit=batch, workers=workers)
         typer.echo(f"[fill] 배치 처리 {processed}, 신규이메일 {emails}, 대기 {pending}")
+        batches += 1
+        # 장기구동 시 메모리 누적 대비 — 러너(bat)가 재기동해 리셋한다(멱등이라 이어받음).
+        if max_batches and batches >= max_batches:
+            typer.echo(f"[fill] max_batches={max_batches} 도달 — 정상종료(러너 재기동 대상)")
+            return
         if processed == 0:  # 대상 있었으나 다 실패/이탈 → 폭주 방지 대기.
             time.sleep(interval)
 
@@ -137,6 +146,9 @@ def backfill_resolve_domains(
     workers: int = typer.Option(4, help="해석+enrich 병렬(검색 API 레이트 고려해 보수적)"),
     interval: float = typer.Option(60.0, help="--loop: 대상 부족/소진 시 폴링 대기(초)"),
     min_queue: int = typer.Option(20, help="--loop: 대상이 이 수 이상 쌓이면 배치 처리(그 전엔 대기)"),
+    max_batches: int = typer.Option(
+        0, help="--loop: 이 배치 수 처리 후 정상종료(0=무제한) — 러너 재기동용 메모리 리셋"
+    ),
 ) -> None:
     """도메인 없이 발견돼 정체된 회사(전세계, GLEIF·NPS 등)에 도메인 해석부터 다시
     돌려 승격을 시도한다.
@@ -167,6 +179,7 @@ def backfill_resolve_domains(
         return
 
     typer.echo(f"[resolve] 상시 consumer 시작 (batch={batch} workers={workers} min_queue={min_queue})")
+    batches = 0
     while True:  # 취소 = Ctrl-C / 프로세스 종료.
         pending = count_resolve_targets(sm)
         if pending < min_queue:
@@ -174,6 +187,11 @@ def backfill_resolve_domains(
             continue
         processed, resolved, promoted = resolve_batch(settings, sm, limit=batch, workers=workers)
         typer.echo(f"[resolve] 배치 처리 {processed}, 해석 {resolved}, 승격 {promoted}, 대기 {pending}")
+        batches += 1
+        # 장기구동 시 메모리 누적 대비 — 러너(bat)가 재기동해 리셋한다(멱등이라 이어받음).
+        if max_batches and batches >= max_batches:
+            typer.echo(f"[resolve] max_batches={max_batches} 도달 — 정상종료(러너 재기동 대상)")
+            return
         if processed == 0 or resolved == 0:  # 소진/무진전 → 폭주 방지 대기.
             time.sleep(interval)
 

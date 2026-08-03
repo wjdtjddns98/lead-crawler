@@ -17,6 +17,30 @@ from ..logging import get_logger
 
 log = get_logger("enrich.headless")
 
+# 렌더에 불필요한 리소스 타입 — 이메일/폼 추출은 DOM 만 필요해 차단한다(렌더러 메모리·
+# 대역폭 절감 + domcontentloaded 도달 단축). 2026-07-31 백필 OOM 재발 방지 경량화.
+_BLOCK_RESOURCE_TYPES = ("image", "media", "font")
+
+
+def block_heavy_resources(context) -> None:  # noqa: ANN001 (Playwright BrowserContext)
+    """컨텍스트에 이미지·미디어·폰트 요청 차단 라우트를 건다(existence 프로브와 공유)."""
+    context.route(
+        "**/*",
+        lambda route: route.abort()
+        if route.request.resource_type in _BLOCK_RESOURCE_TYPES
+        else route.continue_(),
+    )
+
+
+def browser_dead(exc: Exception) -> bool:
+    """브라우저/드라이버 자체가 죽어 난 예외인지 판별한다(리셋 트리거 공용 판정).
+
+    죽은 브라우저를 리셋하지 않으면 이후 모든 렌더가 즉시 실패로 헛돌고, 좀비
+    드라이버/Chromium 이 배치마다 누적된다(2026-07-31 백필 5.5GB OOM 의 뿌리).
+    """
+    msg = str(exc)
+    return "has been closed" in msg or "Connection closed" in msg
+
 
 class SupportsRender(Protocol):
     """헤드리스 렌더러 인터페이스(테스트 더블이 구현)."""
@@ -57,6 +81,7 @@ class PlaywrightRenderer:
             # 자체서명·호스트불일치 인증서 사이트(KR 영세기업 다수)도 렌더 — 공개 페이지만
             # 읽고 시크릿을 안 보내므로 안전. ignore 안 하면 goto 가 ERR_CERT 로 죽어 이메일 유실.
             self._context = self._browser.new_context(ignore_https_errors=True)
+            block_heavy_resources(self._context)
             return True
         except Exception as exc:  # 미설치(ImportError)·브라우저 미설치·기동실패.
             log.info("headless.unavailable", err=str(exc))
@@ -76,6 +101,8 @@ class PlaywrightRenderer:
             return page.content()
         except Exception as exc:  # 타임아웃·네비게이션 실패 → 건너뛴다.
             log.info("headless.render.error", url=url, err=str(exc))
+            if browser_dead(exc):  # 죽은 브라우저 리셋 — 다음 호출이 재기동한다(좀비 누적 방지).
+                self.close()
             return None
         finally:
             if page is not None:
