@@ -92,6 +92,38 @@ def _interleave_by_country(segments: list[Segment]) -> list[int]:
     return order
 
 
+def _close_in_workers(pool: ThreadPoolExecutor, close_own: Callable[[], None]) -> None:
+    """풀의 **워커 스레드 자신**이 자기 스레드로컬 컴포넌트를 닫게 한다.
+
+    Playwright sync API 는 greenlet 스레드 친화라 메인스레드에서 close() 하면
+    ``greenlet.error`` 로 조용히 실패해(기존 best-effort except 가 삼킴) 브라우저·node
+    드라이버가 통째로 샌다 — 배치마다 반복되며 2026-07-31 백필 5.5GB OOM 의 뿌리.
+    배리어로 풀의 전 스레드가 ``close_own`` 을 정확히 한 번씩 실행하게 강제한다.
+    풀이 살아있는 동안(shutdown 전) 호출해야 한다.
+    """
+    n = len(pool._threads)  # ponytail: private 이지만 실제 스폰된 스레드 수의 유일한 출처.
+    if n == 0:
+        return
+    barrier = threading.Barrier(n)
+
+    def _run() -> None:
+        try:
+            close_own()
+        except Exception:  # 정리 실패는 무시(베스트에포트) — 배리어 참여는 보장.
+            pass
+        finally:
+            try:
+                barrier.wait(timeout=60)  # 전 스레드 분배 보장. 타임아웃=행 방지.
+            except Exception:
+                pass
+
+    for f in [pool.submit(_run) for _ in range(n)]:
+        try:
+            f.result(timeout=90)
+        except Exception:  # 개별 실패는 무시 — 남은 정리는 프로세스 종료가 회수.
+            pass
+
+
 def _listed_of(dc: DiscoveredCompany) -> Listed:
     """발견 단계 상장정보 문자열을 :class:`Listed` 로 안전 변환(미상 fallback)."""
     try:
@@ -593,8 +625,20 @@ def run_pipeline(
                     close_sources(ws)  # 워커별 sources httpx 정리(누수 방지).
     finally:
         if pool is not None:
+            # Playwright 보유 컴포넌트(enr/exi)는 만든 워커 스레드만 닫을 수 있다 —
+            # 메인스레드 close 는 greenlet.error 로 no-op(누수). shutdown 전에 워커가 직접.
+            def _close_own_trio() -> None:
+                trio = getattr(_tl, "trio", None)
+                if trio is not None:
+                    for obj in trio:
+                        close = getattr(obj, "close", None)
+                        if callable(close):
+                            close()
+
+            _close_in_workers(pool, _close_own_trio)
             pool.shutdown(wait=True)  # 진행 중 워커 완료 대기 후 인스턴스 정리(쓰기 경쟁 없음).
-        # 워커별 + 메인스레드(순차 경로) 인스턴스 모두 정리 — close() 있는 것만(best-effort).
+        # 나머지(rc httpx 등) + 메인스레드(순차 경로) 인스턴스 정리 — 워커가 이미 닫은 것은
+        # close() 가 멱등(내부 필드 None 가드)이라 재호출해도 안전.
         for obj in (*_created, enricher, existence, email_validator):
             close = getattr(obj, "close", None)
             if callable(close):

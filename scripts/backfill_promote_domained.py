@@ -11,8 +11,9 @@ _persist_lead 가 그대로 강제하므로, 죽은 사이트는 여기서도 �
 멱등: 승격되면 다음 배치의 대상 쿼리에서 자동 제외된다(``co.id is null`` 조건). 중단해도
 이어서 재실행하면 남은 것부터 계속한다.
 
-사용:  python scripts/backfill_promote_domained.py [workers] [batch]
-       (기본 workers=3 — A/C 백필과 동시 구동 시 헤드리스 메모리 경합을 피하려 보수적)
+사용:  python scripts/backfill_promote_domained.py [workers] [batch] [country ...]
+       (기본 workers=3 — A/C 백필과 동시 구동 시 헤드리스 메모리 경합을 피하려 보수적.
+        3번째 인자부터는 국가 코드 — 지정 시 그 국가만, 미지정=전세계. 예: ... 3 200 KR)
 
 ponytail: 일회성 백필이라 CLI 커맨드화 안 함 — scripts/ 스크립트로 충분(backfill_reenrich
 와 같은 판단). 상시화되면 그때 승격.
@@ -25,12 +26,11 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from sqlalchemy import text
-
 from leadcrawler.config import Settings
 from leadcrawler.cost_ledger import CostLedger
 from leadcrawler.enrich.enricher import Enricher
 from leadcrawler.enrich.industry_classify import build_classifier
+from leadcrawler.pipeline.fill import _scoped
 from leadcrawler.pipeline.run import _build_lead, _persist_lead
 from leadcrawler.sources.base import DiscoveredCompany
 from leadcrawler.storage.db import get_sessionmaker
@@ -39,30 +39,28 @@ from leadcrawler.verify.existence import ExistenceVerifier
 from leadcrawler.verify.registry_active import build_registry_checker
 
 # 배치 LIMIT — 전량(2.8만)을 한 번에 메모리로 올리지 않고 끊어서 처리(재개 가능).
-_COUNT_SQL = text(
-    """
+# {scope} 슬롯은 fill._scoped 가 국가 필터로 채운다(미지정=빈 문자열=전세계).
+_COUNT_SQL = """
     select count(*)
     from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
-    where co.id is null and coalesce(d.domain, '') <> ''
+    where co.id is null and coalesce(d.domain, '') <> '' {scope}
     """
-)
 
 # canonical_key 커서로 전진한다. "대상에서 빠지는가"에 기대면 안 된다 — 죽은 사이트는
 # 제약②로 company 가 안 생겨 co.id is null 을 계속 만족하므로, 같은 배치가 영원히 재선택된다.
 # discovered_company 의 PK 는 canonical_key 다(id 컬럼 없음 — 2026-07-31 실사고).
-_TARGET_SQL = text(
-    """
+_TARGET_SQL = """
     select d.canonical_key, d.name, d.country, d.industry, d.listed, d.domain,
            d.registry, d.registry_id, d.source, d.segment, d.reg_no, d.region,
            d.ticker, d.phone, d.ir_url, d.name_eng, d.address
     from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
     where co.id is null and coalesce(d.domain, '') <> '' and d.canonical_key > :after
+    {scope}
     order by d.canonical_key
     limit :limit
     """
-)
 
 
 def _dc_from_row(r) -> DiscoveredCompany:
@@ -78,6 +76,9 @@ def _dc_from_row(r) -> DiscoveredCompany:
 def main() -> int:
     workers = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     batch = int(sys.argv[2]) if len(sys.argv) > 2 else 200
+    countries = sys.argv[3:] or None  # 국가 스코프 — 미지정=전세계(기존 동작 그대로).
+    cnt_stmt, cnt_params = _scoped(_COUNT_SQL, countries)
+    tgt_stmt, tgt_params = _scoped(_TARGET_SQL, countries)
 
     settings = Settings()
     if settings.dry_run:
@@ -89,8 +90,12 @@ def main() -> int:
     classifier = build_classifier(settings, ledger=cost_ledger)  # 스텝리스 공유 안전.
 
     with sm() as s:
-        remaining = int(s.execute(_COUNT_SQL).scalar() or 0)
-    print(f"[promote] 대상 {remaining} 곳 (workers={workers} batch={batch})", flush=True)
+        remaining = int(s.execute(cnt_stmt, cnt_params).scalar() or 0)
+    print(
+        f"[promote] 대상 {remaining} 곳 (workers={workers} batch={batch}"
+        f" country={countries or '전세계'})",
+        flush=True,
+    )
 
     # 워커별 독립 인스턴스(공유 throttle 경쟁 회피) — run_pipeline 패턴 미러링.
     tl = threading.local()
@@ -123,7 +128,9 @@ def main() -> int:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             while True:
                 with sm() as rd:
-                    rows = rd.execute(_TARGET_SQL, {"limit": batch, "after": after}).all()
+                    rows = rd.execute(
+                        tgt_stmt, {**tgt_params, "limit": batch, "after": after}
+                    ).all()
                 if not rows:
                     break
                 after = rows[-1].canonical_key  # 다음 배치는 이 키 뒤부터(고착 방지).

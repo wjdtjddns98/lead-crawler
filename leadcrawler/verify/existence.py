@@ -341,22 +341,30 @@ class PlaywrightRender:
         self._timeout_ms = int(timeout * 1000)
         self._pw = None
         self._browser = None
+        self._context = None
         self._unavailable = False  # 미설치/기동실패 시 재시도 안 함.
 
     def _ensure(self) -> bool:
         """브라우저를 1회 기동(재사용). 미설치/실패면 False(이후 비활성)."""
-        if self._browser is not None:
+        if self._context is not None:  # 완전 기동 기준 — 부분실패 상태를 살아있다고 오판 금지.
             return True
         if self._unavailable:
             return False
         try:
             from playwright.sync_api import sync_playwright
 
+            from ..enrich.headless import block_heavy_resources
+
             self._pw = sync_playwright().start()
             self._browser = self._pw.chromium.launch(headless=True)
+            # 페이지마다 임시 컨텍스트를 만들던 new_page() 대신 컨텍스트 1개 재사용 +
+            # 무거운 리소스(이미지·미디어·폰트) 차단 — 생존판정은 DOM 만 있으면 된다.
+            self._context = self._browser.new_context()
+            block_heavy_resources(self._context)
             return True
         except Exception as exc:  # 미설치(ImportError)·브라우저 미설치·기동실패 → graceful.
             log.info("existence.render.unavailable", err=str(exc))
+            self.close()  # launch 후 실패(new_context 등)의 부분 상태 정리 — 브라우저 누수 방지.
             self._unavailable = True
             return False
 
@@ -364,9 +372,11 @@ class PlaywrightRender:
         """domain 을 https→http 순으로 렌더해 최종 HTML 을 반환(전부 실패/미설치 시 None)."""
         if not self._ensure():
             return None
+        from ..enrich.headless import browser_dead
+
         page = None
         try:
-            page = self._browser.new_page()
+            page = self._context.new_page()
             for scheme in ("https", "http"):
                 try:
                     page.goto(
@@ -376,11 +386,15 @@ class PlaywrightRender:
                     )
                     return page.content()
                 except Exception as exc:  # 해당 스킴 렌더 실패 → 다음 스킴.
+                    if browser_dead(exc):  # 브라우저 사망은 스킴 문제가 아니다 → 바깥 리셋으로.
+                        raise
                     log.debug("existence.render.fail", domain=domain, scheme=scheme, err=str(exc))
                     continue
             return None
-        except Exception as exc:  # new_page 등 예기치 못한 실패 → graceful None.
+        except Exception as exc:  # new_page/브라우저 사망 등 예기치 못한 실패 → graceful None.
             log.info("existence.render.error", domain=domain, err=str(exc))
+            if browser_dead(exc):  # 죽은 브라우저 리셋 — 다음 호출이 재기동한다(좀비 누적 방지).
+                self.close()
             return None
         finally:
             if page is not None:
@@ -391,11 +405,12 @@ class PlaywrightRender:
 
     def close(self) -> None:
         """브라우저·Playwright 를 정리한다(커넥션 누수 방지)."""
-        for obj, method in ((self._browser, "close"), (self._pw, "stop")):
+        for obj, method in ((self._context, "close"), (self._browser, "close"), (self._pw, "stop")):
             if obj is not None:
                 try:
                     getattr(obj, method)()
                 except Exception:  # 정리 실패는 무시(베스트에포트).
                     pass
+        self._context = None
         self._browser = None
         self._pw = None
