@@ -5,6 +5,7 @@ rem (2026-07-31 OOM: --loop 장기구동 중 Chromium/드라이버 누적으로 
 rem  멱등이라 재기동해도 이어받는다. B(promote)는 인메모리 커서 때문에 이 러너 대상이 아님.)
 rem 사용:  scripts\windows\run-backfill-loop.bat A
 rem        scripts\windows\run-backfill-loop.bat C
+rem 2번째 인자부터는 CLI 에 그대로 전달된다(예: ... A --country KR).
 setlocal
 cd /d "%~dp0..\.."
 set PYTHONUTF8=1
@@ -12,10 +13,10 @@ rem 리다이렉트 대상 폴더가 없으면 cmd 가 python 실행 자체를 �
 if not exist "logs" mkdir "logs"
 
 if /i "%1"=="A" (
-  set "ARGS=fill-emails --loop --max-batches 20 --workers 2"
+  set "ARGS=fill-emails --loop --max-batches 20 --workers 2 %2 %3 %4 %5"
   set "LOG=logs\backfill-A-fill-emails.log"
 ) else if /i "%1"=="C" (
-  set "ARGS=backfill-resolve-domains --loop --max-batches 20 --workers 2"
+  set "ARGS=backfill-resolve-domains --loop --max-batches 20 --workers 2 %2 %3 %4 %5"
   set "LOG=logs\backfill-C-resolve-domains.log"
 ) else (
   echo 사용법: %~nx0 A^|C
