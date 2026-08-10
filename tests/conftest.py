@@ -49,7 +49,6 @@ def _isolate_database(
 def _force_dry_run(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """모든 테스트에서 dry_run 을 강제하고 설정 캐시를 비운다."""
     monkeypatch.setenv("LEADCRAWLER_DRY_RUN", "true")
-    monkeypatch.delenv("LEADCRAWLER_NOTION_TOKEN", raising=False)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

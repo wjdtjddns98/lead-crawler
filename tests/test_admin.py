@@ -353,23 +353,6 @@ def test_whitespace_industries_422(admin: TestClient) -> None:
     assert r.status_code == 422
 
 
-def test_scheduler_uses_db_target(admin: TestClient) -> None:
-    # 관리자가 설정한 DB 타깃을 스케줄러가 우선 사용(.env 폴백 아님).
-    from leadcrawler.config import get_settings
-    from leadcrawler.scheduler import _effective_target
-
-    admin.put(
-        "/admin/crawl-target",
-        json={"countries": "JP", "industries": "반도체", "listed": "unlisted",
-              "persist": False},
-    )
-    inds, ctys, listed, persist = _effective_target(get_settings())
-    assert inds == ["반도체"]
-    assert ctys == ["JP"]
-    assert listed == "unlisted"
-    assert persist is False
-
-
 # --- 직접 크롤(웹 트리거·현황·취소) ---------------------------------
 
 @pytest.fixture

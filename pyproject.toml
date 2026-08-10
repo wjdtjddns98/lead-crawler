@@ -37,7 +37,6 @@ db = ["psycopg[binary]>=3.1"]
 # WAF 우회 임베드(Track A) — 벤더링된 insane-search 엔진 런타임 의존(curl_cffi 격자 등).
 bypass = ["curl_cffi>=0.6", "beautifulsoup4>=4.12", "pyyaml>=6.0"]
 api = ["fastapi>=0.110", "uvicorn>=0.29"]
-schedule = ["apscheduler>=3.10"]
 
 [project.scripts]
 leadcrawler = "leadcrawler.cli:app"

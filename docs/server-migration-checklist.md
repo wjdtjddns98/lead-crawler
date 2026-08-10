@@ -66,9 +66,6 @@ scripts\windows\run-server-prod.bat
 ```powershell
 # DB 일일 백업 (03:00)
 schtasks /Create /TN leadcrawler-db-backup /SC DAILY /ST 03:00 /TR "<프로젝트경로>\scripts\windows\backup-db.bat"
-
-# Notion 일일보고 (09:00)
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\register-daily-task.ps1 -Time 09:00
 ```
 
 ## 5. 함정 (과거 실사고 기준)
