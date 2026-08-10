@@ -69,6 +69,28 @@ _COUNT_SQL = """
 
 _SCOPE_CLAUSE = "and lower(d.country) in :country_scope"
 
+# 같은 도메인이 발견 원장에 이미 이만큼 있으면 기업 공식 도메인이 아니라 디렉터리/
+# 플랫폼으로 판정한다(한 도메인을 N개 회사가 공유하는 건 구조적으로 불가능).
+# 2026-08-10 사고: 해석기가 기업정보 디렉터리(nicebizinfo 등)를 오채택 → 원장에 무제한
+# 기록 → promote 백필이 무차별 승격해 company 2만여 건이 오염됐다. blocklist(개별 나열)는
+# 항상 뒤처지므로, 미지의 디렉터리도 여기서 구조적으로 끊는다.
+_DOMAIN_OVERSHARE_CAP = 3
+
+
+def _domain_overshared(session, domain: str) -> bool:  # noqa: ANN001 (Session)
+    """이 도메인이 발견 원장에서 이미 과공유(디렉터리 신호)인지 — 기록·승격 금지 판정.
+
+    ponytail: ① 등가비교는 정규화값 기준 — 해석기 출력(이 가드의 유입 경로)은 항상
+    정규화 root 라 성립하고, 소스가 raw 표기로 넣은 소수는 언더카운트될 수 있다(허용 —
+    업그레이드는 save_discovered 정규화 통일). ② 해석 성공 건당 COUNT 1회 — 배치≤200이라
+    수용, 병목이 되면 배치 도메인 일괄 ANY 조회+인덱스로. ③ 정당한 계열사 도메인 공유가
+    캡을 넘으면 그 행은 영구 miss 로 회전한다(오염 차단 우선 — 구제는 워크벤치 수동).
+    """
+    n = session.execute(
+        text("select count(*) from discovered_company where domain = :d"), {"d": domain}
+    ).scalar()
+    return int(n or 0) >= _DOMAIN_OVERSHARE_CAP
+
 
 def _scoped(sql_tpl: str, countries: Iterable[str] | None):
     """SQL 템플릿의 ``{scope}`` 슬롯에 국가 필터를 주입한다 — (stmt, params) 반환.
@@ -304,10 +326,16 @@ def resolve_batch(
                 if not found:
                     missed.append(dc.canonical_key)
                     continue
+                rdom = normalize_domain(found)
+                if rdom is not None and _domain_overshared(ws, rdom):
+                    # 과공유 도메인(디렉터리 신호) — 기록도 승격도 하지 않는다. miss 로
+                    # 취급해 대기열 뒤로 보낸다(위 _DOMAIN_OVERSHARE_CAP 주석 참고).
+                    log.info("resolve.backfill.overshared", key=dc.canonical_key, domain=rdom)
+                    missed.append(dc.canonical_key)
+                    continue
                 if backfill_domain(ws, dc.canonical_key, found):
                     resolved += 1
                 ws.commit()  # 도메인 기록은 항상 남긴다(승격 실패해도 재시도 방지).
-                rdom = normalize_domain(found)
                 if rdom is not None and rdom in seen_domains:
                     # 이미 원장에 있는(또는 이번 배치에서 먼저 처리된) 회사와 동일 도메인
                     # → 별개 company 로 승격하지 않는다(제약① 중복방지, 흡수는 오프라인

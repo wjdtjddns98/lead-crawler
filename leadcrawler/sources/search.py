@@ -100,6 +100,33 @@ _BLOCKLIST = frozenset({
     "edaily.co.kr", "fnnews.com", "sedaily.com", "newsis.com", "yna.co.kr",
     "mt.co.kr", "etnews.com", "dt.co.kr", "asiae.co.kr", "heraldcorp.com",
     "dailystock.co.kr", "industrynews.co.kr", "koreadisablednews.com",
+    # KR 기업정보 디렉터리·조회 플랫폼 대량 오염 실측(2026-08-10 — KR 백필 C 가 이들을
+    # 공식 홈페이지로 오채택, company 2만여 건 오염): 기업DB·장외주식·조달·병원/채용
+    # 디렉터리·미디어·공유 플랫폼 등 전부 "N개 회사가 공유 불가능한" 부류.
+    "nicebizinfo.com", "thevc.kr", "webify.kr", "moneypin.biz", "rndcircle.io",
+    "cookiedeal.io", "sankun.com", "g2bmarket.com", "marketbz.com", "38.co.kr",
+    "ipo38.co.kr", "jootek.com", "goodoc.co.kr", "modoodoc.com", "bizno.net",
+    "ventureinkorea.com", "deepsearch.com", "innoforest.co.kr", "udanax.org",
+    "rememberapp.co.kr", "irgo.co.kr", "hidoc.co.kr", "alphasquare.co.kr",
+    "cu.co.kr", "todayjiwon.co.kr", "bzpp.co.kr", "reportworld.co.kr", "roa.ai",
+    "zighang.com", "thebell.co.kr", "jasoseol.com", "nextunicorn.kr", "newploy.com",
+    "etoday.co.kr", "linkonbiz.com", "medinavi.co.kr", "chemknock.co.kr",
+    "kakao.com", "hospitalk.net", "localbiz.kr", "zdnet.co.kr", "happyhaksul.com",
+    "happycampus.com", "114-service.co.kr", "platformdodam.com", "schoolm.co.kr",
+    "wisereport.co.kr", "daara.co.kr", "daaraexpo.com", "worker.co.kr",
+    "caredoc.kr", "ddoga.co.kr", "namu.wiki", "yeoshin.co.kr", "teamblind.com",
+    "seoulexchange.kr", "paxnet.co.kr", "demoday.co.kr", "nowdoc.co.kr",
+    "opndoctor.com", "ddocdoc.com", "joongang.co.kr", "sba.kr",
+    "digitaltoday.co.kr", "unicornfactory.co.kr", "daangn.com", "korea.kr",
+    "career.co.kr", "tossinvest.com", "kisrating.com", "apartsearcher.ai",
+    "yeogie.com", "reportshop.co.kr", "bizbank.co.kr", "dealsite.co.kr",
+    "opensalary.com", "gangnamunni.com", "platum.kr", "wowtv.co.kr", "imweb.me",
+    "superookie.com", "dlive.kr", "welfarehello.com", "vmspace.com",
+    "goodhosrank.com", "theteams.kr", "findcompany.kr", "startuprecipe.co.kr",
+    "capa.ai", "loud.kr", "thinkpool.com", "sentv.co.kr", "financialpost.co.kr",
+    "medicaltimes.com", "asiatoday.co.kr", "event-us.kr", "nextround.kr",
+    "sarangbang.com", "mbn.co.kr", "silverin.kr", "yoyang24.kr", "miclick.co.kr",
+    "linkareer.com", "krx.co.kr", "bigvalue.ai", "goinsider.kr", "pe.kr",
 })
 
 

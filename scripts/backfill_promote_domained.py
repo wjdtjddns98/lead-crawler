@@ -24,13 +24,17 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+
+from sqlalchemy import text
 
 from leadcrawler.config import Settings
 from leadcrawler.cost_ledger import CostLedger
+from leadcrawler.dedup import normalize_domain
 from leadcrawler.enrich.enricher import Enricher
 from leadcrawler.enrich.industry_classify import build_classifier
-from leadcrawler.pipeline.fill import _scoped
+from leadcrawler.pipeline.fill import _DOMAIN_OVERSHARE_CAP, _scoped
 from leadcrawler.pipeline.run import _build_lead, _persist_lead
 from leadcrawler.sources.base import DiscoveredCompany
 from leadcrawler.storage.db import get_sessionmaker
@@ -63,6 +67,35 @@ _TARGET_SQL = """
     """
 
 
+def _load_domain_guards(session) -> tuple[set[str], set[str]]:  # noqa: ANN001 (Session)
+    """도메인 dedup 가드 시드 — (기존 company 점유 도메인, 원장 과공유 도메인).
+
+    제약①(2026-08-10 사고 수정): ① 기존 company 가 이미 쓰는 도메인은 재승격하지
+    않는다(한 도메인 = 한 회사). ② 발견 원장에서 과공유된 도메인(디렉터리 신호,
+    fill._DOMAIN_OVERSHARE_CAP)은 통째로 스킵한다 — 구버전은 이 가드가 없어 해석기가
+    오채택한 디렉터리 도메인(nicebizinfo 등)을 수천 건씩 무차별 승격했다.
+    """
+    taken = {
+        d for d in (
+            normalize_domain(h) for (h,) in session.execute(
+                text("select homepage from company where coalesce(homepage,'') <> ''")
+            )
+        ) if d is not None
+    }
+    # 원장 domain 은 소스에 따라 raw URL 표기가 섞일 수 있어(save_discovered 는 정규화
+    # 안 함) SQL group by 대신 정규화 후 집계한다 — 표기 분산으로 캡을 우회하지 못하게
+    # (교차리뷰 MED).
+    counts: Counter[str] = Counter()
+    for (dom,) in session.execute(
+        text("select domain from discovered_company where coalesce(domain,'') <> ''")
+    ):
+        nd = normalize_domain(dom)
+        if nd is not None:
+            counts[nd] += 1
+    overshared = {d for d, n in counts.items() if n >= _DOMAIN_OVERSHARE_CAP}
+    return taken, overshared
+
+
 def _dc_from_row(r) -> DiscoveredCompany:
     return DiscoveredCompany(
         canonical_key=r.canonical_key, name=r.name, country=r.country or "",
@@ -91,9 +124,10 @@ def main() -> int:
 
     with sm() as s:
         remaining = int(s.execute(cnt_stmt, cnt_params).scalar() or 0)
+        taken, overshared = _load_domain_guards(s)
     print(
         f"[promote] 대상 {remaining} 곳 (workers={workers} batch={batch}"
-        f" country={countries or '전세계'})",
+        f" country={countries or '전세계'} | 도메인점유 {len(taken)} 과공유 {len(overshared)})",
         flush=True,
     )
 
@@ -134,10 +168,16 @@ def main() -> int:
                 if not rows:
                     break
                 after = rows[-1].canonical_key  # 다음 배치는 이 키 뒤부터(고착 방지).
-                targets = [_dc_from_row(r) for r in rows]
+                targets = []
+                for r in rows:
+                    done += 1
+                    dom = normalize_domain(r.domain)
+                    if dom is None or dom in taken or dom in overshared:
+                        continue  # 이미 점유/과공유 도메인 — enrich 비용도 쓰지 않는다.
+                    taken.add(dom)  # 같은 런 안의 후속 중복(배치 내 포함)도 차단.
+                    targets.append(_dc_from_row(r))
                 with sm() as ws:
                     for dc, lead in pool.map(_work, targets):
-                        done += 1
                         if lead is None:
                             continue
                         _persist_lead(ws, dc, lead)
