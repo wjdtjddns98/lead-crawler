@@ -16,7 +16,6 @@
 - `models.py` — 도메인 모델(Company/Contact/CompanyLead 등), enum(EmailRole 등).
 - `emailrules.py` — role 분류 + HR/언론 배제 + IR 우선 채택.
 - `excel_format.py` — 12컬럼 서식·O/X 규칙(export/import 공유).
-- `integrations/notion.py` — Notion 자동 리포팅(일일보고·스크럼·현황).
 
 ## dry_run 계약
 

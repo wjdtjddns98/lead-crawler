@@ -56,10 +56,8 @@ leadcrawler/
   enrich/       연락처 추출 체인 (정적 BFS → 헤드리스 → OCR → 이메일 API → Vision)
   verify/       사이트 실존성 · 이메일 유효성(MX/SMTP/도달성) 검증
   pipeline/     run_pipeline 오케스트레이션 + 웹 크롤 잡(연속 라운드·워치독·후속 채움)
-  scheduler/    일일 정기 크롤 + Notion 리포팅 (APScheduler)
   storage/      DB 저장소 — 발견 원장·검수 큐·크롤 잡·커서·감사 로그 + 엑셀 export
   dedup_resolve/ 근접 중복 탐지·병합 (렉시컬 + LLM 판정)
-  integrations/ Notion 클라이언트
   api/          FastAPI — 인증·검수 큐·관리자·중복 워크벤치·export·발송
 web/            React(Vite) 검수 워크벤치 UI
 ```
@@ -69,7 +67,6 @@ web/            React(Vite) 검수 워크벤치 UI
 ```bash
 leadcrawler run --country KR --industry 건설 --persist   # 수집 결과를 DB에 영속화
 leadcrawler import-existing "기존목록.xlsx"               # 기존 목록 시드(중복 방지 기준)
-leadcrawler report 2026-06-18 --done "..." --next "..."  # Notion 리포팅
 ```
 
 ## 배포 (내부망 HTTPS)
