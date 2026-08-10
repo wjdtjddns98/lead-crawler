@@ -267,23 +267,25 @@ class DomainResolver:
     ) -> str | None:
         """후보를 Claude 에 주고 공식 도메인 1건을 중재받는다(기권/캡초과/실패 시 폴백).
 
-        캡 초과·anthropic 미설치/인증정보 없음·오류면 한글은 보수적 결정 규칙으로, 라틴은
-        None 으로 폴백한다(절대 무근거 채택 금지 — 제약②). 구독 OAuth Bearer 호출이라
+        캡 초과·왕복 실패(미설치/인증정보 없음/API 오류) 모두 **miss** 로 이월한다 —
+        중재가 켜진 런에서 결정규칙(title 토큰일치)으로 폴백하면 디렉터리 오채택이
+        재발한다(2026-08-10 사고 메커니즘 — 교차리뷰 HIGH: 캡만 막고 장애 경로를 남기면
+        API 장애 중 배치 전체가 그 구멍으로 흐른다). 구독 OAuth Bearer 호출이라
         과금은 없다 — cost_ledger 미적재, 예산가드는 무료 레버라 미적용(캡만 제어).
         """
         if not self._reserve_llm():  # 런당 캡 — 서브프로세스 왕복 폭주 방지.
-            if korean_core is not None:
-                return _korean_deterministic_pick(cands, korean_core, tld)
+            # 캡 초과는 **miss 로 이월**한다(결정규칙 폴백 금지) — 2026-08-10 사고:
+            # 배치당 캡(100)이 즉시 소진되고 나머지 전부가 title 토큰일치 폴백으로
+            # 흘러 기업정보 디렉터리(제목에 상호명이 항상 그대로 들어감)를 대량
+            # 채택했다. 대상 정렬(last_crawled_at)상 다음 배치가 새 캡으로 재시도한다.
             return None
         shortlist = cands[:_LLM_MAX_CANDIDATES]
         idx, ok = self._arbitrate(dc, shortlist)
         if not ok:
-            # 왕복 자체가 실패(claude CLI 미설치/미인증·타임아웃 등) — 캡 슬롯을 환급해
-            # 일시 장애가 남은 배치/런의 중재를 영구 불능화하지 않게 한다(적대 리뷰 MED).
-            # 폴백으로라도 recall 을 지킨다(한글=토큰일치, 라틴=None).
+            # 왕복 자체가 실패(미설치/미인증·API 오류 등) — 캡 슬롯을 환급해 일시 장애가
+            # 남은 배치/런의 중재를 영구 불능화하지 않게 한다(적대 리뷰 MED). 채택은
+            # 하지 않는다 — 캡 소진과 동일하게 miss 이월(위 독스트링, 교차리뷰 HIGH).
             self._refund_llm()
-            if korean_core is not None:
-                return _korean_deterministic_pick(cands, korean_core, tld)
             return None
         if 0 <= idx < len(shortlist):
             return shortlist[idx].domain
