@@ -383,25 +383,21 @@ def query_reviews(
         )
     else:
         # 기본 = LIFO(최신 크롤분 최상단, 2026-07-13 PO 요청). 큐 행엔 시각 컬럼이 없어
-        # 발견 원장 first_seen 을 상관 서브쿼리로 근사한다 — 조인이 아닌 이유는
-        # _apply_queue_filters 가 같은 테이블을 조건부 조인해 중복 조인이 되기 때문.
+        # 발견 원장 first_seen 으로 근사한다. 구현은 **별칭 LEFT JOIN** — 구 상관
+        # 서브쿼리는 정렬 전 후보 전 행(수만)마다 실행돼 페이지당 ~0.9s 병목이었다
+        # (2026-08-10 EXPLAIN 실측 884ms→JOIN 치환 후 수십 ms). 별칭이라
+        # _apply_queue_filters 의 조건부 동일 테이블 조인과 충돌하지 않고,
+        # canonical_key 는 양쪽 다 유일(1:1)이라 행 증식이 없다.
         # ponytail: 큐 적재시각 정밀 LIFO 가 필요해지면 review_queue.created_at 마이그레이션.
-        # 별칭+명시 correlate — 필터 경로가 같은 테이블을 외부 조인해도 서브쿼리가
-        # 자동 상관으로 FROM 을 잃지 않게(no FROM clauses 오류) 고정한다.
         dc = aliased(DiscoveredCompanyRow)
-        first_seen = (
-            select(dc.first_seen)
-            .where(dc.canonical_key == CompanyRow.canonical_key)
-            .correlate(CompanyRow)
-            .scalar_subquery()
-        )
+        stmt = stmt.join(dc, dc.canonical_key == CompanyRow.canonical_key, isouter=True)
         # status 는 원시 문자열(알파벳순 confirmed<pending — 확정건이 위로 오는 버그,
         # Codex 리뷰 HIGH-1)이 아니라 업무순위 CASE(#238 정렬키와 동일)로. 확정/거부는
         # 점유 해제로 미점유 풀에 재노출되므로 pending 먼저가 실동작에 중요하다.
         # 범위 주의: LIFO 는 이 목록 조회 전용 — 클레임 배정(_claim_more)·내 점유 목록
         # 순서는 별개(PO 확인 후 후속).
         stmt = stmt.order_by(
-            _sort_expression("status"), first_seen.desc(), ReviewQueueRow.id
+            _sort_expression("status"), dc.first_seen.desc(), ReviewQueueRow.id
         )
     stmt = stmt.limit(limit).offset(offset)
     rows = session.execute(stmt).all()
