@@ -74,6 +74,43 @@ def test_target_and_count_sql_run_against_real_schema(tmp_path) -> None:
         assert again == []
 
 
+def test_domain_guards_seed_taken_and_overshared(tmp_path) -> None:
+    """도메인 dedup 가드 시드 — 기존 company 점유 + 원장 과공유 도메인을 잡아낸다.
+
+    2026-08-10 사고 가드: 이 가드가 없어 해석기가 오채택한 디렉터리 도메인
+    (nicebizinfo 등)이 수천 건씩 무차별 승격돼 company 2만여 건이 오염됐다.
+    """
+    mod = _load()
+    s = Settings(database_url=f"sqlite:///{tmp_path}/pd3.db", dry_run=False)
+    init_db(s)
+    sm = get_sessionmaker(s)
+
+    with sm() as session:
+        # 과공유 도메인 — 캡(3)만큼의 발견행이 같은 도메인을 공유.
+        for i in range(3):
+            session.add(DiscoveredCompanyRow(
+                canonical_key=f"name:kr:피해{i}", name=f"피해{i}", country="KR",
+                industry="화학·석유화학", source="nps", domain="directory.example.com",
+            ))
+        # 정상 — 단독 도메인, 이미 승격됨(homepage 점유).
+        session.add(DiscoveredCompanyRow(
+            canonical_key="dom:kr:solo.co.kr", name="단독사", country="KR",
+            industry="화학·석유화학", source="nps", domain="solo.co.kr",
+        ))
+        session.commit()
+        session.add(CompanyRow(
+            id=company_id_for("dom:kr:solo.co.kr"), canonical_key="dom:kr:solo.co.kr",
+            name="단독사", country="KR", industry="화학·석유화학", site_alive=True,
+            homepage="https://solo.co.kr",
+        ))
+        session.commit()
+
+    with sm() as session:
+        taken, overshared = mod._load_domain_guards(session)
+    assert taken == {"solo.co.kr"}  # homepage 정규화 도메인.
+    assert overshared == {"directory.example.com"}  # 캡 도달 도메인만.
+
+
 def test_country_scope_filters_targets(tmp_path) -> None:
     """국가 스코프 지정 시 그 국가 대상만 잡는다(미지정=전세계 — 기존 동작 유지)."""
     mod = _load()

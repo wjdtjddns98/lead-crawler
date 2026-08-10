@@ -272,8 +272,10 @@ class DomainResolver:
         과금은 없다 — cost_ledger 미적재, 예산가드는 무료 레버라 미적용(캡만 제어).
         """
         if not self._reserve_llm():  # 런당 캡 — 서브프로세스 왕복 폭주 방지.
-            if korean_core is not None:
-                return _korean_deterministic_pick(cands, korean_core, tld)
+            # 캡 초과는 **miss 로 이월**한다(결정규칙 폴백 금지) — 2026-08-10 사고:
+            # 배치당 캡(100)이 즉시 소진되고 나머지 전부가 title 토큰일치 폴백으로
+            # 흘러 기업정보 디렉터리(제목에 상호명이 항상 그대로 들어감)를 대량
+            # 채택했다. 대상 정렬(last_crawled_at)상 다음 배치가 새 캡으로 재시도한다.
             return None
         shortlist = cands[:_LLM_MAX_CANDIDATES]
         idx, ok = self._arbitrate(dc, shortlist)

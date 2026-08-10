@@ -306,6 +306,49 @@ def test_resolve_batch_intra_batch_domain_collision_promotes_once(tmp_path, monk
         assert session.query(CompanyRow).count() == 1
 
 
+def test_resolve_batch_overshared_domain_not_recorded(tmp_path, monkeypatch) -> None:
+    """원장에서 이미 과공유된 도메인(디렉터리 신호)은 기록도 승격도 하지 않는다.
+
+    2026-08-10 사고 가드: 해석기가 오채택한 디렉터리 도메인이 원장에 무제한 기록됐고
+    (dedup_skip 은 승격만 막고 기록은 남김), promote 백필이 그걸 무차별 승격했다.
+    과공유 캡(_DOMAIN_OVERSHARE_CAP=3)부터는 기록 자체를 끊어야 한다.
+    """
+    _patch(monkeypatch)
+
+    class _SameDomainResolver(_FakeResolver):
+        def resolve(self, dc: DiscoveredCompany) -> str | None:
+            # eTLD+1 그대로(정규화 불변) — 가드는 정규화값과 원장값의 등가비교라
+            # 서브도메인 픽스처를 쓰면 비교가 어긋난다(실경로도 해석기 출력=정규화 root).
+            return "directoryshare.com"
+
+    monkeypatch.setattr(fill_mod, "DomainResolver", _SameDomainResolver)
+    s = Settings(database_url=f"sqlite:///{tmp_path}/ov.db", dry_run=False, resolve_domains=True)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    with sm() as session:
+        for i in range(fill_mod._DOMAIN_OVERSHARE_CAP):  # 이미 캡만큼 공유된 도메인.
+            session.add(
+                DiscoveredCompanyRow(
+                    canonical_key=f"reg:dart:0000000{i}", name=f"기존{i}", country="KR",
+                    industry="화학·석유화학", source="dart", domain="directoryshare.com",
+                )
+            )
+        session.add(
+            DiscoveredCompanyRow(
+                canonical_key="name:kr:피해자상사", name="피해자상사", country="KR",
+                industry="화학·석유화학", source="nps",
+            )
+        )
+        session.commit()
+
+    processed, resolved, promoted = fill_mod.resolve_batch(s, sm, limit=50, workers=2)
+    assert (processed, resolved, promoted) == (1, 0, 0)  # 기록 0·승격 0.
+    with sm() as session:
+        row = session.get(DiscoveredCompanyRow, "name:kr:피해자상사")
+        assert not (row.domain or "")  # 오염 도메인이 기록되지 않음.
+        assert session.query(CompanyRow).count() == 0
+
+
 def test_resolve_batch_advances_past_unresolvable_rows(tmp_path, monkeypatch) -> None:
     """해석 실패 행이 대기열 선두를 막지 않는다 — 배치마다 다음 구간을 잡아야 한다.
 

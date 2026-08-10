@@ -412,6 +412,45 @@ def test_llm_arbiter_cap_enforced() -> None:
     assert calls["n"] == 1
 
 
+def test_llm_cap_exhausted_never_falls_back_to_title_match() -> None:
+    """LLM 캡 소진 후엔 한글 title 토큰일치 폴백으로 채택하지 않는다(miss 이월).
+
+    2026-08-10 사고 가드: 배치당 캡(100)이 즉시 소진되고 나머지 전부가 결정규칙
+    폴백으로 흘러, title 에 상호명이 그대로 들어가는 기업정보 디렉터리를 대량 채택했다.
+    """
+    f = FakeFetcher(
+        {"items": [{"link": "https://a.com", "title": "동양물산 공식"}]},
+        # 2번째 — 토큰일치 조건을 완전히 충족(길이≥3·title 정확일치)하는 미끼.
+        {"items": [{"link": "https://directory-like.com", "title": "에스케이하이닉스 기업정보"}]},
+    )
+    r = DomainResolver(
+        _no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k", resolve_llm_max=1),
+        fetcher=f,
+    )
+    r._arbitrate = lambda dc, cands: (0, True)
+    assert r.resolve(
+        DiscoveredCompany(canonical_key="reg:dart:20", name="동양물산", country="KR")
+    ) == "a.com"  # 1번째가 캡 소진.
+    assert r.resolve(
+        DiscoveredCompany(canonical_key="reg:dart:21", name="에스케이하이닉스", country="KR")
+    ) is None  # 구버전은 여기서 directory-like.com 을 채택했다.
+
+
+def test_kr_directory_domains_blocklisted() -> None:
+    """KR 기업정보 디렉터리(2026-08-10 대량 오염 실측)는 title 이 일치해도 후보에서 제외."""
+    for link in (
+        "https://nicebizinfo.com/cp/CP2020.nice?num=1",
+        "https://webify.kr/company/1",
+        "https://sankun.com/company/1",
+        "https://38.co.kr/html/forum/?o=1",
+        "https://thevc.kr/companies/1",
+    ):
+        f = FakeFetcher({"items": [{"link": link, "title": "에스케이하이닉스 기업정보"}]})
+        r = DomainResolver(_no_naver_settings(), fetcher=f)
+        dc = DiscoveredCompany(canonical_key="reg:dart:22", name="에스케이하이닉스", country="KR")
+        assert r.resolve(dc) is None, link
+
+
 def test_llm_arbiter_kr_only() -> None:
     """LLM 중재는 KR 전용 — 비KR 은 켜져 있어도 중재하지 않는다(root 대조 실패=miss)."""
     f = FakeFetcher(
