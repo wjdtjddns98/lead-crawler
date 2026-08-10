@@ -38,8 +38,16 @@ from leadcrawler.dedup import normalize_domain
 from leadcrawler.sources.search import _BLOCKLIST
 from leadcrawler.storage.db import get_sessionmaker
 
-_SHARE_CAP = 5  # 같은 homepage 도메인을 공유하는 회사 수가 이 이상이면 구조적 오염.
+# 같은 homepage 도메인을 공유하는 회사 수가 이 이상이면 구조적 오염. 런타임 가드
+# (fill._DOMAIN_OVERSHARE_CAP=3)보다 높게 둔다 — 파괴적 삭제엔 더 높은 확신 기준
+# (정당한 소수 공유(계열사 2~4곳)를 삭제로 오폭하지 않게, 교차리뷰 LOW).
+_SHARE_CAP = 5
 _CHUNK = 1000
+
+# 주의(교차리뷰 HIGH): _BLOCKLIST 엔 "그 도메인의 진짜 소유주"가 실기업인 항목이 있다
+# (미디어사·플랫폼사 본인 — 예: 이투데이↔etoday.co.kr). --apply 전에 dry-run 과 백업
+# CSV 에서 이름↔도메인이 정합하는 소유주 행을 확인하고, 삭제됐다면 pg_dump 에서 복원할 것
+# (2026-08-10 실행에선 11건 확인·복원).
 
 
 def _norm(homepage: str | None) -> str | None:
@@ -65,11 +73,10 @@ def _dump_csv(path: Path, header: list[str], rows: list) -> None:
 
 def main() -> int:
     apply = "--apply" in sys.argv
-    bdir = Path(
-        sys.argv[sys.argv.index("--backup-dir") + 1]
-        if "--backup-dir" in sys.argv
-        else f"logs/cleanup-{time.strftime('%Y%m%d-%H%M%S')}"
-    )
+    try:
+        bdir = Path(sys.argv[sys.argv.index("--backup-dir") + 1])
+    except (ValueError, IndexError):  # 미지정 또는 값 누락 — 기본 경로.
+        bdir = Path(f"logs/cleanup-{time.strftime('%Y%m%d-%H%M%S')}")
     settings = Settings()
     sm = get_sessionmaker(settings)
 
@@ -123,7 +130,6 @@ def main() -> int:
             elif d in shared and r.canonical_key.startswith("name:"):
                 disc_null.append(r.canonical_key)
 
-        bad_set = set(bad_ids)
         rq = s.execute(text(
             "select status, count(*) from review_queue rq"
             " where rq.company_id = any(:ids) group by status"
@@ -140,25 +146,37 @@ def main() -> int:
             print("[cleanup] dry-run — 적용하려면 --apply")
             return 0
 
-        # ── 백업(CSV) — 삭제 전 스냅샷 ─────────────────────────────────────
+        # ── 백업(CSV) — 삭제 전 스냅샷. cascade 하위(email_validation·review_audit)까지
+        # 전 컬럼을 남긴다(교차리뷰 HIGH — 부분 컬럼 백업은 복구에 불충분). 그래도 1차
+        # 복구선은 일일 pg_dump(scripts/windows/backup-db.bat)다 — 실행 전 존재 확인 권장.
         bdir.mkdir(parents=True, exist_ok=True)
-        _dump_csv(bdir / "company.csv", ["id", "canonical_key", "name", "country", "homepage"],
-                  [(r.id, r.canonical_key, r.name, r.country, r.homepage)
-                   for r in companies if r.id in bad_set])
-        con_rows = []
-        for chunk in _chunks(bad_ids):
-            con_rows += s.execute(text(
-                "select id, company_id, type, value, role from contact"
-                " where company_id = any(:ids)"), {"ids": chunk}).all()
-        _dump_csv(bdir / "contact.csv", ["id", "company_id", "type", "value", "role"], con_rows)
-        rq_rows = []
-        for chunk in _chunks(bad_ids):
-            rq_rows += s.execute(text(
-                "select id, company_id, field, status, assignee, selected, claimed_by"
-                " from review_queue where company_id = any(:ids)"), {"ids": chunk}).all()
-        _dump_csv(bdir / "review_queue.csv",
-                  ["id", "company_id", "field", "status", "assignee", "selected", "claimed_by"],
-                  rq_rows)
+
+        def _dump_table(fname: str, sql: str, ids: list[str]) -> None:
+            rows, header = [], None
+            for chunk in _chunks(ids):
+                res = s.execute(text(sql), {"ids": chunk})
+                if header is None:
+                    header = list(res.keys())
+                rows += res.all()
+            _dump_csv(bdir / fname, header or [], rows)
+
+        _dump_table("company.csv", "select * from company where id = any(:ids)", bad_ids)
+        _dump_table("contact.csv", "select * from contact where company_id = any(:ids)", bad_ids)
+        _dump_table(
+            "review_queue.csv", "select * from review_queue where company_id = any(:ids)", bad_ids
+        )
+        _dump_table(
+            "email_validation.csv",
+            "select ev.* from email_validation ev"
+            " join contact ct on ct.id = ev.contact_id where ct.company_id = any(:ids)",
+            bad_ids,
+        )
+        _dump_table(
+            "review_audit.csv",
+            "select ra.* from review_audit ra"
+            " join review_queue rq on rq.id = ra.review_id where rq.company_id = any(:ids)",
+            bad_ids,
+        )
         _dump_csv(bdir / "discovered_nulled.csv", ["canonical_key"], [(k,) for k in disc_null])
         _dump_csv(bdir / "discovered_deleted.csv", ["canonical_key"], [(k,) for k in disc_del])
         print(f"[cleanup] 백업 완료 → {bdir}")

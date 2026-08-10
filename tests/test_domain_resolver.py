@@ -482,8 +482,12 @@ class _Ledger:
         return False
 
 
-def test_llm_arbiter_roundtrip_failure_falls_back_no_cost() -> None:
-    """왕복 실패(claude CLI 미설치/미인증 등)면 결정적 폴백으로 recall 유지 + 원장 미적재."""
+def test_llm_arbiter_roundtrip_failure_misses_no_cost() -> None:
+    """왕복 실패(미설치/미인증 등)도 캡 소진과 동일하게 miss 이월 + 원장 미적재.
+
+    교차리뷰 HIGH(2026-08-10): 캡 소진만 막고 API 장애 경로에 결정규칙 폴백을 남기면,
+    장애 중 배치 전체가 그 구멍으로 흘러 디렉터리 title-토큰일치 오채택이 재발한다.
+    """
     led = _Ledger()
     f = FakeFetcher({"items": [{"link": "https://skhynix.com", "title": "에스케이하이닉스 공식"}]})
     r = DomainResolver(
@@ -491,7 +495,7 @@ def test_llm_arbiter_roundtrip_failure_falls_back_no_cost() -> None:
     )
     r._arbitrate = lambda dc, cands: (-1, False)  # 왕복 자체가 실패.
     dc = DiscoveredCompany(canonical_key="reg:dart:13", name="에스케이하이닉스", country="KR")
-    assert r.resolve(dc) == "skhynix.com"  # 토큰일치 결정적 폴백으로 채택(recall 보존).
+    assert r.resolve(dc) is None  # 폴백 채택 금지 — miss 로 다음 배치 이월.
     assert led.records == []  # 구독 SDK — 메터드 원장 미적재.
 
 

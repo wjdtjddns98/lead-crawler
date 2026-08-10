@@ -24,6 +24,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import text
@@ -81,12 +82,17 @@ def _load_domain_guards(session) -> tuple[set[str], set[str]]:  # noqa: ANN001 (
             )
         ) if d is not None
     }
-    overshared = {
-        d for (d,) in session.execute(text(
-            "select domain from discovered_company where coalesce(domain,'') <> ''"
-            " group by domain having count(*) >= :cap"
-        ), {"cap": _DOMAIN_OVERSHARE_CAP})
-    }
+    # 원장 domain 은 소스에 따라 raw URL 표기가 섞일 수 있어(save_discovered 는 정규화
+    # 안 함) SQL group by 대신 정규화 후 집계한다 — 표기 분산으로 캡을 우회하지 못하게
+    # (교차리뷰 MED).
+    counts: Counter[str] = Counter()
+    for (dom,) in session.execute(
+        text("select domain from discovered_company where coalesce(domain,'') <> ''")
+    ):
+        nd = normalize_domain(dom)
+        if nd is not None:
+            counts[nd] += 1
+    overshared = {d for d, n in counts.items() if n >= _DOMAIN_OVERSHARE_CAP}
     return taken, overshared
 
 

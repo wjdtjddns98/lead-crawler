@@ -78,7 +78,14 @@ _DOMAIN_OVERSHARE_CAP = 3
 
 
 def _domain_overshared(session, domain: str) -> bool:  # noqa: ANN001 (Session)
-    """이 도메인이 발견 원장에서 이미 과공유(디렉터리 신호)인지 — 기록·승격 금지 판정."""
+    """이 도메인이 발견 원장에서 이미 과공유(디렉터리 신호)인지 — 기록·승격 금지 판정.
+
+    ponytail: ① 등가비교는 정규화값 기준 — 해석기 출력(이 가드의 유입 경로)은 항상
+    정규화 root 라 성립하고, 소스가 raw 표기로 넣은 소수는 언더카운트될 수 있다(허용 —
+    업그레이드는 save_discovered 정규화 통일). ② 해석 성공 건당 COUNT 1회 — 배치≤200이라
+    수용, 병목이 되면 배치 도메인 일괄 ANY 조회+인덱스로. ③ 정당한 계열사 도메인 공유가
+    캡을 넘으면 그 행은 영구 miss 로 회전한다(오염 차단 우선 — 구제는 워크벤치 수동).
+    """
     n = session.execute(
         text("select count(*) from discovered_company where domain = :d"), {"d": domain}
     ).scalar()

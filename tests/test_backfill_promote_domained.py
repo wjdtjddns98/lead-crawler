@@ -90,7 +90,7 @@ def test_domain_guards_seed_taken_and_overshared(tmp_path) -> None:
         for i in range(3):
             session.add(DiscoveredCompanyRow(
                 canonical_key=f"name:kr:피해{i}", name=f"피해{i}", country="KR",
-                industry="화학·석유화학", source="nps", domain="directory.example.com",
+                industry="화학·석유화학", source="nps", domain="directoryshare.com",
             ))
         # 정상 — 단독 도메인, 이미 승격됨(homepage 점유).
         session.add(DiscoveredCompanyRow(
@@ -108,7 +108,7 @@ def test_domain_guards_seed_taken_and_overshared(tmp_path) -> None:
     with sm() as session:
         taken, overshared = mod._load_domain_guards(session)
     assert taken == {"solo.co.kr"}  # homepage 정규화 도메인.
-    assert overshared == {"directory.example.com"}  # 캡 도달 도메인만.
+    assert overshared == {"directoryshare.com"}  # 캡 도달 도메인만.
 
 
 def test_country_scope_filters_targets(tmp_path) -> None:
