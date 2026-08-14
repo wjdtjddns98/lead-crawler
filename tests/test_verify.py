@@ -72,13 +72,30 @@ def test_smtp_undeliverable_forces_invalid(monkeypatch: pytest.MonkeyPatch) -> N
     assert v.status is ValidationStatus.INVALID and v.smtp is False and v.provider == "smtp"
 
 
-def test_smtp_deliverable_upgrades_risky_to_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_smtp_deliverable_does_not_upgrade_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_mx(monkeypatch)
     prober = FakeProber(SMTP_DELIVERABLE)
-    # 도메인 불일치 → 1차 RISKY, SMTP 수신확정 → VALID 승격.
+    # 도메인 불일치 → RISKY. SMTP 수신확정은 메일박스 존재 증명일 뿐 회사 소속 증명이
+    # 아니므로 승격하지 않는다(제3자 이메일 '정상' 오염 방지 — 2026-08-14).
     v = EmailValidator(_smtp_settings(), smtp_prober=prober).validate(
         "ir@mail.acme.com", "other.com"
     )
+    assert v.status is ValidationStatus.RISKY and v.smtp is True and v.provider == "smtp"
+
+
+def test_no_company_domain_is_risky() -> None:
+    # 회사 도메인 미상 = 소속 확인 불가 → '정상'이 아니라 '주의'.
+    v = EmailValidator(Settings(dry_run=True)).validate("ir@acme.com", None)
+    assert v.status is ValidationStatus.RISKY and v.domain_match is False
+
+
+def test_smtp_deliverable_keeps_valid_when_domain_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_mx(monkeypatch)
+    prober = FakeProber(SMTP_DELIVERABLE)
+    # 도메인 일치 + 수신 확정 = 진짜 '정상' 유지(승격 제거가 happy-path 를 깨지 않는다).
+    v = EmailValidator(_smtp_settings(), smtp_prober=prober).validate("ir@acme.com", "acme.com")
     assert v.status is ValidationStatus.VALID and v.smtp is True and v.provider == "smtp"
 
 
@@ -233,14 +250,16 @@ def test_deliverability_undeliverable_forces_invalid(monkeypatch: pytest.MonkeyP
     assert v.status is ValidationStatus.INVALID and v.provider == "fake"
 
 
-def test_deliverability_deliverable_upgrades_risky(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deliverability_deliverable_does_not_upgrade_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _patch_mx(monkeypatch)
     checker = FakeChecker(DELIVERABLE)
-    # 도메인 불일치 → 1차 RISKY, 딜리버러빌리티 확정 → VALID 승격.
+    # 도메인 불일치 → RISKY 유지(수신 가능 ≠ 회사 소속). 출처만 표기.
     v = EmailValidator(_deliv_settings(), deliverability_checker=checker).validate(
         "ir@mail.acme.com", "other.com"
     )
-    assert v.status is ValidationStatus.VALID and v.provider == "fake"
+    assert v.status is ValidationStatus.RISKY and v.provider == "fake"
 
 
 def test_deliverability_unknown_keeps_status(monkeypatch: pytest.MonkeyPatch) -> None:
