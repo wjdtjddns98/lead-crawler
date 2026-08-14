@@ -19,6 +19,9 @@ from ..cost_ledger import SupportsCostLedger
 from ..dedup import normalize_domain
 from ..logging import get_logger
 from ..models import EmailValidation, ValidationStatus
+
+# 공유 플랫폼·디렉토리 도메인(검색 blocklist 재사용) — 소속(domain_match) 판정에서 제외.
+from ..sources.search import _BLOCKLIST as _SHARED_PLATFORM_DOMAINS
 from .deliverability import (
     DELIVERABLE as DELIV_OK,
 )
@@ -218,10 +221,16 @@ class EmailValidator:
             return EmailValidation(status=ValidationStatus.INVALID, checked_at=now)
 
         email_domain = email.split("@", 1)[1].lower()
-        domain_match = (
-            normalize_domain(company_domain) == normalize_domain(email_domain)
-            if company_domain
-            else False
+        norm_email = normalize_domain(email_domain)
+        # 소속 일치 = 정규화 도메인 동일 + 그 도메인이 공유 플랫폼(_BLOCKLIST)이 아닐 것.
+        # normalize_domain 은 tistory/blogspot 류 블로그 루트를 등록도메인으로 뭉개므로
+        # acme.tistory.com(회사) ↔ help@tistory.com(플랫폼 공용)이 '일치'로 오판된다 —
+        # 플랫폼 루트는 누구의 소속 증명도 될 수 없다(2026-08-14 교차리뷰 MED).
+        domain_match = bool(
+            company_domain
+            and norm_email
+            and normalize_domain(company_domain) == norm_email
+            and norm_email not in _SHARED_PLATFORM_DOMAINS
         )
         mx, mx_hosts = self._mx(email_domain)
 

@@ -87,6 +87,23 @@ def test_no_company_domain_is_risky() -> None:
     # 회사 도메인 미상 = 소속 확인 불가 → '정상'이 아니라 '주의'.
     v = EmailValidator(Settings(dry_run=True)).validate("ir@acme.com", None)
     assert v.status is ValidationStatus.RISKY and v.domain_match is False
+    # 빈 문자열도 동일(falsy) — 회귀 방지 명시.
+    v2 = EmailValidator(Settings(dry_run=True)).validate("ir@acme.com", "")
+    assert v2.status is ValidationStatus.RISKY and v2.domain_match is False
+
+
+def test_subdomain_email_matches_registered_domain() -> None:
+    # 서브도메인 이메일 ↔ 등록도메인 회사 = 정상 매칭(positive 회귀 방지).
+    v = EmailValidator(Settings(dry_run=True)).validate("ir@mail.acme.com", "acme.com")
+    assert v.status is ValidationStatus.VALID and v.domain_match is True
+
+
+def test_shared_platform_root_never_matches() -> None:
+    # 블로그/플랫폼 루트(tistory 등)는 normalize_domain 이 등록도메인으로 뭉개
+    # acme.tistory.com(회사) ↔ help@tistory.com(플랫폼 공용)이 일치로 오판되던 구멍 —
+    # 공유 플랫폼 도메인은 소속 증명이 될 수 없다(교차리뷰 MED).
+    v = EmailValidator(Settings(dry_run=True)).validate("help@tistory.com", "acme.tistory.com")
+    assert v.status is ValidationStatus.RISKY and v.domain_match is False
 
 
 def test_smtp_deliverable_keeps_valid_when_domain_matches(
@@ -434,6 +451,7 @@ def test_mx_lookup_failure_is_not_cached(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(ev_mod, "_resolve_mx", _flaky)
     v = EmailValidator(Settings(dry_run=False))
-    assert v.validate("a@x.com", "x.com").status is ValidationStatus.RISKY  # 1회차 실패.
-    assert v.validate("b@x.com", "x.com").status is ValidationStatus.VALID  # 재조회 성공.
-    assert calls == ["x.com", "x.com"]  # 캐시 안 됨 → 두 번 조회.
+    # 더미 도메인은 blocklist 밖이어야 한다(x.com 은 공유 플랫폼이라 소속 불인정).
+    assert v.validate("a@acme.com", "acme.com").status is ValidationStatus.RISKY  # 1회차 실패.
+    assert v.validate("b@acme.com", "acme.com").status is ValidationStatus.VALID  # 재조회 성공.
+    assert calls == ["acme.com", "acme.com"]  # 캐시 안 됨 → 두 번 조회.
