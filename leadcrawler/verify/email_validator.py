@@ -19,6 +19,9 @@ from ..cost_ledger import SupportsCostLedger
 from ..dedup import normalize_domain
 from ..logging import get_logger
 from ..models import EmailValidation, ValidationStatus
+
+# 공유 플랫폼·디렉토리 도메인(검색 blocklist 재사용) — 소속(domain_match) 판정에서 제외.
+from ..sources.search import _BLOCKLIST as _SHARED_PLATFORM_DOMAINS
 from .deliverability import (
     DELIVERABLE as DELIV_OK,
 )
@@ -218,10 +221,16 @@ class EmailValidator:
             return EmailValidation(status=ValidationStatus.INVALID, checked_at=now)
 
         email_domain = email.split("@", 1)[1].lower()
-        domain_match = (
-            normalize_domain(company_domain) == normalize_domain(email_domain)
-            if company_domain
-            else False
+        norm_email = normalize_domain(email_domain)
+        # 소속 일치 = 정규화 도메인 동일 + 그 도메인이 공유 플랫폼(_BLOCKLIST)이 아닐 것.
+        # normalize_domain 은 tistory/blogspot 류 블로그 루트를 등록도메인으로 뭉개므로
+        # acme.tistory.com(회사) ↔ help@tistory.com(플랫폼 공용)이 '일치'로 오판된다 —
+        # 플랫폼 루트는 누구의 소속 증명도 될 수 없다(2026-08-14 교차리뷰 MED).
+        domain_match = bool(
+            company_domain
+            and norm_email
+            and normalize_domain(company_domain) == norm_email
+            and norm_email not in _SHARED_PLATFORM_DOMAINS
         )
         mx, mx_hosts = self._mx(email_domain)
 
@@ -232,9 +241,13 @@ class EmailValidator:
             status = ValidationStatus.RISKY
         elif not mx:
             status = ValidationStatus.INVALID
-        elif domain_match or not company_domain:
+        elif domain_match:
             status = ValidationStatus.VALID
         else:
+            # 도메인 불일치·회사 도메인 미상 = **소속 불명** → '주의'(사람 확인 대상).
+            # VALID('정상')는 "수신 가능 + 회사 소속(도메인 일치)" 둘 다 확인된 경우만 —
+            # 호스팅사·플랫폼·제작사 등 제3자 이메일이 수신 가능하다는 이유로 '정상'을
+            # 달고 나가던 오염 경로 차단(2026-08-14 검증팀 피드백).
             status = ValidationStatus.RISKY
 
         # 2차(opt-in 라이브): SMTP RCPT 프로브로 보정.
@@ -250,8 +263,8 @@ class EmailValidator:
                     provider = "smtp"  # SMTP 가 실제 판정에 기여한 경우만 출처 표기.
                 if smtp_result == SMTP_UNDELIVERABLE:
                     status = ValidationStatus.INVALID  # 메일박스 없음 → 무효 확정.
-                elif smtp_result == SMTP_DELIVERABLE and status is ValidationStatus.RISKY:
-                    status = ValidationStatus.VALID  # 수신 확정 → RISKY 승격.
+                # 수신 확정(DELIVERABLE)이어도 승격하지 않는다 — 수신 가능은 메일박스
+                # 존재 증명일 뿐 회사 소속 증명이 아니다(제3자 이메일 '정상' 오염 방지).
 
         # 3차(opt-in 라이브·유료): 딜리버러빌리티 API 로 최종 보정. 이미 INVALID 면
         # 제외 확정이라 과금 호출을 아낀다(VALID/RISKY 만 질의).
@@ -271,9 +284,8 @@ class EmailValidator:
                     status = ValidationStatus.INVALID  # 제3자 DB 수신불가 → 무효 확정.
                     provider = checker.name
                 elif verdict == DELIV_OK:
-                    if status is ValidationStatus.RISKY:
-                        status = ValidationStatus.VALID  # 수신 확정 → RISKY 승격.
-                    provider = checker.name  # 권위있는 확정 → 출처 표기.
+                    # 수신 가능 확정이어도 승격 없음(위 SMTP 와 동일 사유) — 출처만 표기.
+                    provider = checker.name
 
         smtp_flag = {SMTP_DELIVERABLE: True, SMTP_UNDELIVERABLE: False}.get(smtp_result)
         return EmailValidation(
