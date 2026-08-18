@@ -12,11 +12,12 @@ set PYTHONUTF8=1
 rem 리다이렉트 대상 폴더가 없으면 cmd 가 python 실행 자체를 건너뛴다(조용한 무한 no-op).
 if not exist "logs" mkdir "logs"
 
+rem %2~%9 패스스루 — 필터 옵션(--exclude-industry "쉼표목록" 등) 토큰 수가 4를 넘어 확장.
 if /i "%1"=="A" (
-  set "ARGS=fill-emails --loop --max-batches 20 --workers 2 %2 %3 %4 %5"
+  set "ARGS=fill-emails --loop --max-batches 20 --workers 2 %2 %3 %4 %5 %6 %7 %8 %9"
   set "LOG=logs\backfill-A-fill-emails.log"
 ) else if /i "%1"=="C" (
-  set "ARGS=backfill-resolve-domains --loop --max-batches 20 --workers 2 %2 %3 %4 %5"
+  set "ARGS=backfill-resolve-domains --loop --max-batches 20 --workers 2 %2 %3 %4 %5 %6 %7 %8 %9"
   set "LOG=logs\backfill-C-resolve-domains.log"
 ) else (
   echo 사용법: %~nx0 A^|C

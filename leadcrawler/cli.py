@@ -100,6 +100,13 @@ def fill_emails(
     country: list[str] = typer.Option(
         None, "--country", help="이 국가만 대상(반복 지정 가능, 예: --country KR) — 미지정=전세계"
     ),
+    exclude_industry: list[str] = typer.Option(
+        None, "--exclude-industry",
+        help="이 업종 제외(정규 라벨, 반복 지정·쉼표 병기 가능: --exclude-industry '은행,보험')",
+    ),
+    exclude_listed: bool = typer.Option(
+        False, "--exclude-listed", help="상장 확정(listed='listed') 제외 — unknown 은 대상 유지"
+    ),
 ) -> None:
     """큐의 '실존·무이메일' 회사에 이메일을 배치 병렬로 채운다(발견 producer 의 consumer).
 
@@ -120,23 +127,35 @@ def fill_emails(
     sm = get_sessionmaker(settings)
     # 직접 호출(테스트) 시 기본값이 OptionInfo 객체로 들어온다 — list 일 때만 스코프로 인정.
     scope = list(country) if isinstance(country, list) and country else None
+    # 쉼표 병기 허용 — bat 러너의 인자 슬롯 한계로 11개 업종을 한 토큰에 담는 경로.
+    excl_ind = (
+        [t.strip() for v in exclude_industry for t in v.split(",") if t.strip()]
+        if isinstance(exclude_industry, list) and exclude_industry else None
+    )
+    excl_listed = exclude_listed is True  # OptionInfo 방어(위와 동일).
+    filters = {"exclude_industries": excl_ind, "exclude_listed": excl_listed}
 
     if not loop:
-        processed, emails = fill_batch(settings, sm, limit=batch, workers=workers, countries=scope)
+        processed, emails = fill_batch(
+            settings, sm, limit=batch, workers=workers, countries=scope, **filters
+        )
         typer.echo(f"[fill] 처리 {processed}, 신규이메일 {emails}")
         return
 
     typer.echo(
         f"[fill] 상시 consumer 시작 (batch={batch} workers={workers} min_queue={min_queue}"
-        f" country={scope or '전세계'})"
+        f" country={scope or '전세계'} exclude_industry={excl_ind or '없음'}"
+        f" exclude_listed={excl_listed})"
     )
     batches = 0
     while True:  # 취소 = Ctrl-C / 프로세스 종료.
-        pending = count_targets(sm, scope)
+        pending = count_targets(sm, scope, **filters)
         if pending < min_queue:  # 임계 미만 → 더 쌓일 때까지 대기(배치 효율).
             time.sleep(interval)
             continue
-        processed, emails = fill_batch(settings, sm, limit=batch, workers=workers, countries=scope)
+        processed, emails = fill_batch(
+            settings, sm, limit=batch, workers=workers, countries=scope, **filters
+        )
         typer.echo(f"[fill] 배치 처리 {processed}, 신규이메일 {emails}, 대기 {pending}")
         batches += 1
         # 장기구동 시 메모리 누적 대비 — 러너(bat)가 재기동해 리셋한다(멱등이라 이어받음).
@@ -159,6 +178,13 @@ def backfill_resolve_domains(
     ),
     country: list[str] = typer.Option(
         None, "--country", help="이 국가만 대상(반복 지정 가능, 예: --country KR) — 미지정=전세계"
+    ),
+    exclude_industry: list[str] = typer.Option(
+        None, "--exclude-industry",
+        help="이 업종 제외(반복 지정·쉼표 병기 가능 — 미승격 행은 발견 라벨 기준)",
+    ),
+    exclude_listed: bool = typer.Option(
+        False, "--exclude-listed", help="상장 확정(listed='listed') 제외 — unknown 은 대상 유지"
     ),
 ) -> None:
     """도메인 없이 발견돼 정체된 회사(전세계, GLEIF·NPS 등)에 도메인 해석부터 다시
@@ -185,26 +211,34 @@ def backfill_resolve_domains(
     sm = get_sessionmaker(settings)
     # 직접 호출(테스트) 시 기본값이 OptionInfo 객체로 들어온다 — list 일 때만 스코프로 인정.
     scope = list(country) if isinstance(country, list) and country else None
+    # 쉼표 병기 허용 — bat 러너 인자 슬롯 한계 대응(fill-emails 와 동일 관례).
+    excl_ind = (
+        [t.strip() for v in exclude_industry for t in v.split(",") if t.strip()]
+        if isinstance(exclude_industry, list) and exclude_industry else None
+    )
+    excl_listed = exclude_listed is True  # OptionInfo 방어(위와 동일).
+    filters = {"exclude_industries": excl_ind, "exclude_listed": excl_listed}
 
     if not loop:
         processed, resolved, promoted = resolve_batch(
-            settings, sm, limit=batch, workers=workers, countries=scope
+            settings, sm, limit=batch, workers=workers, countries=scope, **filters
         )
         typer.echo(f"[resolve] 처리 {processed}, 도메인해석 {resolved}, 신규승격 {promoted}")
         return
 
     typer.echo(
         f"[resolve] 상시 consumer 시작 (batch={batch} workers={workers} min_queue={min_queue}"
-        f" country={scope or '전세계'})"
+        f" country={scope or '전세계'} exclude_industry={excl_ind or '없음'}"
+        f" exclude_listed={excl_listed})"
     )
     batches = 0
     while True:  # 취소 = Ctrl-C / 프로세스 종료.
-        pending = count_resolve_targets(sm, scope)
+        pending = count_resolve_targets(sm, scope, **filters)
         if pending < min_queue:
             time.sleep(interval)
             continue
         processed, resolved, promoted = resolve_batch(
-            settings, sm, limit=batch, workers=workers, countries=scope
+            settings, sm, limit=batch, workers=workers, countries=scope, **filters
         )
         typer.echo(f"[resolve] 배치 처리 {processed}, 해석 {resolved}, 승격 {promoted}, 대기 {pending}")
         batches += 1
