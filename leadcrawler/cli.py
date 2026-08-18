@@ -217,6 +217,11 @@ def fill_emails(
     job_generation: int = typer.Option(
         0, "--job-generation", help="관리형: 이 프로세스의 세대(진행 보고 펜싱 키)"
     ),
+    stall_exit_secs: float = typer.Option(
+        900.0, "--stall-exit-secs", min=0,
+        help="배치 진행이 이 초 동안 정체되면 프로세스 종료(러너/supervisor 재기동용, 0=끔)"
+        " — Playwright 드라이버 무응답 행 복구(2026-08-18 실사고)",
+    ),
 ) -> None:
     """큐의 '실존·무이메일' 회사에 이메일을 배치 병렬로 채운다(발견 producer 의 consumer).
 
@@ -242,6 +247,10 @@ def fill_emails(
     )
     excl_listed = exclude_listed is True  # OptionInfo 방어(위와 동일).
     filters = {"exclude_industries": excl_ind, "exclude_listed": excl_listed}
+    # 정체 종료는 CLI 전용(프로세스를 러너/supervisor 가 재기동) — OptionInfo 방어 동일.
+    # filters 와 분리 유지: filters 는 count_targets 에도 풀리는데 거긴 이 인자가 없다.
+    stall = stall_exit_secs if isinstance(stall_exit_secs, (int, float)) else 900.0
+    stall_s = stall if stall > 0 else None
     mj = _ManagedJob(
         sm,
         job_id if isinstance(job_id, str) and job_id else None,
@@ -261,7 +270,8 @@ def fill_emails(
             typer.echo("[fill] 취소 요청 감지 — 실행 없이 종료.")
             return
         processed, emails = fill_batch(
-            settings, sm, limit=batch, workers=workers, countries=scope, **filters
+            settings, sm, limit=batch, workers=workers, countries=scope,
+            stall_exit_s=stall_s, **filters,
         )
         mj.report(processed=processed, emails=emails, batches=1)
         typer.echo(f"[fill] 처리 {processed}, 신규이메일 {emails}")
@@ -284,7 +294,8 @@ def fill_emails(
                 return
             continue
         processed, emails = fill_batch(
-            settings, sm, limit=batch, workers=workers, countries=scope, **filters
+            settings, sm, limit=batch, workers=workers, countries=scope,
+            stall_exit_s=stall_s, **filters,
         )
         # ponytail: remaining 은 배치 직전 카운트(한 배치 지연 근사) — 정밀해지면 재count.
         if not mj.report(processed=processed, emails=emails, batches=1, remaining=pending):
@@ -328,6 +339,11 @@ def backfill_resolve_domains(
     job_generation: int = typer.Option(
         0, "--job-generation", help="관리형: 이 프로세스의 세대(진행 보고 펜싱 키)"
     ),
+    stall_exit_secs: float = typer.Option(
+        900.0, "--stall-exit-secs", min=0,
+        help="배치 진행이 이 초 동안 정체되면 프로세스 종료(러너/supervisor 재기동용, 0=끔)"
+        " — Playwright 드라이버 무응답 행 복구(2026-08-18 실사고)",
+    ),
 ) -> None:
     """도메인 없이 발견돼 정체된 회사(전세계, GLEIF·NPS 등)에 도메인 해석부터 다시
     돌려 승격을 시도한다.
@@ -358,6 +374,9 @@ def backfill_resolve_domains(
     )
     excl_listed = exclude_listed is True  # OptionInfo 방어(위와 동일).
     filters = {"exclude_industries": excl_ind, "exclude_listed": excl_listed}
+    # 정체 종료는 CLI 전용 — filters 와 분리(count_resolve_targets 엔 이 인자가 없다).
+    stall = stall_exit_secs if isinstance(stall_exit_secs, (int, float)) else 900.0
+    stall_s = stall if stall > 0 else None
     mj = _ManagedJob(
         sm,
         job_id if isinstance(job_id, str) and job_id else None,
@@ -377,7 +396,8 @@ def backfill_resolve_domains(
             typer.echo("[resolve] 취소 요청 감지 — 실행 없이 종료.")
             return
         processed, resolved, promoted = resolve_batch(
-            settings, sm, limit=batch, workers=workers, countries=scope, **filters
+            settings, sm, limit=batch, workers=workers, countries=scope,
+            stall_exit_s=stall_s, **filters,
         )
         mj.report(processed=processed, resolved=resolved, promoted=promoted, batches=1)
         typer.echo(f"[resolve] 처리 {processed}, 도메인해석 {resolved}, 신규승격 {promoted}")
@@ -400,7 +420,8 @@ def backfill_resolve_domains(
                 return
             continue
         processed, resolved, promoted = resolve_batch(
-            settings, sm, limit=batch, workers=workers, countries=scope, **filters
+            settings, sm, limit=batch, workers=workers, countries=scope,
+            stall_exit_s=stall_s, **filters,
         )
         # ponytail: remaining 은 배치 직전 카운트(한 배치 지연 근사) — 정밀해지면 재count.
         if not mj.report(
