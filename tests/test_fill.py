@@ -226,3 +226,80 @@ def test_fill_batch_advances_past_emailless_rows(tmp_path, monkeypatch) -> None:
         assert (processed, emails) == (1, 0)  # 이메일은 계속 0.
 
     assert sorted(seen) == sorted(keys), f"같은 회사를 반복 처리함: {seen}"
+
+
+def test_stall_watchdog_fires_on_stall() -> None:
+    """진행(beat) 없이 stall_s 를 넘기면 주입된 _exit 이 종료코드와 함께 호출된다."""
+    import time
+
+    from leadcrawler.pipeline.fill import _STALL_EXIT_CODE, _StallWatchdog
+
+    calls: list[int] = []
+    with _StallWatchdog("t", 0.2, _exit=calls.append):
+        deadline = time.monotonic() + 3.0
+        while not calls and time.monotonic() < deadline:
+            time.sleep(0.05)
+    assert calls == [_STALL_EXIT_CODE]
+
+
+def test_stall_watchdog_beat_prevents_exit() -> None:
+    """소비 루프가 beat 을 계속 치면 정체로 판정하지 않는다."""
+    import time
+
+    from leadcrawler.pipeline.fill import _StallWatchdog
+
+    calls: list[int] = []
+    with _StallWatchdog("t", 0.4, _exit=calls.append) as wd:
+        for _ in range(10):
+            time.sleep(0.05)
+            wd.beat()
+    assert calls == []
+
+
+def test_stall_watchdog_disabled_when_none() -> None:
+    """stall_s=None(웹서버 background 경로)이면 감시 스레드 자체를 안 띄운다."""
+    from leadcrawler.pipeline.fill import _StallWatchdog
+
+    calls: list[int] = []
+    with _StallWatchdog("t", None, _exit=calls.append) as wd:
+        assert wd._thread.ident is None  # 한 번도 start 안 됨(미기동 ≠ 이미 종료).
+    assert calls == []
+
+
+def test_stall_default_is_off_for_library_callers() -> None:
+    """계약: 배치 함수 기본값 = 감시 끔 — 웹서버(background.py)가 안 넘기는 한 절대
+    os._exit 이 서버에서 발화하지 않는다. 기본값이 바뀌면 서버가 죽을 수 있다(리뷰 MED)."""
+    import inspect
+
+    from leadcrawler.pipeline.fill import fill_batch, resolve_batch
+
+    assert inspect.signature(fill_batch).parameters["stall_exit_s"].default is None
+    assert inspect.signature(resolve_batch).parameters["stall_exit_s"].default is None
+
+
+def test_cli_stall_option_mapping(monkeypatch) -> None:
+    """계약: CLI 기본(OptionInfo)→900, 0→None(끔) 으로 배치 함수에 전달된다."""
+    from types import SimpleNamespace
+
+    import leadcrawler.cli as cli
+    import leadcrawler.pipeline.fill as fill_mod
+    import leadcrawler.storage.db as db
+
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(dry_run=False))
+    monkeypatch.setattr(db, "get_sessionmaker", lambda s: object())
+    monkeypatch.setattr(cli, "_acquire_track_lock_or_exit", lambda *a, **k: object())
+    monkeypatch.setattr(fill_mod, "count_targets", lambda sm, countries=None, **kw: 100)
+    seen: dict = {}
+
+    def fake_fill_batch(settings, sm, *, limit, workers, countries=None, **kw):
+        seen.update(kw)
+        return 1, 0
+
+    monkeypatch.setattr(fill_mod, "fill_batch", fake_fill_batch)
+    cli.fill_emails(loop=True, batch=5, workers=1, interval=0.0, min_queue=0, max_batches=1)
+    assert seen["stall_exit_s"] == 900.0  # OptionInfo 직접호출 → 기본 900.
+    cli.fill_emails(
+        loop=True, batch=5, workers=1, interval=0.0, min_queue=0, max_batches=1,
+        stall_exit_secs=0,
+    )
+    assert seen["stall_exit_s"] is None  # 0 = 끔.

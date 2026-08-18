@@ -238,6 +238,8 @@ def _supervise(settings: Settings, job: dict, *, launcher, start_generation: int
                         f"연속 {crash}회 비정상종료(rc={rc})"
                         + (" — rc=1 반복이면 트랙 잠금 점유(구버전 bat 러너 미재시작)"
                            " 여부 확인" if rc == 1 else "")
+                        + (" — rc=86 은 배치 진행 정체 자동 종료(Playwright 행,"
+                           " --stall-exit-secs 참고)" if rc == 86 else "")
                     ),
                 )
                 return
