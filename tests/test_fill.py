@@ -69,6 +69,74 @@ def test_count_targets_country_scope(tmp_path) -> None:
     assert count_targets(sm, ["KR"]) == 1  # 'KR' 선택이 '대한민국' 표기도 잡는다(별칭 확장).
 
 
+def test_count_targets_exclude_filters(tmp_path) -> None:
+    """업종 제외·상장 제외 필터 — 국가 스코프와 조합돼야 한다(KR 비상장 백필 경로)."""
+    from leadcrawler.schema import CompanyRow, DiscoveredCompanyRow
+    from leadcrawler.storage.db import get_sessionmaker, init_db
+
+    s = Settings(database_url=f"sqlite:///{tmp_path}/fx.db", dry_run=False)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    #        key                  업종             listed
+    rows = [
+        ("dom:kr:a.co.kr", "화학·석유화학", "unlisted"),
+        ("dom:kr:b.co.kr", "식품·음료", "unlisted"),   # 업종 제외 대상.
+        ("dom:kr:c.co.kr", "화학·석유화학", "listed"),  # 상장 제외 대상.
+        ("dom:kr:d.co.kr", "", "unknown"),               # 업종 빈값·unknown — 대상 유지.
+    ]
+    with sm() as session:
+        for key, industry, listed in rows:
+            session.add(DiscoveredCompanyRow(
+                canonical_key=key, name=key, country="KR", industry=industry,
+                listed=listed, source="import", domain=key.split(":")[-1],
+            ))
+        session.commit()  # FK 순서 — 발견행 먼저.
+        for i, (key, industry, _listed) in enumerate(rows):
+            session.add(CompanyRow(
+                id=f"co_{i}", canonical_key=key, name=key, country="KR",
+                industry=industry, site_alive=True,
+            ))
+        session.commit()
+
+    assert count_targets(sm, ["KR"]) == 4  # 필터 없음=전부.
+    assert count_targets(sm, ["KR"], exclude_industries=["식품·음료"]) == 3
+    assert count_targets(sm, ["KR"], exclude_listed=True) == 3  # unknown 은 남는다.
+    assert count_targets(
+        sm, ["KR"], exclude_industries=["식품·음료", "게임"], exclude_listed=True
+    ) == 2  # a + d 만.
+
+
+def test_count_resolve_targets_exclude_filters(tmp_path) -> None:
+    """resolve 경로 필터 — 미승격(co 없음) 행은 발견 라벨(d.industry) 폴백으로 제외한다."""
+    from leadcrawler.pipeline.fill import count_resolve_targets
+    from leadcrawler.schema import DiscoveredCompanyRow
+    from leadcrawler.storage.db import get_sessionmaker, init_db
+
+    s = Settings(database_url=f"sqlite:///{tmp_path}/rx.db", dry_run=False)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    rows = [
+        ("nm:kr:가", "화학·석유화학", "unlisted"),
+        ("nm:kr:나", "식품·음료", "unlisted"),  # 업종 제외 대상(발견 라벨).
+        ("nm:kr:다", "화학·석유화학", "listed"),  # 상장 제외 대상.
+        ("nm:kr:라", "", "unknown"),              # 빈 라벨·unknown — 대상 유지.
+    ]
+    with sm() as session:
+        for key, industry, listed in rows:
+            session.add(DiscoveredCompanyRow(
+                canonical_key=key, name=key, country="KR", industry=industry,
+                listed=listed, source="nps", domain=None,  # 도메인 없음 = resolve 대상.
+            ))
+        session.commit()
+
+    assert count_resolve_targets(sm, ["KR"]) == 4
+    assert count_resolve_targets(sm, ["KR"], exclude_industries=["식품·음료"]) == 3
+    assert count_resolve_targets(sm, ["KR"], exclude_listed=True) == 3
+    assert count_resolve_targets(
+        sm, ["KR"], exclude_industries=["식품·음료"], exclude_listed=True
+    ) == 2  # 가 + 라 만.
+
+
 def test_fill_batch_advances_past_emailless_rows(tmp_path, monkeypatch) -> None:
     """이메일을 못 찾은 회사가 대기열 선두를 막지 않는다 — 배치마다 다음 구간을 잡아야 한다.
 

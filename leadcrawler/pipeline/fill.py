@@ -92,19 +92,46 @@ def _domain_overshared(session, domain: str) -> bool:  # noqa: ANN001 (Session)
     return int(n or 0) >= _DOMAIN_OVERSHARE_CAP
 
 
-def _scoped(sql_tpl: str, countries: Iterable[str] | None):
-    """SQL 템플릿의 ``{scope}`` 슬롯에 국가 필터를 주입한다 — (stmt, params) 반환.
+def _scoped(
+    sql_tpl: str,
+    countries: Iterable[str] | None,
+    *,
+    exclude_industries: Iterable[str] | None = None,
+    exclude_listed: bool = False,
+):
+    """SQL 템플릿의 ``{scope}`` 슬롯에 대상 필터를 조합 주입한다 — (stmt, params) 반환.
 
     선택 국가는 :func:`country_match_set` 별칭 집합으로 확장해 원장의 자유표기
-    ('KR'/'대한민국' 혼재)를 같은 국가로 접는다. countries 가 비면 필터 없음(전세계).
+    ('KR'/'대한민국' 혼재)를 같은 국가로 접는다. countries 가 비면 국가 필터 없음(전세계).
+    ``exclude_industries`` 는 발견 원장의 정규 업종 라벨을 제외하고,
+    ``exclude_listed`` 는 상장 확정(listed='listed')만 제외한다(unknown 은 대상 유지 —
+    NPS 미스=비상장 경향이라 실질 비상장일 가능성이 높다).
     """
+    clauses: list[str] = []
+    params: dict[str, object] = {}
+    binds = []
     match = country_match_set(countries) if countries else set()
-    if not match:
-        return text(sql_tpl.format(scope="")), {}
-    stmt = text(sql_tpl.format(scope=_SCOPE_CLAUSE)).bindparams(
-        bindparam("country_scope", expanding=True)
-    )
-    return stmt, {"country_scope": sorted(match)}
+    if match:
+        clauses.append(_SCOPE_CLAUSE)
+        params["country_scope"] = sorted(match)
+        binds.append(bindparam("country_scope", expanding=True))
+    if exclude_listed:
+        clauses.append("and coalesce(d.listed, '') <> 'listed'")
+    excl = sorted({i.strip().lower() for i in (exclude_industries or []) if i and i.strip()})
+    if excl:
+        # 정본 라벨 = co.industry(큐 필터·LLM 재분류 기준, 2026-08-18 리뷰 HIGH). 단
+        # resolve 경로(미승격 — co left join null)와 co.industry 빈값은 발견 라벨
+        # d.industry 로 폴백한다(가용한 최선). 소문자 정규화는 국가절과 동일 관례.
+        clauses.append(
+            "and lower(coalesce(nullif(co.industry, ''), d.industry, ''))"
+            " not in :industry_excl"
+        )
+        params["industry_excl"] = excl
+        binds.append(bindparam("industry_excl", expanding=True))
+    stmt = text(sql_tpl.format(scope="".join(f" {c}" for c in clauses)))
+    if binds:
+        stmt = stmt.bindparams(*binds)
+    return stmt, params
 
 
 def _close_own(tl: threading.local) -> None:
@@ -127,9 +154,17 @@ def _dc_from_row(r) -> DiscoveredCompany:  # noqa: ANN001 (SQLAlchemy Row)
     )
 
 
-def count_targets(sm: sessionmaker, countries: Iterable[str] | None = None) -> int:
-    """현재 이메일 채우기 대상(실존·무이메일) 회사 수(``countries`` 지정 시 그 국가만)."""
-    stmt, params = _scoped(_COUNT_SQL, countries)
+def count_targets(
+    sm: sessionmaker,
+    countries: Iterable[str] | None = None,
+    *,
+    exclude_industries: Iterable[str] | None = None,
+    exclude_listed: bool = False,
+) -> int:
+    """현재 이메일 채우기 대상(실존·무이메일) 회사 수(``_scoped`` 필터 적용 후)."""
+    stmt, params = _scoped(
+        _COUNT_SQL, countries, exclude_industries=exclude_industries, exclude_listed=exclude_listed
+    )
     with sm() as s:
         return int(s.execute(stmt, params).scalar() or 0)
 
@@ -137,14 +172,19 @@ def count_targets(sm: sessionmaker, countries: Iterable[str] | None = None) -> i
 def fill_batch(
     settings: Settings, sm: sessionmaker, *, limit: int, workers: int,
     countries: Iterable[str] | None = None,
+    exclude_industries: Iterable[str] | None = None,
+    exclude_listed: bool = False,
 ) -> tuple[int, int]:
     """대상 최대 ``limit`` 개를 ``workers`` 병렬로 enrich 해 이메일을 채운다.
 
     반환 (처리수, 신규이메일수). enrich(_build_lead)는 워커스레드에서, DB 적재(_persist_lead)는
     메인스레드 단독(파이프라인 계약). 1건 실패는 격리(배치 전체 보호). 멱등이라 재호출 안전.
     ``countries`` 지정 시(크롤 companion — 국가 명시선택 크롤) 그 국가 회사만 채운다.
+    ``exclude_industries``/``exclude_listed`` 는 CLI 백필의 대상 제외 필터(``_scoped`` 참고).
     """
-    stmt, params = _scoped(_TARGET_SQL, countries)
+    stmt, params = _scoped(
+        _TARGET_SQL, countries, exclude_industries=exclude_industries, exclude_listed=exclude_listed
+    )
     with sm() as rd:
         targets = [_dc_from_row(r) for r in rd.execute(stmt, {**params, "limit": limit}).all()]
     if not targets:
@@ -226,9 +266,18 @@ _RESOLVE_COUNT_SQL = """
     """
 
 
-def count_resolve_targets(sm: sessionmaker, countries: Iterable[str] | None = None) -> int:
-    """현재 도메인 해석 대상(도메인없음·미승격) 회사 수(``countries`` 지정 시 그 국가만)."""
-    stmt, params = _scoped(_RESOLVE_COUNT_SQL, countries)
+def count_resolve_targets(
+    sm: sessionmaker,
+    countries: Iterable[str] | None = None,
+    *,
+    exclude_industries: Iterable[str] | None = None,
+    exclude_listed: bool = False,
+) -> int:
+    """현재 도메인 해석 대상(도메인없음·미승격) 회사 수(``_scoped`` 필터 적용 후)."""
+    stmt, params = _scoped(
+        _RESOLVE_COUNT_SQL, countries,
+        exclude_industries=exclude_industries, exclude_listed=exclude_listed,
+    )
     with sm() as s:
         return int(s.execute(stmt, params).scalar() or 0)
 
@@ -236,6 +285,8 @@ def count_resolve_targets(sm: sessionmaker, countries: Iterable[str] | None = No
 def resolve_batch(
     settings: Settings, sm: sessionmaker, *, limit: int, workers: int,
     countries: Iterable[str] | None = None,
+    exclude_industries: Iterable[str] | None = None,
+    exclude_listed: bool = False,
 ) -> tuple[int, int, int]:
     """대상 최대 ``limit`` 개의 도메인을 해석해 채우고, 실존이면 승격까지 시도한다.
 
@@ -262,7 +313,10 @@ def resolve_batch(
     (다음 배치가 재시도 — 적대 리뷰 HIGH-MED: 일시적 크래시로 도메인만 기록되고 승격
     기회가 영구 소멸하던 결함).
     """
-    stmt, params = _scoped(_RESOLVE_TARGET_SQL, countries)
+    stmt, params = _scoped(
+        _RESOLVE_TARGET_SQL, countries,
+        exclude_industries=exclude_industries, exclude_listed=exclude_listed,
+    )
     with sm() as rd:
         targets = [_dc_from_row(r) for r in rd.execute(stmt, {**params, "limit": limit}).all()]
     if not targets:
