@@ -90,6 +90,10 @@ def get_db() -> Iterator[Session]:
         session.close()
 
 
+# 백필 재개 1회성 가드 — 모듈 레벨 app=create_app() 과 uvicorn factory 의 이중 호출 대비.
+_backfill_resume_done = False
+
+
 def create_app() -> FastAPI:
     """FastAPI 앱 인스턴스를 생성한다."""
     app = FastAPI(title="lead-crawler 검증 웹앱", version=__version__)
@@ -396,6 +400,22 @@ def create_app() -> FastAPI:
     from ..pipeline.background import start_watchdog
 
     start_watchdog(get_settings())
+
+    # 서버 재시작 시 백필 자동 재개(#352) — running 잔존 잡을 세대+1 로 재스폰한다
+    # (취소 플래그 우선 재확인은 resume 내부 계약). dry_run 게이트는 start_watchdog 과
+    # 동일 관례(테스트·시뮬레이션에서 실 프로세스 스폰 금지). 초기화 실패는 로그만
+    # 남기고 서버 기동을 막지 않는다.
+    global _backfill_resume_done
+    if not get_settings().dry_run and not _backfill_resume_done:
+        _backfill_resume_done = True  # create_app 다중 호출(모듈 app + factory) 중복 방지.
+        try:
+            from ..pipeline.backfill_process import resume_active_jobs
+
+            resume_active_jobs(get_settings())
+        except Exception as exc:  # pragma: no cover — 재개 실패는 로그로만(기동 우선).
+            from ..logging import get_logger
+
+            get_logger("api.app").info("backfill.resume.startup_error", err=str(exc))
 
     return app
 
