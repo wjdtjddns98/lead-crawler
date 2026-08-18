@@ -131,8 +131,8 @@ def create_app() -> FastAPI:
         받아간 작업). ``total`` 도 동일 필터를 반영해 '이 범위 잔여건수' 표시에 쓴다.
         지역·시장 필터는 미상(주소 없는 소스 유입·시장 미기입) 행을 자연히 제외한다.
         ``sort_by``/``sort_dir``(#238) 는 전체 결과 기준 서버 정렬이라 페이지를 넘겨도
-        순서가 일관된다. 미지정 시 기본 = LIFO(status 업무순위 안에서 발견 first_seen
-        역순 — 최신 크롤분 최상단, 2026-07-13 변경).
+        순서가 일관된다. 미지정 시 기본 = LIFO(status 업무순위 안에서 큐 적재시각
+        created_at 역순 — 최신 적재분 최상단, #352 에서 발견 first_seen 근사키 대체).
         """
         status_val = status.value if status is not None else None
         countries = _split_csv(country)

@@ -197,6 +197,12 @@ class ReviewQueueRow(Base):
     )
     # 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼으로 export 된다.
     note: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # 큐 적재 시각 — 전체큐 기본 LIFO 의 정렬 키(#352). 종전 근사키(발견 first_seen)는
+    # 백필 승격처럼 "발견은 옛날, 적재는 지금"인 행을 바닥에 묻었다. 마이그레이션이
+    # 기존 행을 first_seen 으로 백필해 현행 순서를 보존한다.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now(), index=True
+    )
 
 
 class ReviewAuditRow(Base):
@@ -415,6 +421,63 @@ class CrawlJobRow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BackfillJobRow(Base):
+    """백필 작업 1건 — 웹 트리거 supervisor 가 자식 CLI 프로세스를 세대 단위로 감독(#352).
+
+    crawl_job 과 달리 실행 주체가 스레드가 아닌 **별도 자식 프로세스**다(Playwright 메모리
+    리셋을 위해 max_batches 마다 정상종료→재기동). 이 행이 상태·필터 스냅샷·누적 카운터의
+    정본이고, 자식은 ``--job-id`` 로 배치마다 자기보고한다(generation 펜싱으로 이전 세대의
+    늦은 갱신 차단). status: running | failed | cancelled | budget_exhausted —
+    지속형(consumer)이라 '완료(done)'는 없고 대상 0건이면 대기한다.
+    """
+
+    __tablename__ = "backfill_job"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # 'bf_' + uuid12
+    track: Mapped[str] = mapped_column(String(8), index=True)  # 'A'(이메일) | 'C'(도메인해석)
+    # 트랙별 활성 1건 강제 — 활성이면 track 값, 종료 시 NULL(NULL 은 유니크 미충돌).
+    active_track: Mapped[str | None] = mapped_column(String(8), nullable=True, unique=True)
+    status: Mapped[str] = mapped_column(
+        String(24), default="running", server_default=text("'running'"), index=True
+    )
+    # 필터 스냅샷 — 재기동(세대 교체)이 원 요청 조건을 그대로 복원한다(crawl_job 선례).
+    countries: Mapped[str] = mapped_column(String(256), default="", server_default=text("''"))
+    exclude_industries: Mapped[str] = mapped_column(
+        String(1024), default="", server_default=text("''")
+    )  # 쉼표구분 CSV(crawl_target 관례)
+    exclude_listed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # 실행 스냅샷.
+    batch: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    workers: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    max_batches: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    min_queue: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # 진행 카운터(자식 자기보고 누계) — record_progress 가 원자 증가시킨다.
+    initial_target: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    remaining: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    processed: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    resolved: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    promoted: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    emails: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    batches_done: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # 세대(프로세스 재기동) 관리 — generation 은 진행 갱신의 펜싱 키.
+    generation: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    recycles: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    crash_restarts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    pid: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 표시·진단용(kill 판단 금지)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    stop_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    triggered_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now(), index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+    progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
