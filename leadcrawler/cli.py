@@ -109,6 +109,26 @@ class _ManagedJob:
         with self._sm() as s:
             return is_cancel_requested(s, self._job_id)
 
+    def should_stop(self) -> bool:
+        """중지 신호 — 취소뿐 아니라 **세대 교체·작업 종료·행 삭제**도 감지한다.
+
+        idle 대기 중인 구세대 자식은 배치 보고(펜싱)를 안 하므로, 이 확인이 없으면
+        트랙 잠금을 무기한 쥔 채 새 세대의 기동을 막는다(2026-08-18 Codex HIGH-3).
+        """
+        if self._job_id is None:
+            return False
+        from .storage.backfill_job import TERMINAL, get_backfill_job
+
+        with self._sm() as s:
+            row = get_backfill_job(s, self._job_id)
+            if row is None:
+                return True
+            return bool(
+                row.cancel_requested
+                or row.status in TERMINAL
+                or row.generation != self._generation
+            )
+
     def invalid_reason(self, track: str) -> str | None:
         """시작 전 job 검증 — 없음/트랙 불일치/이미 종료면 사유 문자열(fail-loud 용)."""
         if self._job_id is None:
@@ -148,7 +168,7 @@ class _ManagedJob:
             return False
         end = time.monotonic() + seconds
         while True:
-            if self.cancelled():
+            if self.should_stop():
                 return True
             left = end - time.monotonic()
             if left <= 0:
@@ -254,13 +274,13 @@ def fill_emails(
     )
     batches = 0
     while True:  # 취소 = Ctrl-C / 프로세스 종료 / 관리형 취소 플래그.
-        if mj.cancelled():
-            typer.echo("[fill] 취소 요청 감지 — 정상종료.")
+        if mj.should_stop():
+            typer.echo("[fill] 중지 신호 감지(취소/세대 교체/종료) — 정상종료.")
             return
         pending = count_targets(sm, scope, **filters)
         if pending < min_queue:  # 임계 미만 → 더 쌓일 때까지 대기(배치 효율).
             if mj.wait(interval):
-                typer.echo("[fill] 취소 요청 감지 — 정상종료.")
+                typer.echo("[fill] 중지 신호 감지(취소/세대 교체/종료) — 정상종료.")
                 return
             continue
         processed, emails = fill_batch(
@@ -278,7 +298,7 @@ def fill_emails(
             return
         if processed == 0:  # 대상 있었으나 다 실패/이탈 → 폭주 방지 대기.
             if mj.wait(interval):
-                typer.echo("[fill] 취소 요청 감지 — 정상종료.")
+                typer.echo("[fill] 중지 신호 감지(취소/세대 교체/종료) — 정상종료.")
                 return
 
 
@@ -370,13 +390,13 @@ def backfill_resolve_domains(
     )
     batches = 0
     while True:  # 취소 = Ctrl-C / 프로세스 종료 / 관리형 취소 플래그.
-        if mj.cancelled():
-            typer.echo("[resolve] 취소 요청 감지 — 정상종료.")
+        if mj.should_stop():
+            typer.echo("[resolve] 중지 신호 감지(취소/세대 교체/종료) — 정상종료.")
             return
         pending = count_resolve_targets(sm, scope, **filters)
         if pending < min_queue:
             if mj.wait(interval):
-                typer.echo("[resolve] 취소 요청 감지 — 정상종료.")
+                typer.echo("[resolve] 중지 신호 감지(취소/세대 교체/종료) — 정상종료.")
                 return
             continue
         processed, resolved, promoted = resolve_batch(
@@ -397,7 +417,7 @@ def backfill_resolve_domains(
             return
         if processed == 0 or resolved == 0:  # 소진/무진전 → 폭주 방지 대기.
             if mj.wait(interval):
-                typer.echo("[resolve] 취소 요청 감지 — 정상종료.")
+                typer.echo("[resolve] 중지 신호 감지(취소/세대 교체/종료) — 정상종료.")
                 return
 
 

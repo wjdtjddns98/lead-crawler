@@ -123,18 +123,22 @@ def test_managed_job_validation_fails_loud(settings, monkeypatch) -> None:
 
 
 def test_report_rejection_stops_loop(settings, monkeypatch) -> None:
-    """세대 교체 후 구세대 자식의 보고가 거부되면 루프가 스스로 멈춘다(유령 세대 방지)."""
+    """**배치 도중** 세대가 교체되면 보고 거부(2차 방어선)로 루프가 멈춘다.
+
+    루프 상단 should_stop(1차)은 배치 전 교체만 잡는다 — 이 테스트는 배치 실행 중
+    교체가 일어나는 경쟁 창을 재현해 보고-거부 경로 자체를 검증한다.
+    """
     from leadcrawler.storage.backfill_job import update_backfill_job
 
     jid = _make_job(settings, "A")
     sm = get_sessionmaker(settings)
-    with sm() as s:
-        update_backfill_job(s, jid, generation=1)  # supervisor 가 세대 교체한 상황.
-        s.commit()
     calls = {"n": 0}
 
     def fake_fill_batch(*a, **k):
         calls["n"] += 1
+        with sm() as s:  # 배치 처리 도중 supervisor 가 세대를 교체하는 상황.
+            update_backfill_job(s, jid, generation=1)
+            s.commit()
         return 1, 0
 
     monkeypatch.setattr(fill, "count_targets", lambda *a, **k: 100)
@@ -145,6 +149,27 @@ def test_report_rejection_stops_loop(settings, monkeypatch) -> None:
         job_id=jid, job_generation=0,
     )
     assert calls["n"] == 1  # 배치 1회 후 보고 거부 → 즉시 정상종료.
+
+
+def test_stale_generation_stops_before_first_batch(settings, monkeypatch) -> None:
+    """배치 **전에** 이미 세대가 교체돼 있으면 should_stop(1차)이 실행 자체를 막는다."""
+    from leadcrawler.storage.backfill_job import update_backfill_job
+
+    jid = _make_job(settings, "A")
+    sm = get_sessionmaker(settings)
+    with sm() as s:
+        update_backfill_job(s, jid, generation=1)
+        s.commit()
+    calls = {"n": 0}
+    monkeypatch.setattr(fill, "count_targets", lambda *a, **k: 100)
+    monkeypatch.setattr(
+        fill, "fill_batch", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1) or (1, 0)
+    )
+    cli.fill_emails(
+        loop=True, batch=5, workers=1, interval=0.0, min_queue=0, max_batches=0,
+        job_id=jid, job_generation=0,
+    )
+    assert calls["n"] == 0  # 배치 0회 — 시작 전에 자기감지 종료.
 
 
 def test_lock_busy_exits_with_code_1(settings, monkeypatch) -> None:
