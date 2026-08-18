@@ -450,3 +450,69 @@ class DedupRefreshStatus(BaseModel):
     finished_at: str | None = None
     error: str | None = None  # status==error 일 때 사유
     result: DedupRefreshResult | None = None  # status==done 일 때 적재 결과
+
+
+class BackfillStartRequest(BaseModel):
+    """딸깍 백필 시작(#352) — 조건 하나로 C(도메인해석)·A(이메일) 두 트랙 자동 가동.
+
+    트랙은 내부 구현 개념이라 요청에 노출하지 않는다. 조건 전부 기본값이면 전세계
+    전체 대상(진짜 원클릭). 값 형식은 쉼표구분 CSV(crawl_target 관례).
+    """
+
+    countries: str = Field(default="", max_length=256)
+    exclude_industries: str = Field(default="", max_length=1024)
+    exclude_listed: bool = False
+
+
+class BackfillJobInfo(BaseModel):
+    """백필 작업 현황(트랙 1개분) — status: idle(작업 없음) | running | failed |
+    cancelled | budget_exhausted. 지속형 consumer 라 '완료'는 없다(대상 소진=대기)."""
+
+    id: str | None = None
+    track: str = ""
+    status: str = "idle"
+    countries: str = ""
+    exclude_industries: str = ""
+    exclude_listed: bool = False
+    batch: int = 0
+    workers: int = 0
+    max_batches: int = 0
+    min_queue: int = 0
+    initial_target: int = 0
+    remaining: int = 0
+    processed: int = 0
+    resolved: int = 0
+    promoted: int = 0
+    emails: int = 0
+    batches_done: int = 0
+    generation: int = 0
+    recycles: int = 0
+    crash_restarts: int = 0
+    pid: int | None = None
+    cancel_requested: bool = False
+    stop_reason: str | None = None
+    error: str | None = None
+    triggered_by: str | None = None
+    started_at: str | None = None
+    updated_at: str | None = None
+    progress_at: str | None = None
+    finished_at: str | None = None
+
+
+class BackfillStatusResponse(BaseModel):
+    """통합 진행 카드 — 트랙별 최신 작업(운영자 화면은 두 카운터를 합쳐 깔때기로)."""
+
+    resolve: BackfillJobInfo  # C 트랙(도메인 해석→승격).
+    fill: BackfillJobInfo  # A 트랙(이메일 채우기).
+
+
+class BackfillOverview(BaseModel):
+    """상시 잔여 패널 — 조건 변경 시 즉시 재계산되는 깔때기 카운트.
+
+    queue_pending 은 국가 필터만 반영한다(큐 카운트는 포함식 업종 필터 체계라
+    제외식과 불일치 — 화면엔 근사치로 표기).
+    """
+
+    resolve_pending: int  # 도메인 없음·미승격(해석 대기).
+    fill_pending: int  # 도메인 있음·이메일 없음(채우기 대기).
+    queue_pending: int  # 워크벤치 미점유 pending.

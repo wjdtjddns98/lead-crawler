@@ -38,6 +38,10 @@ from ..storage.crawl_job import (
 from ..storage.crawl_target import get_crawl_target, set_crawl_target
 from .schemas import (
     AuditEntry,
+    BackfillJobInfo,
+    BackfillOverview,
+    BackfillStartRequest,
+    BackfillStatusResponse,
     CountryOption,
     CrawlJobInfo,
     CrawlJobRequest,
@@ -339,6 +343,150 @@ def register_admin(
         # 실행 스레드가 그 사이 종료했을 수 있으니 재조회해 정확한 현재 상태를 돌려준다.
         db.refresh(row)
         return CrawlJobInfo(**crawl_job_dict(row))
+
+    # ------------------------------------------------------------------
+    # 백필 제어(#352) — 딸깍 원칙: 조건 하나로 C(도메인해석)·A(이메일) 자동 병행.
+    # 트랙은 내부 개념이라 요청엔 없고, 응답에서만 resolve/fill 로 구분 표기한다.
+    # ------------------------------------------------------------------
+
+    def _backfill_filters(countries: str, exclude_industries: str, exclude_listed: bool):
+        """CSV 요청값 → count 함수 인자(쉼표 분해·빈값 None 수렴)."""
+        from .app import _split_csv
+
+        c = _split_csv(countries) or None
+        e = _split_csv(exclude_industries) or None
+        return c, e, bool(exclude_listed)
+
+    def _track_info(settings, track: str) -> BackfillJobInfo:  # noqa: ANN001
+        from ..pipeline.backfill_process import backfill_status
+
+        info = backfill_status(settings, track)
+        return BackfillJobInfo(**info) if info else BackfillJobInfo(track=track)
+
+    @app.get("/admin/backfill/overview", response_model=BackfillOverview)
+    def backfill_overview(
+        countries: str = Query(default=""),
+        exclude_industries: str = Query(default=""),
+        exclude_listed: bool = Query(default=False),
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> BackfillOverview:
+        """상시 잔여 깔때기 — 조건 변경 시 즉시 재계산(시작 전 미리보기 겸용).
+
+        FE 계약: **필터 변경·수동 새로고침 시에만 호출**(초 단위 폴링 금지 — 카운트가
+        대형 조인 풀스캔이라 폴링은 status 쪽으로). 진행 중 잔여는 status.remaining 사용.
+        """
+        from ..pipeline.fill import count_resolve_targets, count_targets
+        from ..storage.db import get_sessionmaker
+        from ..storage.review import count_reviews
+
+        c, e, x = _backfill_filters(countries, exclude_industries, exclude_listed)
+        sm = get_sessionmaker(get_settings())
+        return BackfillOverview(
+            resolve_pending=count_resolve_targets(sm, c, exclude_industries=e, exclude_listed=x),
+            fill_pending=count_targets(sm, c, exclude_industries=e, exclude_listed=x),
+            queue_pending=count_reviews(db, status="pending", countries=c),
+        )
+
+    @app.post("/admin/backfill/start", response_model=BackfillStatusResponse, status_code=202)
+    def backfill_start(
+        body: BackfillStartRequest,
+        admin: UserRow = Depends(require_admin),
+    ) -> BackfillStatusResponse:
+        """백필 시작(딸깍) — C·A 두 트랙을 같은 조건으로 함께 가동한다.
+
+        어느 한 트랙이라도 이미 활성이면 409(먼저 중지 후 재시작). C 만 성공하고
+        A 가 경쟁으로 막히면 C 를 되돌려 부분 가동을 남기지 않는다.
+        """
+        from ..pipeline.backfill_process import request_stop, start_backfill
+        from ..pipeline.fill import count_resolve_targets, count_targets
+        from ..storage.backfill_job import BackfillBusy, active_backfill_job
+        from ..storage.db import get_sessionmaker
+
+        settings = get_settings()
+        sm = get_sessionmaker(settings)
+        with sm() as s:
+            active = [t for t in ("A", "C") if active_backfill_job(s, t) is not None]
+        if active:
+            raise HTTPException(
+                status_code=409, detail=f"활성 백필 존재(트랙 {', '.join(active)})"
+            )
+        c, e, x = _backfill_filters(
+            body.countries, body.exclude_industries, body.exclude_listed
+        )
+        kwargs = {
+            "countries": body.countries.strip(),
+            "exclude_industries": body.exclude_industries.strip(),
+            "exclude_listed": bool(body.exclude_listed),
+            "triggered_by": admin.username,
+        }
+        try:
+            resolve_job = start_backfill(
+                settings, track="C",
+                initial_target=count_resolve_targets(
+                    sm, c, exclude_industries=e, exclude_listed=x
+                ),
+                **kwargs,
+            )
+        except BackfillBusy as exc:
+            raise HTTPException(status_code=409, detail="트랙 C 활성 작업 존재") from exc
+        try:
+            start_backfill(
+                settings, track="A",
+                initial_target=count_targets(sm, c, exclude_industries=e, exclude_listed=x),
+                **kwargs,
+            )
+        except Exception as exc:
+            # BackfillBusy 뿐 아니라 **어떤 실패든** C 를 되돌린다 — 아니면 500 과 함께
+            # C 만 고아 running 으로 남는다(2026-08-18 Codex 리뷰 HIGH-1).
+            request_stop(settings, str(resolve_job["id"]))  # 부분 가동 방지 — C 되돌림.
+            if isinstance(exc, BackfillBusy):
+                raise HTTPException(
+                    status_code=409,
+                    detail="트랙 A 활성 작업 존재 — 기존 가동을 비동기로 되감는 중이니"
+                    " 잠시 후 재시도",
+                ) from exc
+            raise
+        return BackfillStatusResponse(
+            resolve=_track_info(settings, "C"), fill=_track_info(settings, "A")
+        )
+
+    @app.get("/admin/backfill/status", response_model=BackfillStatusResponse)
+    def backfill_status_route(
+        _admin: UserRow = Depends(require_admin),
+    ) -> BackfillStatusResponse:
+        """통합 진행 카드 — 트랙별 최신 작업(이력 없으면 idle)."""
+        settings = get_settings()
+        return BackfillStatusResponse(
+            resolve=_track_info(settings, "C"), fill=_track_info(settings, "A")
+        )
+
+    @app.post("/admin/backfill/stop", response_model=BackfillStatusResponse)
+    def backfill_stop(
+        _admin: UserRow = Depends(require_admin),
+    ) -> BackfillStatusResponse:
+        """백필 중지 — 활성 작업 전부에 취소 요청(supervisor 가 Job 트리 종료·마감).
+
+        활성이 하나도 없으면 404. 응답은 요청 직후 상태(마감은 수 초 내 비동기 완료).
+        """
+        from ..pipeline.backfill_process import request_stop
+        from ..storage.backfill_job import active_backfill_job
+        from ..storage.db import get_sessionmaker
+
+        settings = get_settings()
+        sm = get_sessionmaker(settings)
+        with sm() as s:
+            targets = [
+                row.id for t in ("A", "C")
+                if (row := active_backfill_job(s, t)) is not None
+            ]
+        if not targets:
+            raise HTTPException(status_code=404, detail="활성 백필이 없습니다")
+        for job_id in targets:
+            request_stop(settings, job_id)
+        return BackfillStatusResponse(
+            resolve=_track_info(settings, "C"), fill=_track_info(settings, "A")
+        )
 
 
 def _target_info(row: CrawlTargetRow) -> CrawlTargetInfo:
