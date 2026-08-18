@@ -87,6 +87,90 @@ def db_upgrade(revision: str = typer.Argument("head", help="목표 리비전")) 
     typer.echo(f"DB 마이그레이션 적용 완료: {revision}")
 
 
+class _ManagedJob:
+    """``--job-id`` 관리형 실행 컨텍스트 — 진행 자기보고·취소 폴링(#352 PR③).
+
+    웹 supervisor 가 만든 backfill_job 행에 배치마다 카운터를 자기보고하고, 취소
+    플래그를 짧은 세션으로 폴링한다(장수 세션 identity-map 캐시는 다른 트랜잭션의
+    취소 커밋을 못 본다 — crawl_job 소비자와 동일 회피). ``job_id=None``(비관리형
+    — bat 러너·수동 실행)이면 전부 no-op 으로 수렴해 기존 동작과 100% 동일하다.
+    """
+
+    def __init__(self, sm, job_id: str | None, generation: int) -> None:  # noqa: ANN001
+        self._sm = sm
+        self._job_id = job_id
+        self._generation = generation
+
+    def cancelled(self) -> bool:
+        if self._job_id is None:
+            return False
+        from .storage.backfill_job import is_cancel_requested
+
+        with self._sm() as s:
+            return is_cancel_requested(s, self._job_id)
+
+    def invalid_reason(self, track: str) -> str | None:
+        """시작 전 job 검증 — 없음/트랙 불일치/이미 종료면 사유 문자열(fail-loud 용)."""
+        if self._job_id is None:
+            return None
+        from .storage.backfill_job import TERMINAL, get_backfill_job
+
+        with self._sm() as s:
+            row = get_backfill_job(s, self._job_id)
+            if row is None:
+                return f"job {self._job_id} 없음"
+            if row.track != track:
+                return f"job 트랙 불일치({row.track} != {track})"
+            if row.status in TERMINAL:
+                return f"job 이미 종료({row.status})"
+        return None
+
+    def report(self, *, remaining: int | None = None, **deltas: int) -> bool:
+        """배치 자기보고 — DB 가 거부하면(세대 교체·종료) False: 자식은 스스로 멈춰야
+        한다(유령 세대가 과금 작업을 계속하는 유일한 감지선, 2026-08-18 Codex HIGH-2)."""
+        if self._job_id is None:
+            return True
+        from .storage.backfill_job import record_progress
+
+        with self._sm() as s:
+            ok = record_progress(
+                s, self._job_id, self._generation, remaining=remaining, **deltas
+            )
+            s.commit()
+        return ok
+
+    def wait(self, seconds: float) -> bool:
+        """대기 — 관리형이면 5초 청크로 취소를 살피고, 취소 시 True(조기 반환)."""
+        import time
+
+        if self._job_id is None:
+            time.sleep(seconds)
+            return False
+        end = time.monotonic() + seconds
+        while True:
+            if self.cancelled():
+                return True
+            left = end - time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(5.0, left))
+
+
+def _acquire_track_lock_or_exit(settings, track: str, label: str):  # noqa: ANN001, ANN202
+    """트랙 실행 잠금 획득 — 이미 점유면 안내 후 종료(중복 실행이 과금 이중화를 만듦).
+
+    반환 핸들은 프로세스 수명 동안 보유한다(커넥션 종료 = 잠금 해제). SQLite 는 no-op.
+    """
+    from .storage.db import get_engine
+    from .storage.track_lock import acquire_track_lock
+
+    lock = acquire_track_lock(get_engine(settings), track)
+    if lock is None:
+        typer.echo(f"[{label}] 트랙 {track} 실행 잠금 점유 중(다른 백필 실행) — 중단.")
+        raise typer.Exit(1)
+    return lock
+
+
 @app.command("fill-emails")
 def fill_emails(
     loop: bool = typer.Option(False, "--loop", help="상시 consumer — 취소 전까지 배치 반복"),
@@ -107,6 +191,12 @@ def fill_emails(
     exclude_listed: bool = typer.Option(
         False, "--exclude-listed", help="상장 확정(listed='listed') 제외 — unknown 은 대상 유지"
     ),
+    job_id: str = typer.Option(
+        None, "--job-id", help="관리형(웹 supervisor) 실행 — backfill_job 행에 진행 자기보고"
+    ),
+    job_generation: int = typer.Option(
+        0, "--job-generation", help="관리형: 이 프로세스의 세대(진행 보고 펜싱 키)"
+    ),
 ) -> None:
     """큐의 '실존·무이메일' 회사에 이메일을 배치 병렬로 채운다(발견 producer 의 consumer).
 
@@ -114,8 +204,6 @@ def fill_emails(
     회사를 배치로 잡아 헤드리스/OCR 까지 돌려 이메일을 채운다. 멱등(채워지면 대상에서 이탈).
     ``--loop`` 면 취소(Ctrl-C) 전까지 상시 구동한다.
     """
-    import time
-
     from .pipeline.fill import count_targets, fill_batch
     from .storage.db import get_sessionmaker
 
@@ -134,11 +222,28 @@ def fill_emails(
     )
     excl_listed = exclude_listed is True  # OptionInfo 방어(위와 동일).
     filters = {"exclude_industries": excl_ind, "exclude_listed": excl_listed}
+    mj = _ManagedJob(
+        sm,
+        job_id if isinstance(job_id, str) and job_id else None,
+        job_generation if isinstance(job_generation, int) else 0,
+    )
+    # 트랙 실행 잠금 — 웹·bat·야간 CLI 중복 실행 차단(과금 이중화 방지). 명시 해제 없이
+    # 프로세스 수명 동안 보유한다(1 CLI 호출 = 1 프로세스 불변식 — 같은 프로세스에서
+    # 이 커맨드를 재호출하면 PG 에선 자기 잠금에 막힌다. 재호출 용도가 생기면 try/finally).
+    _lock = _acquire_track_lock_or_exit(settings, "A", "fill")
+    bad = mj.invalid_reason("A")
+    if bad:
+        typer.echo(f"[fill] 관리형 job 검증 실패 — {bad}. 중단.")
+        raise typer.Exit(1)
 
     if not loop:
+        if mj.cancelled():
+            typer.echo("[fill] 취소 요청 감지 — 실행 없이 종료.")
+            return
         processed, emails = fill_batch(
             settings, sm, limit=batch, workers=workers, countries=scope, **filters
         )
+        mj.report(processed=processed, emails=emails, batches=1)
         typer.echo(f"[fill] 처리 {processed}, 신규이메일 {emails}")
         return
 
@@ -148,14 +253,23 @@ def fill_emails(
         f" exclude_listed={excl_listed})"
     )
     batches = 0
-    while True:  # 취소 = Ctrl-C / 프로세스 종료.
+    while True:  # 취소 = Ctrl-C / 프로세스 종료 / 관리형 취소 플래그.
+        if mj.cancelled():
+            typer.echo("[fill] 취소 요청 감지 — 정상종료.")
+            return
         pending = count_targets(sm, scope, **filters)
         if pending < min_queue:  # 임계 미만 → 더 쌓일 때까지 대기(배치 효율).
-            time.sleep(interval)
+            if mj.wait(interval):
+                typer.echo("[fill] 취소 요청 감지 — 정상종료.")
+                return
             continue
         processed, emails = fill_batch(
             settings, sm, limit=batch, workers=workers, countries=scope, **filters
         )
+        # ponytail: remaining 은 배치 직전 카운트(한 배치 지연 근사) — 정밀해지면 재count.
+        if not mj.report(processed=processed, emails=emails, batches=1, remaining=pending):
+            typer.echo("[fill] 진행 보고 거부(세대 교체/작업 종료) — 정상종료.")
+            return
         typer.echo(f"[fill] 배치 처리 {processed}, 신규이메일 {emails}, 대기 {pending}")
         batches += 1
         # 장기구동 시 메모리 누적 대비 — 러너(bat)가 재기동해 리셋한다(멱등이라 이어받음).
@@ -163,7 +277,9 @@ def fill_emails(
             typer.echo(f"[fill] max_batches={max_batches} 도달 — 정상종료(러너 재기동 대상)")
             return
         if processed == 0:  # 대상 있었으나 다 실패/이탈 → 폭주 방지 대기.
-            time.sleep(interval)
+            if mj.wait(interval):
+                typer.echo("[fill] 취소 요청 감지 — 정상종료.")
+                return
 
 
 @app.command("backfill-resolve-domains")
@@ -186,6 +302,12 @@ def backfill_resolve_domains(
     exclude_listed: bool = typer.Option(
         False, "--exclude-listed", help="상장 확정(listed='listed') 제외 — unknown 은 대상 유지"
     ),
+    job_id: str = typer.Option(
+        None, "--job-id", help="관리형(웹 supervisor) 실행 — backfill_job 행에 진행 자기보고"
+    ),
+    job_generation: int = typer.Option(
+        0, "--job-generation", help="관리형: 이 프로세스의 세대(진행 보고 펜싱 키)"
+    ),
 ) -> None:
     """도메인 없이 발견돼 정체된 회사(전세계, GLEIF·NPS 등)에 도메인 해석부터 다시
     돌려 승격을 시도한다.
@@ -195,8 +317,6 @@ def backfill_resolve_domains(
     KR 은 네이버(무료 25k/일), 그 외는 유료 CSE/Serper 로 라우팅된다 — 쿼터·예산 소진
     중엔 처리수만 늘고 해석은 거의 안 될 수 있다(정상 — 리셋 후 재실행하면 이어서 풀린다).
     """
-    import time
-
     from .pipeline.fill import count_resolve_targets, resolve_batch
     from .storage.db import get_sessionmaker
 
@@ -218,11 +338,28 @@ def backfill_resolve_domains(
     )
     excl_listed = exclude_listed is True  # OptionInfo 방어(위와 동일).
     filters = {"exclude_industries": excl_ind, "exclude_listed": excl_listed}
+    mj = _ManagedJob(
+        sm,
+        job_id if isinstance(job_id, str) and job_id else None,
+        job_generation if isinstance(job_generation, int) else 0,
+    )
+    # 트랙 실행 잠금 — 웹·bat·야간 CLI 중복 실행 차단(과금 이중화 방지). 명시 해제 없이
+    # 프로세스 수명 동안 보유한다(1 CLI 호출 = 1 프로세스 불변식 — 같은 프로세스에서
+    # 이 커맨드를 재호출하면 PG 에선 자기 잠금에 막힌다. 재호출 용도가 생기면 try/finally).
+    _lock = _acquire_track_lock_or_exit(settings, "C", "resolve")
+    bad = mj.invalid_reason("C")
+    if bad:
+        typer.echo(f"[resolve] 관리형 job 검증 실패 — {bad}. 중단.")
+        raise typer.Exit(1)
 
     if not loop:
+        if mj.cancelled():
+            typer.echo("[resolve] 취소 요청 감지 — 실행 없이 종료.")
+            return
         processed, resolved, promoted = resolve_batch(
             settings, sm, limit=batch, workers=workers, countries=scope, **filters
         )
+        mj.report(processed=processed, resolved=resolved, promoted=promoted, batches=1)
         typer.echo(f"[resolve] 처리 {processed}, 도메인해석 {resolved}, 신규승격 {promoted}")
         return
 
@@ -232,14 +369,26 @@ def backfill_resolve_domains(
         f" exclude_listed={excl_listed})"
     )
     batches = 0
-    while True:  # 취소 = Ctrl-C / 프로세스 종료.
+    while True:  # 취소 = Ctrl-C / 프로세스 종료 / 관리형 취소 플래그.
+        if mj.cancelled():
+            typer.echo("[resolve] 취소 요청 감지 — 정상종료.")
+            return
         pending = count_resolve_targets(sm, scope, **filters)
         if pending < min_queue:
-            time.sleep(interval)
+            if mj.wait(interval):
+                typer.echo("[resolve] 취소 요청 감지 — 정상종료.")
+                return
             continue
         processed, resolved, promoted = resolve_batch(
             settings, sm, limit=batch, workers=workers, countries=scope, **filters
         )
+        # ponytail: remaining 은 배치 직전 카운트(한 배치 지연 근사) — 정밀해지면 재count.
+        if not mj.report(
+            processed=processed, resolved=resolved, promoted=promoted,
+            batches=1, remaining=pending,
+        ):
+            typer.echo("[resolve] 진행 보고 거부(세대 교체/작업 종료) — 정상종료.")
+            return
         typer.echo(f"[resolve] 배치 처리 {processed}, 해석 {resolved}, 승격 {promoted}, 대기 {pending}")
         batches += 1
         # 장기구동 시 메모리 누적 대비 — 러너(bat)가 재기동해 리셋한다(멱등이라 이어받음).
@@ -247,7 +396,9 @@ def backfill_resolve_domains(
             typer.echo(f"[resolve] max_batches={max_batches} 도달 — 정상종료(러너 재기동 대상)")
             return
         if processed == 0 or resolved == 0:  # 소진/무진전 → 폭주 방지 대기.
-            time.sleep(interval)
+            if mj.wait(interval):
+                typer.echo("[resolve] 취소 요청 감지 — 정상종료.")
+                return
 
 
 @app.command("nps-import")
