@@ -17,6 +17,8 @@ def _stub_common(monkeypatch, settings) -> None:
     import leadcrawler.storage.db as db
 
     monkeypatch.setattr(db, "get_sessionmaker", lambda s: object())
+    # 트랙 잠금은 실 엔진이 필요(#352 PR③) — 이 테스트는 카운터 로직만 보므로 무력화.
+    monkeypatch.setattr(cli, "_acquire_track_lock_or_exit", lambda *a, **k: object())
 
 
 def test_fill_emails_max_batches_도달시_종료(monkeypatch):

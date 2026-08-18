@@ -165,3 +165,23 @@ def test_pg_concurrent_claim_different_filters(pg_settings: Settings) -> None:
     assert {it["country"] for it in ai} == {"KR"} and len(ai) == 4
     assert {it["country"] for it in bi} == {"US"} and len(bi) == 6
     assert not ({it["id"] for it in ai} & {it["id"] for it in bi})
+
+
+def test_pg_track_advisory_lock_mutual_exclusion(pg_settings: Settings) -> None:
+    """트랙 advisory lock(#352 PR③) — 같은 트랙 2번째 획득은 실패, 해제 후 재획득 성공.
+
+    SQLite 는 no-op 이라 이 상호배제는 PG 에서만 증명된다(웹·bat·야간 CLI 중복 실행 차단).
+    """
+    from leadcrawler.storage.track_lock import acquire_track_lock
+
+    engine = get_engine(pg_settings)
+    first = acquire_track_lock(engine, "A")
+    assert first is not None
+    assert acquire_track_lock(engine, "A") is None  # 같은 트랙 — 점유 중.
+    other = acquire_track_lock(engine, "C")  # 다른 트랙 — 독립.
+    assert other is not None
+    first.close()
+    regained = acquire_track_lock(engine, "A")  # 해제 후 재획득.
+    assert regained is not None
+    regained.close()
+    other.close()
