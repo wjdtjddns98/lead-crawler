@@ -83,23 +83,30 @@ def test_save_lead_auto_enqueues(session: Session) -> None:
 
 
 def test_default_order_is_lifo_newest_first(session: Session) -> None:
-    # 기본 정렬 = LIFO(2026-07-13 PO 요청): 발견 first_seen 최신이 최상단.
+    # 기본 정렬 = LIFO(2026-07-13 PO 요청): 큐 적재시각(created_at) 최신이 최상단(#352).
+    # 발견(first_seen)이 아무리 옛날이어도 **지금 적재된** 행이 위로 온다 — 백필 승격
+    # 물량이 바닥에 묻히던 종전 근사키(first_seen)의 결함 회귀가드.
     from datetime import datetime, timedelta, timezone
 
-    from leadcrawler.schema import DiscoveredCompanyRow
+    from leadcrawler.schema import DiscoveredCompanyRow, ReviewQueueRow
+    from leadcrawler.storage.repository import company_id_for
 
     save_lead(session, _lead(domain="old.com", email="ir@old.com"))
     save_lead(session, _lead(domain="new.com", email="ir@new.com"))
     session.flush()
     base = datetime(2026, 7, 1, tzinfo=timezone.utc)
-    session.get(DiscoveredCompanyRow, "dom:old.com").first_seen = base
-    session.get(DiscoveredCompanyRow, "dom:new.com").first_seen = base + timedelta(days=7)
+    # 발견 시점은 역전시켜 둔다(old 가 최신 발견) — created_at 만이 정렬 키임을 증명.
+    session.get(DiscoveredCompanyRow, "dom:old.com").first_seen = base + timedelta(days=7)
+    session.get(DiscoveredCompanyRow, "dom:new.com").first_seen = base
+    old_rq = session.get(ReviewQueueRow, review_id_for(company_id_for("dom:old.com"), "email"))
+    new_rq = session.get(ReviewQueueRow, review_id_for(company_id_for("dom:new.com"), "email"))
+    old_rq.created_at = base
+    new_rq.created_at = base + timedelta(days=7)
     session.flush()
     assert [it["selected"] for it in query_reviews(session)] == [
         "ir@new.com", "ir@old.com",
     ]
-    # 필터 병행 회귀가드 — 필터가 같은 테이블(DiscoveredCompanyRow)을 조인해도
-    # first_seen 서브쿼리(aliased+correlate)가 auto-correlation 으로 깨지지 않는다.
+    # 필터 병행 회귀가드 — 필터가 DiscoveredCompanyRow 를 조인해도 정렬이 안 깨진다.
     assert [it["selected"] for it in query_reviews(session, listed="unknown")] == [
         "ir@new.com", "ir@old.com",
     ]
