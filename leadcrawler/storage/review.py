@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
 from ..logging import get_logger
@@ -28,7 +28,8 @@ from ..schema import (
     ReviewAuditRow,
     ReviewQueueRow,
 )
-from ..sources.countries import country_match_set
+from ..sources.countries import country_match_set, resolve_country
+from ..sources.taxonomy import UNCLASSIFIED
 
 log = get_logger("review")
 
@@ -110,7 +111,15 @@ def _apply_queue_filters(
     if industries:
         wanted = {i.strip().lower() for i in industries if i and i.strip()}
         if wanted:
-            stmt = stmt.where(func.lower(CompanyRow.industry).in_(wanted))
+            cond = func.lower(CompanyRow.industry).in_(wanted)
+            if UNCLASSIFIED.lower() in wanted:
+                # '미분류' 는 저장값이 리터럴이 아니라 **빈 문자열**인 행들이다 —
+                # /queue/stock 집계가 빈값을 '미분류' 로 접어 뱃지를 다는데, 여기서
+                # 원시 일치만 하면 그 뱃지 조합이 0건이 되는 왕복 불가(라이브 5,393건,
+                # 이중 리뷰 HIGH 합치). 목록·카운트·claim 이 전부 이 헬퍼를 지나므로
+                # 세 경로가 같은 수를 본다.
+                cond = or_(cond, func.coalesce(CompanyRow.industry, "") == "")
+            stmt = stmt.where(cond)
     rset = {r.strip().lower() for r in (regions or []) if r and r.strip()}
     mset = {m.strip().upper() for m in (markets or []) if m and m.strip()}
     if listed or rset or mset:
@@ -174,6 +183,61 @@ def list_markets(session: Session) -> list[str]:
         .order_by(DiscoveredCompanyRow.market)
     ).all()
     return [m for m in rows if m]
+
+
+def queue_stock(session: Session) -> list[dict]:
+    """세그먼트별 대기 재고 — (국가, 업종, 상장) 그룹의 pending·미점유 카운트.
+
+    작업자가 필터 조합을 걸기 **전에** 잔량을 보여주기 위한 집계(빈 조합을 골라 헛걸음하는
+    상황 방지 — 2026-08-19 P0). 값 축과 왕복 계약:
+    - 국가: 등록국은 :func:`resolve_country` 로 ISO2 에 접고('KR'/'대한민국' 합산 —
+      필터 쪽 :func:`country_match_set` 별칭 확장과 대칭), **미등록 표기는 원문 유지**
+      (필터의 lower 원문 일치로 왕복 가능 — 단 FE 옵션 목록엔 없을 수 있음),
+      빈값은 '' 그대로(국가 필터로 도달 불가 — FE 는 '미상' 으로 구분 렌더).
+    - 업종: 빈값 → ``UNCLASSIFIED``('미분류'). 필터 쪽도 '미분류' 요청 시 빈값 행을
+      포함하도록 대칭 처리돼 있다(:func:`_apply_queue_filters`).
+    - 상장: 빈값/NULL → 'unknown'(스키마상 NOT NULL default 라 방어적).
+    지역·시장 축은 미포함 — 5축 전체 곱은 조합 폭발이라, 필요해지면 요청 파라미터로
+    슬라이스 확장(ponytail).
+
+    한 회사 = 큐 행 1개(``review_id_for(company_id, 'email')`` 결정적 PK)라 count(*) 가
+    곧 회사 수다. 조인은 전부 1:1(id/canonical_key 유일) — 행 증식 없음. 발견 원장이
+    없는 고아 company 도 누락되지 않게 outer join(+unknown 폴백 — ``_listed_by_company``
+    와 동일 의미). 호출당 원장 group by 1회(실측 ~140ms) — 폴링용이 아니다(API docstring
+    의 FE 계약 참고).
+    """
+    rows = session.execute(
+        select(
+            CompanyRow.country,
+            CompanyRow.industry,
+            func.coalesce(DiscoveredCompanyRow.listed, "unknown"),
+            func.count(),
+        )
+        .select_from(ReviewQueueRow)
+        .join(CompanyRow, CompanyRow.id == ReviewQueueRow.company_id)
+        .outerjoin(
+            DiscoveredCompanyRow,
+            DiscoveredCompanyRow.canonical_key == CompanyRow.canonical_key,
+        )
+        .where(ReviewQueueRow.status == PENDING, ReviewQueueRow.claimed_by.is_(None))
+        .group_by(
+            CompanyRow.country, CompanyRow.industry, DiscoveredCompanyRow.listed
+        )
+    ).all()
+    agg: dict[tuple[str, str, str], int] = {}
+    for country, industry, listed, n in rows:
+        resolved = resolve_country(country or "")
+        country_label = resolved.iso2 if resolved else (country or "").strip()
+        key = (
+            country_label,
+            (industry or "").strip() or UNCLASSIFIED,
+            (listed or "").strip() or "unknown",
+        )
+        agg[key] = agg.get(key, 0) + int(n)
+    return [
+        {"country": c, "industry": i, "listed": li, "n": n}
+        for (c, i, li), n in sorted(agg.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
 
 
 class ReviewConflict(Exception):

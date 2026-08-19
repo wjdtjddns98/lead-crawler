@@ -674,6 +674,51 @@ def test_queue_filters_accessible_to_worker(worker_client: TestClient) -> None:
     assert all(o["value"] == o["label"] for o in body["industries"])
     # 동일 직원은 admin 옵션 라우트엔 여전히 접근 불가(분리 확인).
     assert worker_client.get("/admin/countries").status_code == 403
+    # 재고 집계도 동일 권한(require_user) — 직원 200(뱃지·비활성 렌더의 소비 주체).
+    assert worker_client.get("/queue/stock").status_code == 200
+
+
+def test_queue_stock_counts_folds_country_and_excludes_claimed(client: TestClient) -> None:
+    """/queue/stock — (국가×업종×상장) pending·미점유 집계(P0 재고 가시화 계약).
+
+    표기 혼재('대한민국')는 ISO2 로 접히고, 빈 업종은 '미분류' 뱃지로 나오되 그 값
+    그대로 /queue 필터에 넣으면 같은 수가 나온다(왕복 계약 — 리뷰 HIGH 회귀 가드).
+    점유(claim)된 행은 재고에서 빠진다.
+    """
+    from leadcrawler.sources.taxonomy import UNCLASSIFIED
+
+    for key, name, country, industry in [
+        ("dom:hanguk.co.kr", "한국사", "대한민국", "건설"),  # 표기 혼재 — KR 로 접힘.
+        ("dom:mystery.co.kr", "미분류사", "KR", ""),  # 빈 업종 — '미분류' 뱃지.
+    ]:
+        lead = CompanyLead(
+            company=Company(
+                canonical_key=key, name=name, country=country, industry=industry,
+                domain=key.removeprefix("dom:"),
+                homepage=f"https://{key.removeprefix('dom:')}",
+                is_active=True, site_alive=True,
+            ),
+        )
+        with session_scope(get_settings()) as s:
+            save_lead(s, lead, source="test")
+
+    r = client.get("/queue/stock")
+    assert r.status_code == 200
+    body = r.json()
+    rows = {(x["country"], x["industry"], x["listed"]): x["n"] for x in body["rows"]}
+    assert rows == {
+        ("KR", "건설", "unknown"): 2,  # 시드 아크메(KR) + 한국사(대한민국) — 별표기 접힘.
+        ("KR", UNCLASSIFIED, "unknown"): 1,  # 빈 업종 → '미분류'.
+    }
+    assert body["total"] == sum(rows.values()) == 3
+
+    # 왕복 계약: 뱃지 값 그대로 /queue 필터에 넣으면 같은 수 — '미분류'=빈 업종 행 매칭.
+    q = client.get("/queue", params={"industry": UNCLASSIFIED}).json()
+    assert q["total"] == 1
+
+    # 점유하면 재고에서 빠진다(pending·미점유만 집계 — 기본 배치가 3건을 전부 점유).
+    assert client.post("/queue/claim", json={}).status_code == 200
+    assert client.get("/queue/stock").json()["total"] == 0
 
 
 def test_export_worker_own_scope_admin_full(worker_client: TestClient) -> None:
