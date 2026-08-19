@@ -26,7 +26,7 @@ from leadcrawler.config import Settings
 from leadcrawler.cost_ledger import CostLedger
 from leadcrawler.enrich.industry_classify import build_classifier
 from leadcrawler.schema import CompanyRow, DiscoveredCompanyRow
-from leadcrawler.sources.taxonomy import UNCLASSIFIED
+from leadcrawler.sources.taxonomy import AMBIGUOUS_LABELS
 from leadcrawler.storage.db import get_sessionmaker
 
 
@@ -36,26 +36,29 @@ def main() -> int:
     ap.add_argument("--commit-every", type=int, default=50)
     args = ap.parse_args()
 
-    settings = Settings()
+    # 기본 캡(industry_llm_max_calls=5000)이 대상 2만행보다 작아 절반이 조용히 무산된다
+    # (리뷰 HIGH) — 이 런의 목적이 전량 분류이므로 캡을 대상보다 크게 올린다(월예산
+    # 가드는 ledger 가 그대로 집행).
+    settings = Settings(industry_llm_max_calls=50_000)
     if settings.dry_run:
         print("DRY_RUN=true — 과금 분류 백필 무의미. 중단.", flush=True)
         return 1
     ledger = CostLedger(settings, persist=True)
     classifier = build_classifier(settings, ledger=ledger)
-    client = httpx.Client(
-        timeout=10, follow_redirects=True,
-        headers={"User-Agent": settings.discovery_user_agent},
-    )
 
     sm = get_sessionmaker(settings)
-    with sm() as s:
+    with httpx.Client(
+        timeout=10, follow_redirects=True,
+        headers={"User-Agent": settings.discovery_user_agent},
+    ) as client, sm() as s:
         rows = s.execute(
             select(DiscoveredCompanyRow)
             .outerjoin(CompanyRow, CompanyRow.canonical_key == DiscoveredCompanyRow.canonical_key)
             .where(
                 DiscoveredCompanyRow.source == "import",
                 CompanyRow.id.is_(None),
-                DiscoveredCompanyRow.industry.in_(["", UNCLASSIFIED]),
+                # 선례(cli.backfill_industries)와 동일 대상: 미분류 + catch-all(기타 제조).
+                DiscoveredCompanyRow.industry.in_(["", *AMBIGUOUS_LABELS]),
                 DiscoveredCompanyRow.domain.is_not(None),
             )
             .order_by(DiscoveredCompanyRow.canonical_key)
@@ -63,22 +66,34 @@ def main() -> int:
         ).scalars().all()
         print(f"[import-industry] 대상 {len(rows):,}행 (도메인 보유·미승격·미분류)", flush=True)
 
-        done = updated = 0
+        done = updated = starved = 0
         t0 = time.monotonic()
         for d in rows:
             done += 1
             html = None
-            try:
-                r = client.get(f"https://{d.domain}")
-                html = r.text if r.status_code < 400 else None
-            except Exception:
-                html = None  # 죽은/느린 사이트 — 홈페이지 게이트에 걸려 스킵된다.
+            # www 폴백은 enricher._home_fetch 실측 패턴(naked 도메인에 A레코드 없는 사이트).
+            hosts = [d.domain] if d.domain.startswith("www.") else [d.domain, f"www.{d.domain}"]
+            for host in hosts:
+                try:
+                    r = client.get(f"https://{host}")
+                    if r.status_code < 400:
+                        html = r.text
+                        break
+                except Exception:
+                    continue  # 죽은/느린 사이트 — 홈페이지 게이트에 걸려 스킵된다.
             if not html:
                 continue  # 블라인드 분류 금지 — 미분류 유지, 재실행 시 재시도.
             verdict = classifier.classify(d.name, d.domain, html)
             if verdict.label and verdict.label != d.industry:
                 d.industry = verdict.label
                 updated += 1
+            # 캡/예산 소진이면 abstain 이 무과금으로 연속된다 — fetch 낭비 말고 조기 종료
+            # (리뷰 MED). 일시 오류 섞임을 감안해 연속 30회에서 끊는다.
+            starved = starved + 1 if (verdict.label is None and not verdict.billed) else 0
+            if starved >= 30:
+                print("[import-industry] LLM 캡/예산 소진 추정 — 조기 종료(재실행 시 이어서)",
+                      flush=True)
+                break
             if args.commit_every and done % args.commit_every == 0:
                 s.commit()  # 중단돼도 여기까지 지출분은 보존.
             if done % 100 == 0:
@@ -91,7 +106,6 @@ def main() -> int:
         s.commit()
         print(f"[import-industry] 완료 — 검토 {done:,}, 분류 {updated:,}"
               f" (스킵분은 재실행 시 재시도)", flush=True)
-    client.close()
     return 0
 
 
