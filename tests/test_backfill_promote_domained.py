@@ -74,6 +74,40 @@ def test_target_and_count_sql_run_against_real_schema(tmp_path) -> None:
         assert again == []
 
 
+def test_scoped_industry_include_runs_on_promote_sql(tmp_path) -> None:
+    """--industry include 필터가 promote 대상/카운트 SQL 에서도 실행된다(P1, 스키마 실행 가드)."""
+    mod = _load()
+    s = Settings(database_url=f"sqlite:///{tmp_path}/pd2.db", dry_run=False)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    with sm() as session:
+        session.add(DiscoveredCompanyRow(
+            canonical_key="dom:kr:sec.co.kr", name="보안사", country="KR",
+            industry="정보보안", source="nps", domain="sec.co.kr",
+        ))
+        session.add(DiscoveredCompanyRow(
+            canonical_key="dom:kr:game.co.kr", name="게임사", country="KR",
+            industry="게임", source="nps", domain="game.co.kr",
+        ))
+        session.commit()
+
+        cnt_stmt, cnt_params = mod._scoped(
+            mod._COUNT_SQL, ["KR"], industries=["정보보안"], exclude_listed=True
+        )
+        assert int(session.execute(cnt_stmt, cnt_params).scalar() or 0) == 1
+        tgt_stmt, tgt_params = mod._scoped(mod._TARGET_SQL, ["KR"], industries=["정보보안"])
+        rows = session.execute(tgt_stmt, {**tgt_params, "limit": 10, "after": ""}).all()
+        assert [r.canonical_key for r in rows] == ["dom:kr:sec.co.kr"]
+
+
+def test_split_multi_flattens_commas() -> None:
+    """반복 지정 + 쉼표 병기 평탄화 — CLI --exclude-industry 관례와 동일."""
+    mod = _load()
+    assert mod._split_multi(["정보보안,게임", "은행"]) == ["정보보안", "게임", "은행"]
+    assert mod._split_multi(None) is None
+    assert mod._split_multi([" , "]) is None
+
+
 def test_domain_guards_seed_taken_and_overshared(tmp_path) -> None:
     """도메인 dedup 가드 시드 — 기존 company 점유 + 원장 과공유 도메인을 잡아낸다.
 

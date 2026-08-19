@@ -69,6 +69,45 @@ def test_count_targets_country_scope(tmp_path) -> None:
     assert count_targets(sm, ["KR"]) == 1  # 'KR' 선택이 '대한민국' 표기도 잡는다(별칭 확장).
 
 
+def test_count_targets_industry_include(tmp_path) -> None:
+    """--industry include — 지정 업종만 센다(굶는 세그먼트 타겟 보충, 2026-08-19 P1).
+
+    '미분류' 는 라벨 빈값 행과 대칭 매칭 — /queue/stock 뱃지 값을 그대로 타겟으로
+    옮겨 쓸 수 있는 어휘 계약(#360 선례).
+    """
+    from leadcrawler.schema import CompanyRow, DiscoveredCompanyRow
+    from leadcrawler.sources.taxonomy import UNCLASSIFIED
+    from leadcrawler.storage.db import get_sessionmaker, init_db
+
+    s = Settings(database_url=f"sqlite:///{tmp_path}/fi.db", dry_run=False)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    rows = [
+        ("dom:kr:sec.co.kr", "보안사", "정보보안"),
+        ("dom:kr:game.co.kr", "게임사", "게임"),
+        ("dom:kr:none.co.kr", "무업종사", ""),  # 라벨 빈값 — '미분류' 로만 타겟 가능.
+    ]
+    with sm() as session:
+        for key, name, industry in rows:
+            session.add(DiscoveredCompanyRow(
+                canonical_key=key, name=name, country="KR", industry=industry,
+                source="import", domain=key.split(":")[-1],
+            ))
+        session.commit()  # FK(company→discovered) 순서 보장.
+        for i, (key, name, industry) in enumerate(rows):
+            session.add(CompanyRow(
+                id=f"ci_{i}", canonical_key=key, name=name, country="KR",
+                industry=industry, site_alive=True,
+            ))
+        session.commit()
+
+    assert count_targets(sm, industries=["정보보안"]) == 1
+    assert count_targets(sm, industries=["정보보안", "게임"]) == 2
+    assert count_targets(sm, industries=[UNCLASSIFIED]) == 1  # 빈값 행 대칭 매칭.
+    assert count_targets(sm, industries=["정보보안"], exclude_industries=["정보보안"]) == 0
+    assert count_targets(sm) == 3  # 미지정=전체(현행 유지).
+
+
 def test_count_targets_exclude_filters(tmp_path) -> None:
     """업종 제외·상장 제외 필터 — 국가 스코프와 조합돼야 한다(KR 비상장 백필 경로)."""
     from leadcrawler.schema import CompanyRow, DiscoveredCompanyRow

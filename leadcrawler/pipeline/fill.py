@@ -29,6 +29,7 @@ from ..enrich.industry_classify import build_classifier
 from ..logging import get_logger
 from ..sources.base import DiscoveredCompany
 from ..sources.countries import country_match_set
+from ..sources.taxonomy import UNCLASSIFIED
 from ..sources.domain_resolver import DomainResolver
 from ..sources.http import HostRateLimiters
 from ..storage.repository import backfill_domain, load_seen_domains
@@ -95,10 +96,17 @@ def _domain_overshared(session, domain: str) -> bool:  # noqa: ANN001 (Session)
     return int(n or 0) >= _DOMAIN_OVERSHARE_CAP
 
 
+# include/exclude 공용 업종 표현식 — 정본 라벨 = co.industry(큐 필터·LLM 재분류 기준,
+# 2026-08-18 리뷰 HIGH). resolve 경로(미승격 — co left join null)와 co.industry 빈값은
+# 발견 라벨 d.industry 로 폴백한다(가용한 최선).
+_INDUSTRY_EXPR = "lower(coalesce(nullif(co.industry, ''), d.industry, ''))"
+
+
 def _scoped(
     sql_tpl: str,
     countries: Iterable[str] | None,
     *,
+    industries: Iterable[str] | None = None,
     exclude_industries: Iterable[str] | None = None,
     exclude_listed: bool = False,
 ):
@@ -106,7 +114,9 @@ def _scoped(
 
     선택 국가는 :func:`country_match_set` 별칭 집합으로 확장해 원장의 자유표기
     ('KR'/'대한민국' 혼재)를 같은 국가로 접는다. countries 가 비면 국가 필터 없음(전세계).
-    ``exclude_industries`` 는 발견 원장의 정규 업종 라벨을 제외하고,
+    ``industries`` 는 이 업종**만** 대상(굶는 세그먼트 타겟 보충 — 2026-08-19 P1.
+    '미분류' 는 큐 재고 API 와 동일하게 라벨 빈값 행으로 대칭 매칭),
+    ``exclude_industries`` 는 이 업종 제외,
     ``exclude_listed`` 는 상장 확정(listed='listed')만 제외한다(unknown 은 대상 유지 —
     NPS 미스=비상장 경향이라 실질 비상장일 가능성이 높다).
     """
@@ -120,15 +130,19 @@ def _scoped(
         binds.append(bindparam("country_scope", expanding=True))
     if exclude_listed:
         clauses.append("and coalesce(d.listed, '') <> 'listed'")
+    incl = sorted({i.strip().lower() for i in (industries or []) if i and i.strip()})
+    if incl:
+        cond = f"{_INDUSTRY_EXPR} in :industry_incl"
+        if UNCLASSIFIED.lower() in incl:
+            # '미분류' = 라벨 빈값 행(큐 재고 API 의 접기와 동일 어휘 — /queue/stock 뱃지
+            # 값을 그대로 백필 타겟으로 옮겨 쓸 수 있게 대칭 유지, #360 리뷰 선례).
+            cond = f"({cond} or {_INDUSTRY_EXPR} = '')"
+        clauses.append(f"and {cond}")
+        params["industry_incl"] = incl
+        binds.append(bindparam("industry_incl", expanding=True))
     excl = sorted({i.strip().lower() for i in (exclude_industries or []) if i and i.strip()})
     if excl:
-        # 정본 라벨 = co.industry(큐 필터·LLM 재분류 기준, 2026-08-18 리뷰 HIGH). 단
-        # resolve 경로(미승격 — co left join null)와 co.industry 빈값은 발견 라벨
-        # d.industry 로 폴백한다(가용한 최선). 소문자 정규화는 국가절과 동일 관례.
-        clauses.append(
-            "and lower(coalesce(nullif(co.industry, ''), d.industry, ''))"
-            " not in :industry_excl"
-        )
+        clauses.append(f"and {_INDUSTRY_EXPR} not in :industry_excl")
         params["industry_excl"] = excl
         binds.append(bindparam("industry_excl", expanding=True))
     stmt = text(sql_tpl.format(scope="".join(f" {c}" for c in clauses)))
@@ -292,12 +306,14 @@ def count_targets(
     sm: sessionmaker,
     countries: Iterable[str] | None = None,
     *,
+    industries: Iterable[str] | None = None,
     exclude_industries: Iterable[str] | None = None,
     exclude_listed: bool = False,
 ) -> int:
     """현재 이메일 채우기 대상(실존·무이메일) 회사 수(``_scoped`` 필터 적용 후)."""
     stmt, params = _scoped(
-        _COUNT_SQL, countries, exclude_industries=exclude_industries, exclude_listed=exclude_listed
+        _COUNT_SQL, countries, industries=industries,
+        exclude_industries=exclude_industries, exclude_listed=exclude_listed,
     )
     with sm() as s:
         return int(s.execute(stmt, params).scalar() or 0)
@@ -306,6 +322,7 @@ def count_targets(
 def fill_batch(
     settings: Settings, sm: sessionmaker, *, limit: int, workers: int,
     countries: Iterable[str] | None = None,
+    industries: Iterable[str] | None = None,
     exclude_industries: Iterable[str] | None = None,
     exclude_listed: bool = False,
     stall_exit_s: float | None = None,
@@ -320,7 +337,8 @@ def fill_batch(
     :class:`_StallWatchdog` 참고. 웹서버 내 호출자는 절대 주지 말 것).
     """
     stmt, params = _scoped(
-        _TARGET_SQL, countries, exclude_industries=exclude_industries, exclude_listed=exclude_listed
+        _TARGET_SQL, countries, industries=industries,
+        exclude_industries=exclude_industries, exclude_listed=exclude_listed,
     )
     with sm() as rd:
         targets = [_dc_from_row(r) for r in rd.execute(stmt, {**params, "limit": limit}).all()]
@@ -410,12 +428,13 @@ def count_resolve_targets(
     sm: sessionmaker,
     countries: Iterable[str] | None = None,
     *,
+    industries: Iterable[str] | None = None,
     exclude_industries: Iterable[str] | None = None,
     exclude_listed: bool = False,
 ) -> int:
     """현재 도메인 해석 대상(도메인없음·미승격) 회사 수(``_scoped`` 필터 적용 후)."""
     stmt, params = _scoped(
-        _RESOLVE_COUNT_SQL, countries,
+        _RESOLVE_COUNT_SQL, countries, industries=industries,
         exclude_industries=exclude_industries, exclude_listed=exclude_listed,
     )
     with sm() as s:
@@ -425,6 +444,7 @@ def count_resolve_targets(
 def resolve_batch(
     settings: Settings, sm: sessionmaker, *, limit: int, workers: int,
     countries: Iterable[str] | None = None,
+    industries: Iterable[str] | None = None,
     exclude_industries: Iterable[str] | None = None,
     exclude_listed: bool = False,
     stall_exit_s: float | None = None,
@@ -455,7 +475,7 @@ def resolve_batch(
     기회가 영구 소멸하던 결함).
     """
     stmt, params = _scoped(
-        _RESOLVE_TARGET_SQL, countries,
+        _RESOLVE_TARGET_SQL, countries, industries=industries,
         exclude_industries=exclude_industries, exclude_listed=exclude_listed,
     )
     with sm() as rd:

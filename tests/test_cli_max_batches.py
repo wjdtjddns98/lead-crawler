@@ -52,9 +52,11 @@ def test_fill_emails_exclude_필터_정규화_전달(monkeypatch):
     monkeypatch.setattr(fill, "fill_batch", fake_fill_batch)
     cli.fill_emails(
         loop=True, batch=5, workers=1, interval=0.0, min_queue=0, max_batches=1,
-        country=["KR"], exclude_industry=["은행,보험", "게임"], exclude_listed=True,
+        country=["KR"], industry=["정보보안,게임"],
+        exclude_industry=["은행,보험", "게임"], exclude_listed=True,
     )
     assert seen["countries"] == ["KR"]
+    assert seen["industries"] == ["정보보안", "게임"]  # include 도 쉼표 병기 분해(P1).
     assert seen["exclude_industries"] == ["은행", "보험", "게임"]
     assert seen["exclude_listed"] is True
 
