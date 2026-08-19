@@ -45,6 +45,7 @@ from ..storage.review import (
     my_history,
     my_work,
     query_reviews,
+    queue_stock,
     set_review_status,
 )
 from .admin import register_admin
@@ -57,6 +58,8 @@ from .schemas import (
     IndustryOption,
     QueueFilterOptions,
     QueueResponse,
+    QueueStockResponse,
+    QueueStockRow,
     RejectRequest,
     ReviewItem,
     ReviewStatus,
@@ -88,6 +91,10 @@ def get_db() -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+# 백필 재개 1회성 가드 — 모듈 레벨 app=create_app() 과 uvicorn factory 의 이중 호출 대비.
+_backfill_resume_done = False
 
 
 def create_app() -> FastAPI:
@@ -131,8 +138,8 @@ def create_app() -> FastAPI:
         받아간 작업). ``total`` 도 동일 필터를 반영해 '이 범위 잔여건수' 표시에 쓴다.
         지역·시장 필터는 미상(주소 없는 소스 유입·시장 미기입) 행을 자연히 제외한다.
         ``sort_by``/``sort_dir``(#238) 는 전체 결과 기준 서버 정렬이라 페이지를 넘겨도
-        순서가 일관된다. 미지정 시 기본 = LIFO(status 업무순위 안에서 발견 first_seen
-        역순 — 최신 크롤분 최상단, 2026-07-13 변경).
+        순서가 일관된다. 미지정 시 기본 = LIFO(status 업무순위 안에서 큐 적재시각
+        created_at 역순 — 최신 적재분 최상단, #352 에서 발견 first_seen 근사키 대체).
         """
         status_val = status.value if status is not None else None
         countries = _split_csv(country)
@@ -183,6 +190,31 @@ def create_app() -> FastAPI:
             listed=["listed", "unlisted", "unknown"],
             regions=list_regions(db),
             markets=list_markets(db),
+        )
+
+    @app.get("/queue/stock", response_model=QueueStockResponse)
+    def queue_stock_report(
+        db: Session = Depends(get_db),
+        user: UserRow = Depends(require_user),
+    ) -> QueueStockResponse:
+        """세그먼트별 대기 재고 집계 — (국가 × 업종 × 상장) 조합의 pending·미점유 수.
+
+        FE 계약(P0, 2026-08-19): 필터 옵션에 잔량 뱃지를 달고 **재고 0 조합을 비활성**해
+        작업자가 빈 조합을 골라 "적재된 큐가 없어 못 뽑는" 헛걸음을 없앤다.
+        - rows 는 n>0 조합만(없는 조합 = 0). 뱃지의 (country, industry, listed) 값을
+          **그대로** ``/queue``·``/queue/claim`` 필터 파라미터로 보내면 같은 수가 나온다
+          (왕복 계약 — '미분류' 는 서버가 빈 업종 행으로 대칭 매칭).
+        - 국가는 등록국이면 ISO2(``/queue/filters.countries`` 와 동일 어휘), 미등록 표기는
+          원문(옵션 목록에 없을 수 있음 — 뱃지 없이 무시 가능), '' 는 국가 미상(필터로
+          도달 불가 — 비활성 렌더). 지역·시장 축은 미포함(뱃지 없이 기존 동작 유지).
+        - 호출 정책: 필터 패널 진입 시 1회 + claim/confirm/reject 후 갱신, **폴링 금지**
+          (호출당 원장 group by ~140ms). 집계는 요청 시점 스냅샷(동시 claim 으로 소폭
+          어긋날 수 있음).
+        """
+        rows = queue_stock(db)
+        return QueueStockResponse(
+            rows=[QueueStockRow(**r) for r in rows],
+            total=sum(r["n"] for r in rows),
         )
 
     @app.post("/queue/claim", response_model=list[ReviewItem])
@@ -396,6 +428,22 @@ def create_app() -> FastAPI:
     from ..pipeline.background import start_watchdog
 
     start_watchdog(get_settings())
+
+    # 서버 재시작 시 백필 자동 재개(#352) — running 잔존 잡을 세대+1 로 재스폰한다
+    # (취소 플래그 우선 재확인은 resume 내부 계약). dry_run 게이트는 start_watchdog 과
+    # 동일 관례(테스트·시뮬레이션에서 실 프로세스 스폰 금지). 초기화 실패는 로그만
+    # 남기고 서버 기동을 막지 않는다.
+    global _backfill_resume_done
+    if not get_settings().dry_run and not _backfill_resume_done:
+        _backfill_resume_done = True  # create_app 다중 호출(모듈 app + factory) 중복 방지.
+        try:
+            from ..pipeline.backfill_process import resume_active_jobs
+
+            resume_active_jobs(get_settings())
+        except Exception as exc:  # pragma: no cover — 재개 실패는 로그로만(기동 우선).
+            from ..logging import get_logger
+
+            get_logger("api.app").info("backfill.resume.startup_error", err=str(exc))
 
     return app
 

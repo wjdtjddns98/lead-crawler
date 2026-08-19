@@ -10,7 +10,10 @@ CLI ``leadcrawler fill-emails [--loop]`` 가 이 모듈을 구동한다.
 
 from __future__ import annotations
 
+import os
+import sys
 import threading
+import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -26,6 +29,7 @@ from ..enrich.industry_classify import build_classifier
 from ..logging import get_logger
 from ..sources.base import DiscoveredCompany
 from ..sources.countries import country_match_set
+from ..sources.taxonomy import UNCLASSIFIED
 from ..sources.domain_resolver import DomainResolver
 from ..sources.http import HostRateLimiters
 from ..storage.repository import backfill_domain, load_seen_domains
@@ -92,19 +96,59 @@ def _domain_overshared(session, domain: str) -> bool:  # noqa: ANN001 (Session)
     return int(n or 0) >= _DOMAIN_OVERSHARE_CAP
 
 
-def _scoped(sql_tpl: str, countries: Iterable[str] | None):
-    """SQL 템플릿의 ``{scope}`` 슬롯에 국가 필터를 주입한다 — (stmt, params) 반환.
+# include/exclude 공용 업종 표현식 — 정본 라벨 = co.industry(큐 필터·LLM 재분류 기준,
+# 2026-08-18 리뷰 HIGH). resolve 경로(미승격 — co left join null)와 co.industry 빈값은
+# 발견 라벨 d.industry 로 폴백한다(가용한 최선).
+_INDUSTRY_EXPR = "lower(coalesce(nullif(co.industry, ''), d.industry, ''))"
+
+
+def _scoped(
+    sql_tpl: str,
+    countries: Iterable[str] | None,
+    *,
+    industries: Iterable[str] | None = None,
+    exclude_industries: Iterable[str] | None = None,
+    exclude_listed: bool = False,
+):
+    """SQL 템플릿의 ``{scope}`` 슬롯에 대상 필터를 조합 주입한다 — (stmt, params) 반환.
 
     선택 국가는 :func:`country_match_set` 별칭 집합으로 확장해 원장의 자유표기
-    ('KR'/'대한민국' 혼재)를 같은 국가로 접는다. countries 가 비면 필터 없음(전세계).
+    ('KR'/'대한민국' 혼재)를 같은 국가로 접는다. countries 가 비면 국가 필터 없음(전세계).
+    ``industries`` 는 이 업종**만** 대상(굶는 세그먼트 타겟 보충 — 2026-08-19 P1.
+    '미분류' 는 큐 재고 API 와 동일하게 라벨 빈값 행으로 대칭 매칭),
+    ``exclude_industries`` 는 이 업종 제외,
+    ``exclude_listed`` 는 상장 확정(listed='listed')만 제외한다(unknown 은 대상 유지 —
+    NPS 미스=비상장 경향이라 실질 비상장일 가능성이 높다).
     """
+    clauses: list[str] = []
+    params: dict[str, object] = {}
+    binds = []
     match = country_match_set(countries) if countries else set()
-    if not match:
-        return text(sql_tpl.format(scope="")), {}
-    stmt = text(sql_tpl.format(scope=_SCOPE_CLAUSE)).bindparams(
-        bindparam("country_scope", expanding=True)
-    )
-    return stmt, {"country_scope": sorted(match)}
+    if match:
+        clauses.append(_SCOPE_CLAUSE)
+        params["country_scope"] = sorted(match)
+        binds.append(bindparam("country_scope", expanding=True))
+    if exclude_listed:
+        clauses.append("and coalesce(d.listed, '') <> 'listed'")
+    incl = sorted({i.strip().lower() for i in (industries or []) if i and i.strip()})
+    if incl:
+        cond = f"{_INDUSTRY_EXPR} in :industry_incl"
+        if UNCLASSIFIED.lower() in incl:
+            # '미분류' = 라벨 빈값 행(큐 재고 API 의 접기와 동일 어휘 — /queue/stock 뱃지
+            # 값을 그대로 백필 타겟으로 옮겨 쓸 수 있게 대칭 유지, #360 리뷰 선례).
+            cond = f"({cond} or {_INDUSTRY_EXPR} = '')"
+        clauses.append(f"and {cond}")
+        params["industry_incl"] = incl
+        binds.append(bindparam("industry_incl", expanding=True))
+    excl = sorted({i.strip().lower() for i in (exclude_industries or []) if i and i.strip()})
+    if excl:
+        clauses.append(f"and {_INDUSTRY_EXPR} not in :industry_excl")
+        params["industry_excl"] = excl
+        binds.append(bindparam("industry_excl", expanding=True))
+    stmt = text(sql_tpl.format(scope="".join(f" {c}" for c in clauses)))
+    if binds:
+        stmt = stmt.bindparams(*binds)
+    return stmt, params
 
 
 def _close_own(tl: threading.local) -> None:
@@ -127,9 +171,150 @@ def _dc_from_row(r) -> DiscoveredCompany:  # noqa: ANN001 (SQLAlchemy Row)
     )
 
 
-def count_targets(sm: sessionmaker, countries: Iterable[str] | None = None) -> int:
-    """현재 이메일 채우기 대상(실존·무이메일) 회사 수(``countries`` 지정 시 그 국가만)."""
-    stmt, params = _scoped(_COUNT_SQL, countries)
+# 정체 종료 코드 — bat 러너는 코드 무관 60s 후 재기동, supervisor 는 비정상종료 백오프
+# 재기동(연속 3회 회로차단). 정상종료(0)와 구분되는 임의의 식별값.
+_STALL_EXIT_CODE = 86
+
+
+class _StallWatchdog:
+    """배치 진행 정체 감시 — ``stall_s`` 동안 ``beat()`` 이 없으면 프로세스를 종료한다.
+
+    2026-08-18 실사고: Playwright 드라이버 무응답으로 워커의 sync 호출이 영구 미반환 →
+    ``pool.map`` 소비 루프가 그 future 를 무한 대기(로그·CPU 0, 4시간 정지). 파이썬은
+    스레드를 강제 종료할 수 없으므로 **프로세스 종료가 유일하게 신뢰 가능한 복구**다 —
+    CLI 는 러너(bat)/supervisor 가 재기동하고 배치는 멱등이라 유실 없이 이어받는다.
+    ``stall_s`` 가 0/None 이면 완전 무장해제(웹서버 내 background fill 경로 — 서버를
+    죽일 수 없으므로 종전 동작 유지).
+
+    ponytail: 진행 판정 = 결과 소비 1건. 극단적으로 느린 정상 배치도 stall_s 를 넘기면
+    종료되지만 피해 = 재기동 1회(멱등). 상한은 CLI ``--stall-exit-secs`` 로 조정.
+    """
+
+    def __init__(
+        self,
+        stage: str,
+        stall_s: float | None,
+        *,
+        _exit=os._exit,
+        _kill_children: bool | None = None,
+    ) -> None:
+        self._stage = stage
+        self._stall_s = float(stall_s or 0)
+        self._exit = _exit
+        # 자식 트리 정리 여부 — 종료 방식(_exit)과 분리해 테스트 가능하게(리뷰 MED).
+        self._kill_children = (
+            (_exit is os._exit and sys.platform == "win32")
+            if _kill_children is None
+            else _kill_children
+        )
+        self._last = time.monotonic()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._watch, daemon=True, name=f"stall-watchdog-{stage}"
+        )
+
+    def beat(self) -> None:
+        """진행 1건 보고 — 소비 루프가 결과를 받을 때마다 호출한다."""
+        self._last = time.monotonic()
+
+    def _watch(self) -> None:
+        poll = min(10.0, max(0.05, self._stall_s / 4))
+        while not self._stop.wait(poll):
+            idle = time.monotonic() - self._last
+            if idle >= self._stall_s:
+                if self._stop.is_set():  # 정상 종료 직후 발화 방지 — 블록을 나왔으면 무장해제.
+                    return
+                log.info("fill.stall.exit", stage=self._stage, idle_s=round(idle))
+                try:  # 러너가 stdout 을 로그파일로 리다이렉트 — os._exit 전 플러시 필수.
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+                if self._kill_children:
+                    # bat 러너 경로엔 Job Object 가 없어 os._exit 만으론 Playwright
+                    # node/Chromium 손자가 고아로 쌓인다(리뷰 HIGH — 정체 사이클마다
+                    # 브라우저 트리 1개씩 누적 = 2026-07-31 OOM 재래). **자식 트리만**
+                    # 죽이고 자신은 os._exit 로 나가 종료코드 86(정체 식별)을 보존한다.
+                    # 실패는 전부 로그로 가시화(무음이면 고아 누적이 '정상 종료'로 보임 —
+                    # 리뷰 MED). ponytail: PID 스캔은 재사용 오폭의 이론적 여지가 있는
+                    # 임시방편 — 근본은 CLI 자기 Job Object 결속(winjob), 별도 트랙.
+                    import subprocess
+
+                    try:
+                        proc = subprocess.run(
+                            [
+                                "powershell", "-NoProfile", "-Command",
+                                "(Get-CimInstance Win32_Process -Filter"
+                                f" 'ParentProcessId={os.getpid()}'"
+                                " | Where-Object { $_.ProcessId -ne $PID }).ProcessId",
+                            ],
+                            capture_output=True, text=True, timeout=30, check=False,
+                        )
+                        pids = [p.strip() for p in proc.stdout.split() if p.strip().isdigit()]
+                        if not pids:  # 자식 0 vs 열거 실패(권한 거부 등) 구분용.
+                            log.info(
+                                "fill.stall.childkill.none",
+                                stage=self._stage, stderr=proc.stderr.strip()[:200],
+                            )
+                        for pid in pids:
+                            try:
+                                subprocess.run(
+                                    ["taskkill", "/T", "/F", "/PID", pid],
+                                    capture_output=True, timeout=30, check=False,
+                                )
+                            except Exception as exc:  # 1건 실패는 다음 자식 계속.
+                                log.info(
+                                    "fill.stall.childkill.error", pid=pid, err=str(exc)
+                                )
+                    except Exception as exc:
+                        log.info("fill.stall.childkill.error", err=str(exc))
+                self._exit(_STALL_EXIT_CODE)
+                return  # 테스트 주입 _exit 는 반환한다 — 중복 발화 방지.
+
+    def __enter__(self) -> _StallWatchdog:
+        if self._stall_s > 0:
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        if self._thread.ident is not None:  # 기동된 경우만 — set() 이 wait 를 즉시 깨운다.
+            self._thread.join(timeout=15.0)
+
+
+def _stamp_attempt(sm: sessionmaker, keys: list[str]) -> None:
+    """배치 대상 전체의 ``last_crawled_at`` 을 **시작 전에** 스탬프한다(시도 기록).
+
+    대상 SQL 이 ``last_crawled_at asc`` 정렬이라, 처리 실패(예외·정체 종료 포함)로
+    스탬프가 안 남으면 같은 행이 영원히 선두에 온다 — 특정 행이 Playwright 를 얼리는
+    poison row 면 "무한 정지"가 "무한 재기동"으로 바뀔 뿐 전진이 0 이 된다(리뷰 HIGH).
+    선스탬프하면 어떤 경로로 죽어도 재기동이 다음 구간을 잡고, 실패 행은 한 바퀴 뒤
+    재시도로 복귀한다. 성공 행은 처리 시 save 경로가 다시 스탬프하므로 의미 손실 없음.
+    """
+    with sm() as s:
+        s.execute(
+            text(
+                "update discovered_company set last_crawled_at = :now"
+                " where canonical_key in :keys"
+            ).bindparams(bindparam("keys", expanding=True)),
+            {"now": datetime.now(timezone.utc), "keys": keys},
+        )
+        s.commit()
+
+
+def count_targets(
+    sm: sessionmaker,
+    countries: Iterable[str] | None = None,
+    *,
+    industries: Iterable[str] | None = None,
+    exclude_industries: Iterable[str] | None = None,
+    exclude_listed: bool = False,
+) -> int:
+    """현재 이메일 채우기 대상(실존·무이메일) 회사 수(``_scoped`` 필터 적용 후)."""
+    stmt, params = _scoped(
+        _COUNT_SQL, countries, industries=industries,
+        exclude_industries=exclude_industries, exclude_listed=exclude_listed,
+    )
     with sm() as s:
         return int(s.execute(stmt, params).scalar() or 0)
 
@@ -137,18 +322,29 @@ def count_targets(sm: sessionmaker, countries: Iterable[str] | None = None) -> i
 def fill_batch(
     settings: Settings, sm: sessionmaker, *, limit: int, workers: int,
     countries: Iterable[str] | None = None,
+    industries: Iterable[str] | None = None,
+    exclude_industries: Iterable[str] | None = None,
+    exclude_listed: bool = False,
+    stall_exit_s: float | None = None,
 ) -> tuple[int, int]:
     """대상 최대 ``limit`` 개를 ``workers`` 병렬로 enrich 해 이메일을 채운다.
 
     반환 (처리수, 신규이메일수). enrich(_build_lead)는 워커스레드에서, DB 적재(_persist_lead)는
     메인스레드 단독(파이프라인 계약). 1건 실패는 격리(배치 전체 보호). 멱등이라 재호출 안전.
     ``countries`` 지정 시(크롤 companion — 국가 명시선택 크롤) 그 국가 회사만 채운다.
+    ``exclude_industries``/``exclude_listed`` 는 CLI 백필의 대상 제외 필터(``_scoped`` 참고).
+    ``stall_exit_s`` 를 주면 그 초 동안 진행이 없을 때 프로세스를 종료한다(CLI 전용 —
+    :class:`_StallWatchdog` 참고. 웹서버 내 호출자는 절대 주지 말 것).
     """
-    stmt, params = _scoped(_TARGET_SQL, countries)
+    stmt, params = _scoped(
+        _TARGET_SQL, countries, industries=industries,
+        exclude_industries=exclude_industries, exclude_listed=exclude_listed,
+    )
     with sm() as rd:
         targets = [_dc_from_row(r) for r in rd.execute(stmt, {**params, "limit": limit}).all()]
     if not targets:
         return 0, 0
+    _stamp_attempt(sm, [t.canonical_key for t in targets])  # 선스탬프 — 재기동 전진 보장.
 
     cost_ledger = CostLedger(settings, persist=True)
     # 공유 호스트 캡 — CH `/company` 조회가 워커 수와 무관하게 합산 2req/s 를 지키게(429 방지).
@@ -180,9 +376,10 @@ def fill_batch(
             return dc, None
 
     processed = emails = 0
-    with sm() as ws:
+    with _StallWatchdog("fill", stall_exit_s) as wd, sm() as ws:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             for dc, lead in pool.map(_work, targets):
+                wd.beat()
                 processed += 1
                 if lead is not None:
                     _persist_lead(ws, dc, lead)
@@ -190,6 +387,7 @@ def fill_batch(
                         emails += 1
             # Playwright 보유 컴포넌트는 만든 워커 스레드만 닫을 수 있다(메인스레드 close 는
             # greenlet.error 로 조용히 no-op → 배치마다 브라우저 누수 = 2026-07-31 OOM 뿌리).
+            # close 행도 감시 범위 안(watchdog 은 이 블록 전체를 덮는다).
             _close_in_workers(pool, lambda: _close_own(tl))
 
     for obj in created:
@@ -226,9 +424,19 @@ _RESOLVE_COUNT_SQL = """
     """
 
 
-def count_resolve_targets(sm: sessionmaker, countries: Iterable[str] | None = None) -> int:
-    """현재 도메인 해석 대상(도메인없음·미승격) 회사 수(``countries`` 지정 시 그 국가만)."""
-    stmt, params = _scoped(_RESOLVE_COUNT_SQL, countries)
+def count_resolve_targets(
+    sm: sessionmaker,
+    countries: Iterable[str] | None = None,
+    *,
+    industries: Iterable[str] | None = None,
+    exclude_industries: Iterable[str] | None = None,
+    exclude_listed: bool = False,
+) -> int:
+    """현재 도메인 해석 대상(도메인없음·미승격) 회사 수(``_scoped`` 필터 적용 후)."""
+    stmt, params = _scoped(
+        _RESOLVE_COUNT_SQL, countries, industries=industries,
+        exclude_industries=exclude_industries, exclude_listed=exclude_listed,
+    )
     with sm() as s:
         return int(s.execute(stmt, params).scalar() or 0)
 
@@ -236,6 +444,10 @@ def count_resolve_targets(sm: sessionmaker, countries: Iterable[str] | None = No
 def resolve_batch(
     settings: Settings, sm: sessionmaker, *, limit: int, workers: int,
     countries: Iterable[str] | None = None,
+    industries: Iterable[str] | None = None,
+    exclude_industries: Iterable[str] | None = None,
+    exclude_listed: bool = False,
+    stall_exit_s: float | None = None,
 ) -> tuple[int, int, int]:
     """대상 최대 ``limit`` 개의 도메인을 해석해 채우고, 실존이면 승격까지 시도한다.
 
@@ -262,11 +474,15 @@ def resolve_batch(
     (다음 배치가 재시도 — 적대 리뷰 HIGH-MED: 일시적 크래시로 도메인만 기록되고 승격
     기회가 영구 소멸하던 결함).
     """
-    stmt, params = _scoped(_RESOLVE_TARGET_SQL, countries)
+    stmt, params = _scoped(
+        _RESOLVE_TARGET_SQL, countries, industries=industries,
+        exclude_industries=exclude_industries, exclude_listed=exclude_listed,
+    )
     with sm() as rd:
         targets = [_dc_from_row(r) for r in rd.execute(stmt, {**params, "limit": limit}).all()]
     if not targets:
         return 0, 0, 0
+    _stamp_attempt(sm, [t.canonical_key for t in targets])  # 선스탬프 — 재기동 전진 보장.
 
     cost_ledger = CostLedger(settings, persist=True)
     registry_checker = build_registry_checker(
@@ -317,21 +533,22 @@ def resolve_batch(
             return dc2, None, None
 
     processed = resolved = promoted = 0
-    with sm() as ws:
+    with _StallWatchdog("resolve", stall_exit_s) as wd, sm() as ws:
         seen_domains = load_seen_domains(ws)  # 배치 시작 스냅샷 — 이 배치 내 중복도 아래서 누적.
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            missed: list[str] = []  # 해석 실패 — 시도 시각만 남겨 대기열 뒤로 보낸다.
+            # 해석 실패(miss)는 별도 스탬프가 필요 없다 — 배치 시작 시 _stamp_attempt 가
+            # 대상 전체를 이미 뒤로 보냈다(구 missed 일괄 update 는 정체 종료 시 통째로
+            # 유실돼 같은 창을 재과금 재시도하던 결함 — 리뷰 MED).
             for dc, found, lead in pool.map(_work, targets):
+                wd.beat()
                 processed += 1
                 if not found:
-                    missed.append(dc.canonical_key)
                     continue
                 rdom = normalize_domain(found)
                 if rdom is not None and _domain_overshared(ws, rdom):
-                    # 과공유 도메인(디렉터리 신호) — 기록도 승격도 하지 않는다. miss 로
-                    # 취급해 대기열 뒤로 보낸다(위 _DOMAIN_OVERSHARE_CAP 주석 참고).
+                    # 과공유 도메인(디렉터리 신호) — 기록도 승격도 하지 않는다(위
+                    # _DOMAIN_OVERSHARE_CAP 주석 참고). 선스탬프가 이미 뒤로 보냈다.
                     log.info("resolve.backfill.overshared", key=dc.canonical_key, domain=rdom)
-                    missed.append(dc.canonical_key)
                     continue
                 if backfill_domain(ws, dc.canonical_key, found):
                     resolved += 1
@@ -348,19 +565,6 @@ def resolve_batch(
                     _persist_lead(ws, dc, lead)
                     if lead.company.is_active:
                         promoted += 1
-            if missed:
-                # 해석 실패 행은 아무것도 persist 되지 않아 last_crawled_at 이 그대로다 →
-                # 정렬(asc)에서 계속 선두라 **같은 200건만 무한 재시도**된다(2026-07-31 실측:
-                # 1,000건 처리에 대기열 6 감소). 시도 시각만 찍어 뒤로 보내면 다음 배치가
-                # 다음 구간을 잡는다. 도메인은 안 건드리므로 한 바퀴 뒤 재시도는 그대로 유지.
-                ws.execute(
-                    text(
-                        "update discovered_company set last_crawled_at = :now"
-                        " where canonical_key in :keys"
-                    ).bindparams(bindparam("keys", expanding=True)),
-                    {"now": datetime.now(timezone.utc), "keys": missed},
-                )
-                ws.commit()
             # fill_batch 와 동일 — Playwright 보유 컴포넌트는 워커 스레드 자신이 닫는다.
             _close_in_workers(pool, lambda: _close_own(tl))
 
