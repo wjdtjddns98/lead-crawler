@@ -224,7 +224,7 @@ def register_admin(
 
         기본은 코드/검색어 매핑으로 풀리는 라벨(supported_industries). 여기에
         3층 통합매핑(ksic_industry_map — NPS 발견이 서빙 가능)이 보유한 라벨을
-        합집합으로 추가해, 매핑이 채워지면 택소노미 42 전체가 자동 노출된다
+        합집합으로 추가해, 매핑이 채워지면 택소노미 전체가 자동 노출된다
         (FE 계약: 응답 스키마 동일·옵션만 증가하는 additive 변경).
         """
         from ..sources.industry import industry_search_term

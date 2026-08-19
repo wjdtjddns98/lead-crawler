@@ -322,7 +322,7 @@ def is_specific_industry(industry: str) -> bool:
     (게임·기계·산업장비 등)을 광범위로 취급해 집계원을 켜뒀는데, 집계원은 업종 무관
     명부(LEI 발급순 등)를 그대로 퍼오면서 세그먼트 라벨이 도장돼 100% 오라벨이 됐다
     (2026-07-13 실측: gleif 1,000건 전원 캐피탈·SPC 가 '기계·산업장비'). 3층 매핑
-    이후 NPS 가 42라벨 전부를 커버해 '유일 출처' 근거도 소멸.
+    이후 NPS 가 전 라벨을 커버해 '유일 출처' 근거도 소멸.
     """
     stripped = (industry or "").strip()
     if not stripped:
