@@ -172,18 +172,23 @@ def discover_segment(
         if (segment.region is None or getattr(src, "region_aware", isinstance(src, SearchSource)))
         and src.applies_to(segment)
     ]
-    # KR 발견 = NPS 단독(PO 2026-07-13, kr_discovery_nps_only): DART 등재 법인은 가입
-    # 사업장으로 NPS 에 전부 있고, DART 데이터(홈페이지·상장·업종)는 NPS 캐시 조인·relink 가
-    # 참고용으로 부착한다 — DART 는 발견에서 참고용으로 강등. 검색·지역검색은 뉴스/블로그
-    # 헤드라인이 회사로 유입되는 오탐(2026-07-13 실측)으로 발견에서 제외.
-    # KR 지역 팬아웃 세그먼트(region, 검색 전용)는 applicable 이 비어 자연 no-op.
+    # KR 발견 화이트리스트(kr_discovery_nps_only): 구 NPS 단독(PO 2026-07-13)에서 **네이버
+    # 지역검색을 추가**(2026-08-19). DART 등재 법인은 가입 사업장으로 NPS 에 전부 있고 DART
+    # 데이터는 캐시 조인·relink 로 부착(발견에선 계속 제외), SERP 검색은 뉴스/블로그 헤드라인
+    # 오탐(2026-07-13 실측)으로 계속 제외. 지역검색(local.json)은 업체 DB 기반이라 헤드라인
+    # 오탐이 없고, 1회성 KR 크롤(2026-08-19 — 게이트 우회·지역검색 단독 빌드로 실행)에서
+    # 2,988 발견-승격이 실존게이트를 통과하며 순도가 실증돼 허용한다(포털 루트 도메인
+    # 소수 유입은 naver_local 의 플랫폼 도메인 폐기 필터로 봉합). 지역검색은 region_aware 라
+    # KR 지역 팬아웃 세그먼트에서도 돈다.
     if settings.kr_discovery_nps_only and is_country(segment, _KR):
-        applicable = [src for src in applicable if isinstance(src, NpsSource)]
+        applicable = [
+            src for src in applicable if isinstance(src, (NpsSource, NaverLocalSource))
+        ]
         if not applicable:
             # NPS 미적용 KR 세그먼트(브로드 '전체'·3층매핑 미커버 라벨·persist=False 로
             # 스토어 미주입·region 팬아웃)는 발견 0 이 된다 — 조용한 사각 방지용 가시화
             # (교차리뷰 HIGH: 침묵 0건은 원인 구분 불가).
-            log.warning("discover.kr_nps_only.empty", segment=segment.label)
+            log.warning("discover.kr_whitelist.empty", segment=segment.label)
     free_srcs = [src for src in applicable if not isinstance(src, SearchSource)]
     workers = min(settings.discovery_source_workers, len(free_srcs))
     found_by_src: dict[int, list[DiscoveredCompany]] = {}

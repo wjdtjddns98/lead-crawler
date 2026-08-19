@@ -266,6 +266,50 @@ def test_stall_watchdog_disabled_when_none() -> None:
     assert calls == []
 
 
+def test_stall_watchdog_child_enum_failure_still_exits(monkeypatch) -> None:
+    """자식 열거(PowerShell)가 죽어도 최종 _exit(86) 은 반드시 호출된다(리뷰 MED 잠금)."""
+    import subprocess
+    import time
+
+    from leadcrawler.pipeline.fill import _STALL_EXIT_CODE, _StallWatchdog
+
+    def boom(*a, **k):  # noqa: ANN002, ANN003
+        raise OSError("powershell unavailable")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    calls: list[int] = []
+    with _StallWatchdog("t", 0.2, _exit=calls.append, _kill_children=True):
+        deadline = time.monotonic() + 3.0
+        while not calls and time.monotonic() < deadline:
+            time.sleep(0.05)
+    assert calls == [_STALL_EXIT_CODE]
+
+
+def test_stall_watchdog_kills_each_enumerated_child(monkeypatch) -> None:
+    """열거된 자식 PID 마다 taskkill /T 1회 — 죽음 경로의 유일한 실행 검증(리뷰 MED)."""
+    import subprocess
+    import time
+    from types import SimpleNamespace
+
+    from leadcrawler.pipeline.fill import _STALL_EXIT_CODE, _StallWatchdog
+
+    killed: list[str] = []
+
+    def fake_run(cmd, **k):  # noqa: ANN001, ANN003
+        if cmd[0] == "taskkill":
+            killed.append(cmd[4])
+        return SimpleNamespace(stdout="123\n456\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    calls: list[int] = []
+    with _StallWatchdog("t", 0.2, _exit=calls.append, _kill_children=True):
+        deadline = time.monotonic() + 3.0
+        while not calls and time.monotonic() < deadline:
+            time.sleep(0.05)
+    assert killed == ["123", "456"]
+    assert calls == [_STALL_EXIT_CODE]
+
+
 def test_stall_default_is_off_for_library_callers() -> None:
     """계약: 배치 함수 기본값 = 감시 끔 — 웹서버(background.py)가 안 넘기는 한 절대
     os._exit 이 서버에서 발화하지 않는다. 기본값이 바뀌면 서버가 죽을 수 있다(리뷰 MED)."""

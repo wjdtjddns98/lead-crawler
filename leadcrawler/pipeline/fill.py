@@ -176,10 +176,23 @@ class _StallWatchdog:
     종료되지만 피해 = 재기동 1회(멱등). 상한은 CLI ``--stall-exit-secs`` 로 조정.
     """
 
-    def __init__(self, stage: str, stall_s: float | None, *, _exit=os._exit) -> None:
+    def __init__(
+        self,
+        stage: str,
+        stall_s: float | None,
+        *,
+        _exit=os._exit,
+        _kill_children: bool | None = None,
+    ) -> None:
         self._stage = stage
         self._stall_s = float(stall_s or 0)
         self._exit = _exit
+        # 자식 트리 정리 여부 — 종료 방식(_exit)과 분리해 테스트 가능하게(리뷰 MED).
+        self._kill_children = (
+            (_exit is os._exit and sys.platform == "win32")
+            if _kill_children is None
+            else _kill_children
+        )
         self._last = time.monotonic()
         self._stop = threading.Event()
         self._thread = threading.Thread(
@@ -203,21 +216,44 @@ class _StallWatchdog:
                     sys.stderr.flush()
                 except Exception:
                     pass
-                if self._exit is os._exit and sys.platform == "win32":
+                if self._kill_children:
                     # bat 러너 경로엔 Job Object 가 없어 os._exit 만으론 Playwright
                     # node/Chromium 손자가 고아로 쌓인다(리뷰 HIGH — 정체 사이클마다
-                    # 브라우저 트리 1개씩 누적 = 2026-07-31 OOM 재래). 자기 트리째 종료.
-                    # taskkill 이 자신도 죽이므로 아래 _exit 는 도달 못 할 수 있다(무해).
-                    # 관리형(supervisor) 경로는 Job Object 가 이중 방어라 중복 무해.
+                    # 브라우저 트리 1개씩 누적 = 2026-07-31 OOM 재래). **자식 트리만**
+                    # 죽이고 자신은 os._exit 로 나가 종료코드 86(정체 식별)을 보존한다.
+                    # 실패는 전부 로그로 가시화(무음이면 고아 누적이 '정상 종료'로 보임 —
+                    # 리뷰 MED). ponytail: PID 스캔은 재사용 오폭의 이론적 여지가 있는
+                    # 임시방편 — 근본은 CLI 자기 Job Object 결속(winjob), 별도 트랙.
                     import subprocess
 
                     try:
-                        subprocess.run(
-                            ["taskkill", "/T", "/F", "/PID", str(os.getpid())],
-                            capture_output=True, timeout=30, check=False,
+                        proc = subprocess.run(
+                            [
+                                "powershell", "-NoProfile", "-Command",
+                                "(Get-CimInstance Win32_Process -Filter"
+                                f" 'ParentProcessId={os.getpid()}'"
+                                " | Where-Object { $_.ProcessId -ne $PID }).ProcessId",
+                            ],
+                            capture_output=True, text=True, timeout=30, check=False,
                         )
-                    except Exception:
-                        pass
+                        pids = [p.strip() for p in proc.stdout.split() if p.strip().isdigit()]
+                        if not pids:  # 자식 0 vs 열거 실패(권한 거부 등) 구분용.
+                            log.info(
+                                "fill.stall.childkill.none",
+                                stage=self._stage, stderr=proc.stderr.strip()[:200],
+                            )
+                        for pid in pids:
+                            try:
+                                subprocess.run(
+                                    ["taskkill", "/T", "/F", "/PID", pid],
+                                    capture_output=True, timeout=30, check=False,
+                                )
+                            except Exception as exc:  # 1건 실패는 다음 자식 계속.
+                                log.info(
+                                    "fill.stall.childkill.error", pid=pid, err=str(exc)
+                                )
+                    except Exception as exc:
+                        log.info("fill.stall.childkill.error", err=str(exc))
                 self._exit(_STALL_EXIT_CODE)
                 return  # 테스트 주입 _exit 는 반환한다 — 중복 발화 방지.
 
