@@ -159,6 +159,9 @@ def test_accept_label_closed_set_only():
 def test_stub_classifier_keyword_and_abstain():
     assert StubClassifier().classify("Samsung Pharma", "x.com", None).label == "제약·바이오"
     assert StubClassifier().classify("한화 게임즈", None, None).label == "게임"
+    # 연기금 세그먼트(2026-08-19 신설) — 공제회·연금공단도 연기금으로 귀속.
+    assert is_taxonomy_label("연기금")
+    assert StubClassifier().classify("한국교직원공제회", None, None).label == "연기금"
     v = StubClassifier().classify("Zzz Holdings", "z.com", None)
     assert v.label is None and v.billed is False
 
