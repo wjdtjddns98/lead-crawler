@@ -11,16 +11,22 @@ _persist_lead 가 그대로 강제하므로, 죽은 사이트는 여기서도 �
 멱등: 승격되면 다음 배치의 대상 쿼리에서 자동 제외된다(``co.id is null`` 조건). 중단해도
 이어서 재실행하면 남은 것부터 계속한다.
 
-사용:  python scripts/backfill_promote_domained.py [workers] [batch] [country ...]
-       (기본 workers=3 — A/C 백필과 동시 구동 시 헤드리스 메모리 경합을 피하려 보수적.
-        3번째 인자부터는 국가 코드 — 지정 시 그 국가만, 미지정=전세계. 예: ... 3 200 KR)
+사용:  python scripts/backfill_promote_domained.py [--workers 3] [--batch 200]
+       [--country KR ...] [--industry '정보보안,게임'] [--exclude-industry ...]
+       [--exclude-listed] [--cursor-file logs/promote-cursor.txt] [--stall-exit-secs 900]
+       (workers 기본 3 — A/C 백필과 동시 구동 시 헤드리스 메모리 경합을 피하려 보수적.
+        --industry 는 굶는 세그먼트 타겟 보충용 — 2026-08-19 P1, '미분류'=라벨 빈값 행.
+        --cursor-file 지정 시 배치마다 마지막 키를 기록해 재기동(정체 종료 포함)이
+        이어받는다. 정체 감시는 fill._StallWatchdog 재사용 — 무진행 900s 면 종료(러너가
+        재기동하는 구성에서만 의미, 단독 실행이면 그냥 죽고 재실행하면 이어받음.)
 
-ponytail: 일회성 백필이라 CLI 커맨드화 안 함 — scripts/ 스크립트로 충분(backfill_reenrich
-와 같은 판단). 상시화되면 그때 승격.
+ponytail: 세그먼트 보충 운영이 생겨 필터·커서·워치독을 정식화했지만 CLI 커맨드화는
+아직 안 함 — 스크립트 직접 실행으로 충분. 관리형(supervisor) 트랙이 필요해지면 승격.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 import threading
 import time
@@ -34,7 +40,7 @@ from leadcrawler.cost_ledger import CostLedger
 from leadcrawler.dedup import normalize_domain
 from leadcrawler.enrich.enricher import Enricher
 from leadcrawler.enrich.industry_classify import build_classifier
-from leadcrawler.pipeline.fill import _DOMAIN_OVERSHARE_CAP, _scoped
+from leadcrawler.pipeline.fill import _DOMAIN_OVERSHARE_CAP, _scoped, _StallWatchdog
 from leadcrawler.pipeline.run import _build_lead, _persist_lead
 from leadcrawler.sources.base import DiscoveredCompany
 from leadcrawler.storage.db import get_sessionmaker
@@ -106,12 +112,38 @@ def _dc_from_row(r) -> DiscoveredCompany:
     )
 
 
+def _split_multi(vals: list[str] | None) -> list[str] | None:
+    """반복 지정 + 쉼표 병기 옵션을 평탄화한다(CLI --exclude-industry 와 동일 관례)."""
+    out = [t.strip() for v in (vals or []) for t in v.split(",") if t.strip()]
+    return out or None
+
+
 def main() -> int:
-    workers = int(sys.argv[1]) if len(sys.argv) > 1 else 3
-    batch = int(sys.argv[2]) if len(sys.argv) > 2 else 200
-    countries = sys.argv[3:] or None  # 국가 스코프 — 미지정=전세계(기존 동작 그대로).
-    cnt_stmt, cnt_params = _scoped(_COUNT_SQL, countries)
-    tgt_stmt, tgt_params = _scoped(_TARGET_SQL, countries)
+    ap = argparse.ArgumentParser(description="도메인 보유 미승격 발견행 승격 백필")
+    ap.add_argument("--workers", type=int, default=3)
+    ap.add_argument("--batch", type=int, default=200)
+    ap.add_argument("--country", action="append", default=None,
+                    help="이 국가만(반복 지정) — 미지정=전세계")
+    ap.add_argument("--industry", action="append", default=None,
+                    help="이 업종만(반복·쉼표 병기 — 굶는 세그먼트 타겟 보충, '미분류'=빈값)")
+    ap.add_argument("--exclude-industry", action="append", default=None,
+                    help="이 업종 제외(반복·쉼표 병기)")
+    ap.add_argument("--exclude-listed", action="store_true",
+                    help="상장 확정(listed='listed') 제외 — unknown 유지")
+    ap.add_argument("--cursor-file", default="",
+                    help="배치 커서 파일 — 재기동이 이어받는다(빈값=미사용, 처음부터)")
+    ap.add_argument("--stall-exit-secs", type=float, default=900.0,
+                    help="무진행 이 초 경과 시 프로세스 종료(0=끔) — Playwright 행 복구")
+    args = ap.parse_args()
+    workers, batch = args.workers, args.batch
+    countries = args.country or None
+    filters = {
+        "industries": _split_multi(args.industry),
+        "exclude_industries": _split_multi(args.exclude_industry),
+        "exclude_listed": bool(args.exclude_listed),
+    }
+    cnt_stmt, cnt_params = _scoped(_COUNT_SQL, countries, **filters)
+    tgt_stmt, tgt_params = _scoped(_TARGET_SQL, countries, **filters)
 
     settings = Settings()
     if settings.dry_run:
@@ -127,7 +159,10 @@ def main() -> int:
         taken, overshared = _load_domain_guards(s)
     print(
         f"[promote] 대상 {remaining} 곳 (workers={workers} batch={batch}"
-        f" country={countries or '전세계'} | 도메인점유 {len(taken)} 과공유 {len(overshared)})",
+        f" country={countries or '전세계'} industry={filters['industries'] or '전체'}"
+        f" exclude_industry={filters['exclude_industries'] or '없음'}"
+        f" exclude_listed={filters['exclude_listed']}"
+        f" | 도메인점유 {len(taken)} 과공유 {len(overshared)})",
         flush=True,
     )
 
@@ -156,10 +191,20 @@ def main() -> int:
             return dc, None
 
     done = promoted = emails = 0
-    after = ""  # 커서 — 재실행 시 처음부터 훑되 이미 승격된 행은 쿼리에서 빠진다.
+    after = ""  # 커서 — 파일 지정 시 재기동(정체 종료 포함)이 이어받는다.
+    if args.cursor_file:
+        try:
+            with open(args.cursor_file, encoding="utf-8") as f:
+                after = f.read().strip()
+        except OSError:
+            pass
+        if after:
+            print(f"[promote] 파일 커서 재개: {after!r} 뒤부터", flush=True)
     t0 = time.monotonic()
     try:
-        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        # 정체 감시(2026-08-18 실사고: Playwright 무응답 행) — fill 워치독 재사용.
+        with _StallWatchdog("promote", args.stall_exit_secs) as wd, \
+                ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             while True:
                 with sm() as rd:
                     rows = rd.execute(
@@ -177,7 +222,10 @@ def main() -> int:
                     taken.add(dom)  # 같은 런 안의 후속 중복(배치 내 포함)도 차단.
                     targets.append(_dc_from_row(r))
                 with sm() as ws:
+                    # ponytail: pool.map 은 호출순 소비 — 독행 1건이 뒤 완료분의 persist 를
+                    # 막을 수 있다(fill.py 선례와 동일 한계). 문제되면 as_completed 로 승격.
                     for dc, lead in pool.map(_work, targets):
+                        wd.beat()  # 진행 보고 — 정체 판정 리셋.
                         if lead is None:
                             continue
                         _persist_lead(ws, dc, lead)
@@ -186,6 +234,12 @@ def main() -> int:
                             promoted += 1
                         if lead.email is not None:
                             emails += 1
+                if args.cursor_file:
+                    # 배치 persist 완료 후에만 기록 — 중간에 죽으면 같은 배치를 다시
+                    # 훑는다(승격분은 co.id is null 로 빠져 멱등). 선기록이면 미처리
+                    # 행이 커서 뒤로 영구 스킵된다(리뷰 HIGH).
+                    with open(args.cursor_file, "w", encoding="utf-8") as f:
+                        f.write(after)
                 el = time.monotonic() - t0
                 rate = done / el if el else 0
                 eta = (remaining - done) / rate / 60 if rate else 0

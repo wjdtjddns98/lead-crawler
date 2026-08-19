@@ -52,10 +52,34 @@ def test_fill_emails_exclude_필터_정규화_전달(monkeypatch):
     monkeypatch.setattr(fill, "fill_batch", fake_fill_batch)
     cli.fill_emails(
         loop=True, batch=5, workers=1, interval=0.0, min_queue=0, max_batches=1,
-        country=["KR"], exclude_industry=["은행,보험", "게임"], exclude_listed=True,
+        country=["KR"], industry=["정보보안,게임"],
+        exclude_industry=["은행,보험", "게임"], exclude_listed=True,
     )
     assert seen["countries"] == ["KR"]
+    assert seen["industries"] == ["정보보안", "게임"]  # include 도 쉼표 병기 분해(P1).
     assert seen["exclude_industries"] == ["은행", "보험", "게임"]
+    assert seen["exclude_listed"] is True
+
+
+def test_resolve_필터_정규화_전달(monkeypatch):
+    """backfill-resolve-domains 도 --industry include 를 동일하게 분해·전달한다(P1 리뷰 MED)."""
+    _stub_common(monkeypatch, SimpleNamespace(dry_run=False, resolve_domains=True))
+    seen: dict = {}
+    monkeypatch.setattr(fill, "count_resolve_targets", lambda sm, countries=None, **kw: 100)
+
+    def fake_resolve_batch(settings, sm, *, limit, workers, countries=None, **kw):
+        seen.update(kw, countries=countries)
+        return 1, 1, 0
+
+    monkeypatch.setattr(fill, "resolve_batch", fake_resolve_batch)
+    cli.backfill_resolve_domains(
+        loop=True, batch=5, workers=1, interval=0.0, min_queue=0, max_batches=1,
+        country=["KR"], industry=["정보보안,게임"], exclude_industry=["은행"],
+        exclude_listed=True,
+    )
+    assert seen["countries"] == ["KR"]
+    assert seen["industries"] == ["정보보안", "게임"]
+    assert seen["exclude_industries"] == ["은행"]
     assert seen["exclude_listed"] is True
 
 

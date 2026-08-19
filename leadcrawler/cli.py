@@ -204,6 +204,11 @@ def fill_emails(
     country: list[str] = typer.Option(
         None, "--country", help="이 국가만 대상(반복 지정 가능, 예: --country KR) — 미지정=전세계"
     ),
+    industry: list[str] = typer.Option(
+        None, "--industry",
+        help="이 업종만 대상(정규 라벨, 반복 지정·쉼표 병기 가능 — 굶는 세그먼트 타겟 보충."
+        " '미분류'=라벨 빈값 행, /queue/stock 뱃지 값과 동일 어휘)",
+    ),
     exclude_industry: list[str] = typer.Option(
         None, "--exclude-industry",
         help="이 업종 제외(정규 라벨, 반복 지정·쉼표 병기 가능: --exclude-industry '은행,보험')",
@@ -241,12 +246,18 @@ def fill_emails(
     # 직접 호출(테스트) 시 기본값이 OptionInfo 객체로 들어온다 — list 일 때만 스코프로 인정.
     scope = list(country) if isinstance(country, list) and country else None
     # 쉼표 병기 허용 — bat 러너의 인자 슬롯 한계로 11개 업종을 한 토큰에 담는 경로.
+    incl_ind = (
+        [t.strip() for v in industry for t in v.split(",") if t.strip()]
+        if isinstance(industry, list) and industry else None
+    )
     excl_ind = (
         [t.strip() for v in exclude_industry for t in v.split(",") if t.strip()]
         if isinstance(exclude_industry, list) and exclude_industry else None
     )
     excl_listed = exclude_listed is True  # OptionInfo 방어(위와 동일).
-    filters = {"exclude_industries": excl_ind, "exclude_listed": excl_listed}
+    filters = {
+        "industries": incl_ind, "exclude_industries": excl_ind, "exclude_listed": excl_listed,
+    }
     # 정체 종료는 CLI 전용(프로세스를 러너/supervisor 가 재기동) — OptionInfo 방어 동일.
     # filters 와 분리 유지: filters 는 count_targets 에도 풀리는데 거긴 이 인자가 없다.
     stall = stall_exit_secs if isinstance(stall_exit_secs, (int, float)) else 900.0
@@ -279,8 +290,8 @@ def fill_emails(
 
     typer.echo(
         f"[fill] 상시 consumer 시작 (batch={batch} workers={workers} min_queue={min_queue}"
-        f" country={scope or '전세계'} exclude_industry={excl_ind or '없음'}"
-        f" exclude_listed={excl_listed})"
+        f" country={scope or '전세계'} industry={incl_ind or '전체'}"
+        f" exclude_industry={excl_ind or '없음'} exclude_listed={excl_listed})"
     )
     batches = 0
     while True:  # 취소 = Ctrl-C / 프로세스 종료 / 관리형 취소 플래그.
@@ -325,6 +336,11 @@ def backfill_resolve_domains(
     ),
     country: list[str] = typer.Option(
         None, "--country", help="이 국가만 대상(반복 지정 가능, 예: --country KR) — 미지정=전세계"
+    ),
+    industry: list[str] = typer.Option(
+        None, "--industry",
+        help="이 업종만 대상(반복 지정·쉼표 병기 가능 — 굶는 세그먼트 타겟 보충."
+        " 미승격 행은 발견 라벨 기준, '미분류'=라벨 빈값 행)",
     ),
     exclude_industry: list[str] = typer.Option(
         None, "--exclude-industry",
@@ -372,8 +388,14 @@ def backfill_resolve_domains(
         [t.strip() for v in exclude_industry for t in v.split(",") if t.strip()]
         if isinstance(exclude_industry, list) and exclude_industry else None
     )
+    incl_ind = (
+        [t.strip() for v in industry for t in v.split(",") if t.strip()]
+        if isinstance(industry, list) and industry else None
+    )
     excl_listed = exclude_listed is True  # OptionInfo 방어(위와 동일).
-    filters = {"exclude_industries": excl_ind, "exclude_listed": excl_listed}
+    filters = {
+        "industries": incl_ind, "exclude_industries": excl_ind, "exclude_listed": excl_listed,
+    }
     # 정체 종료는 CLI 전용 — filters 와 분리(count_resolve_targets 엔 이 인자가 없다).
     stall = stall_exit_secs if isinstance(stall_exit_secs, (int, float)) else 900.0
     stall_s = stall if stall > 0 else None
@@ -405,8 +427,8 @@ def backfill_resolve_domains(
 
     typer.echo(
         f"[resolve] 상시 consumer 시작 (batch={batch} workers={workers} min_queue={min_queue}"
-        f" country={scope or '전세계'} exclude_industry={excl_ind or '없음'}"
-        f" exclude_listed={excl_listed})"
+        f" country={scope or '전세계'} industry={incl_ind or '전체'}"
+        f" exclude_industry={excl_ind or '없음'} exclude_listed={excl_listed})"
     )
     batches = 0
     while True:  # 취소 = Ctrl-C / 프로세스 종료 / 관리형 취소 플래그.
