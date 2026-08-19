@@ -266,6 +266,28 @@ class QueueFilterOptions(BaseModel):
     markets: list[str] = []  # 실제 수집된 시장 보드 distinct(정렬) — 빈 목록=FE 폴백 어휘 사용
 
 
+class QueueStockRow(BaseModel):
+    """세그먼트 1칸의 대기 재고 — (국가, 업종, 상장) 조합의 pending·미점유 수."""
+
+    country: str  # 등록국=ISO2(표기 혼재 접음), 미등록 표기=원문, ''=국가 미상(필터 도달 불가)
+    industry: str  # 구분 라벨(빈값은 '미분류'로 접음 — 필터도 '미분류'→빈값 대칭 매칭)
+    listed: Literal["listed", "unlisted", "unknown"]  # 빈값/NULL 은 unknown 으로 정규화됨
+    n: int = Field(ge=1)  # rows 는 n>0 조합만 담는다(없는 조합 = 0)
+
+
+class QueueStockResponse(BaseModel):
+    """필터 조합별 잔량 집계 — FE 가 필터 옵션에 잔량 뱃지를 달고 0 조합을 비활성한다.
+
+    rows 는 n>0 인 조합만 담는다(없는 조합 = 0). 지역·시장 축은 미포함(조합 폭발 방지 —
+    FE 는 이 두 축엔 뱃지를 달지 않는다). total = rows 합 = ``GET /queue?status=pending``
+    (무필터) 의 total 과 동치(pending·미점유 전체). 호출 정책: 필터 패널 진입 시 1회 +
+    claim/confirm/reject 후 갱신 — **폴링 금지**(호출당 원장 group by, FE 계약).
+    """
+
+    rows: list[QueueStockRow]
+    total: int = Field(ge=0)
+
+
 class SendPreview(BaseModel):
     """발송 미리보기 — 수신 N명·일일 잔여·발신계정·표본(실발송 없음)."""
 
