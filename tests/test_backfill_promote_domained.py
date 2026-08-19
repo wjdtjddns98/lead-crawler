@@ -108,6 +108,58 @@ def test_split_multi_flattens_commas() -> None:
     assert mod._split_multi([" , "]) is None
 
 
+def test_cursor_file_only_advances_after_batch_persisted(tmp_path, monkeypatch) -> None:
+    """--cursor-file 은 배치 persist 완료 후에만 기록된다(리뷰 HIGH 회귀 가드).
+
+    중간에 죽으면(persist 예외) 커서 파일이 없어야 재기동이 같은 배치를 다시 훑는다 —
+    선기록이면 미처리 행이 커서 뒤로 영구 스킵된다.
+    """
+    from types import SimpleNamespace
+
+    mod = _load()
+    s = Settings(database_url=f"sqlite:///{tmp_path}/pd3.db", dry_run=False)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    with sm() as session:
+        for key, dom in [("dom:kr:a1.co.kr", "a1.co.kr"), ("dom:kr:b2.co.kr", "b2.co.kr")]:
+            session.add(DiscoveredCompanyRow(
+                canonical_key=key, name=dom, country="KR",
+                industry="게임", source="nps", domain=dom,
+            ))
+        session.commit()
+
+    cursor = tmp_path / "cursor.txt"
+    monkeypatch.setattr(mod, "Settings", lambda: s)
+    monkeypatch.setattr(mod, "CostLedger", lambda settings, persist=True: object())
+    monkeypatch.setattr(mod, "build_registry_checker", lambda settings: None)
+    monkeypatch.setattr(mod, "build_classifier", lambda settings, ledger=None: None)
+    for cls in ("Enricher", "ExistenceVerifier", "EmailValidator"):
+        monkeypatch.setattr(mod, cls, lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr(mod, "_build_lead", lambda dc, **kw: SimpleNamespace(
+        company=SimpleNamespace(is_active=True), email=None,
+    ))
+    import sys
+    monkeypatch.setattr(sys, "argv", [
+        "backfill_promote_domained.py", "--workers", "1", "--batch", "10",
+        "--cursor-file", str(cursor),
+    ])
+
+    # ① 배치 중간 사망 시뮬레이션 — persist 가 터지면 커서 파일이 없어야 한다.
+    def boom(ws, dc, lead):
+        raise RuntimeError("mid-batch death")
+
+    monkeypatch.setattr(mod, "_persist_lead", boom)
+    import pytest
+    with pytest.raises(RuntimeError):
+        mod.main()
+    assert not cursor.exists()
+
+    # ② 정상 완주 — 커서 파일에 마지막 키가 남는다.
+    monkeypatch.setattr(mod, "_persist_lead", lambda ws, dc, lead: None)
+    assert mod.main() == 0
+    assert cursor.read_text(encoding="utf-8") == "dom:kr:b2.co.kr"
+
+
 def test_domain_guards_seed_taken_and_overshared(tmp_path) -> None:
     """도메인 dedup 가드 시드 — 기존 company 점유 + 원장 과공유 도메인을 잡아낸다.
 

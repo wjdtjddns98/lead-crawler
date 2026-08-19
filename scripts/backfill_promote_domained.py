@@ -213,9 +213,6 @@ def main() -> int:
                 if not rows:
                     break
                 after = rows[-1].canonical_key  # 다음 배치는 이 키 뒤부터(고착 방지).
-                if args.cursor_file:
-                    with open(args.cursor_file, "w", encoding="utf-8") as f:
-                        f.write(after)
                 targets = []
                 for r in rows:
                     done += 1
@@ -225,6 +222,8 @@ def main() -> int:
                     taken.add(dom)  # 같은 런 안의 후속 중복(배치 내 포함)도 차단.
                     targets.append(_dc_from_row(r))
                 with sm() as ws:
+                    # ponytail: pool.map 은 호출순 소비 — 독행 1건이 뒤 완료분의 persist 를
+                    # 막을 수 있다(fill.py 선례와 동일 한계). 문제되면 as_completed 로 승격.
                     for dc, lead in pool.map(_work, targets):
                         wd.beat()  # 진행 보고 — 정체 판정 리셋.
                         if lead is None:
@@ -235,6 +234,12 @@ def main() -> int:
                             promoted += 1
                         if lead.email is not None:
                             emails += 1
+                if args.cursor_file:
+                    # 배치 persist 완료 후에만 기록 — 중간에 죽으면 같은 배치를 다시
+                    # 훑는다(승격분은 co.id is null 로 빠져 멱등). 선기록이면 미처리
+                    # 행이 커서 뒤로 영구 스킵된다(리뷰 HIGH).
+                    with open(args.cursor_file, "w", encoding="utf-8") as f:
+                        f.write(after)
                 el = time.monotonic() - t0
                 rate = done / el if el else 0
                 eta = (remaining - done) / rate / 60 if rate else 0
