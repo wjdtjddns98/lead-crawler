@@ -16,10 +16,13 @@ from __future__ import annotations
 
 from ..config import Settings
 from ..cost_ledger import SupportsCostLedger
+from ..dedup import normalize_domain
 from ..logging import get_logger
 from .base import DiscoveredCompany, DiscoverySource, Segment, build_company, is_country
+from .domain_resolver import _is_noise_domain
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import is_broad_industry
+from .search import _BLOCKLIST
 from .search_provider import clean_search_text
 
 log = get_logger("sources.naver_local")
@@ -65,8 +68,13 @@ class NaverLocalSource(DiscoverySource):
         self._rate_limiters = rate_limiters
 
     def applies_to(self, segment: Segment) -> bool:
-        """KR 세그먼트 + 키 보유 + 업종 검색어가 있을 때만."""
+        """KR 세그먼트 + 키 보유 + 업종 검색어 + 상장스코프 미지정일 때만."""
         if not is_country(segment, _KR):
+            return False
+        if segment.listed != "unknown":
+            # 지역검색은 상장여부를 판별할 수 없는 소스 — listed 스코프 크롤에서 돌면
+            # 미검증 업체가 그 스코프값으로 최초 저장돼 오염된다(이중 리뷰 MED, 게이트
+            # 확장으로 region×listed 조합이 처음 실행 가능해지며 열린 표면).
             return False
         s = self._settings
         if not s.dry_run and not (s.naver_client_id and s.naver_client_secret):
@@ -121,8 +129,10 @@ class NaverLocalSource(DiscoverySource):
         }
         out: list[DiscoveredCompany] = []
         seen_names: set[str] = set()
+        calls = 0  # 쿼터 소비 계측 — 25k/일을 도메인 해석과 공유(로그로 산정 근거 제공).
         for term in _industry_terms(segment.industry):
             query = f"{prefix}{term}".strip()
+            calls += 1
             try:
                 payload = fetcher.get_json(
                     _LOCAL_URL,
@@ -142,18 +152,29 @@ class NaverLocalSource(DiscoverySource):
                 if not name or name in seen_names:
                     continue
                 seen_names.add(name)
+                # link 는 원시 URL('http://x.co.kr/', 'https://blog.naver.com/..') — 그대로
+                # 저장하면 enrich/existence 가 URL 을 호스트명으로 취급해 전면 getaddrinfo
+                # 실패한다(2026-08-18 실사고, 승격 0). 정규화 후 공유 플랫폼(포털/블로그/
+                # SNS·노이즈)이면 도메인을 **폐기**한다 — normalize 는 등록가능 루트까지
+                # 접으므로(blog.naver.com/A·/B → naver.com) 살려두면 서로 다른 업체가
+                # dom:naver.com 한 행에 뭉개져 영구 유실되고(제약①) 포털 루트가 승격된다
+                # (이중 리뷰 HIGH 합치). None 폴백이면 name: 티어 키로 업체가 분리 보존되고
+                # resolve 백필이 진짜 도메인을 찾을 여지도 남는다.
+                dom = normalize_domain(str(it.get("link") or "").strip() or None)
+                if dom is not None and (dom in _BLOCKLIST or _is_noise_domain(dom)):
+                    dom = None
                 out.append(
                     build_company(
                         source=self.name,
                         segment=segment,
                         name=name,
-                        domain=str(it.get("link") or "").strip() or None,
+                        domain=dom,
                         address=str(it.get("address") or "").strip() or None,
                         phone=str(it.get("telephone") or "").strip() or None,
                     )
                 )
                 if len(out) >= cap:
-                    log.info("naver_local.live", segment=segment.label, n=len(out))
+                    log.info("naver_local.live", segment=segment.label, n=len(out), calls=calls)
                     return out
-        log.info("naver_local.live", segment=segment.label, n=len(out))
+        log.info("naver_local.live", segment=segment.label, n=len(out), calls=calls)
         return out

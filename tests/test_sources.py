@@ -589,34 +589,46 @@ def test_discover_segment_skip_disabled_by_default() -> None:
     assert spy.calls == 1  # 스킵 비활성 → 검색 호출됨.
 
 
-# ── KR 발견 = NPS 단독 정책(kr_discovery_nps_only, PO 2026-07-13) ────────────
-def test_kr_nps_only_policy_default_on() -> None:
-    """기본값(on)이면 KR 세그먼트 발견은 NPS 소스만 실행된다.
+# ── KR 발견 화이트리스트 정책(kr_discovery_nps_only) — NPS+지역검색(2026-08-19 확장) ──
+def test_kr_whitelist_policy_default_on() -> None:
+    """기본값(on)이면 KR 세그먼트 발견은 NPS + 네이버 지역검색만 실행된다.
 
-    근거: DART 등재 법인은 NPS 에 전부 있고(가입 사업장) DART 데이터는 캐시 조인·relink 로
-    부착 — 검색/지역검색의 뉴스 헤드라인 오탐 유입(2026-07-13 실측) 차단.
+    DART(NPS 와 중복)·SERP 검색(뉴스 헤드라인 오탐, 2026-07-13 실측)은 계속 제외.
+    지역검색은 업체 DB 기반 — 2026-08-19 1회성 크롤 3,073 승격으로 순도 실증돼 추가.
     """
     rows = discover_segment(Segment(country="KR", industry="건설"), Settings(dry_run=True))
-    assert rows and {r.source for r in rows} == {"nps"}
+    assert rows and {r.source for r in rows} == {"nps", "naver_local"}
 
 
-def test_kr_nps_only_policy_off_restores_multi_source() -> None:
+def test_kr_whitelist_policy_off_restores_multi_source() -> None:
     """플래그 off 면 기존 다소스 발견 그대로(회귀 0)."""
     rows = discover_segment(Segment(country="KR", industry="건설"), _dry_settings())
     assert len({r.source for r in rows}) > 1
 
 
-def test_kr_nps_only_policy_normalizes_country_aliases() -> None:
+def test_kr_whitelist_policy_normalizes_country_aliases() -> None:
     """소문자 'kr'·별칭 'korea' 표기도 게이트에 걸린다(is_country 정규화 — 리뷰 MED).
 
     admin API 경로는 국가 문자열을 대문자화하지 않으므로 엄격비교면 정책이 우회된다.
     """
     for alias in ("kr", "korea", " KR "):
         rows = discover_segment(Segment(country=alias, industry="건설"), Settings(dry_run=True))
-        assert rows and {r.source for r in rows} == {"nps"}
+        assert rows and {r.source for r in rows} == {"nps", "naver_local"}
 
 
-def test_kr_nps_only_broad_industry_returns_empty_without_error() -> None:
+def test_kr_whitelist_region_fanout_runs_naver_local_only() -> None:
+    """KR 지역 팬아웃 세그먼트는 지역검색만 돈다(등록처는 기본 세그먼트에서 1회).
+
+    구 NPS 단독 정책에선 region 세그먼트가 통째로 no-op(발견 0)이었다 — 지역검색 허용으로
+    시/도·시군구 팬아웃이 게이트 안에서도 작동한다(2026-08-19).
+    """
+    rows = discover_segment(
+        Segment(country="KR", industry="화학·석유화학", region="수원"), Settings(dry_run=True)
+    )
+    assert rows and {r.source for r in rows} == {"naver_local"}
+
+
+def test_kr_whitelist_broad_industry_returns_empty_without_error() -> None:
     """NPS 미적용 KR 세그먼트(브로드 '전체')는 예외 없이 빈 결과(경고 로그 경로).
 
     구 동작은 DART/검색이 커버하던 사각 — 정책 on 에서는 per-업종(택소노미) 트리거가 전제.

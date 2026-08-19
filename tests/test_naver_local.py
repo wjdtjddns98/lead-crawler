@@ -91,6 +91,44 @@ def test_dry_run_deterministic_no_network() -> None:
     assert out1 and [d.canonical_key for d in out1] == [d.canonical_key for d in out2]
 
 
+def test_live_normalizes_link_and_drops_platform_domains() -> None:
+    """link 원시 URL → 정규화 저장 + 공유 플랫폼 링크는 도메인 폐기(name: 키 분리 보존).
+
+    원시 URL 이 domain 에 그대로 들어가면 enrich/existence 가 URL 을 호스트명으로 취급해
+    전면 실패한다(2026-08-18 실사고, 승격 0). 정규화는 루트까지 접으므로(blog.naver.com/A·/B
+    → naver.com) 플랫폼 도메인을 살려두면 서로 다른 업체가 dom:naver.com 한 행에 뭉개져
+    영구 유실되고(제약①) 포털 루트가 승격된다 — 폐기(None)해 업체를 분리 보존한다."""
+    def _on_query(q):  # noqa: ARG001
+        return {"items": [
+            _item("정규화상사", link="http://foo.co.kr/sub?x=1"),
+            _item("블로그상사A", link="https://blog.naver.com/a"),
+            _item("블로그상사B", link="https://blog.naver.com/b"),
+            _item("무링크상사"),
+        ]}
+
+    src = NaverLocalSource(_settings(), fetcher=FakeFetcher(_on_query))
+    out = src.discover(Segment(country="KR", industry="화학·석유화학"))
+    domains = {d.name: d.domain for d in out}
+    assert domains["정규화상사"] == "foo.co.kr"
+    assert domains["블로그상사A"] is None and domains["블로그상사B"] is None  # 플랫폼 폐기.
+    assert domains["무링크상사"] is None  # 링크 없음 → None 유지.
+    keys = {d.name: d.canonical_key for d in out}
+    assert keys["블로그상사A"].startswith("name:")  # 도메인 폐기 → name: 티어 폴백.
+    assert keys["블로그상사A"] != keys["블로그상사B"]  # 서로 다른 업체가 분리 보존된다.
+
+
+def test_applies_to_rejects_listed_scope() -> None:
+    """상장 스코프 세그먼트에선 안 돈다 — 지역검색은 상장여부를 판별할 수 없는 소스라
+    listed 스코프 크롤에서 돌면 미검증 업체가 그 스코프값으로 저장·오염된다(리뷰 MED)."""
+    src = NaverLocalSource(_settings())
+    assert not src.applies_to(
+        Segment(country="KR", industry="화학·석유화학", listed="listed")
+    )
+    assert not src.applies_to(
+        Segment(country="KR", industry="화학·석유화학", listed="unlisted")
+    )
+
+
 def test_live_unescapes_html_entities_in_name() -> None:
     """title 의 HTML 엔티티 복원 — name: canonical_key 오염 방지(리뷰 M6)."""
     def _on_query(q):  # noqa: ARG001
