@@ -13,7 +13,8 @@ _persist_lead 가 그대로 강제하므로, 죽은 사이트는 여기서도 �
 
 사용:  python scripts/backfill_promote_domained.py [--workers 3] [--batch 200]
        [--country KR ...] [--industry '정보보안,게임'] [--exclude-industry ...]
-       [--exclude-listed] [--cursor-file logs/promote-cursor.txt] [--stall-exit-secs 900]
+       [--exclude-listed | --listed] [--cursor-file logs/promote-cursor.txt]
+       [--stall-exit-secs 900]
        (workers 기본 3 — A/C 백필과 동시 구동 시 헤드리스 메모리 경합을 피하려 보수적.
         --industry 는 굶는 세그먼트 타겟 보충용 — 2026-08-19 P1, '미분류'=라벨 빈값 행.
         --cursor-file 지정 시 배치마다 마지막 키를 기록해 재기동(정체 종료 포함)이
@@ -130,6 +131,8 @@ def main() -> int:
                     help="이 업종 제외(반복·쉼표 병기)")
     ap.add_argument("--exclude-listed", action="store_true",
                     help="상장 확정(listed='listed') 제외 — unknown 유지")
+    ap.add_argument("--listed", action="store_true",
+                    help="상장 확정(listed='listed')만 대상 — 상장사 세그먼트 타겟 보충")
     ap.add_argument("--cursor-file", default="",
                     help="배치 커서 파일 — 재기동이 이어받는다(빈값=미사용, 처음부터)")
     ap.add_argument("--stall-exit-secs", type=float, default=900.0,
@@ -141,6 +144,7 @@ def main() -> int:
         "industries": _split_multi(args.industry),
         "exclude_industries": _split_multi(args.exclude_industry),
         "exclude_listed": bool(args.exclude_listed),
+        "only_listed": bool(args.listed),
     }
     cnt_stmt, cnt_params = _scoped(_COUNT_SQL, countries, **filters)
     tgt_stmt, tgt_params = _scoped(_TARGET_SQL, countries, **filters)
@@ -162,6 +166,7 @@ def main() -> int:
         f" country={countries or '전세계'} industry={filters['industries'] or '전체'}"
         f" exclude_industry={filters['exclude_industries'] or '없음'}"
         f" exclude_listed={filters['exclude_listed']}"
+        f" listed_only={filters['only_listed']}"
         f" | 도메인점유 {len(taken)} 과공유 {len(overshared)})",
         flush=True,
     )

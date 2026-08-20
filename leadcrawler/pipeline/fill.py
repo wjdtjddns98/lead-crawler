@@ -109,6 +109,7 @@ def _scoped(
     industries: Iterable[str] | None = None,
     exclude_industries: Iterable[str] | None = None,
     exclude_listed: bool = False,
+    only_listed: bool = False,
 ):
     """SQL 템플릿의 ``{scope}`` 슬롯에 대상 필터를 조합 주입한다 — (stmt, params) 반환.
 
@@ -118,7 +119,8 @@ def _scoped(
     '미분류' 는 큐 재고 API 와 동일하게 라벨 빈값 행으로 대칭 매칭),
     ``exclude_industries`` 는 이 업종 제외,
     ``exclude_listed`` 는 상장 확정(listed='listed')만 제외한다(unknown 은 대상 유지 —
-    NPS 미스=비상장 경향이라 실질 비상장일 가능성이 높다).
+    NPS 미스=비상장 경향이라 실질 비상장일 가능성이 높다),
+    ``only_listed`` 는 상장 확정만 대상(상장사 세그먼트 타겟 보충 — exclude 와 배타 사용).
     """
     clauses: list[str] = []
     params: dict[str, object] = {}
@@ -130,6 +132,8 @@ def _scoped(
         binds.append(bindparam("country_scope", expanding=True))
     if exclude_listed:
         clauses.append("and coalesce(d.listed, '') <> 'listed'")
+    if only_listed:
+        clauses.append("and d.listed = 'listed'")
     incl = sorted({i.strip().lower() for i in (industries or []) if i and i.strip()})
     if incl:
         cond = f"{_INDUSTRY_EXPR} in :industry_incl"

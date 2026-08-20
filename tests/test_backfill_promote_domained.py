@@ -89,6 +89,10 @@ def test_scoped_industry_include_runs_on_promote_sql(tmp_path) -> None:
             canonical_key="dom:kr:game.co.kr", name="게임사", country="KR",
             industry="게임", source="nps", domain="game.co.kr",
         ))
+        session.add(DiscoveredCompanyRow(
+            canonical_key="dom:kr:listed.co.kr", name="상장사", country="KR",
+            industry="은행", source="dart", domain="listed.co.kr", listed="listed",
+        ))
         session.commit()
 
         cnt_stmt, cnt_params = mod._scoped(
@@ -98,6 +102,11 @@ def test_scoped_industry_include_runs_on_promote_sql(tmp_path) -> None:
         tgt_stmt, tgt_params = mod._scoped(mod._TARGET_SQL, ["KR"], industries=["정보보안"])
         rows = session.execute(tgt_stmt, {**tgt_params, "limit": 10, "after": ""}).all()
         assert [r.canonical_key for r in rows] == ["dom:kr:sec.co.kr"]
+
+        # --listed(only_listed): 상장 확정 행만 대상 — 상장사 세그먼트 타겟 보충.
+        lst_stmt, lst_params = mod._scoped(mod._TARGET_SQL, ["KR"], only_listed=True)
+        rows = session.execute(lst_stmt, {**lst_params, "limit": 10, "after": ""}).all()
+        assert [r.canonical_key for r in rows] == ["dom:kr:listed.co.kr"]
 
 
 def test_split_multi_flattens_commas() -> None:
