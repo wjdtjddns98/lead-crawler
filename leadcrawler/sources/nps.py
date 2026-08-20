@@ -95,7 +95,7 @@ class NpsSource(DiscoverySource):
         라이브는 3층(ksic_industry_map) 라벨 매핑만 쓴다 — NPS 업종코드는 KSIC 10차가
         아니라 구체계(실측: 61=수상운송·21=제지·26=요업)라, 10차 접두표(ksic_prefixes)
         필터가 엉뚱한 사업장을 골라낸다(2026-07-14 실사고: 통신 세그먼트에 해운사 유입).
-        접두 폴백 제거 — 매핑은 nps-map-industries 가 42라벨 전체를 커버한다.
+        접두 폴백 제거 — 매핑은 nps-map-industries 가 전 라벨을 커버한다.
         dry_run 은 네트워크 0 결정성 계약용 게이트로만 접두표를 유지한다(_dry 와 대칭).
         """
         if not is_country(segment, _KR):
@@ -115,7 +115,7 @@ class NpsSource(DiscoverySource):
         offset = 0
         if self._cursor_store is not None:
             offset = max(0, self._cursor_store.get(self.name, segment.label))
-        # 3층 라벨 매핑 경로 단독(42라벨 전체 커버·코드단위 통합) — 10차 접두 폴백은
+        # 3층 라벨 매핑 경로 단독(전 라벨 커버·코드단위 통합) — 10차 접두 폴백은
         # NPS 코드체계 불일치 오라벨(applies_to docstring)로 제거. 미매핑 라벨은 빈 결과.
         if segment.industry not in self._mapped_labels():
             return []
