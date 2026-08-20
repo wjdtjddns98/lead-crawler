@@ -129,10 +129,11 @@ def main() -> int:
                     help="이 업종만(반복·쉼표 병기 — 굶는 세그먼트 타겟 보충, '미분류'=빈값)")
     ap.add_argument("--exclude-industry", action="append", default=None,
                     help="이 업종 제외(반복·쉼표 병기)")
-    ap.add_argument("--exclude-listed", action="store_true",
-                    help="상장 확정(listed='listed') 제외 — unknown 유지")
-    ap.add_argument("--listed", action="store_true",
-                    help="상장 확정(listed='listed')만 대상 — 상장사 세그먼트 타겟 보충")
+    listed_group = ap.add_mutually_exclusive_group()
+    listed_group.add_argument("--exclude-listed", action="store_true",
+                              help="상장 확정(listed='listed') 제외 — unknown 유지")
+    listed_group.add_argument("--listed", action="store_true",
+                              help="상장 확정(listed='listed')만 대상 — 상장사 세그먼트 타겟 보충")
     ap.add_argument("--cursor-file", default="",
                     help="배치 커서 파일 — 재기동이 이어받는다(빈값=미사용, 처음부터)")
     ap.add_argument("--stall-exit-secs", type=float, default=900.0,

@@ -12,6 +12,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 from leadcrawler.config import Settings
 from leadcrawler.schema import CompanyRow, DiscoveredCompanyRow
 from leadcrawler.storage.db import get_sessionmaker, init_db
@@ -107,6 +109,10 @@ def test_scoped_industry_include_runs_on_promote_sql(tmp_path) -> None:
         lst_stmt, lst_params = mod._scoped(mod._TARGET_SQL, ["KR"], only_listed=True)
         rows = session.execute(lst_stmt, {**lst_params, "limit": 10, "after": ""}).all()
         assert [r.canonical_key for r in rows] == ["dom:kr:listed.co.kr"]
+
+        # 모순 조합(exclude+only)은 조용한 0건 no-op 대신 즉시 거부.
+        with pytest.raises(ValueError):
+            mod._scoped(mod._TARGET_SQL, ["KR"], exclude_listed=True, only_listed=True)
 
 
 def test_split_multi_flattens_commas() -> None:

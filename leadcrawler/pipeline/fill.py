@@ -122,6 +122,9 @@ def _scoped(
     NPS 미스=비상장 경향이라 실질 비상장일 가능성이 높다),
     ``only_listed`` 는 상장 확정만 대상(상장사 세그먼트 타겟 보충 — exclude 와 배타 사용).
     """
+    if exclude_listed and only_listed:
+        # 모순 조합은 SQL 이 항상 거짓(0건 조용한 no-op)이 되므로 즉시 거부한다.
+        raise ValueError("exclude_listed 와 only_listed 는 동시 사용 불가(배타)")
     clauses: list[str] = []
     params: dict[str, object] = {}
     binds = []
