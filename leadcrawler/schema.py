@@ -445,6 +445,9 @@ class BackfillJobRow(Base):
     )
     # 필터 스냅샷 — 재기동(세대 교체)이 원 요청 조건을 그대로 복원한다(crawl_job 선례).
     countries: Mapped[str] = mapped_column(String(256), default="", server_default=text("''"))
+    industries: Mapped[str] = mapped_column(
+        String(1024), default="", server_default=text("''")
+    )  # 포함식(이 업종만) — exclude_industries 와 배타 사용(#372)
     exclude_industries: Mapped[str] = mapped_column(
         String(1024), default="", server_default=text("''")
     )  # 쉼표구분 CSV(crawl_target 관례)

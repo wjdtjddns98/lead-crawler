@@ -119,6 +119,56 @@ def test_overview_returns_funnel_counts(app) -> None:
     assert all(isinstance(v, int) for v in body.values())
 
 
+def test_overview_accepts_inclusive_industries(app) -> None:
+    """포함식 industries — 잔여 카운트 경로가 200 으로 통과한다('미분류' 포함)."""
+    admin = _client(app, _ADMIN)
+    r = admin.get(
+        "/admin/backfill/overview", params={"countries": "KR", "industries": "은행,미분류"}
+    )
+    assert r.status_code == 200
+    assert all(isinstance(v, int) for v in r.json().values())
+
+
+def test_both_industry_modes_rejected(app) -> None:
+    """포함식·제외식 동시 지정은 422 배타 거부(FE 는 둘 중 하나만 보내는 계약, #372)."""
+    admin = _client(app, _ADMIN)
+    r = admin.post(
+        "/admin/backfill/start", json={"industries": "은행", "exclude_industries": "보험"}
+    )
+    assert r.status_code == 422
+    r = admin.get(
+        "/admin/backfill/overview",
+        params={"industries": "은행", "exclude_industries": "보험"},
+    )
+    assert r.status_code == 422
+
+
+def test_start_with_industries_carries_snapshot(app) -> None:
+    """포함식 조건이 두 트랙 job 스냅샷·현황 응답에 실려 재기동에도 유지된다."""
+    admin = _client(app, _ADMIN)
+    r = admin.post("/admin/backfill/start", json={"industries": "반도체·디스플레이"})
+    assert r.status_code == 202
+    body = r.json()
+    assert body["resolve"]["industries"] == "반도체·디스플레이"
+    assert body["fill"]["industries"] == "반도체·디스플레이"
+    admin.post("/admin/backfill/stop")
+    _wait_status(admin, "resolve", "cancelled")
+    _wait_status(admin, "fill", "cancelled")
+
+
+def test_child_argv_includes_industry() -> None:
+    """DB 스냅샷 → 자식 argv 재구성에 --industry 가 포함된다(빈값이면 미포함)."""
+    base = {
+        "id": "bf_test", "track": "A", "max_batches": 20, "batch": 200, "workers": 2,
+        "min_queue": 1, "countries": "KR", "industries": "은행,보험",
+        "exclude_industries": "", "exclude_listed": False,
+    }
+    argv = bp._child_argv(base, 0)
+    assert argv[argv.index("--industry") + 1] == "은행,보험"
+    argv = bp._child_argv({**base, "industries": ""}, 0)
+    assert "--industry" not in argv
+
+
 def test_start_status_duplicate_stop_flow(app) -> None:
     """딸깍 플로우 — 시작(두 트랙 동시) → 현황 → 중복 409 → 중지 → cancelled 마감."""
     admin = _client(app, _ADMIN)
