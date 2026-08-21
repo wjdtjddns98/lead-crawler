@@ -48,6 +48,7 @@ from ..storage.review import (
     queue_stock,
     set_review_status,
 )
+from ..storage.dashboard import holdings_summary
 from .admin import register_admin
 from .auth import make_require_admin, make_require_user, register_auth
 from .dedup import register_dedup
@@ -55,6 +56,7 @@ from .schemas import (
     ClaimRequest,
     ConfirmRequest,
     CountryOption,
+    DashboardSummaryResponse,
     IndustryOption,
     QueueFilterOptions,
     QueueResponse,
@@ -216,6 +218,19 @@ def create_app() -> FastAPI:
             rows=[QueueStockRow(**r) for r in rows],
             total=sum(r["n"] for r in rows),
         )
+
+    @app.get("/dashboard/summary", response_model=DashboardSummaryResponse)
+    def dashboard_summary(
+        db: Session = Depends(get_db),
+        user: UserRow = Depends(require_user),
+    ) -> DashboardSummaryResponse:
+        """보유 데이터 대시보드 스냅샷 — 발견 원장·승격 회사·검증 큐 현황 한 응답.
+
+        FE 계약(2026-08-21): 대시보드 진입 시 1회 호출(+수동 새로고침) — **폴링 금지**
+        (원장 group by 수회). 국가(ISO2 접기)·업종('미분류' 접기) 어휘는 ``/queue/stock``
+        과 동일해, 대시보드 숫자를 큐 필터 파라미터로 그대로 되짚을 수 있다.
+        """
+        return DashboardSummaryResponse(**holdings_summary(db))
 
     @app.post("/queue/claim", response_model=list[ReviewItem])
     def claim_queue(

@@ -538,3 +538,52 @@ class BackfillOverview(BaseModel):
     resolve_pending: int  # 도메인 없음·미승격(해석 대기).
     fill_pending: int  # 도메인 있음·이메일 없음(채우기 대기).
     queue_pending: int  # 워크벤치 미점유 pending.
+
+
+class LedgerSummary(BaseModel):
+    """발견 원장 분해 — total = promoted + domained_unpromoted + undomained_unpromoted."""
+
+    total: int = Field(ge=0)
+    promoted: int = Field(ge=0)  # company 로 승격 완료(실존 확인분).
+    domained_unpromoted: int = Field(ge=0)  # 도메인 확정·미승격(promote 백필 대상).
+    undomained_unpromoted: int = Field(ge=0)  # 도메인 미확정(resolve 대기).
+
+
+class CountryCount(BaseModel):
+    country: str  # 등록국=ISO2 접기, 미등록 표기=원문, ''=국가 미상(queue_stock 과 동일 어휘).
+    n: int = Field(ge=0)
+
+
+class IndustryCount(BaseModel):
+    industry: str  # 구분 라벨(빈값은 '미분류'로 접음).
+    n: int = Field(ge=0)
+
+
+class CompaniesSummary(BaseModel):
+    """승격(실존) 회사 현황 — 분포는 n 내림차순 정렬."""
+
+    total: int = Field(ge=0)
+    with_email: int = Field(ge=0)  # 이메일 연락처 1개 이상 보유 회사 수(distinct).
+    by_country: list[CountryCount]
+    by_industry: list[IndustryCount]
+
+
+class QueueSummary(BaseModel):
+    """검증 큐 상태별 카운트 — pending 은 점유 여부로 분해."""
+
+    pending_unclaimed: int = Field(ge=0)
+    pending_claimed: int = Field(ge=0)
+    confirmed: int = Field(ge=0)
+    rejected: int = Field(ge=0)
+
+
+class DashboardSummaryResponse(BaseModel):
+    """보유 데이터 대시보드 스냅샷 — 원장·회사·큐 한 응답(2026-08-21 FE 계약).
+
+    호출 정책: 대시보드 진입 시 1회(+수동 새로고침) — 폴링 금지(원장 group by 수회).
+    국가·업종 어휘는 /queue/stock 과 동일해 숫자를 큐 필터로 되짚을 수 있다.
+    """
+
+    ledger: LedgerSummary
+    companies: CompaniesSummary
+    queue: QueueSummary
