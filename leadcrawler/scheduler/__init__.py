@@ -104,7 +104,19 @@ def run_daily_report(
     else:
         inds, ctys, listed, persist = _effective_target(settings)
         segments = generate_segments(inds, countries=ctys, listed=[listed])
-        leads = run_pipeline(segments, settings=settings, persist=persist)
+        # 무인 경로 세그먼트 캡 — 웹 즉시크롤(trigger_crawl_job)에만 있던 가드를 스케줄러에도.
+        # 국가 빈값=등록국 전체(71국) 팬아웃이라, 캡 초과면 실행 대신 스킵+로그(리뷰 HIGH:
+        # 저장은 되는 빈 국가 타깃을 다음날 데일리잡이 무가드로 실행해 예산가드 우회).
+        if len(segments) > settings.crawl_max_segments:
+            log.warning(
+                "scheduler.daily_crawl_skipped",
+                reason="too_many_segments",
+                segments=len(segments),
+                cap=settings.crawl_max_segments,
+            )
+            leads = []
+        else:
+            leads = run_pipeline(segments, settings=settings, persist=persist)
     result = auto_report(
         leads, date=report_date, settings=settings, milestone=settings.report_milestone
     )
