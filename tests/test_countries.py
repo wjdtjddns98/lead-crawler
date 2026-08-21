@@ -47,8 +47,17 @@ def test_resolve_country_is_case_and_space_insensitive() -> None:
 
 
 def test_resolve_country_unregistered_returns_none() -> None:
-    # 레지스트리에 없는 국가는 None(발견 스코프 불변 — 별칭 확장이 크롤 대상을 늘리지 않음).
-    assert resolve_country("Austria") is None
+    # 레지스트리에 없는 국가는 None(2026-08-21 확장으로 Austria 는 등록됨 → 표본 교체).
+    assert resolve_country("Vatican City") is None
+
+
+def test_expanded_registry_samples() -> None:
+    # 2026-08-21 52개국 확장 — QID/ISO 오타 회귀 가드(표본) + 터키어 대문자 İ 케이스폴딩.
+    assert resolve_country("아랍에미리트").iso2 == "AE"
+    assert resolve_country("Turkey").qid == "Q43"
+    assert resolve_country("TÜRKİYE").iso2 == "TR"  # lower() 분해 문제 선치환 검증.
+    assert resolve_country("nzl").iso2 == "NZ"
+    assert resolve_country("팔레스타인").qid == "Q219060"
     assert resolve_country("Narnia") is None
     assert resolve_country("") is None
 
