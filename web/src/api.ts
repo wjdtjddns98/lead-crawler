@@ -3,6 +3,8 @@
 // 모든 보호 요청에 Authorization: Bearer 헤더로 동반한다. 401 이면 세션을 비우고 콜백 통지.
 import type {
   AuditEntry,
+  BackfillOverview,
+  BackfillStatus,
   ClaimFilter,
   CountryOption,
   CrawlJob,
@@ -70,6 +72,23 @@ function handle401(res: Response): void {
   }
 }
 
+// HTTP 오류 응답 — 상태코드로 분기해야 하는 호출부(백필 409/404 등)를 위해 코드를 싣는다.
+// Error 를 상속하므로 message 만 쓰던 기존 호출부(errMsg)는 그대로 동작한다.
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+// unknown 오류 → HTTP 상태코드(ApiError 가 아니면 null). catch 블록에서 분기용.
+export function errStatus(e: unknown): number | null {
+  return e instanceof ApiError ? e.status : null;
+}
+
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   handle401(res);
   if (!res.ok) {
@@ -90,7 +109,7 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
     } catch {
       // 본문이 JSON 이 아니면 상태코드만 노출.
     }
-    throw new Error(`요청 실패: ${detail}`);
+    throw new ApiError(`요청 실패: ${detail}`, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -338,6 +357,42 @@ export async function fetchCrawlHistory(limit = 10): Promise<CrawlJob[]> {
 // 진행 중 크롤에 취소를 요청한다(협조적 중단). 진행 중이 없으면 404.
 export async function cancelCrawl(): Promise<CrawlJob> {
   return apiSend("POST", "/admin/crawl/cancel");
+}
+
+// --- 백필 제어(#352, admin 전용) ---------------------------------------
+
+// 조건별 잔여 미리보기. 수십만 행 조인이라 **폴링 금지** — 마운트/조건 변경/수동
+// 새로고침에서만 호출한다(진행 중 잔여는 fetchBackfillStatus 의 remaining).
+export async function fetchBackfillOverview(f: {
+  countries: string;
+  exclude_industries: string;
+  exclude_listed: boolean;
+}): Promise<BackfillOverview> {
+  const q = new URLSearchParams({
+    countries: f.countries,
+    exclude_industries: f.exclude_industries,
+    exclude_listed: String(f.exclude_listed),
+  });
+  return apiGet(`/admin/backfill/overview?${q.toString()}`);
+}
+
+// 백필 시작(딸깍) — 조건 하나로 두 트랙을 함께 가동한다. 이미 활성이면 409.
+export async function startBackfill(f: {
+  countries: string;
+  exclude_industries: string;
+  exclude_listed: boolean;
+}): Promise<BackfillStatus> {
+  return apiSend("POST", "/admin/backfill/start", f);
+}
+
+// 트랙별 최신 작업(이력 없으면 status="idle"). 진행 중 주기 폴링 대상.
+export async function fetchBackfillStatus(): Promise<BackfillStatus> {
+  return apiGet("/admin/backfill/status");
+}
+
+// 활성 백필 전부에 취소 요청(마감은 수 초 내 비동기). 활성이 없으면 404.
+export async function stopBackfill(): Promise<BackfillStatus> {
+  return apiSend("POST", "/admin/backfill/stop");
 }
 
 // 확정분 엑셀 다운로드. 인증 헤더가 필요해 평범한 링크 대신 fetch→blob 으로 받아 저장한다.
