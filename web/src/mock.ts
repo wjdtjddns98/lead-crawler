@@ -487,6 +487,114 @@ function crawlJobInfo(): CrawlJobJson {
   };
 }
 
+// 백필 작업(#352) — 크롤과 같은 무타이머 방식(폴링 시점 경과시간으로 진행 계산)이되,
+// 지속형 consumer 라 '완료(done)'가 없다. 대상을 소진해도 계속 돌며(신규 유입분 처리)
+// 종료는 중지·예산소진뿐. 데모 시간에 맞춰 처리속도는 실 BE 보다 크게 잡았다.
+const BF_RATE = { C: 420, A: 300 }; // 초당 처리(모의) — 초기 대상 소진까지 ~30초.
+const BF_CANCEL_DELAY_MS = 2000; // 협조적 취소 흉내(요청 후 확정까지).
+// 예산 소진 데모 — A 가 먼저(45초), C 가 나중(60초)에 끝나 그 사이 구간이 '한쪽만 중단'
+// 상태가 된다(진행 카드의 "일부 작업 중단됨" 분기 확인용).
+const BF_BUDGET_MS = { A: 45_000, C: 60_000 };
+
+// 잔여 풀 — overview 의 기준값. 작업이 끝나면 처리한 만큼 깎아 재조회 시 감소를 보여준다.
+const backfillPool = { C: 12_043, A: 8_210 };
+let backfillDrained = false; // 종료분 차감 1회성 가드
+
+type BackfillJobState = {
+  id: string;
+  countries: string;
+  excludeIndustries: string;
+  excludeListed: boolean;
+  startedAt: number;
+  initial: { C: number; A: number };
+  cancelRequestedAt: number | null;
+};
+let backfillJob: BackfillJobState | null = null;
+
+type BackfillJobJson = { status: string } & Record<string, unknown>;
+
+function idleBackfill(track: "C" | "A"): BackfillJobJson {
+  return {
+    id: null, track, status: "idle", countries: "", exclude_industries: "",
+    exclude_listed: false, batch: 0, workers: 0, max_batches: 0, min_queue: 0,
+    initial_target: 0, remaining: 0, processed: 0, resolved: 0, promoted: 0, emails: 0,
+    batches_done: 0, generation: 0, recycles: 0, crash_restarts: 0, pid: null,
+    cancel_requested: false, stop_reason: null, error: null, triggered_by: null,
+    started_at: null, updated_at: null, progress_at: null, finished_at: null,
+  };
+}
+
+// 트랙 종료 시점·사유 — 취소가 예산소진보다 먼저면 취소로 확정(둘 다 미도달이면 진행 중).
+function backfillEnd(
+  j: BackfillJobState,
+  track: "C" | "A",
+): { at: number; status: string; reason: string } | null {
+  const cancelAt =
+    j.cancelRequestedAt !== null ? j.cancelRequestedAt + BF_CANCEL_DELAY_MS : Infinity;
+  const budgetAt = j.startedAt + BF_BUDGET_MS[track];
+  const at = Math.min(cancelAt, budgetAt);
+  if (Date.now() < at) return null;
+  return cancelAt <= budgetAt
+    ? { at: cancelAt, status: "cancelled", reason: "operator" }
+    : { at: budgetAt, status: "budget_exhausted", reason: "monthly_budget" };
+}
+
+function backfillTrackInfo(track: "C" | "A"): BackfillJobJson {
+  const j = backfillJob;
+  if (!j) return idleBackfill(track);
+  const end = backfillEnd(j, track);
+  const endMs = end?.at ?? Date.now();
+  const elapsedSec = Math.max(0, (endMs - j.startedAt) / 1000);
+  // 지속형 — processed 는 initial 을 넘어서도 계속 증가한다(대상 소진 후 신규 유입분).
+  const processed = Math.floor(elapsedSec * BF_RATE[track]);
+  const initial = j.initial[track];
+  const batches = Math.floor(processed / 200);
+  return {
+    id: `${j.id}-${track}`,
+    track,
+    status: end ? end.status : "running",
+    countries: j.countries,
+    exclude_industries: j.excludeIndustries,
+    exclude_listed: j.excludeListed,
+    batch: 200,
+    workers: track === "C" ? 6 : 4,
+    max_batches: 0,
+    min_queue: 500,
+    initial_target: initial,
+    remaining: Math.max(0, initial - processed),
+    processed,
+    // 트랙별 산출물 — C 는 도메인 해석·승격, A 는 이메일(반대쪽은 항상 0).
+    resolved: track === "C" ? Math.floor(processed * 0.34) : 0,
+    promoted: track === "C" ? Math.floor(processed * 0.31) : 0,
+    emails: track === "A" ? Math.floor(processed * 0.22) : 0,
+    batches_done: batches,
+    generation: 1 + Math.floor(batches / 40),
+    recycles: Math.floor(batches / 40),
+    crash_restarts: 0,
+    pid: track === "C" ? 13820 : 13821,
+    cancel_requested: j.cancelRequestedAt !== null,
+    stop_reason: end?.reason ?? null,
+    error: null,
+    triggered_by: "mock-admin",
+    started_at: new Date(j.startedAt).toISOString(),
+    updated_at: new Date(endMs).toISOString(),
+    progress_at: new Date(endMs).toISOString(),
+    finished_at: end ? new Date(end.at).toISOString() : null,
+  };
+}
+
+// 두 트랙 스냅샷 + 전부 종료했으면 잔여 풀에서 처리분 1회 차감(overview 재조회 시 감소 확인용).
+function backfillStatusJson(): { resolve: BackfillJobJson; fill: BackfillJobJson } {
+  const resolve = backfillTrackInfo("C");
+  const fill = backfillTrackInfo("A");
+  if (backfillJob && !backfillDrained && resolve.status !== "running" && fill.status !== "running") {
+    backfillPool.C = Math.max(0, backfillPool.C - (resolve.processed as number));
+    backfillPool.A = Math.max(0, backfillPool.A - (fill.processed as number));
+    backfillDrained = true;
+  }
+  return { resolve, fill };
+}
+
 function setStatus(
   id: string,
   status: ReviewItem["status"],
@@ -798,6 +906,58 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     if (crawlJob && crawlJob.cancelRequestedAt === null) crawlJob.cancelRequestedAt = Date.now();
     return jsonRes(crawlJobInfo());
   }
+  // --- 백필 제어(#352) ---------------------------------------------------
+  if (path === "/admin/backfill/overview") {
+    const countries = csvSet(u.searchParams.get("countries"));
+    const excluded = csvSet(u.searchParams.get("exclude_industries"));
+    const exclListed = u.searchParams.get("exclude_listed") === "true";
+    // 대략치 축소 계수 — 실 BE 의 조인 결과가 아니라 필터 반응을 눈으로 보기 위한 흉내.
+    let f = 1;
+    if (countries.size) f *= Math.min(1, (countries.size * 2) / MOCK_COUNTRIES.length);
+    f *= Math.max(0.1, 1 - excluded.size * 0.07);
+    if (exclListed) f *= 0.8;
+    // 검증 큐는 BE 계약대로 **국가 조건만** 반영한다(업종은 포함식이라 제외식과 불일치).
+    const queue = pending().filter(
+      (x) => !countries.size || countries.has(x.country.toLowerCase()),
+    ).length;
+    return jsonRes({
+      resolve_pending: Math.round(backfillPool.C * f),
+      fill_pending: Math.round(backfillPool.A * f),
+      queue_pending: queue,
+    });
+  }
+  if (path === "/admin/backfill/status") return jsonRes(backfillStatusJson());
+  if (path === "/admin/backfill/start" && method === "POST") {
+    const s = backfillStatusJson();
+    if (s.resolve.status === "running" || s.fill.status === "running")
+      return jsonRes({ detail: "활성 백필 존재(트랙 C, A)" }, 409);
+    let body: { countries?: string; exclude_industries?: string; exclude_listed?: boolean } = {};
+    try {
+      body = JSON.parse(String(init?.body ?? "{}"));
+    } catch {
+      // 본문 없음 — 전부 기본값(전세계 전체).
+    }
+    backfillJob = {
+      id: `mock-backfill-${Date.now()}`,
+      countries: body.countries ?? "",
+      excludeIndustries: body.exclude_industries ?? "",
+      excludeListed: !!body.exclude_listed,
+      startedAt: Date.now(),
+      initial: { C: backfillPool.C, A: backfillPool.A },
+      cancelRequestedAt: null,
+    };
+    backfillDrained = false;
+    return jsonRes(backfillStatusJson(), 202);
+  }
+  if (path === "/admin/backfill/stop" && method === "POST") {
+    const s = backfillStatusJson();
+    if (s.resolve.status !== "running" && s.fill.status !== "running")
+      return jsonRes({ detail: "활성 백필이 없습니다" }, 404);
+    if (backfillJob && backfillJob.cancelRequestedAt === null)
+      backfillJob.cancelRequestedAt = Date.now();
+    return jsonRes(backfillStatusJson());
+  }
+
   if (path === "/send/preview")
     return jsonRes({
       recipients: 0,

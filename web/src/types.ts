@@ -180,3 +180,62 @@ export interface CrawlJob {
   updated_at: string | null;
   finished_at: string | null;
 }
+
+// --- 백필 제어(#352) ----------------------------------------------------
+// 지속형 consumer 라 '완료(done)'가 없다 — 대상을 다 소진해도 대기 상태로 남는다.
+// budget_exhausted 는 월 예산 소진에 의한 **정상 종료**(실패 아님 — 표시 톤 구분 필요).
+export type BackfillJobStatus =
+  | "idle"
+  | "running"
+  | "failed"
+  | "cancelled"
+  | "budget_exhausted";
+
+// 트랙 1개분 현황. track("C"=도메인해석, "A"=이메일)은 내부 개념이라 화면엔 노출하지
+// 않고, 응답을 구분해 받기 위해서만 존재한다(딸깍 원칙 — 조건 하나·버튼 하나).
+export interface BackfillJob {
+  id: string | null;
+  track: string;
+  status: BackfillJobStatus;
+  countries: string;
+  exclude_industries: string;
+  exclude_listed: boolean;
+  batch: number;
+  workers: number;
+  max_batches: number;
+  min_queue: number;
+  // initial_target 은 시작 시점 스냅샷(고정), remaining 은 실시간 잔여(신규 유입으로 늘 수 있음).
+  initial_target: number;
+  remaining: number;
+  processed: number;
+  resolved: number;
+  promoted: number;
+  emails: number;
+  batches_done: number;
+  generation: number;
+  recycles: number;
+  crash_restarts: number;
+  pid: number | null;
+  cancel_requested: boolean;
+  // operator | monthly_budget | cancelled_before_resume
+  stop_reason: string | null;
+  error: string | null;
+  triggered_by: string | null;
+  started_at: string | null;
+  updated_at: string | null;
+  progress_at: string | null;
+  finished_at: string | null;
+}
+
+export interface BackfillStatus {
+  resolve: BackfillJob; // 도메인 해석→승격
+  fill: BackfillJob; // 이메일 채우기
+}
+
+// 시작 전 잔여 미리보기. 대형 조인이라 폴링 금지(진행 중 잔여는 status.remaining).
+// queue_pending 은 국가 조건만 반영한다(BE 주석 — 업종 필터 체계가 포함식이라 제외식과 불일치).
+export interface BackfillOverview {
+  resolve_pending: number;
+  fill_pending: number;
+  queue_pending: number;
+}
