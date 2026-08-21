@@ -378,7 +378,7 @@ def register_admin(
     @app.get("/admin/backfill/overview", response_model=BackfillOverview)
     def backfill_overview(
         countries: str = Query(default=""),
-        industries: str = Query(default=""),
+        industries: str = Query(default="", max_length=1024),
         exclude_industries: str = Query(default=""),
         exclude_listed: bool = Query(default=False),
         db: Session = Depends(get_db),
@@ -418,6 +418,11 @@ def register_admin(
         from ..storage.backfill_job import BackfillBusy, active_backfill_job
         from ..storage.db import get_sessionmaker
 
+        # 422(포함·제외 배타) 검사를 409(활성 존재) 검사보다 먼저 — 잘못된 요청은
+        # 서버 상태와 무관하게 항상 같은 응답을 받게 한다(리뷰 LOW-3).
+        c, i, e, x = _backfill_filters(
+            body.countries, body.industries, body.exclude_industries, body.exclude_listed
+        )
         settings = get_settings()
         sm = get_sessionmaker(settings)
         with sm() as s:
@@ -426,12 +431,11 @@ def register_admin(
             raise HTTPException(
                 status_code=409, detail=f"활성 백필 존재(트랙 {', '.join(active)})"
             )
-        c, i, e, x = _backfill_filters(
-            body.countries, body.industries, body.exclude_industries, body.exclude_listed
-        )
         kwargs = {
             "countries": body.countries.strip(),
-            "industries": body.industries.strip(),
+            # 정규화 CSV 로 저장 — ",," 같은 입력이 카운트(무필터)와 스냅샷/자식 argv
+            # 사이에서 다르게 해석되는 틈을 막는다(리뷰 LOW-2).
+            "industries": ",".join(i or []),
             "exclude_industries": body.exclude_industries.strip(),
             "exclude_listed": bool(body.exclude_listed),
             "triggered_by": admin.username,

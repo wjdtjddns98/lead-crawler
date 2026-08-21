@@ -120,13 +120,21 @@ def test_overview_returns_funnel_counts(app) -> None:
 
 
 def test_overview_accepts_inclusive_industries(app) -> None:
-    """포함식 industries — 잔여 카운트 경로가 200 으로 통과한다('미분류' 포함)."""
+    """포함식 industries 가 카운트 SQL 까지 실제 배선됐는지 — 시드 데이터로 값 차이를 실증."""
+    from leadcrawler.schema import DiscoveredCompanyRow
+
+    with session_scope(get_settings()) as s:
+        # 도메인 없음·미승격 = 트랙 C(resolve) 대상 — 업종만 다르게 2건.
+        s.add(DiscoveredCompanyRow(canonical_key="kr:은행테스트", name="은행테스트", industry="은행"))
+        s.add(DiscoveredCompanyRow(canonical_key="kr:보험테스트", name="보험테스트", industry="보험"))
     admin = _client(app, _ADMIN)
-    r = admin.get(
-        "/admin/backfill/overview", params={"countries": "KR", "industries": "은행,미분류"}
-    )
-    assert r.status_code == 200
-    assert all(isinstance(v, int) for v in r.json().values())
+    both = admin.get("/admin/backfill/overview").json()
+    only_bank = admin.get("/admin/backfill/overview", params={"industries": "은행"}).json()
+    assert both["resolve_pending"] == 2
+    assert only_bank["resolve_pending"] == 1  # industries=i 배선이 빠지면 2 로 회귀.
+    # '미분류' = 라벨 빈값 대칭 매칭이 API 경로에서도 유지되는지(엔진 어휘 그대로 통과).
+    r = admin.get("/admin/backfill/overview", params={"industries": "미분류"})
+    assert r.status_code == 200 and r.json()["resolve_pending"] == 0
 
 
 def test_both_industry_modes_rejected(app) -> None:
@@ -141,6 +149,14 @@ def test_both_industry_modes_rejected(app) -> None:
         params={"industries": "은행", "exclude_industries": "보험"},
     )
     assert r.status_code == 422
+    # 활성 백필이 돌고 있어도 잘못된 조합은 409 가 아니라 422 — 검사 순서 회귀 방지.
+    assert admin.post("/admin/backfill/start", json={}).status_code == 202
+    r = admin.post(
+        "/admin/backfill/start", json={"industries": "은행", "exclude_industries": "보험"}
+    )
+    assert r.status_code == 422
+    admin.post("/admin/backfill/stop")
+    _wait_status(admin, "fill", "cancelled")
 
 
 def test_start_with_industries_carries_snapshot(app) -> None:
