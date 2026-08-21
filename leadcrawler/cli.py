@@ -1,6 +1,6 @@
 """명령행 진입점 (typer).
 
-크롤러 운영·기존 import·엑셀 export·Notion 자동 리포팅을 CLI 로 노출한다.
+크롤러 운영·기존 import·엑셀 export 를 CLI 로 노출한다.
 """
 
 from __future__ import annotations
@@ -12,10 +12,8 @@ import typer
 from . import __version__
 from .config import get_settings
 from .importer import ExistingImporter, ImportedCompany
-from .integrations.notion import DailyReport, NotionReporter, ScrumEntry
 from .logging import configure_logging, get_logger
 from .pipeline import run_pipeline
-from .reporting import auto_report
 from .sources.base import Segment
 from .sources.segments import generate_segments, parse_regions
 from .storage.export import ExcelExporter
@@ -1054,66 +1052,6 @@ def dedup_merge(
         session.close()
 
 
-@app.command()
-def report(
-    date: str = typer.Argument(..., help="보고 일자 YYYY-MM-DD"),
-    done: str = typer.Option("", help="오늘 한 일"),
-    nxt: str = typer.Option("", "--next", help="내일 할 일"),
-    milestone: str = typer.Option("M0", help="마일스톤"),
-) -> None:
-    """일일 보고서 + 데일리 스크럼을 Notion 에 자동 기입한다."""
-    configure_logging()
-    reporter = NotionReporter(get_settings())
-    reporter.post_daily_report(
-        DailyReport(date=date, milestone=milestone, done=done, next=nxt)
-    )
-    reporter.post_scrum(ScrumEntry(date=date, today=nxt or done))
-    mode = "전송" if reporter.enabled else "dry_run(미전송)"
-    typer.echo(f"Notion 리포트 {mode} 완료: {date}")
-
-
-@app.command("report-auto")
-def report_auto(
-    industries: str = typer.Option("건설", help="쉼표구분 업종 목록(예: '건설,반도체')"),
-    countries: str = typer.Option("", help="쉼표구분 국가(빈값=지원 전체국 ISO2)"),
-    date: str = typer.Option("", help="보고 일자 YYYY-MM-DD(빈값=오늘 UTC)"),
-    milestone: str = typer.Option("M0", help="마일스톤"),
-    next_plan: str = typer.Option("", "--next", help="내일 할 일(선택, 보통 비움)"),
-    persist: bool = typer.Option(False, help="결과를 DB 에 영속화"),
-) -> None:
-    """크롤을 1회전 돌려 통계+git 활동을 모아 Notion 에 자동 기입한다(수기 입력 0).
-
-    스케줄러가 매일 호출할 무인 리포팅 진입점. ``--done``/``--next`` 수기 입력 없이
-    파이프라인 산출과 커밋 로그에서 일일보고·스크럼·현황 본문을 자동 생성한다.
-    """
-    configure_logging()
-    report_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    inds = [s for s in industries.split(",") if s.strip()]
-    if not inds:
-        raise typer.BadParameter("업종을 하나 이상 지정해야 합니다", param_hint="--industries")
-    ctys = [s for s in countries.split(",") if s.strip()] or None
-    segments = generate_segments(inds, countries=ctys)
-    leads = run_pipeline(segments, persist=persist)
-    auto_report(leads, date=report_date, milestone=milestone, next_plan=next_plan)
-    sent = "전송" if NotionReporter(get_settings()).enabled else "dry_run(미전송)"
-    typer.echo(f"자동 리포트 {sent} 완료: {report_date} (리드 {len(leads)}건)")
-
-
-@app.command("report-daily")
-def report_daily(date: str = typer.Option("", help="보고 일자 YYYY-MM-DD(빈값=오늘 UTC)")) -> None:
-    """설정(.env/config) 기반 무인 1회전 리포팅 — 인자 없이 동작(스케줄러용).
-
-    업종·국가·마일스톤을 ``report_*`` 설정에서 읽으므로 OS 예약작업이 한글 인자 없이
-    호출할 수 있다(Windows PowerShell 의 .ps1 한글 인코딩 함정 회피).
-    """
-    from .scheduler import run_daily_report
-
-    configure_logging()
-    run_daily_report(get_settings(), date=date or None)
-    sent = "전송" if NotionReporter(get_settings()).enabled else "dry_run(미전송)"
-    typer.echo(f"일일 리포트 {sent} 완료")
-
-
 @app.command("user-add")
 def user_add(
     username: str = typer.Argument(..., help="직원 로그인 아이디"),
@@ -1533,24 +1471,6 @@ def web(
         ssl_keyfile=ssl_keyfile,
         reload=reload,
     )
-
-
-@app.command()
-def serve() -> None:
-    """24/7 스케줄러를 띄워 매일 지정 시각(UTC)에 자동 리포팅을 무인 실행한다.
-
-    ``LEADCRAWLER_SCHEDULER_ENABLED=true`` 필요. APScheduler 미설치 시 설치 안내 후 종료.
-    실행 시각·업종·국가는 ``report_*`` 설정으로 제어한다(블로킹 — Ctrl+C 로 종료).
-    """
-    from .scheduler import start_scheduler
-
-    configure_logging()
-    try:
-        start_scheduler(get_settings())
-    except RuntimeError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    except KeyboardInterrupt:
-        typer.echo("스케줄러 종료")
 
 
 if __name__ == "__main__":

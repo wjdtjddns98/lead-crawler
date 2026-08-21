@@ -188,16 +188,6 @@ class Settings(BaseSettings):
     email_send_daily_cap: int = Field(default=400)  # 일일 발송 상한(계정 차단·스팸 방지)
     email_send_min_interval: float = Field(default=1.0)  # 발송 간 최소 간격(초, 레이트리밋)
 
-    # Notion 자동 리포팅 — 토큰 없으면 no-op(로그만).
-    notion_token: str = Field(default="")
-    notion_version: str = Field(default="2022-06-28")
-    notion_daily_db: str = Field(default="4709a56a55614147a264e68dc7e521b8")
-    notion_scrum_db: str = Field(default="850215969daa4b648a8713055356053a")
-    notion_status_db: str = Field(default="dd74e2f7c25f425cbf030117031c9f92")
-    # Nutti 팀스페이스 일일 업무보고 DB id — 설정한 배포만 그날 페이지에 lead-crawler 섹션을
-    # 병기한다(빈 값=끔, 옵트인). 타 팀 DB 쓰기라 기본 활성화하지 않는다.
-    notion_nutti_daily_db: str = Field(default="")
-
     # 라이브 발견 제어(예산·레이트리밋)
     # 무료/등록처 소스(EDGAR·DART·CompaniesHouse·거래소·GLEIF·Wikidata·OpenCorporates)의
     # 소스·세그먼트당 후보 상한 — 후보당 무료 API 1콜이라 깊게 긁어도 무비용. 이 프로그램의
@@ -301,15 +291,10 @@ class Settings(BaseSettings):
     # 지정 가능. 짧을수록 락아웃이 약해진다(브루트포스 완화 ↓) — 운영자 편의와 트레이드오프.
     login_failure_window_seconds: int = Field(default=900, ge=1)
 
-    # 24/7 스케줄러(opt-in) — 매일 크롤 1회전 + Notion 자동 리포팅(일일보고·스크럼·현황).
-    # APScheduler(선택적 extra ``schedule``) 미설치면 ``serve`` 가 안내 후 종료. 기본 off.
-    scheduler_enabled: bool = Field(default=False)
-    report_hour: int = Field(default=0)  # 일일 리포트 실행 시각(UTC 시)
-    report_minute: int = Field(default=0)  # 일일 리포트 실행 시각(UTC 분)
-    report_industries: str = Field(default="건설")  # 일일 잡 기본 업종(쉼표구분)
-    report_countries: str = Field(default="KR")  # 일일 잡 기본 국가(쉼표구분, 빈값=전체국)
-    report_milestone: str = Field(default="M3")  # 일일 보고 마일스톤 라벨
-    report_persist: bool = Field(default=False)  # 일일 잡 결과 DB 영속화 여부
+    # 크롤 타깃 기본값 — 웹앱 관리자(crawl_target)가 비어 있을 때의 .env 폴백.
+    report_industries: str = Field(default="건설")  # 기본 업종(쉼표구분)
+    report_countries: str = Field(default="KR")  # 기본 국가(쉼표구분, 빈값=전체국)
+    report_persist: bool = Field(default=False)  # 크롤 결과 DB 영속화 여부
 
 
 @lru_cache
