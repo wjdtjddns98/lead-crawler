@@ -47,8 +47,8 @@ def test_resolve_country_is_case_and_space_insensitive() -> None:
 
 
 def test_resolve_country_unregistered_returns_none() -> None:
-    # 레지스트리에 없는 국가는 None(발견 스코프 불변 — 별칭 확장이 크롤 대상을 늘리지 않음).
-    assert resolve_country("Austria") is None
+    # 레지스트리에 없는 국가는 None(2026-08-21 확장으로 Austria 는 등록됨 → 표본 교체).
+    assert resolve_country("Vatican City") is None
     assert resolve_country("Narnia") is None
     assert resolve_country("") is None
 

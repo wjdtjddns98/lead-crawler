@@ -73,6 +73,68 @@ _COUNTRIES: tuple[Country, ...] = (
     Country(iso2="CA", qid="Q16", aliases=("ca", "can", "canada", "캐나다")),
     Country(iso2="BR", qid="Q155", aliases=(
         "br", "bra", "brazil", "brasil", "federative republic of brazil", "브라질")),
+    # ── 2026-08-21 확장(PO 지시: "국가 필터에 안 잡히는 것들 다") — 보유 데이터에 실재하는
+    # 미등록국 전량. 우선순위는 기존 뒤(기존 크롤 우선순위 불변). QID=Wikidata 표준.
+    Country(iso2="NZ", qid="Q664", aliases=("nz", "nzl", "new zealand", "뉴질랜드")),
+    Country(iso2="TR", qid="Q43", aliases=(
+        "tr", "tur", "turkey", "türkiye", "turkiye", "튀르키예", "터키")),
+    Country(iso2="MX", qid="Q96", aliases=("mx", "mex", "mexico", "méxico", "멕시코")),
+    Country(iso2="IT", qid="Q38", aliases=("it", "ita", "italy", "italia", "이탈리아")),
+    Country(iso2="FI", qid="Q33", aliases=("fi", "fin", "finland", "suomi", "핀란드")),
+    Country(iso2="ES", qid="Q29", aliases=("es", "esp", "spain", "españa", "스페인")),
+    Country(iso2="NL", qid="Q55", aliases=(
+        "nl", "nld", "netherlands", "the netherlands", "holland", "nederland", "네덜란드")),
+    Country(iso2="BE", qid="Q31", aliases=("be", "bel", "belgium", "belgië", "벨기에")),
+    Country(iso2="PL", qid="Q36", aliases=("pl", "pol", "poland", "polska", "폴란드")),
+    Country(iso2="CZ", qid="Q213", aliases=(
+        "cz", "cze", "czech republic", "czechia", "체코")),
+    Country(iso2="CH", qid="Q39", aliases=(
+        "ch", "che", "switzerland", "schweiz", "suisse", "스위스")),
+    Country(iso2="NO", qid="Q20", aliases=("no", "nor", "norway", "norge", "노르웨이")),
+    Country(iso2="SE", qid="Q34", aliases=("se", "swe", "sweden", "sverige", "스웨덴")),
+    Country(iso2="HU", qid="Q28", aliases=("hu", "hun", "hungary", "magyarország", "헝가리")),
+    Country(iso2="MN", qid="Q711", aliases=("mn", "mng", "mongolia", "몽골")),
+    Country(iso2="DK", qid="Q35", aliases=("dk", "dnk", "denmark", "danmark", "덴마크")),
+    Country(iso2="IE", qid="Q27", aliases=("ie", "irl", "ireland", "éire", "아일랜드")),
+    Country(iso2="AT", qid="Q40", aliases=(
+        "at", "aut", "austria", "österreich", "오스트리아")),
+    Country(iso2="BD", qid="Q902", aliases=("bd", "bgd", "bangladesh", "방글라데시")),
+    Country(iso2="SA", qid="Q851", aliases=(
+        "sa", "sau", "saudi arabia", "ksa", "사우디아라비아", "사우디")),
+    Country(iso2="AE", qid="Q878", aliases=(
+        "ae", "are", "united arab emirates", "uae", "emirates", "아랍에미리트", "두바이")),
+    Country(iso2="KW", qid="Q817", aliases=("kw", "kwt", "kuwait", "쿠웨이트")),
+    Country(iso2="BH", qid="Q398", aliases=("bh", "bhr", "bahrain", "바레인")),
+    Country(iso2="QA", qid="Q846", aliases=("qa", "qat", "qatar", "카타르")),
+    Country(iso2="JO", qid="Q810", aliases=("jo", "jor", "jordan", "요르단")),
+    Country(iso2="OM", qid="Q842", aliases=("om", "omn", "oman", "오만")),
+    Country(iso2="PT", qid="Q45", aliases=("pt", "prt", "portugal", "포르투갈")),
+    Country(iso2="EG", qid="Q79", aliases=("eg", "egy", "egypt", "이집트")),
+    Country(iso2="LB", qid="Q822", aliases=("lb", "lbn", "lebanon", "레바논")),
+    Country(iso2="EE", qid="Q191", aliases=("ee", "est", "estonia", "에스토니아")),
+    Country(iso2="PS", qid="Q219060", aliases=("ps", "pse", "palestine", "팔레스타인")),
+    Country(iso2="GR", qid="Q41", aliases=("gr", "grc", "greece", "hellas", "그리스")),
+    Country(iso2="IL", qid="Q801", aliases=("il", "isr", "israel", "이스라엘")),
+    Country(iso2="LT", qid="Q37", aliases=("lt", "ltu", "lithuania", "리투아니아")),
+    Country(iso2="IQ", qid="Q796", aliases=("iq", "irq", "iraq", "이라크")),
+    Country(iso2="RO", qid="Q218", aliases=("ro", "rou", "romania", "루마니아")),
+    Country(iso2="RS", qid="Q403", aliases=("rs", "srb", "serbia", "세르비아")),
+    Country(iso2="KH", qid="Q424", aliases=("kh", "khm", "cambodia", "캄보디아")),
+    Country(iso2="LU", qid="Q32", aliases=("lu", "lux", "luxembourg", "룩셈부르크")),
+    Country(iso2="SI", qid="Q215", aliases=("si", "svn", "slovenia", "슬로베니아")),
+    Country(iso2="IS", qid="Q189", aliases=("is", "isl", "iceland", "아이슬란드")),
+    Country(iso2="HR", qid="Q224", aliases=("hr", "hrv", "croatia", "크로아티아")),
+    Country(iso2="LV", qid="Q211", aliases=("lv", "lva", "latvia", "라트비아")),
+    Country(iso2="BN", qid="Q921", aliases=("bn", "brn", "brunei", "브루나이")),
+    Country(iso2="MT", qid="Q233", aliases=("mt", "mlt", "malta", "몰타")),
+    Country(iso2="MM", qid="Q836", aliases=("mm", "mmr", "myanmar", "burma", "미얀마")),
+    Country(iso2="AO", qid="Q916", aliases=("ao", "ago", "angola", "앙골라")),
+    Country(iso2="TL", qid="Q574", aliases=(
+        "tl", "tls", "timor-leste", "east timor", "동티모르")),
+    Country(iso2="CY", qid="Q229", aliases=("cy", "cyp", "cyprus", "키프로스")),
+    Country(iso2="SK", qid="Q214", aliases=("sk", "svk", "slovakia", "슬로바키아")),
+    Country(iso2="UA", qid="Q212", aliases=("ua", "ukr", "ukraine", "우크라이나")),
+    Country(iso2="KZ", qid="Q232", aliases=("kz", "kaz", "kazakhstan", "카자흐스탄")),
 )
 
 def _build_index() -> dict[str, Country]:
