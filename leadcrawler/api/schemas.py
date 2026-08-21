@@ -541,12 +541,17 @@ class BackfillOverview(BaseModel):
 
 
 class LedgerSummary(BaseModel):
-    """발견 원장 분해 — total = promoted + domained_unpromoted + undomained_unpromoted."""
+    """발견 원장 4분면 — total = promoted + domained_unpromoted + undomained_unpromoted + absorbed.
+
+    absorbed 는 dedup 이 다른 canonical_key 로 흡수한 행(duplicate_of 기록) — 승격 백로그가
+    아니므로 분리 집계한다(백로그 두 값이 실제 소화 대상만 담는다는 계약).
+    """
 
     total: int = Field(ge=0)
     promoted: int = Field(ge=0)  # company 로 승격 완료(실존 확인분).
     domained_unpromoted: int = Field(ge=0)  # 도메인 확정·미승격(promote 백필 대상).
     undomained_unpromoted: int = Field(ge=0)  # 도메인 미확정(resolve 대기).
+    absorbed: int = Field(ge=0)  # dedup 흡수분(승격 대상 아님 — 감사용 잔존).
 
 
 class CountryCount(BaseModel):
@@ -560,7 +565,11 @@ class IndustryCount(BaseModel):
 
 
 class CompaniesSummary(BaseModel):
-    """승격(실존) 회사 현황 — 분포는 n 내림차순 정렬."""
+    """승격(실존) 회사 현황 — 분포는 n 내림차순 정렬.
+
+    발견 원장 없는 고아 company 가 있으면 total 이 ledger.promoted 를 넘을 수 있다
+    (queue_stock 과 동일 현상 — 버그 아님, FE 는 두 수를 등치로 그리지 말 것).
+    """
 
     total: int = Field(ge=0)
     with_email: int = Field(ge=0)  # 이메일 연락처 1개 이상 보유 회사 수(distinct).
