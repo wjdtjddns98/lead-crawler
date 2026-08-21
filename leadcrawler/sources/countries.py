@@ -142,7 +142,8 @@ def _build_index() -> dict[str, Country]:
     해석되므로, 중복을 import 시점에 즉시 드러낸다(fail-loud)."""
     index: dict[str, Country] = {}
     for country in _COUNTRIES:
-        for alias in country.aliases:
+        for raw in country.aliases:
+            alias = raw.strip().lower()  # 조회 정규화와 동일 기준으로 중복 검사(리뷰 LOW).
             if alias in index:
                 raise ValueError(
                     f"중복 국가 별칭 {alias!r}: {index[alias].iso2} vs {country.iso2}"
@@ -155,8 +156,13 @@ _INDEX: dict[str, Country] = _build_index()
 
 
 def resolve_country(name: str) -> Country | None:
-    """세그먼트 국가 문자열을 표준 :class:`Country` 로 해석한다(미등록이면 None)."""
-    return _INDEX.get((name or "").strip().lower())
+    """세그먼트 국가 문자열을 표준 :class:`Country` 로 해석한다(미등록이면 None).
+
+    주의: 국가 지정자 전체 문자열 매칭 전용 — 자유텍스트 토큰 스캔에 쓰면 짧은 별칭
+    ('it'/'no'/'is')이 오발한다. 터키어 대문자 İ 는 lower() 가 'i'+결합점으로 분해해
+    별칭과 불일치하므로 선치환한다(리뷰 MED — 'TÜRKİYE' 재현 검증).
+    """
+    return _INDEX.get((name or "").replace("İ", "i").strip().lower())
 
 
 def supported_countries() -> tuple[Country, ...]:
