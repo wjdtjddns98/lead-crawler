@@ -152,6 +152,8 @@ def _child_argv(job: dict, generation: int) -> list[str]:
     for c in str(job["countries"]).split(","):
         if c.strip():
             argv += ["--country", c.strip()]
+    if str(job.get("industries", "")).strip():
+        argv += ["--industry", str(job["industries"])]
     if str(job["exclude_industries"]).strip():
         argv += ["--exclude-industry", str(job["exclude_industries"])]
     if job["exclude_listed"]:
@@ -277,6 +279,7 @@ def start_backfill(
     *,
     track: str,
     countries: str = "",
+    industries: str = "",
     exclude_industries: str = "",
     exclude_listed: bool = False,
     max_batches: int = 20,
@@ -301,7 +304,7 @@ def start_backfill(
     try:
         with sm() as s:
             row = create_backfill_job(
-                session=s, track=track, countries=countries,
+                session=s, track=track, countries=countries, industries=industries,
                 exclude_industries=exclude_industries, exclude_listed=exclude_listed,
                 batch=batch, workers=workers, max_batches=max_batches, min_queue=min_queue,
                 initial_target=initial_target, triggered_by=triggered_by,

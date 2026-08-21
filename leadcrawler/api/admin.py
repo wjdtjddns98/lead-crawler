@@ -349,13 +349,25 @@ def register_admin(
     # 트랙은 내부 개념이라 요청엔 없고, 응답에서만 resolve/fill 로 구분 표기한다.
     # ------------------------------------------------------------------
 
-    def _backfill_filters(countries: str, exclude_industries: str, exclude_listed: bool):
-        """CSV 요청값 → count 함수 인자(쉼표 분해·빈값 None 수렴)."""
+    def _backfill_filters(
+        countries: str, industries: str, exclude_industries: str, exclude_listed: bool
+    ):
+        """CSV 요청값 → count 함수 인자(쉼표 분해·빈값 None 수렴).
+
+        포함식(industries)과 제외식(exclude_industries) 동시 지정은 422 — FE 는 둘 중
+        하나만 보내는 계약이라, 조용한 AND 적용 대신 명시 거부한다(#372).
+        """
         from .app import _split_csv
 
         c = _split_csv(countries) or None
+        i = _split_csv(industries) or None
         e = _split_csv(exclude_industries) or None
-        return c, e, bool(exclude_listed)
+        if i and e:
+            raise HTTPException(
+                status_code=422,
+                detail="industries 와 exclude_industries 는 동시 지정 불가(둘 중 하나만)",
+            )
+        return c, i, e, bool(exclude_listed)
 
     def _track_info(settings, track: str) -> BackfillJobInfo:  # noqa: ANN001
         from ..pipeline.backfill_process import backfill_status
@@ -366,6 +378,7 @@ def register_admin(
     @app.get("/admin/backfill/overview", response_model=BackfillOverview)
     def backfill_overview(
         countries: str = Query(default=""),
+        industries: str = Query(default="", max_length=1024),
         exclude_industries: str = Query(default=""),
         exclude_listed: bool = Query(default=False),
         db: Session = Depends(get_db),
@@ -380,11 +393,13 @@ def register_admin(
         from ..storage.db import get_sessionmaker
         from ..storage.review import count_reviews
 
-        c, e, x = _backfill_filters(countries, exclude_industries, exclude_listed)
+        c, i, e, x = _backfill_filters(countries, industries, exclude_industries, exclude_listed)
         sm = get_sessionmaker(get_settings())
         return BackfillOverview(
-            resolve_pending=count_resolve_targets(sm, c, exclude_industries=e, exclude_listed=x),
-            fill_pending=count_targets(sm, c, exclude_industries=e, exclude_listed=x),
+            resolve_pending=count_resolve_targets(
+                sm, c, industries=i, exclude_industries=e, exclude_listed=x
+            ),
+            fill_pending=count_targets(sm, c, industries=i, exclude_industries=e, exclude_listed=x),
             queue_pending=count_reviews(db, status="pending", countries=c),
         )
 
@@ -403,6 +418,11 @@ def register_admin(
         from ..storage.backfill_job import BackfillBusy, active_backfill_job
         from ..storage.db import get_sessionmaker
 
+        # 422(포함·제외 배타) 검사를 409(활성 존재) 검사보다 먼저 — 잘못된 요청은
+        # 서버 상태와 무관하게 항상 같은 응답을 받게 한다(리뷰 LOW-3).
+        c, i, e, x = _backfill_filters(
+            body.countries, body.industries, body.exclude_industries, body.exclude_listed
+        )
         settings = get_settings()
         sm = get_sessionmaker(settings)
         with sm() as s:
@@ -411,11 +431,11 @@ def register_admin(
             raise HTTPException(
                 status_code=409, detail=f"활성 백필 존재(트랙 {', '.join(active)})"
             )
-        c, e, x = _backfill_filters(
-            body.countries, body.exclude_industries, body.exclude_listed
-        )
         kwargs = {
             "countries": body.countries.strip(),
+            # 정규화 CSV 로 저장 — ",," 같은 입력이 카운트(무필터)와 스냅샷/자식 argv
+            # 사이에서 다르게 해석되는 틈을 막는다(리뷰 LOW-2).
+            "industries": ",".join(i or []),
             "exclude_industries": body.exclude_industries.strip(),
             "exclude_listed": bool(body.exclude_listed),
             "triggered_by": admin.username,
@@ -424,7 +444,7 @@ def register_admin(
             resolve_job = start_backfill(
                 settings, track="C",
                 initial_target=count_resolve_targets(
-                    sm, c, exclude_industries=e, exclude_listed=x
+                    sm, c, industries=i, exclude_industries=e, exclude_listed=x
                 ),
                 **kwargs,
             )
@@ -433,7 +453,9 @@ def register_admin(
         try:
             start_backfill(
                 settings, track="A",
-                initial_target=count_targets(sm, c, exclude_industries=e, exclude_listed=x),
+                initial_target=count_targets(
+                    sm, c, industries=i, exclude_industries=e, exclude_listed=x
+                ),
                 **kwargs,
             )
         except Exception as exc:

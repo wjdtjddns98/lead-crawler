@@ -482,6 +482,8 @@ class BackfillStartRequest(BaseModel):
     """
 
     countries: str = Field(default="", max_length=256)
+    # 포함식(이 업종만, '미분류'=라벨 빈값) — exclude_industries 와 동시 지정 시 422(#372).
+    industries: str = Field(default="", max_length=1024)
     exclude_industries: str = Field(default="", max_length=1024)
     exclude_listed: bool = False
 
@@ -494,6 +496,7 @@ class BackfillJobInfo(BaseModel):
     track: str = ""
     status: str = "idle"
     countries: str = ""
+    industries: str = ""
     exclude_industries: str = ""
     exclude_listed: bool = False
     batch: int = 0
