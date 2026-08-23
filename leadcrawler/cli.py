@@ -1360,11 +1360,21 @@ def backfill_industry(
     def fetch_html(url: str) -> str | None:
         if classifier.model == "stub":  # dry_run/키없음 — 네트워크 0 계약(§2) 유지.
             return None
-        try:
-            r = client.get(url)
-            return r.text if r.status_code < 400 else None
-        except Exception:  # 죽은 사이트·타임아웃 → 본문 없이(이름·도메인만) 분류.
-            return None
+        candidates = [url]
+        # www 폴백 — 루트 도메인이 응답 안 하고 www.* 만 서빙하는 사이트 회수(2026-08-24
+        # 실측: 미분류 잔여 표본 ConnectError 8곳 중 5곳이 www 로 200. 원장용 백필
+        # 스크립트의 www 폴백 선례와 동일 규칙).
+        scheme, sep, rest = url.partition("://")
+        if sep and rest and not rest.startswith("www."):
+            candidates.append(f"{scheme}://www.{rest}")
+        for u in candidates:
+            try:
+                r = client.get(u)
+                if r.status_code < 400 and r.text:
+                    return r.text
+            except Exception:  # 죽은 사이트·타임아웃 → 다음 후보(소진 시 본문 없이 스킵).
+                continue
+        return None
 
     session = get_sessionmaker(settings)()
     try:
