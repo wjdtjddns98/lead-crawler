@@ -305,6 +305,8 @@ def create_app() -> FastAPI:
         ``remove_emails`` 는 실존하지 않아 삭제할 이메일 목록 — 후보·연락처에서 지운다
         (삭제 후 이메일이 없고 폼이 있으면 엑셀 J="사이트 내 문의폼"). 같은 요청의
         ``selected`` 는 삭제 후 남은 후보여야 한다(삭제한 주소를 고르면 400).
+        ``has_attachment``/``manager`` 는 첨부파일 유무 체크·담당자명(엑셀 H 컬럼) —
+        규약은 :class:`ConfirmRequest` 독스트링 참조(``None``=변경 없음).
         """
         selected = body.selected if body else None
         if selected and selected.strip():

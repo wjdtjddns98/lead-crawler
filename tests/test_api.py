@@ -922,3 +922,10 @@ def test_confirm_manager_formula_defused_in_export(client: TestClient) -> None:
     rid = client.get("/queue").json()["items"][0]["id"]
     client.post(f"/queue/{rid}/confirm", json={"manager": "=CMD()"})
     assert _export_ws(client).cell(row=2, column=8).value == "'=CMD()"
+
+
+def test_confirm_note_manager_nul_rejected(client: TestClient) -> None:
+    # NUL 바이트는 PG 저장 오류(500) 예방 차원에서 422 로 조기 거절.
+    rid = client.get("/queue").json()["items"][0]["id"]
+    assert client.post(f"/queue/{rid}/confirm", json={"manager": "김\x00담당"}).status_code == 422
+    assert client.post(f"/queue/{rid}/confirm", json={"note": "메모\x00"}).status_code == 422

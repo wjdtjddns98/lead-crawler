@@ -104,6 +104,14 @@ class ConfirmRequest(BaseModel):
     manager: str | None = Field(default=None, max_length=64)
     remove_emails: list[str] | None = Field(default=None, max_length=50)
 
+    @field_validator("note", "manager")
+    @classmethod
+    def _reject_nul(cls, v: str | None) -> str | None:
+        # NUL 바이트는 PG TEXT/VARCHAR 저장 시 오류(500) — 422 로 조기 거절(Codex 리뷰 채택).
+        if v is not None and "\x00" in v:
+            raise ValueError("제어문자(NUL)는 허용되지 않습니다")
+        return v
+
     @field_validator("homepage")
     @classmethod
     def _validate_homepage(cls, v: str | None) -> str | None:
