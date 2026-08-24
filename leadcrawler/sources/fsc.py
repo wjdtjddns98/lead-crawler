@@ -13,6 +13,10 @@ resolve 수율이 소진됨 — 등록처가 유일한 확대 경로).
   없이 반환하면 은행이 '증권·자산운용'으로 오라벨되는 실사고 패턴 — GLEIF 2026-07-13).
 - 커서: **업종 필터 단위 키**(구체 라벨 또는 'ALL')로 page 를 영속한다 — 공유 키 하나로
   하면 A 업종 런이 넘긴 페이지의 B 업종 레코드가 랩 전까지 영영 스킵된다(설계 교차검증).
+  listed 파티션은 키에 안 넣는다(GLEIF 국가키와 동일 트레이드오프 — 같은 모집단을
+  listed 값별로 재순회하지 않는 대신, 혼용 배치에선 커서를 공유한다).
+- 이 API 가 말소/해산 법인을 포함하는지는 미확인(활용신청 승인 후 샘플로 확인 예정) —
+  포함되더라도 승격 파이프라인의 실존 게이트(제약 ②)가 하류에서 걸러낸다.
 - canonical_key = ``reg:fsc:<법인등록번호>`` (제약 ①). 법인등록번호 없으면 name 키 폴백.
 - dry_run 은 네트워크 없이 결정적 더미(전 소스 계약).
 
@@ -55,7 +59,9 @@ _MAX_PAGES = 60
 _NAME_LABEL_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"자산운용|투자운용|리츠운용|투자신탁|자산관리운용"), "증권·자산운용"),
     (re.compile(r"증권|선물|투자증권|종합금융"), "증권·자산운용"),
-    (re.compile(r"투자자문"), "투자자문"),
+    # '투자자문' 은 INDUSTRY_TAXONOMY(닫힌 집합) 밖 라벨이라 규칙을 두지 않는다 —
+    # 큐 필터 드롭다운에 없어 영구 고아화(라벨 파편화 실사고 계열, 리뷰 HIGH). 자문사는
+    # 매핑 실패(None)로 흘려 broad 세그먼트에서 '미분류'→LLM 배치 후속에 맡긴다.
     (re.compile(r"저축은행|은행"), "은행"),
     (re.compile(r"생명보험|손해보험|화재보험|보험|재보험"), "보험"),
     (re.compile(r"공제회|공제조합|연금공단"), "연기금"),
@@ -63,6 +69,12 @@ _NAME_LABEL_RULES: list[tuple[re.Pattern[str], str]] = [
 ]
 # applies_to 게이트 — 이 소스가 순도 있게 공급 가능한 구체 업종 라벨 집합.
 _FIN_LABELS = frozenset(rule_label for _, rule_label in _NAME_LABEL_RULES)
+
+
+def _redact_key(text: str, key: str) -> str:
+    """예외/URL 문자열에서 serviceKey 를 가린다 — httpx 예외가 전체 URL 을 포함해
+    키가 로그로 새는 것을 차단(nps-sync '적대 리뷰 M4' 기확립 패턴 재사용)."""
+    return text.replace(key, "***") if key else text
 
 
 def _label_for(name: str) -> str | None:
@@ -167,7 +179,7 @@ class FscSource:
             try:
                 payload = fetcher.get_json(_API_URL, params=params)
             except Exception as exc:  # 403(미승인)/쿼터/깨진 응답 → 부분 결과 보존 후 중단.
-                log.info("fsc.error", page=page, err=str(exc))
+                log.info("fsc.error", page=page, err=_redact_key(str(exc), key))
                 break
             code = self._result_code(payload)
             if code is not None and code != "00":
@@ -185,6 +197,8 @@ class FscSource:
                     out.append(dc)
                     if len(out) >= cap:
                         break
+            # ponytail: cap 도달로 페이지 중간에서 끊겨도 page+1 저장 — 그 페이지 잔여
+            # 행은 이번 사이클엔 스킵되지만 소진→0 리셋 후 재스캔으로 self-heal(GLEIF/CH 동일).
             page += 1
             pages_done += 1
         if self._cursor_store is not None:

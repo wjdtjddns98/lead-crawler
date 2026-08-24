@@ -6,7 +6,7 @@ from typing import Any
 
 from leadcrawler.config import Settings
 from leadcrawler.sources.base import Segment
-from leadcrawler.sources.fsc import FscSource, _label_for
+from leadcrawler.sources.fsc import FscSource, _label_for, _redact_key
 
 
 def _seg(industry: str = "증권·자산운용", country: str = "KR") -> Segment:
@@ -24,7 +24,8 @@ def test_label_for_keyword_mapping() -> None:
     assert _label_for("타임폴리오자산운용") == "증권·자산운용"
     assert _label_for("마스턴투자운용") == "증권·자산운용"
     assert _label_for("대신증권 주식회사") == "증권·자산운용"
-    assert _label_for("브이아이피투자자문") == "투자자문"
+    # '투자자문' 은 택소노미 밖 — 규칙 없음(미분류→LLM 후속, 리뷰 HIGH 채택).
+    assert _label_for("브이아이피투자자문") is None
     assert _label_for("주식회사 국민은행") == "은행"
     assert _label_for("삼성생명보험") == "보험"
     assert _label_for("한국교직원공제회") == "연기금"
@@ -187,6 +188,43 @@ def test_specific_segment_cursor_key_is_label() -> None:
     src = FscSource(_live_settings(), fetcher=spy, cursor_store=cur)
     src.discover(_seg("은행"))
     assert cur.saved and cur.saved[0][1] == "은행"
+
+
+def test_live_cap_truncates_and_advances_cursor() -> None:
+    # cap 도달 시 페이지 중간 절단 — 커서는 page+1 저장(소진 리셋 사이클로 self-heal).
+    spy = _SpyFetcher([_envelope(_RECORDS)] * 2)
+    cur = _Cursor()
+    src = FscSource(
+        Settings(dry_run=False, data_go_kr_service_key="k", discovery_max_per_source=1),
+        fetcher=spy,
+        cursor_store=cur,
+    )
+    got = src.discover(_seg("전체"))
+    assert len(got) == 1
+    assert cur.saved == [("fsc", "ALL", 2)]
+
+
+def test_live_phone_fallback_field() -> None:
+    # fncoTelno 부재 시 fncoTlno 폴백.
+    rec = {"fncoNm": "폴백은행", "crno": "1", "fncoTlno": "02-9"}
+    spy = _SpyFetcher([_envelope([rec])])
+    got = FscSource(_live_settings(), fetcher=spy).discover(_seg("은행"))
+    assert got and got[0].phone == "02-9"
+
+
+def test_live_no_crno_falls_back_to_name_key() -> None:
+    # 법인등록번호 없는 레코드 — name 티어 canonical_key 폴백(제약① 안정성 고정).
+    spy = _SpyFetcher([_envelope(_RECORDS)])
+    got = FscSource(_live_settings(), fetcher=spy).discover(_seg("전체"))
+    keyed = {c.name: c.canonical_key for c in got}
+    assert keyed["이름없는회사"].startswith("name:")
+
+
+def test_redact_key_masks_service_key() -> None:
+    # httpx 예외 문자열의 전체 URL 에서 serviceKey 마스킹(보안 리뷰 HIGH — 키 로그 유출 차단).
+    msg = "Client error '403' for url 'https://api?serviceKey=SEC123&pageNo=1'"
+    assert "SEC123" not in _redact_key(msg, "SEC123")
+    assert _redact_key(msg, "") == msg  # 빈 키 = 원문 유지(무키 no-op 경로).
 
 
 def test_kr_whitelist_includes_fsc() -> None:
