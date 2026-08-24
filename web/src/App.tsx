@@ -11,20 +11,32 @@ import {
 import { errMsg } from "./format";
 import { krInScope, LISTED_FILTER_OPTIONS, useQueueFilterOpts } from "./filterOptions";
 import { Admin } from "./components/Admin";
+import { Dashboard, type QueueJump } from "./components/Dashboard";
 import { MyWork } from "./components/MyWork";
 import { FilterPopover, pickSummary } from "./components/FilterPopover";
 import { MultiPicker, type PickerOption } from "./components/MultiPicker";
 import { QueueTable } from "./components/QueueTable";
 import { TableSkeleton } from "./components/TableSkeleton";
 import { Login } from "./components/Login";
-import { ChevronLeft, ChevronRight, Settings } from "lucide-react";
+import { BarChart3, ChevronLeft, ChevronRight, Settings } from "lucide-react";
 import { BTN, INPUT, tabCls } from "./ui";
 import { Toaster } from "sonner";
 import { ErrorBox } from "./components/ErrorBox";
 import type { Listed, ReviewItem, ReviewStatus, Role } from "./types";
 
 type Filter = ReviewStatus | "";
-type View = "mine" | "browse" | "admin";
+type View = "mine" | "browse" | "dashboard" | "admin";
+
+// 히스토리 엔트리 한 칸 = 뷰 + 전체 큐 필터 한 벌(뒤로/앞으로 가기로 복원되는 범위).
+interface NavState {
+  view: View;
+  filter: Filter;
+  country: string;
+  industry: string;
+  listed: "" | Listed;
+  market: string;
+  region: string;
+}
 const PAGE = 50;
 
 // 시장 보드 검색용 한글 별칭 — BE 어휘엔 라벨/별칭이 없어 FE 가 표기만 보강한다.
@@ -113,14 +125,12 @@ function Workbench({
     const saved = localStorage.getItem("wb.view") as View | null;
     // 전체 큐는 admin 전용 뷰 — worker 는 저장값이 남아 있어도(권한 강등·계정 교대) 내 작업으로.
     if (saved === "browse") return isAdmin ? "browse" : "mine";
+    // 대시보드도 관제 화면이라 admin 전용(BE 는 로그인만 요구하지만 worker 업무와 무관).
+    if (saved === "dashboard") return isAdmin ? "dashboard" : "mine";
     if (saved === "admin" && isAdmin) return "admin";
     if (saved === "mine") return "mine";
     return isAdmin ? "admin" : "mine";
   });
-  const setView = (v: View) => {
-    localStorage.setItem("wb.view", v);
-    setViewState(v);
-  };
   const [filter, setFilter] = useState<Filter>("pending");
   // 전체 큐 국가·업종 필터 — total 이 이 조건 반영분으로 내려와 '해당 건수'를 그대로 보여준다.
   const [country, setCountry] = useState("");
@@ -145,6 +155,56 @@ function Workbench({
   const [sessionDone, setSessionDone] = useState(0);
   // 요청 시퀀스 — 늦게 도착한 옛 응답이 현재 화면을 덮어쓰지 않게 한다(필터 연타 레이스).
   const reqRef = useRef(0);
+
+  // 뷰 전환을 브라우저 히스토리에 얕게 싣는다 — 대시보드에서 숫자를 눌러 큐로 되짚은 뒤
+  // 뒤로 가기로 대시보드에 돌아오기 위한 것(SPA 라 라우터 없이 pushState 로만 처리).
+  // 담는 건 뷰와 전체 큐 필터 한 벌뿐 — 페이지(offset)는 복원 시 1페이지로 되돌린다.
+  const applyNav = useCallback(
+    (st: NavState) => {
+      // 계정이 바뀌어(로그아웃 후 worker 로그인) 권한 없는 뷰가 히스토리에 남아 있을 수 있다.
+      const v: View = !isAdmin && st.view !== "mine" ? "mine" : st.view;
+      localStorage.setItem("wb.view", v);
+      setViewState(v);
+      setFilter(st.filter);
+      setCountry(st.country);
+      setIndustry(st.industry);
+      setListed(st.listed);
+      setMarket(st.market);
+      setRegion(st.region);
+      setSessionDone(0);
+    },
+    [isAdmin],
+  );
+
+  // 상태를 바꾸면서 히스토리 엔트리를 하나 쌓는다. patch 에 없는 축은 현재 값 그대로.
+  const pushNav = (patch: Partial<NavState>) => {
+    const st: NavState = { view, filter, country, industry, listed, market, region, ...patch };
+    applyNav(st);
+    history.pushState({ wb: st }, "");
+  };
+
+  const setView = (v: View) => pushNav({ view: v });
+
+  // 현재 엔트리를 항상 화면과 같은 값으로 유지한다. 첫 엔트리에 뷰를 심는 역할(안 심으면
+  // 되짚기 후 뒤로 가기가 state 없는 엔트리로 떨어져 화면이 멈춘 것처럼 보인다)과, 툴바에서
+  // 직접 바꾼 필터(엔트리를 쌓지 않는다 — 클릭마다 쌓으면 히스토리가 필터 로그가 된다)를
+  // 현재 엔트리에 반영하는 역할을 겸한다. pushNav·popstate 직후엔 같은 값을 덮어써 무해.
+  useEffect(() => {
+    const here: NavState = { view, filter, country, industry, listed, market, region };
+    history.replaceState({ wb: here }, "");
+  }, [view, filter, country, industry, listed, market, region]);
+
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      const st = (e.state as { wb?: NavState } | null)?.wb;
+      // 우리가 심지 않은 엔트리(앱 진입 이전)는 건드리지 않는다 — 브라우저가 이탈 처리.
+      if (!st) return;
+      applyNav(st);
+      setOffset(0);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [applyNav]);
 
   const load = useCallback(async () => {
     const myReq = ++reqRef.current;
@@ -228,6 +288,23 @@ function Workbench({
     setFilter(f);
     setOffset(0);
     setSessionDone(0);
+  };
+
+  // 대시보드 숫자 → 전체 큐 되짚기(#378). 지정 안 한 축은 비워 "그 숫자가 곧 이 목록"이
+  // 되게 한다 — 이전 화면에 남아 있던 필터가 섞이면 건수가 안 맞아 되짚기가 거짓말이 된다.
+  const jumpToQueue = (jump: QueueJump) => {
+    setOffset(0);
+    // 축을 개별 setter 로 먼저 바꾸면 안 된다 — pushNav 는 현 렌더의 값으로 NavState 를
+    // 만들므로 방금 세팅한 값이 옛 값으로 덮인다. 되짚기 한 벌을 통째로 넘긴다.
+    pushNav({
+      view: "browse",
+      filter: jump.status ?? "",
+      country: jump.country ?? "",
+      industry: jump.industry ?? "",
+      listed: "",
+      market: "",
+      region: "",
+    });
   };
 
   const page = Math.floor(offset / PAGE) + 1;
@@ -416,6 +493,13 @@ function Workbench({
                 전체 큐
               </button>
               <span className="w-px h-5 bg-line mx-1.5" aria-hidden />
+              {/* 대시보드·관리자는 구분선 오른쪽 — 큐를 처리하는 작업 뷰가 아니라 전사
+                  현황을 보고 운영을 조작하는 관제 자리다. */}
+              <button className={tabCls(view === "dashboard")} onClick={() => setView("dashboard")}>
+                <span className="inline-flex items-center gap-1">
+                  <BarChart3 size={14} aria-hidden /> 대시보드
+                </span>
+              </button>
               <button className={tabCls(view === "admin")} onClick={() => setView("admin")}>
                 <span className="inline-flex items-center gap-1">
                   <Settings size={14} aria-hidden /> 관리자
@@ -433,7 +517,18 @@ function Workbench({
         </div>
       </header>
 
-      {view === "admin" && isAdmin ? <Admin /> : view === "browse" ? queueView : <MyWork />}
+      {/* 대시보드는 진입할 때마다 마운트돼 1회 조회한다(탭 전환=새 스냅샷). 숨김 유지가
+          아닌 이유: 집계가 무거워 폴링이 금지된 API라, 낡은 값을 계속 보여주느니 진입
+          시점에 새로 뜨는 편이 맞다. */}
+      {view === "admin" && isAdmin ? (
+        <Admin />
+      ) : view === "dashboard" && isAdmin ? (
+        <Dashboard onJumpToQueue={jumpToQueue} />
+      ) : view === "browse" ? (
+        queueView
+      ) : (
+        <MyWork />
+      )}
     </div>
   );
 }

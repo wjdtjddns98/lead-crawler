@@ -2,7 +2,14 @@
 // main.tsx 가 installMock() 을 호출한다. window.fetch 를 가로채 검증 큐 API 를 메모리 상태로 응답하므로
 // api.ts·컴포넌트는 전혀 수정하지 않는다. 상태는 메모리 전용 — 새로고침 시 초기 샘플로 리셋된다.
 // admin 세션을 localStorage 에 시드해 로그인 화면을 건너뛴다. 매칭 안 되는 API 는 빈/스텁으로 응답.
-import type { AuditEntry, CandidateInfo, ClaimFilter, Listed, ReviewItem } from "./types";
+import type {
+  AuditEntry,
+  CandidateInfo,
+  ClaimFilter,
+  DashboardSummary,
+  Listed,
+  ReviewItem,
+} from "./types";
 
 // 영구 배정 계약(PRD-queue-claim-permanent) — claim 1회 = +BATCH 추가, 총량 CAP 상한.
 const BATCH = 30;
@@ -638,6 +645,55 @@ function setStatus(
   return it;
 }
 
+// --- 보유 데이터 대시보드(#378) ----------------------------------------
+// 큐 카운트는 메모리 db 실측(점유 여부까지 반영), 회사 분포는 그 db 를 회사 목록으로 간주해
+// 집계한다. 국가 미상('')·업종 '미분류' 폴백 표기를 화면에서 확인할 수 있도록, 두 축 어디에도
+// 값이 없는 회사를 UNKNOWN_COMPANIES 건 함께 싣는다(총계와 분포 합은 그대로 일치).
+const UNKNOWN_COMPANIES = 7;
+// 원장 백로그 — mock 엔 discovered_company 개념이 없어 고정 데모값(실 BE 는 group by 집계).
+const MOCK_LEDGER_BACKLOG = { domained: 1_240, undomained: 3_105, absorbed: 418 };
+
+// n 내림차순 → 키 오름차순(BE _ranked 와 동일 정렬).
+function ranked(counts: Map<string, number>): { key: string; n: number }[] {
+  return [...counts]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([key, n]) => ({ key, n }));
+}
+
+function dashboardSummaryJson(): DashboardSummary {
+  const queue = { pending_unclaimed: 0, pending_claimed: 0, confirmed: 0, rejected: 0 };
+  const countries = new Map<string, number>([["", UNKNOWN_COMPANIES]]);
+  const industries = new Map<string, number>([["미분류", UNKNOWN_COMPANIES]]);
+  for (const it of db) {
+    if (it.status === "pending") {
+      queue[claimedIds.has(it.id) ? "pending_claimed" : "pending_unclaimed"] += 1;
+    } else {
+      queue[it.status] += 1;
+    }
+    countries.set(it.country, (countries.get(it.country) ?? 0) + 1);
+    industries.set(it.industry, (industries.get(it.industry) ?? 0) + 1);
+  }
+  const total = db.length + UNKNOWN_COMPANIES;
+  const b = MOCK_LEDGER_BACKLOG;
+  return {
+    ledger: {
+      // BE 불변식 — total = 승격 + 도메인확정 미승격 + 도메인 미확정 + 흡수분.
+      total: total + b.domained + b.undomained + b.absorbed,
+      promoted: total,
+      domained_unpromoted: b.domained,
+      undomained_unpromoted: b.undomained,
+      absorbed: b.absorbed,
+    },
+    companies: {
+      total,
+      with_email: db.filter((it) => it.candidates.length > 0).length,
+      by_country: ranked(countries).map(({ key, n }) => ({ country: key, n })),
+      by_industry: ranked(industries).map(({ key, n }) => ({ industry: key, n })),
+    },
+    queue,
+  };
+}
+
 function jsonRes(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -708,6 +764,9 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
   }
   if (path === "/auth/logout") return jsonRes({});
   if (path === "/health") return jsonRes({ status: "ok" });
+
+  // 보유 데이터 대시보드 스냅샷(#378) — 진입 1회 조회라 mock 도 매 호출 즉석 집계.
+  if (path === "/dashboard/summary" && method === "GET") return jsonRes(dashboardSummaryJson());
 
   // 검증 큐 필터 옵션 — 국가(countries.py) 전량 + 구분 택소노미 42+미분류(#115, BE 와 동일).
   if (path === "/queue/filters" && method === "GET") {

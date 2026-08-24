@@ -21,6 +21,15 @@
   --color-err-bg: #3a1c1c;
   --color-err-fg: #f6c0bd;
 
+  /* 차트 계열색 — 대시보드 원장 4분면처럼 '구성비'를 칠할 때 쓴다. 상태색(ok/warn/danger)을
+     그대로 재사용하지 않는 이유: 상태색은 성공/경고/오류 의미가 예약돼 있어 분류 색으로
+     쓰면 '도메인 미확정 = 경고'처럼 잘못 읽힌다. 이 3색은 다크 배경(#171a21) 기준으로
+     명도대(OKLCH L 0.48~0.67)·채도 하한·색각이상 분리도(ΔE)·대비 3:1 를 모두 통과한 조합.
+     4번째 칸(흡수분)은 계열색이 아니라 중립(muted/line) — '대상 아님'을 색으로 물린다. */
+  --color-chart-1: #2ea043; /* 승격 완료 */
+  --color-chart-2: #4f8cff; /* 도메인 확정·미승격 */
+  --color-chart-3: #bf8a1e; /* 도메인 미확정 */
+
   --font-sans: "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
   --font-mono: "Consolas", monospace;
 }
