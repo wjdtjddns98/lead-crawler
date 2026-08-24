@@ -9,6 +9,7 @@ import type {
   CountryOption,
   CrawlJob,
   CrawlTarget,
+  DashboardSummary,
   IndustryOption,
   Listed,
   LoginResponse,
@@ -232,6 +233,14 @@ export async function confirmReview(
 
 export async function rejectReview(id: string): Promise<ReviewItem> {
   return apiSend("POST", `/queue/${id}/reject`);
+}
+
+// --- 보유 데이터 대시보드(#378) ----------------------------------------
+
+// 원장·회사·큐 현황 스냅샷. 원장 group by 를 여러 번 도는 집계라 **폴링 금지** —
+// 대시보드 진입 시 1회 + 수동 새로고침만(BE docstring 계약, 2026-08-21).
+export async function fetchDashboardSummary(): Promise<DashboardSummary> {
+  return apiGet("/dashboard/summary");
 }
 
 // --- 관리자 API(role==admin 만 200, 아니면 403) -----------------------

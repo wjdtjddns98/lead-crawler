@@ -239,3 +239,50 @@ export interface BackfillOverview {
   fill_pending: number;
   queue_pending: number;
 }
+
+// --- 보유 데이터 대시보드(#378) ----------------------------------------
+// GET /dashboard/summary — 원장·회사·큐 한 응답 스냅샷(진입 1회 + 수동 새로고침, 폴링 금지).
+
+// 발견 원장 4분면 — total = promoted + domained_unpromoted + undomained_unpromoted + absorbed.
+export interface LedgerSummary {
+  total: number;
+  promoted: number; // company 로 승격 완료(실존 확인분)
+  domained_unpromoted: number; // 도메인 확정·미승격(승격 백필 대상)
+  undomained_unpromoted: number; // 도메인 미확정(해석 대기)
+  absorbed: number; // dedup 흡수분 — 승격 대상이 아니라 백로그에 섞으면 안 된다
+}
+
+// country: 등록국=ISO2, 미등록=원문, ''=국가 미상(큐 필터와 동일 어휘).
+export interface CountryCount {
+  country: string;
+  n: number;
+}
+
+// industry: 구분 라벨(빈 업종은 '미분류'로 접힘).
+export interface IndustryCount {
+  industry: string;
+  n: number;
+}
+
+// 승격(실존) 회사 현황. total 이 ledger.promoted 를 넘을 수 있다(원장 없는 고아 company —
+// 정상 현상). 두 수를 등치로 그리지 말 것(BE 계약 주석).
+export interface CompaniesSummary {
+  total: number;
+  with_email: number; // 이메일 연락처 1개 이상 보유 회사 수(distinct)
+  by_country: CountryCount[]; // n 내림차순
+  by_industry: IndustryCount[]; // n 내림차순
+}
+
+// 검증 큐 상태별 카운트 — pending 은 점유 여부로 분해.
+export interface QueueSummary {
+  pending_unclaimed: number;
+  pending_claimed: number;
+  confirmed: number;
+  rejected: number;
+}
+
+export interface DashboardSummary {
+  ledger: LedgerSummary;
+  companies: CompaniesSummary;
+  queue: QueueSummary;
+}

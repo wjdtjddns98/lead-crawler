@@ -11,20 +11,21 @@ import {
 import { errMsg } from "./format";
 import { krInScope, LISTED_FILTER_OPTIONS, useQueueFilterOpts } from "./filterOptions";
 import { Admin } from "./components/Admin";
+import { Dashboard, type QueueJump } from "./components/Dashboard";
 import { MyWork } from "./components/MyWork";
 import { FilterPopover, pickSummary } from "./components/FilterPopover";
 import { MultiPicker, type PickerOption } from "./components/MultiPicker";
 import { QueueTable } from "./components/QueueTable";
 import { TableSkeleton } from "./components/TableSkeleton";
 import { Login } from "./components/Login";
-import { ChevronLeft, ChevronRight, Settings } from "lucide-react";
+import { BarChart3, ChevronLeft, ChevronRight, Settings } from "lucide-react";
 import { BTN, INPUT, tabCls } from "./ui";
 import { Toaster } from "sonner";
 import { ErrorBox } from "./components/ErrorBox";
 import type { Listed, ReviewItem, ReviewStatus, Role } from "./types";
 
 type Filter = ReviewStatus | "";
-type View = "mine" | "browse" | "admin";
+type View = "mine" | "browse" | "dashboard" | "admin";
 const PAGE = 50;
 
 // 시장 보드 검색용 한글 별칭 — BE 어휘엔 라벨/별칭이 없어 FE 가 표기만 보강한다.
@@ -113,6 +114,8 @@ function Workbench({
     const saved = localStorage.getItem("wb.view") as View | null;
     // 전체 큐는 admin 전용 뷰 — worker 는 저장값이 남아 있어도(권한 강등·계정 교대) 내 작업으로.
     if (saved === "browse") return isAdmin ? "browse" : "mine";
+    // 대시보드도 관제 화면이라 admin 전용(BE 는 로그인만 요구하지만 worker 업무와 무관).
+    if (saved === "dashboard") return isAdmin ? "dashboard" : "mine";
     if (saved === "admin" && isAdmin) return "admin";
     if (saved === "mine") return "mine";
     return isAdmin ? "admin" : "mine";
@@ -228,6 +231,20 @@ function Workbench({
     setFilter(f);
     setOffset(0);
     setSessionDone(0);
+  };
+
+  // 대시보드 숫자 → 전체 큐 되짚기(#378). 지정 안 한 축은 비워 "그 숫자가 곧 이 목록"이
+  // 되게 한다 — 이전 화면에 남아 있던 필터가 섞이면 건수가 안 맞아 되짚기가 거짓말이 된다.
+  const jumpToQueue = (jump: QueueJump) => {
+    setFilter(jump.status ?? "");
+    setCountry(jump.country ?? "");
+    setIndustry(jump.industry ?? "");
+    setListed("");
+    setMarket("");
+    setRegion("");
+    setOffset(0);
+    setSessionDone(0);
+    setView("browse");
   };
 
   const page = Math.floor(offset / PAGE) + 1;
@@ -416,6 +433,13 @@ function Workbench({
                 전체 큐
               </button>
               <span className="w-px h-5 bg-line mx-1.5" aria-hidden />
+              {/* 대시보드·관리자는 구분선 오른쪽 — 큐를 처리하는 작업 뷰가 아니라 전사
+                  현황을 보고 운영을 조작하는 관제 자리다. */}
+              <button className={tabCls(view === "dashboard")} onClick={() => setView("dashboard")}>
+                <span className="inline-flex items-center gap-1">
+                  <BarChart3 size={14} aria-hidden /> 대시보드
+                </span>
+              </button>
               <button className={tabCls(view === "admin")} onClick={() => setView("admin")}>
                 <span className="inline-flex items-center gap-1">
                   <Settings size={14} aria-hidden /> 관리자
@@ -433,7 +457,18 @@ function Workbench({
         </div>
       </header>
 
-      {view === "admin" && isAdmin ? <Admin /> : view === "browse" ? queueView : <MyWork />}
+      {/* 대시보드는 진입할 때마다 마운트돼 1회 조회한다(탭 전환=새 스냅샷). 숨김 유지가
+          아닌 이유: 집계가 무거워 폴링이 금지된 API라, 낡은 값을 계속 보여주느니 진입
+          시점에 새로 뜨는 편이 맞다. */}
+      {view === "admin" && isAdmin ? (
+        <Admin />
+      ) : view === "dashboard" && isAdmin ? (
+        <Dashboard onJumpToQueue={jumpToQueue} />
+      ) : view === "browse" ? (
+        queueView
+      ) : (
+        <MyWork />
+      )}
     </div>
   );
 }
