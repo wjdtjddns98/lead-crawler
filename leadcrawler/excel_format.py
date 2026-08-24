@@ -69,7 +69,7 @@ def build_row(lead: CompanyLead) -> list[str]:
         form_cell,                                  # E 홈페이지 문의(폼 URL 또는 X)
         c.homepage or c.domain or "",               # F 사이트
         "",                                          # G 담당 부서(공란)
-        "",                                          # H 담당자(공란)
+        defuse(lead.manager),                       # H 담당자(검수자 기입 — 수식 인젝션 방어)
         defuse(c.industry),                         # I 구분(업종만)
         email_exist,                                # J 이메일 실존 여부
         ox(c.site_alive),                           # K 사이트 실존 여부

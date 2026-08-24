@@ -321,6 +321,8 @@ def create_app() -> FastAPI:
         return _set_status(
             db, review_id, CONFIRMED, user,
             selected=selected, homepage=homepage, has_form=has_form, note=note,
+            has_attachment=body.has_attachment if body else None,
+            manager=body.manager if body else None,
             remove_emails=body.remove_emails if body else None,
         )
 
@@ -497,6 +499,8 @@ def _set_status(
     homepage: str | None = None,
     has_form: bool | None = None,
     note: str | None = None,
+    has_attachment: bool | None = None,
+    manager: str | None = None,
     remove_emails: list[str] | None = None,
 ) -> ReviewItem:
     """상태 변경 공통 — 담당자=로그인 사용자. 404/후보밖 400/타인점유 409 + 감사기록."""
@@ -511,6 +515,8 @@ def _set_status(
             homepage=homepage,
             has_form=has_form,
             note=note,
+            has_attachment=has_attachment,
+            manager=manager,
             remove_emails=remove_emails,
         )
     except ReviewConflict as exc:  # 타인이 점유 중 → 409(영구 배정 — 시간 경과 무관).

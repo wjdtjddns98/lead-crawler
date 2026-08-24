@@ -517,6 +517,8 @@ def set_review_status(
     homepage: str | None = None,
     has_form: bool | None = None,
     note: str | None = None,
+    has_attachment: bool | None = None,
+    manager: str | None = None,
     remove_emails: Sequence[str] | None = None,
     now: datetime | None = None,
 ) -> dict | None:
@@ -590,6 +592,11 @@ def set_review_status(
         # ponytail: note 는 감사이력(before/after) 미기록 — 최종값만 의미 있는 자유
         # 메모라 의도적 생략. 책임추적이 필요해지면 ReviewAuditRow 에 컬럼 추가.
         rq.note = note.strip() or None  # 빈 문자열=메모 지움.
+    if has_attachment is not None:
+        # ponytail: note 와 동일하게 감사이력 미기록 — 최종값만 의미 있는 검수 체크값.
+        rq.has_attachment = has_attachment
+    if manager is not None:
+        rq.manager = manager.strip() or None  # 빈 문자열=담당자 지움.
     rq.status = status
     if status in (CONFIRMED, REJECTED):
         # 종료 상태로 가면 점유는 무의미 — 정리(귀속은 assignee/reviewed_at 가 보존).
@@ -984,6 +991,9 @@ def _to_dict(
         "site_alive": company.site_alive if company else False,
         # 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼.
         "note": rq.note,
+        # 첨부파일 유무(검수자 체크, None=미확인)·상대 회사 담당자명 — 엑셀 H 컬럼.
+        "has_attachment": rq.has_attachment,
+        "manager": rq.manager,
         # 문의폼 URL + 신뢰도(없으면 None) — 저신뢰(폴백 0.3)면 리뷰레인서 '사람 확인' 표기.
         "form": form_url,
         "form_confidence": form_conf,

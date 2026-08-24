@@ -197,6 +197,10 @@ class ReviewQueueRow(Base):
     )
     # 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼으로 export 된다.
     note: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # 첨부파일 유무(검수자 체크) — NULL=미확인, True/False=사람이 확인한 값.
+    has_attachment: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # 상대 회사 담당자명(검수자 기입) — 엑셀 H(담당자) 컬럼으로 export 된다.
+    manager: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # 큐 적재 시각 — 전체큐 기본 LIFO 의 정렬 키(#352). 종전 근사키(발견 first_seen)는
     # 백필 승격처럼 "발견은 옛날, 적재는 지금"인 행을 바닥에 묻었다. 마이그레이션이
     # 기존 행을 first_seen 으로 백필해 현행 순서를 보존한다.
