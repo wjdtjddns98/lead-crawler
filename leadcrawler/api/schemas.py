@@ -46,6 +46,8 @@ class ReviewItem(BaseModel):
     site_alive: bool = False
     form: str | None = None  # 문의폼 URL(이메일 없을 때 폼으로 처리)
     note: str | None = None  # 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼
+    has_attachment: bool | None = None  # 첨부파일 유무(검수자 체크, None=미확인)
+    manager: str | None = None  # 상대 회사 담당자명(검수자 기입) — 엑셀 H(담당자) 컬럼
     form_confidence: float | None = None  # 폼 신뢰도(없으면 None)
     form_low_confidence: bool = False  # 저신뢰 폴백 폼(사람 확인 필요) — 리뷰레인 표기용
     # 선택된 후보의 검증 신호(이메일 컬럼 표시용, 없으면 None).
@@ -85,7 +87,9 @@ class ConfirmRequest(BaseModel):
     교정값(``None`` = 변경 없음): ``False`` = 폼 없음(저장된 폼 삭제), ``True`` = 폼 있음
     (URL 미상이면 홈페이지를 진입 링크로 저장 — 홈페이지도 없으면 400).
     ``note`` 는 검수자 기타 메모(문의폼 미발송 사유 등, 엑셀 L 컬럼): ``None`` = 변경
-    없음, 빈 문자열 = 메모 지움.
+    없음, 빈 문자열 = 메모 지움. ``has_attachment`` 는 첨부파일 유무 체크(``None`` = 변경
+    없음), ``manager`` 는 상대 회사 담당자명(엑셀 H 컬럼, ``None`` = 변경 없음·빈
+    문자열 = 지움) — 검증 UI 의 기타메모 아래 입력란.
     ``remove_emails`` 는 실제로 존재하지 않아 삭제할 이메일 목록(빈 목록/``None`` = 삭제
     없음) — 후보와 연락처에서 지운다. 남은 이메일이 없고 문의폼이 있으면 엑셀 J 가
     "사이트 내 문의폼"이 된다. 삭제 대상은 저장된 값과 대조되므로 형식 검증 대신 개수·
@@ -96,7 +100,17 @@ class ConfirmRequest(BaseModel):
     homepage: str | None = Field(default=None, max_length=512)
     has_form: bool | None = None
     note: str | None = Field(default=None, max_length=512)
+    has_attachment: bool | None = None
+    manager: str | None = Field(default=None, max_length=64)
     remove_emails: list[str] | None = Field(default=None, max_length=50)
+
+    @field_validator("note", "manager")
+    @classmethod
+    def _reject_nul(cls, v: str | None) -> str | None:
+        # NUL 바이트는 PG TEXT/VARCHAR 저장 시 오류(500) — 422 로 조기 거절(Codex 리뷰 채택).
+        if v is not None and "\x00" in v:
+            raise ValueError("제어문자(NUL)는 허용되지 않습니다")
+        return v
 
     @field_validator("homepage")
     @classmethod
