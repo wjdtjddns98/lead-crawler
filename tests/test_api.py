@@ -886,3 +886,46 @@ def test_expired_session_rejected(anon: TestClient, monkeypatch) -> None:
     monkeypatch.setattr(security, "_utcnow", lambda: future)
     anon.headers.update({"Authorization": f"Bearer {token}"})
     assert anon.get("/queue").status_code == 401
+
+
+# --- 확정 본문 has_attachment(첨부파일 유무)·manager(담당자, 엑셀 H 컬럼) ----------
+
+
+def test_confirm_attachment_and_manager_stored_and_exported(client: TestClient) -> None:
+    rid = client.get("/queue").json()["items"][0]["id"]
+    r = client.post(
+        f"/queue/{rid}/confirm", json={"has_attachment": True, "manager": "김담당"}
+    )
+    assert r.status_code == 200
+    assert r.json()["has_attachment"] is True
+    assert r.json()["manager"] == "김담당"
+    ws = _export_ws(client)
+    assert ws.cell(row=1, column=8).value == "담당자"
+    assert ws.cell(row=2, column=8).value == "김담당"
+
+
+def test_confirm_attachment_manager_none_no_change_and_clear(client: TestClient) -> None:
+    rid = client.get("/queue").json()["items"][0]["id"]
+    client.post(f"/queue/{rid}/confirm", json={"has_attachment": False, "manager": "담당"})
+    # None(생략)=변경 없음 — 같은 처리자의 재확정은 허용된다.
+    body = client.post(f"/queue/{rid}/confirm", json={}).json()
+    assert body["has_attachment"] is False
+    assert body["manager"] == "담당"
+    # 공백뿐인 담당자=지움(트림 후 빈값 → NULL). 첨부 체크값은 유지된다.
+    body = client.post(f"/queue/{rid}/confirm", json={"manager": " "}).json()
+    assert body["manager"] is None
+    assert body["has_attachment"] is False
+
+
+def test_confirm_manager_formula_defused_in_export(client: TestClient) -> None:
+    # 담당자명도 자유텍스트 — H 컬럼 defuse 대상.
+    rid = client.get("/queue").json()["items"][0]["id"]
+    client.post(f"/queue/{rid}/confirm", json={"manager": "=CMD()"})
+    assert _export_ws(client).cell(row=2, column=8).value == "'=CMD()"
+
+
+def test_confirm_note_manager_nul_rejected(client: TestClient) -> None:
+    # NUL 바이트는 PG 저장 오류(500) 예방 차원에서 422 로 조기 거절.
+    rid = client.get("/queue").json()["items"][0]["id"]
+    assert client.post(f"/queue/{rid}/confirm", json={"manager": "김\x00담당"}).status_code == 422
+    assert client.post(f"/queue/{rid}/confirm", json={"note": "메모\x00"}).status_code == 422

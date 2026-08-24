@@ -13,6 +13,7 @@ export default defineConfig({
     proxy: {
       "/auth": API_TARGET,
       "/admin": API_TARGET,
+      "/dashboard": API_TARGET,
       "/queue": API_TARGET,
       "/send": API_TARGET,
       "/export": API_TARGET,

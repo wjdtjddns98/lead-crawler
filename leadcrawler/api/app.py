@@ -305,6 +305,8 @@ def create_app() -> FastAPI:
         ``remove_emails`` 는 실존하지 않아 삭제할 이메일 목록 — 후보·연락처에서 지운다
         (삭제 후 이메일이 없고 폼이 있으면 엑셀 J="사이트 내 문의폼"). 같은 요청의
         ``selected`` 는 삭제 후 남은 후보여야 한다(삭제한 주소를 고르면 400).
+        ``has_attachment``/``manager`` 는 첨부파일 유무 체크·담당자명(엑셀 H 컬럼) —
+        규약은 :class:`ConfirmRequest` 독스트링 참조(``None``=변경 없음).
         """
         selected = body.selected if body else None
         if selected and selected.strip():
@@ -321,6 +323,8 @@ def create_app() -> FastAPI:
         return _set_status(
             db, review_id, CONFIRMED, user,
             selected=selected, homepage=homepage, has_form=has_form, note=note,
+            has_attachment=body.has_attachment if body else None,
+            manager=body.manager if body else None,
             remove_emails=body.remove_emails if body else None,
         )
 
@@ -497,6 +501,8 @@ def _set_status(
     homepage: str | None = None,
     has_form: bool | None = None,
     note: str | None = None,
+    has_attachment: bool | None = None,
+    manager: str | None = None,
     remove_emails: list[str] | None = None,
 ) -> ReviewItem:
     """상태 변경 공통 — 담당자=로그인 사용자. 404/후보밖 400/타인점유 409 + 감사기록."""
@@ -511,6 +517,8 @@ def _set_status(
             homepage=homepage,
             has_form=has_form,
             note=note,
+            has_attachment=has_attachment,
+            manager=manager,
             remove_emails=remove_emails,
         )
     except ReviewConflict as exc:  # 타인이 점유 중 → 409(영구 배정 — 시간 경과 무관).

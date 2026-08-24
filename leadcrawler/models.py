@@ -146,3 +146,5 @@ class CompanyLead(BaseModel):
     email_validations: dict[str, EmailValidation] = Field(default_factory=dict)
     # 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼에 기입.
     note: str = ""
+    # 상대 회사 담당자명(검수자 기입) — 엑셀 H(담당자) 컬럼.
+    manager: str = ""
