@@ -467,14 +467,15 @@ export function QueueTable({
       it.id in attachOverride ? attachOverride[it.id] : origAttach(it),
     [attachOverride],
   );
-  // 확정에 실을 첨부 유무 — 유/무를 골랐고 원본과 다를 때만. '미확인'(null)은 계약상
-  // "변경 없음"과 구분되지 않아 서버로 보낼 수 없다(모달이 미반영을 안내).
+  // 확정에 실을 첨부 유무 — 유/무를 골랐고 원본과 다를 때만(그 외 undefined = 변경 없음).
+  // '미확인'(null)은 계약상 "변경 없음"과 구분되지 않아 서버로 보낼 수 없다(모달이 미반영을
+  // 안내). editedForm/editedNote 와 같은 이디엄으로 override 를 직접 읽는다.
   const editedAttachment = useCallback(
     (it: ReviewItem): boolean | undefined => {
-      const v = attachChecked(it);
-      return v === null || v === origAttach(it) ? undefined : v;
+      const v = attachOverride[it.id];
+      return v === undefined || v === null || v === origAttach(it) ? undefined : v;
     },
-    [attachChecked],
+    [attachOverride],
   );
 
   // 행별 담당자 교정(#382) — 메모와 같은 규약(원본과 다를 때만, 빈 문자열=지움).
