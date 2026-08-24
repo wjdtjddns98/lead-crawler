@@ -9,7 +9,7 @@ import { FilterPopover, pickSummary } from "./FilterPopover";
 import { MultiPicker } from "./MultiPicker";
 import { BTN, BTN_EXPORT, EMPTY, INPUT, tabCls } from "../ui";
 import { ErrorBox } from "./ErrorBox";
-import type { ClaimFilter, Listed, ReviewItem, ReviewStatus } from "../types";
+import type { ClaimFilter, ConfirmEdits, Listed, ReviewItem, ReviewStatus } from "../types";
 
 const FILTER_KEY = "lc_claim_filter";
 const EMPTY_FILTER: ClaimFilter = { country: "", industry: "", listed: "", region: "" };
@@ -158,18 +158,13 @@ export function MyWork() {
   const act = async (
     id: string,
     kind: "confirm" | "reject",
-    selected?: string,
-    homepage?: string,
-    hasForm?: boolean,
-    note?: string,
-    removeEmails?: string[],
+    edits: ConfirmEdits = {},
   ): Promise<boolean> => {
     setBusyIds((p) => new Set(p).add(id));
     setError(null);
     let ok = false;
     try {
-      if (kind === "confirm")
-        await confirmReview(id, selected, homepage, hasForm, note, removeEmails);
+      if (kind === "confirm") await confirmReview(id, edits);
       else await rejectReview(id);
       setSessionDone((n) => n + 1);
       ok = true;
@@ -332,9 +327,7 @@ export function MyWork() {
           // 진행률 분모 = 이번 세션 처리분 + 내 잔여 작업분(내 배치 기준). 전체큐 잔여(remaining)를
           // 쓰면 영구 배정에선 내 점유가 전체큐에서 빠져 있어 처리해도 분모가 계속 자란다.
           remaining={items.length}
-          onConfirm={(id, selected, homepage, hasForm, note, removeEmails) =>
-            act(id, "confirm", selected, homepage, hasForm, note, removeEmails)
-          }
+          onConfirm={(id, edits) => act(id, "confirm", edits)}
           onReject={(id) => act(id, "reject")}
         />
       )}
