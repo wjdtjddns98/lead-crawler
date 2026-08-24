@@ -172,6 +172,8 @@ function mk(p: Partial<ReviewItem> & { id: string; name: string }): ReviewItem {
     site_alive: true,
     form: null,
     note: null,
+    has_attachment: null,
+    manager: null,
     email_status: null,
     email_mx: null,
     email_smtp: null,
@@ -195,6 +197,10 @@ function handSamples(): ReviewItem[] {
       email_mx: true,
       email_smtp: true,
       candidates: [cand("ir@robotis.com"), cand("contact@robotis.com", "unknown", true, null)],
+      // 첨부 유무·담당자 기존값 보유 샘플(#382) — 재진입 시 값 표시와 '미확인으로 되돌리기
+      // 불가' 안내를 mock 만으로 확인할 수 있게 한다.
+      has_attachment: true,
+      manager: "김담당 과장",
     }),
     mk({
       id: "c11",
@@ -225,6 +231,7 @@ function handSamples(): ReviewItem[] {
       email_mx: true,
       email_smtp: true,
       candidates: [cand("sales@parksystems.com")],
+      has_attachment: false, // '첨부 무' 표시 확인용(#382)
     }),
     mk({
       id: "c4",
@@ -602,15 +609,23 @@ function backfillStatusJson(): { resolve: BackfillJobJson; fill: BackfillJobJson
   return { resolve, fill };
 }
 
+// 확정/거부 요청 본문(BE 스키마와 같은 snake_case) — 필드 부재·null = 변경 없음.
+interface ConfirmBody {
+  selected?: string | null;
+  homepage?: string | null;
+  has_form?: boolean | null;
+  note?: string | null;
+  remove_emails?: string[] | null;
+  has_attachment?: boolean | null; // 첨부파일 유무(#382)
+  manager?: string | null; // 담당자명(#382, 최대 64자·빈 문자열=지움)
+}
+
 function setStatus(
   id: string,
   status: ReviewItem["status"],
-  selected?: string | null,
-  homepage?: string | null,
-  hasForm?: boolean | null,
-  note?: string | null,
-  removeEmails?: string[] | null,
+  body: ConfirmBody = {},
 ): ReviewItem | null {
+  const { selected, homepage, has_form: hasForm, note, remove_emails: removeEmails } = body;
   const it = db.find((x) => x.id === id);
   if (!it) return null;
   // 실존하지 않는 이메일 삭제(BE PR#314) — 후보에서 제거(대소문자 무시). selected 반영보다
@@ -629,6 +644,12 @@ function setStatus(
   if (hasForm !== undefined && hasForm !== null) it.form = hasForm ? (it.form ?? it.homepage) : null;
   // note: null=변경 없음(BE 계약과 동일), 빈 문자열=메모 삭제.
   if (note !== undefined && note !== null) it.note = note.trim() === "" ? null : note.trim();
+  // 첨부파일 유무(#382): null=변경 없음 — 유/무만 반영된다(미확인으로 되돌리기 불가).
+  if (body.has_attachment !== undefined && body.has_attachment !== null)
+    it.has_attachment = body.has_attachment;
+  // 담당자(#382): null=변경 없음, 빈 문자열=지움. 64자 초과는 BE 가 422 — mock 도 동일히 막는다.
+  if (body.manager !== undefined && body.manager !== null)
+    it.manager = body.manager.trim() === "" ? null : body.manager.trim();
   it.assignee = "mock-admin";
   it.reviewed_at = new Date().toISOString();
   claimedIds.delete(id); // 처리 완료 — 점유 종료.
@@ -823,31 +844,20 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
 
   const confirm = path.match(/^\/queue\/([^/]+)\/confirm$/);
   if (confirm && method === "POST") {
-    let selected: string | null = null;
-    let homepage: string | null = null;
-    let hasForm: boolean | null = null;
-    let note: string | null = null;
-    let removeEmails: string[] | null = null;
+    let body: ConfirmBody = {};
     try {
-      const body = JSON.parse(String(init?.body ?? "{}")) as {
-        selected?: string | null;
-        homepage?: string | null;
-        has_form?: boolean | null;
-        note?: string | null;
-        remove_emails?: string[] | null;
-      };
-      selected = body.selected ?? null;
-      homepage = body.homepage ?? null;
-      hasForm = body.has_form ?? null;
-      note = body.note ?? null;
-      removeEmails = body.remove_emails ?? null;
+      body = JSON.parse(String(init?.body ?? "{}")) as ConfirmBody;
     } catch {
       // 본문 없음/파싱 실패 — 선택 없이 확정.
     }
+    const selected = body.selected ?? null;
     // 삭제 대상을 selected 로 함께 보내면 모순 — BE 처럼 400(FE 는 선택에서 제외해 보낸다).
-    if (selected && removeEmails?.some((e) => e.toLowerCase() === selected!.toLowerCase()))
+    if (selected && body.remove_emails?.some((e) => e.toLowerCase() === selected.toLowerCase()))
       return jsonRes({ detail: "삭제 대상 이메일을 선택할 수 없습니다" }, 400);
-    const it = setStatus(confirm[1], "confirmed", selected, homepage, hasForm, note, removeEmails);
+    // 담당자 64자 초과 — BE(#381)와 동일하게 422(입력란 maxLength 로 정상 경로에선 안 걸린다).
+    if (body.manager && body.manager.length > 64)
+      return jsonRes({ detail: "담당자는 64자를 넘을 수 없습니다" }, 422);
+    const it = setStatus(confirm[1], "confirmed", body);
     return it ? jsonRes(it) : jsonRes({ detail: "검증 항목을 찾을 수 없습니다" }, 404);
   }
   const reject = path.match(/^\/queue\/([^/]+)\/reject$/);
@@ -860,7 +870,7 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     } catch {
       // 본문 없음/파싱 실패 — 삭제 없이 거부.
     }
-    const it = setStatus(reject[1], "rejected", undefined, undefined, undefined, undefined, removeEmails);
+    const it = setStatus(reject[1], "rejected", { remove_emails: removeEmails });
     return it ? jsonRes(it) : jsonRes({ detail: "검증 항목을 찾을 수 없습니다" }, 404);
   }
 

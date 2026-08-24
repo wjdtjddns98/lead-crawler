@@ -22,7 +22,7 @@ import { BarChart3, ChevronLeft, ChevronRight, Settings } from "lucide-react";
 import { BTN, INPUT, tabCls } from "./ui";
 import { Toaster } from "sonner";
 import { ErrorBox } from "./components/ErrorBox";
-import type { Listed, ReviewItem, ReviewStatus, Role } from "./types";
+import type { ConfirmEdits, Listed, ReviewItem, ReviewStatus, Role } from "./types";
 
 type Filter = ReviewStatus | "";
 type View = "mine" | "browse" | "dashboard" | "admin";
@@ -243,22 +243,16 @@ function Workbench({
   const act = async (
     id: string,
     kind: "confirm" | "reject",
-    selected?: string,
-    homepage?: string,
-    hasForm?: boolean,
-    note?: string,
-    removeEmails?: string[],
+    edits: ConfirmEdits = {},
   ): Promise<boolean> => {
     setBusyIds((prev) => new Set(prev).add(id));
     setError(null);
     let ok = false;
     try {
-      // 담당자는 서버가 로그인 사용자로 자동 기록. 확정 시 사람이 고른 이메일·사이트·문의폼·
-      // 메모 수정값과 삭제할 이메일(실존하지 않는 주소)을 보낸다.
+      // 검증 담당자(assignee)는 서버가 로그인 사용자로 자동 기록. 확정 시 사람이 고른
+      // 이메일·사이트·문의폼·메모·담당자·첨부 유무 교정분과 삭제할 이메일을 함께 보낸다.
       const updated =
-        kind === "confirm"
-          ? await confirmReview(id, selected, homepage, hasForm, note, removeEmails)
-          : await rejectReview(id);
+        kind === "confirm" ? await confirmReview(id, edits) : await rejectReview(id);
       // 현재 필터에서 벗어난 항목은 목록에서 빠지므로 재조회, 아니면 제자리 갱신.
       if (filter && updated.status !== filter) {
         await load();
@@ -438,9 +432,7 @@ function Workbench({
           remaining={total}
           // 전체 큐는 admin 전용 뷰(탭 자체가 admin 에게만 노출) — worker 의 직접 처리는
           // claim(내 작업) 경유만이라 미점유 항목 동시 중복 검토가 원천 차단된다.
-          onConfirm={(id, selected, homepage, hasForm, note, removeEmails) =>
-            act(id, "confirm", selected, homepage, hasForm, note, removeEmails)
-          }
+          onConfirm={(id, edits) => act(id, "confirm", edits)}
           onReject={(id) => act(id, "reject")}
           // 전체큐는 점유 항목이 서버에서 제외됨 — pending 0 = "받아갈 수 있는 작업 없음".
           emptyText={

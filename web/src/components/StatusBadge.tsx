@@ -46,6 +46,45 @@ export function EmailBadge({ status }: { status: string | null }) {
   return <span className={`${BADGE} ${cls}`} title={status}>{label}</span>;
 }
 
+// 첨부파일 유무 3상태 선택(#382) — 미확인(null)/유/무. 큐 행·사이트 탐색 사이드바 공용.
+// 3상태라 체크박스(indeterminate)보다 셀렉트가 현재 상태를 오해 없이 드러낸다. 계약상
+// null=변경 없음이라 서버로는 유/무만 보낼 수 있고, '미확인'으로 되돌리는 요청은 표현할 수
+// 없다 — 호출부가 확정 확인 단계에서 미반영을 알린다.
+const ATTACH_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "첨부 미확인" },
+  { value: "yes", label: "첨부 유" },
+  { value: "no", label: "첨부 무" },
+];
+
+export function AttachmentSelect({
+  value,
+  disabled,
+  className = "",
+  onChange,
+}: {
+  value: boolean | null;
+  disabled: boolean;
+  className?: string;
+  onChange: (value: boolean | null) => void;
+}) {
+  return (
+    <select
+      className={`bg-canvas border border-line text-ink rounded focus:outline-none focus:border-accent disabled:opacity-50 ${className}`}
+      value={value === null ? "" : value ? "yes" : "no"}
+      disabled={disabled}
+      aria-label="첨부파일 유무"
+      title="첨부파일 유무 — 확정 시 함께 반영됩니다(미확인으로 되돌리기는 반영 불가)"
+      onChange={(e) => onChange(e.target.value === "" ? null : e.target.value === "yes")}
+    >
+      {ATTACH_OPTIONS.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 // 이메일 후보 라디오 목록 — 큐 행·사이트 탐색 사이드바 공용(같은 표기·같은 뱃지).
 // 선택 상태(choice)와 반영(onPick)은 호출부 몫, name 은 행/모달별 라디오 그룹 구분용.
 // removed(소문자 매칭)·onToggleRemove 를 주면 후보별 "이 주소 없음"(실존하지 않는 이메일

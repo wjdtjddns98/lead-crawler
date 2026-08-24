@@ -3,7 +3,7 @@ import { AlertTriangle, ExternalLink, Search, X } from "lucide-react";
 import type { ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, tabCls } from "../ui";
 import { normSiteUrl, safeHref, tri } from "../format";
-import { CandidateRadios, EmailBadge } from "./StatusBadge";
+import { AttachmentSelect, CandidateRadios, EmailBadge } from "./StatusBadge";
 
 // 잡텍스트에서 첫 이메일을 뽑는다(끝 구두점 제거). 없으면 null. 팝업에서 줄째 복사해도
 // 이메일만 골라 입력란에 채우기 위함.
@@ -50,6 +50,8 @@ interface Props {
   site: string | undefined;
   formChecked: boolean; // 문의폼 유무 체크박스 표시값 — 표(QueueTable)의 formOverride 와 같은 소스.
   note: string; // 기타 메모 표시값 — 표(QueueTable)의 notes 맵과 같은 소스.
+  hasAttachment: boolean | null; // 첨부파일 유무 표시값(null=미확인) — 표와 같은 소스(#382).
+  manager: string; // 담당자 표시값 — 표와 같은 소스(#382).
   removed: string[] | undefined; // 삭제 표시된 이메일 — 표(QueueTable)의 removals 맵과 같은 소스.
   busy: boolean;
   onTab: (tab: SiteTab) => void;
@@ -58,6 +60,8 @@ interface Props {
   onEditSite: (id: string, value: string) => void;
   onToggleForm: (id: string, value: boolean) => void;
   onEditNote: (id: string, value: string) => void;
+  onEditAttachment: (id: string, value: boolean | null) => void;
+  onEditManager: (id: string, value: string) => void;
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
   onClose: () => void;
@@ -75,6 +79,8 @@ export function SiteExplorer({
   site,
   formChecked,
   note,
+  hasAttachment,
+  manager,
   removed,
   busy,
   onTab,
@@ -83,6 +89,8 @@ export function SiteExplorer({
   onEditSite,
   onToggleForm,
   onEditNote,
+  onEditAttachment,
+  onEditManager,
   onConfirm,
   onReject,
   onClose,
@@ -151,6 +159,15 @@ export function SiteExplorer({
   const changedForm = formChecked !== !!item.form ? formChecked : undefined;
   // 메모 변경분 — 원본과 다를 때만(QueueTable 의 editedNote 와 동일 판정, 빈 문자열=삭제).
   const changedNote = note.trim() !== (item.note ?? "") ? note.trim() : undefined;
+  // 담당자 변경분(#382) — 메모와 같은 판정(빈 문자열=지움).
+  const changedManager = manager.trim() !== (item.manager ?? "") ? manager.trim() : undefined;
+  // 첨부 유무 변경분(#382) — 유/무를 골랐고 원본과 다를 때만. '미확인'(null)은 계약상
+  // "변경 없음"과 구분되지 않아 전송 불가 — 되돌린 경우 확인 오버레이가 미반영을 알린다.
+  // 원본은 ?? null 로 정규화(필드가 없는 미배포 서버 응답의 undefined 방어).
+  const origAttach = item.has_attachment ?? null;
+  const changedAttachment =
+    hasAttachment === null || hasAttachment === origAttach ? undefined : hasAttachment;
+  const attachReverted = origAttach !== null && hasAttachment === null;
   // 삭제 표시된 이메일 — 확정 오버레이에 삭제 대상으로 미리보기(파괴적 교정이라 명시).
   const removedList = removed ?? [];
   // 프리뷰 적용된 수정 URL — 키 입력마다 팝업이 이동하지 않도록 Enter/blur 시점에만 반영.
@@ -328,6 +345,16 @@ export function SiteExplorer({
                       메모 → {changedNote || "(삭제)"}
                     </span>
                   )}
+                  {changedManager !== undefined && (
+                    <span className="block mt-1 text-xs text-muted [overflow-wrap:anywhere]">
+                      담당자 → {changedManager || "(삭제)"}
+                    </span>
+                  )}
+                  {changedAttachment !== undefined && (
+                    <span className="block mt-1 text-xs text-muted">
+                      첨부파일 → {changedAttachment ? "있음" : "없음"}
+                    </span>
+                  )}
                   {/* 실존하지 않아 삭제할 이메일 — 후보·연락처에서 지운다(파괴적이라 명시). */}
                   {removedList.length > 0 && (
                     <span className="block mt-1 text-xs text-danger-fg [overflow-wrap:anywhere]">
@@ -339,6 +366,12 @@ export function SiteExplorer({
                   {site !== undefined && !changedHome && site.trim() !== (item.homepage ?? "") && (
                     <span className="block mt-1 text-xs text-danger-fg">
                       사이트 수정값이 유효한 변경이 아니어서 반영되지 않습니다
+                    </span>
+                  )}
+                  {/* 첨부 '미확인' 되돌리기는 서버 계약(null=변경 없음)으로 표현 불가 — 미반영 안내. */}
+                  {attachReverted && (
+                    <span className="block mt-1 text-xs text-danger-fg">
+                      첨부파일 유무는 ‘미확인’으로 되돌릴 수 없어 기존 값이 유지됩니다
                     </span>
                   )}
                   <span className="block mt-2 text-muted text-xs">다시 Enter 를 누르면 확정됩니다.</span>
@@ -571,6 +604,33 @@ export function SiteExplorer({
                 maxLength={512}
                 placeholder="예: 문의폼 스팸 방지로 미발송"
                 onChange={(e) => onEditNote(item.id, e.target.value)}
+              />
+            </label>
+
+            {/* 첨부파일 유무(#382) — 미확인/유/무 3상태. 표(QueueTable)와 같은 소스, 확정 시
+                함께 반영. 엑셀 12컬럼에 자리가 없어 export 는 안 되고 화면·DB 기록용이다. */}
+            <label className="flex flex-col gap-1">
+              <span className="text-muted text-xs">첨부파일 유무</span>
+              <AttachmentSelect
+                value={hasAttachment}
+                disabled={item.status === "confirmed"}
+                className="w-full text-sm py-1.5 px-2"
+                onChange={(v) => onEditAttachment(item.id, v)}
+              />
+            </label>
+
+            {/* 담당자(#382) — 상대 회사 담당자명. 확정 시 엑셀 H(담당자) 컬럼에 기입된다.
+                BE 가 64자 초과를 422 로 거부하므로 입력에서 막는다. */}
+            <label className="flex flex-col gap-1">
+              <span className="text-muted text-xs">담당자(상대 회사 담당자명)</span>
+              <input
+                className="w-full bg-canvas border border-line text-ink text-sm py-1.5 px-2 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+                type="text"
+                value={manager}
+                disabled={item.status === "confirmed"}
+                maxLength={64}
+                placeholder="예: 김담당 과장"
+                onChange={(e) => onEditManager(item.id, e.target.value)}
               />
             </label>
 

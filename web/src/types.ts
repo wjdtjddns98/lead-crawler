@@ -27,6 +27,10 @@ export interface ReviewItem {
   site_alive: boolean;
   form: string | null;
   note: string | null; // 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼.
+  // 첨부파일 유무(BE #381) — null=미확인. 엑셀 12컬럼에 자리가 없어 export 미반영(화면·DB 전용).
+  has_attachment: boolean | null;
+  // 상대 회사 담당자명(BE #381, 최대 64자) — 엑셀 H(담당자) 컬럼에 기입된다.
+  manager: string | null;
   email_status: string | null;
   email_mx: boolean | null;
   email_smtp: boolean | null;
@@ -34,6 +38,20 @@ export interface ReviewItem {
   listed: Listed;
   // 상장 시장 보드(KOSPI/KOSDAQ/KONEX/NASDAQ…, 미상=null) — BE #136 큐 API 노출.
   market: string | null;
+}
+
+// 확정(POST /queue/{id}/confirm)에 실을 사람 교정분 — 필드 생략/undefined = 변경 없음.
+// 인자 수가 늘어 위치인자(8개)로는 호출부에서 순서를 틀리기 쉬워 한 벌로 묶어 넘긴다.
+export interface ConfirmEdits {
+  selected?: string; // 사람이 고른/직접 입력한 최종 이메일
+  homepage?: string; // 교정한 사이트 URL(정규화 통과분, 원본과 다를 때만)
+  hasForm?: boolean; // 교정한 문의폼 유무(감지값과 다를 때만)
+  note?: string; // 기타 메모 — 빈 문자열 = 메모 삭제
+  removeEmails?: string[]; // 실존하지 않아 지울 이메일(후보+연락처)
+  // 첨부파일 유무(#382) — 유/무만 전송 가능. 계약상 null=변경 없음이라 '미확인'으로
+  // 되돌리는 요청은 표현할 수 없다(호출부가 미반영을 사용자에게 알린다).
+  hasAttachment?: boolean;
+  manager?: string; // 담당자명(#382, 최대 64자) — 빈 문자열 = 지움
 }
 
 export interface QueueResponse {

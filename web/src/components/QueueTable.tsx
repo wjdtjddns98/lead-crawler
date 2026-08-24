@@ -1,9 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, FileText, Pencil } from "lucide-react";
-import type { Listed, ReviewItem } from "../types";
+import type { ConfirmEdits, Listed, ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
 import { normSiteUrl, safeHref, tri } from "../format";
-import { CandidateRadios, EmailBadge, StatusBadge } from "./StatusBadge";
+import { AttachmentSelect, CandidateRadios, EmailBadge, StatusBadge } from "./StatusBadge";
 import { SiteExplorer, type SiteTab } from "./SiteExplorer";
 
 // 상태별 행 좌측 색 띠(첫 칸에 inset 그림자로 표현) — 한눈에 스캔.
@@ -28,7 +28,7 @@ const COL_W = [
   "", // 메일(뱃지·MX·SMTP — 단위 사이에서만 줄바꿈)
   "", // 사이트
   "whitespace-nowrap", // 문의폼 유무
-  "min-w-[140px]", // 기타 메모(엑셀 L 컬럼)
+  "min-w-[180px]", // 기타 메모(엑셀 L)·담당자(엑셀 H)·첨부 유무 — 한 셀에 세로로 묶음
   "", // 상태(뱃지는 자체 nowrap — 담당자·시각이 아래로 접힘)
   "min-w-[120px]", // 액션(버튼 2개 가로 고정 — flex 줄바꿈 없음)
 ];
@@ -41,7 +41,9 @@ const HEADERS = [
   "메일",
   "사이트",
   "문의폼",
-  "기타 메모",
+  // 메모 셀에 담당자·첨부 유무 입력이 함께 세로로 들어간다(#382) — 컬럼 수를 늘리지 않아
+  // 표가 가로 스크롤 없이 유지된다. 각 입력이 자기 라벨(placeholder/옵션)을 가진다.
+  "메모 · 담당자 · 첨부",
   "상태",
   "액션",
 ];
@@ -76,20 +78,16 @@ interface Props {
   doneCount: number; // 이번 세션 처리 건수(진행률 바 분자)
   remaining: number; // 남은 작업 건수(호출부 기준 — 내 작업=내 잔여분, 전체큐=필터 반영 total). 분모 = doneCount + remaining
   // 성공(처리 완료) 시 true 를 resolve — 팝업에서 '성공해야 다음 행 전진' 판단에 쓴다.
-  // homepage = 사람이 수정한 사이트 URL(유효 http(s)·원본과 다를 때만, 없으면 undefined).
-  // hasForm = 사람이 교정한 문의폼 유무(감지값과 다를 때만, 없으면 undefined).
-  // note = 사람이 수정한 기타 메모(원본과 다를 때만, 없으면 undefined — 빈 문자열은 메모 삭제).
-  // removeEmails = 실존하지 않아 삭제할 이메일(후보+연락처, 없으면 undefined) — BE PR#314.
-  onConfirm: (
-    id: string,
-    selected?: string,
-    homepage?: string,
-    hasForm?: boolean,
-    note?: string,
-    removeEmails?: string[],
-  ) => Promise<boolean>;
+  // edits = 사람이 교정한 값 한 벌(각 필드 생략 = 변경 없음) — ConfirmEdits 주석 참조.
+  onConfirm: (id: string, edits: ConfirmEdits) => Promise<boolean>;
   onReject: (id: string) => Promise<boolean>;
   emptyText?: string; // 빈 목록 안내 — 화면 맥락별 문구(생략 시 기본).
+}
+
+// 원본 첨부 유무 — 필드가 없는(미배포) 서버 응답에선 undefined 가 와 '첨부 무'로 오표시되므로
+// 미확인(null)으로 정규화한다(note·form 을 ?? 로 방어하는 것과 같은 취지).
+function origAttach(it: ReviewItem): boolean | null {
+  return it.has_attachment ?? null;
 }
 
 // URL 에서 표시용 호스트(도메인)를 뽑는다(www. 제거). 실패 시 원문.
@@ -129,6 +127,8 @@ interface RowProps {
   site: string | undefined;
   formChecked: boolean; // 문의폼 유무 체크박스 표시값(override 없으면 감지값).
   note: string; // 기타 메모 표시값(override 없으면 원본, 없으면 "").
+  hasAttachment: boolean | null; // 첨부파일 유무 표시값(override 없으면 원본, null=미확인).
+  manager: string; // 담당자 표시값(override 없으면 원본, 없으면 "").
   removed: string[] | undefined; // 삭제 표시된 이메일(없으면 undefined — 참조 안정성 위해 [] 대신).
   onPick: (id: string, value: string) => void;
   onToggleRemove: (id: string, value: string) => void;
@@ -136,6 +136,8 @@ interface RowProps {
   onCancelSite: (id: string) => void; // 편집 취소 — 입력을 닫고 원본 링크로 복귀.
   onToggleForm: (id: string, value: boolean) => void;
   onEditNote: (id: string, value: string) => void;
+  onEditAttachment: (id: string, value: boolean | null) => void;
+  onEditManager: (id: string, value: string) => void;
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
   onOpen: (id: string, tab: SiteTab) => void;
@@ -153,6 +155,8 @@ const QueueRow = memo(
     site,
     formChecked,
     note,
+    hasAttachment,
+    manager,
     removed,
     onPick,
     onToggleRemove,
@@ -160,6 +164,8 @@ const QueueRow = memo(
     onCancelSite,
     onToggleForm,
     onEditNote,
+    onEditAttachment,
+    onEditManager,
     onConfirm,
     onReject,
     onOpen,
@@ -294,17 +300,38 @@ const QueueRow = memo(
             />
           </div>
         </td>
+        {/* 메모 + 담당자 + 첨부 유무 — 세로로 묶는다(#382). 별도 컬럼을 두면 표가 13열이
+            되어 좁은 화면에서 가로 스크롤이 생기므로 같은 셀에 쌓았다. */}
         <td className={`${TD} ${COL_W[8]}`}>
-          <input
-            className="w-full bg-canvas border border-line text-ink text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
-            type="text"
-            value={note}
-            disabled={locked}
-            maxLength={512}
-            placeholder="기타 메모(문의폼 미발송 사유 등)"
-            title="확정 시 엑셀 '기타' 컬럼에 반영됩니다"
-            onChange={(e) => onEditNote(item.id, e.target.value)}
-          />
+          <div className="flex flex-col gap-1">
+            <input
+              className="w-full bg-canvas border border-line text-ink text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+              type="text"
+              value={note}
+              disabled={locked}
+              maxLength={512}
+              placeholder="기타 메모(문의폼 미발송 사유 등)"
+              title="확정 시 엑셀 '기타' 컬럼에 반영됩니다"
+              onChange={(e) => onEditNote(item.id, e.target.value)}
+            />
+            {/* 담당자 — 엑셀 H 컬럼. BE 는 64자 초과를 422 로 거부하므로 입력에서 막는다. */}
+            <input
+              className="w-full bg-canvas border border-line text-ink text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+              type="text"
+              value={manager}
+              disabled={locked}
+              maxLength={64}
+              placeholder="담당자"
+              title="상대 회사 담당자명 — 확정 시 엑셀 '담당자' 컬럼에 반영됩니다"
+              onChange={(e) => onEditManager(item.id, e.target.value)}
+            />
+            <AttachmentSelect
+              value={hasAttachment}
+              disabled={locked}
+              className="w-full text-xs py-1 px-1.5"
+              onChange={(v) => onEditAttachment(item.id, v)}
+            />
+          </div>
         </td>
         <td className={`${TD} ${COL_W[9]}`}>
           <StatusBadge status={item.status} />
@@ -347,6 +374,8 @@ const QueueRow = memo(
     prev.site === next.site &&
     prev.formChecked === next.formChecked &&
     prev.note === next.note &&
+    prev.hasAttachment === next.hasAttachment &&
+    prev.manager === next.manager &&
     // removed 는 행별 removals[id] 참조를 그대로 넘겨 안정적(변경 시에만 새 배열) — 삭제
     // 토글 시 참조가 바뀌어 재렌더된다.
     prev.removed === next.removed,
@@ -426,6 +455,46 @@ export function QueueTable({
       return trimmed === (it.note ?? "") ? undefined : trimmed;
     },
     [notes],
+  );
+
+  // 행별 첨부파일 유무 교정(#382) — 3상태(null=미확인/true=유/false=무). 키가 없으면 원본값.
+  const [attachOverride, setAttachOverride] = useState<Record<string, boolean | null>>({});
+  const onEditAttachment = useCallback((id: string, value: boolean | null) => {
+    setAttachOverride((p) => ({ ...p, [id]: value }));
+  }, []);
+  const attachChecked = useCallback(
+    (it: ReviewItem): boolean | null =>
+      it.id in attachOverride ? attachOverride[it.id] : origAttach(it),
+    [attachOverride],
+  );
+  // 확정에 실을 첨부 유무 — 유/무를 골랐고 원본과 다를 때만(그 외 undefined = 변경 없음).
+  // '미확인'(null)은 계약상 "변경 없음"과 구분되지 않아 서버로 보낼 수 없다(모달이 미반영을
+  // 안내). editedForm/editedNote 와 같은 이디엄으로 override 를 직접 읽는다.
+  const editedAttachment = useCallback(
+    (it: ReviewItem): boolean | undefined => {
+      const v = attachOverride[it.id];
+      return v === undefined || v === null || v === origAttach(it) ? undefined : v;
+    },
+    [attachOverride],
+  );
+
+  // 행별 담당자 교정(#382) — 메모와 같은 규약(원본과 다를 때만, 빈 문자열=지움).
+  const [managers, setManagers] = useState<Record<string, string>>({});
+  const onEditManager = useCallback((id: string, value: string) => {
+    setManagers((p) => ({ ...p, [id]: value }));
+  }, []);
+  const manager = useCallback(
+    (it: ReviewItem): string => managers[it.id] ?? it.manager ?? "",
+    [managers],
+  );
+  const editedManager = useCallback(
+    (it: ReviewItem): string | undefined => {
+      const v = managers[it.id];
+      if (v === undefined) return undefined;
+      const trimmed = v.trim();
+      return trimmed === (it.manager ?? "") ? undefined : trimmed;
+    },
+    [managers],
   );
 
   // 행별 "실존하지 않는 이메일" 삭제 표시 — 후보/연락처에서 지울 주소 목록(BE PR#314).
@@ -547,22 +616,29 @@ export function QueueTable({
     },
     [],
   );
+  // 확정에 실을 사람 교정분 한 벌 — 표 행·팝업·확인 모달이 같은 판정을 쓰도록 한 곳에서 만든다.
+  const editsOf = useCallback(
+    (it: ReviewItem, selected?: string): ConfirmEdits => ({
+      selected,
+      homepage: editedSite(it),
+      hasForm: editedForm(it),
+      note: editedNote(it),
+      removeEmails: removeEmailsOf(it),
+      hasAttachment: editedAttachment(it),
+      manager: editedManager(it),
+    }),
+    [editedSite, editedForm, editedNote, removeEmailsOf, editedAttachment, editedManager],
+  );
+
   const popupConfirm = useCallback(
     (id: string, selected?: string) =>
       advanceAfter(id, () => {
-        // 표에서 편집해 둔 사이트 URL·문의폼 유무·메모·삭제 이메일이 있으면 팝업 확정에도
-        // 함께 실린다(편집 유실 방지).
+        // 표에서 편집해 둔 사이트 URL·문의폼 유무·메모·담당자·첨부 유무·삭제 이메일이 있으면
+        // 팝업 확정에도 함께 실린다(편집 유실 방지).
         const it = itemsRef.current.find((x) => x.id === id);
-        return onConfirm(
-          id,
-          selected,
-          it ? editedSite(it) : undefined,
-          it ? editedForm(it) : undefined,
-          it ? editedNote(it) : undefined,
-          it ? removeEmailsOf(it) : undefined,
-        );
+        return onConfirm(id, it ? editsOf(it, selected) : { selected });
       }),
-    [advanceAfter, onConfirm, editedSite, editedForm, editedNote, removeEmailsOf],
+    [advanceAfter, onConfirm, editsOf],
   );
   const popupReject = useCallback(
     (id: string) => advanceAfter(id, () => onReject(id)),
@@ -578,15 +654,13 @@ export function QueueTable({
   // 모달에 보여주고 실제 확정에 쓸 이메일 — 행 버튼과 동일한 우선순위(사용자 선택→서버→
   // 남은 후보 선두). 삭제 표시된 주소는 choiceOf 가 이미 건너뛴다.
   const modalChoice = modalItem ? choiceOf(modalItem)?.trim() : undefined;
-  // 확정에 실릴 삭제 이메일(없으면 undefined) — 모달에 삭제 대상으로 미리보기.
-  const modalRemovals = modalItem ? removeEmailsOf(modalItem) : undefined;
-  // 확정에 실릴 사이트 수정값(없으면 undefined). raw 는 무효 입력 경고 판단용.
-  const modalSite = modalItem ? editedSite(modalItem) : undefined;
+  // 확정에 실릴 교정분 한 벌 — 모달 미리보기와 실제 전송값이 같은 객체라 어긋날 여지가 없다.
+  const modalEdits = modalItem ? editsOf(modalItem, modalChoice || undefined) : undefined;
+  // 사이트 무효 입력 경고 판단용 원문(정규화 전).
   const modalSiteRaw = modalItem ? sites[modalItem.id]?.trim() : undefined;
-  // 확정에 실릴 문의폼 유무 수정값(없으면 undefined).
-  const modalForm = modalItem ? editedForm(modalItem) : undefined;
-  // 확정에 실릴 메모 수정값(없으면 undefined — 빈 문자열은 메모 삭제).
-  const modalNote = modalItem ? editedNote(modalItem) : undefined;
+  // 첨부 유무를 '미확인'으로 되돌린 경우 — 계약상 null=변경 없음이라 전송할 수 없어 안내한다.
+  const modalAttachReverted =
+    !!modalItem && origAttach(modalItem) !== null && attachChecked(modalItem) === null;
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
@@ -637,6 +711,8 @@ export function QueueTable({
               site={sites[it.id]}
               formChecked={formChecked(it)}
               note={note(it)}
+              hasAttachment={attachChecked(it)}
+              manager={manager(it)}
               removed={removals[it.id]}
               onPick={onPick}
               onToggleRemove={onToggleRemove}
@@ -644,6 +720,8 @@ export function QueueTable({
               onCancelSite={onCancelSite}
               onToggleForm={onToggleForm}
               onEditNote={onEditNote}
+              onEditAttachment={onEditAttachment}
+              onEditManager={onEditManager}
               onConfirm={(id) => setModal({ id, action: "confirm" }) /* 즉시 확정 대신 확인 모달 */}
               // confirmed 행 거부 = 확정 번복 — 확인 모달 경유. pending 거부는 기존대로 1클릭.
               onReject={(id) =>
@@ -681,36 +759,52 @@ export function QueueTable({
                       {modalChoice}
                     </span>
                   )}
-                  {modalSite && (
+                  {modalEdits?.homepage && (
                     <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
-                      사이트 → {modalSite}
+                      사이트 → {modalEdits.homepage}
                     </span>
                   )}
-                  {modalForm !== undefined && (
+                  {modalEdits?.hasForm !== undefined && (
                     <span className="block mt-1 text-xs text-muted">
-                      문의폼 → {modalForm ? "있음" : "없음"}
+                      문의폼 → {modalEdits.hasForm ? "있음" : "없음"}
                     </span>
                   )}
-                  {modalNote !== undefined && (
+                  {modalEdits?.note !== undefined && (
                     <span className="block mt-1 text-xs text-muted [overflow-wrap:anywhere]">
-                      메모 → {modalNote || "(삭제)"}
+                      메모 → {modalEdits.note || "(삭제)"}
+                    </span>
+                  )}
+                  {modalEdits?.manager !== undefined && (
+                    <span className="block mt-1 text-xs text-muted [overflow-wrap:anywhere]">
+                      담당자 → {modalEdits.manager || "(삭제)"}
+                    </span>
+                  )}
+                  {modalEdits?.hasAttachment !== undefined && (
+                    <span className="block mt-1 text-xs text-muted">
+                      첨부파일 → {modalEdits.hasAttachment ? "있음" : "없음"}
                     </span>
                   )}
                   {/* 실존하지 않아 삭제할 이메일 — 후보·연락처에서 지운다(파괴적이라 명시). */}
-                  {modalRemovals && modalRemovals.length > 0 && (
+                  {modalEdits?.removeEmails && modalEdits.removeEmails.length > 0 && (
                     <span className="block mt-1 text-xs text-danger-fg [overflow-wrap:anywhere]">
-                      이메일 삭제 → {modalRemovals.join(", ")}
+                      이메일 삭제 → {modalEdits.removeEmails.join(", ")}
                     </span>
                   )}
                   {/* 편집했지만 반영될 변경이 없는 경우(무효 URL·정규화 후 원본과 동일)
                       — 조용히 버리지 않고 미반영을 알린다. */}
                   {modalSiteRaw !== undefined &&
-                    !modalSite &&
+                    !modalEdits?.homepage &&
                     modalSiteRaw !== (modalItem.homepage ?? "") && (
                       <span className="block mt-1 text-xs text-danger-fg">
                         사이트 수정값이 유효한 변경이 아니어서 반영되지 않습니다
                       </span>
                     )}
+                  {/* 첨부 '미확인' 되돌리기는 서버 계약(null=변경 없음)으로 표현 불가 — 미반영 안내. */}
+                  {modalAttachReverted && (
+                    <span className="block mt-1 text-xs text-danger-fg">
+                      첨부파일 유무는 ‘미확인’으로 되돌릴 수 없어 기존 값이 유지됩니다
+                    </span>
+                  )}
                 </>
               ) : (
                 <>
@@ -737,15 +831,7 @@ export function QueueTable({
                 }
                 onClick={() => {
                   setModal(null);
-                  if (modal.action === "confirm")
-                    void onConfirm(
-                      modalItem.id,
-                      modalChoice || undefined,
-                      modalSite,
-                      modalForm,
-                      modalNote,
-                      modalRemovals,
-                    );
+                  if (modal.action === "confirm") void onConfirm(modalItem.id, modalEdits ?? {});
                   else void onReject(modalItem.id);
                 }}
               >
@@ -768,6 +854,8 @@ export function QueueTable({
           site={sites[openItem.id]}
           formChecked={formChecked(openItem)}
           note={note(openItem)}
+          hasAttachment={attachChecked(openItem)}
+          manager={manager(openItem)}
           removed={removals[openItem.id]}
           busy={busyIds.has(openItem.id)}
           onTab={(tab) => setOpen({ id: openItem.id, tab })}
@@ -776,6 +864,8 @@ export function QueueTable({
           onEditSite={onEditSite}
           onToggleForm={onToggleForm}
           onEditNote={onEditNote}
+          onEditAttachment={onEditAttachment}
+          onEditManager={onEditManager}
           onConfirm={popupConfirm}
           onReject={popupReject}
           onClose={() => setOpen(null)}
