@@ -35,6 +35,7 @@ from .exchanges import (
     SgxSource,
 )
 from .ai_directory import AiDirectorySource
+from .fsc import FscSource
 from .gleif import GleifSource
 from .naver_local import NaverLocalSource
 from .nps import _KR, NpsSource, SupportsNpsStore
@@ -76,6 +77,9 @@ def build_sources(
             corp_cache=dart_corp_cache,
         ),
         CompaniesHouseSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        # KR 금융회사 등록처(금융위 공공데이터, reg:fsc 키) — 홈페이지 URL 동봉이라
+        # 도메인 해석 없이 승격 가능. DART 와 같은 등록처 tier(첫 등장 우선 신뢰도).
+        FscSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         PseSource(settings, rate_limiters=rate_limiters),
         SetSource(settings, rate_limiters=rate_limiters),
         SgxSource(settings, rate_limiters=rate_limiters),
@@ -182,7 +186,9 @@ def discover_segment(
     # KR 지역 팬아웃 세그먼트에서도 돈다.
     if settings.kr_discovery_nps_only and is_country(segment, _KR):
         applicable = [
-            src for src in applicable if isinstance(src, (NpsSource, NaverLocalSource))
+            # FSC(금융위 등록처, 2026-08-24)는 공식 인가 명부라 헤드라인 오탐 무관 — 포함.
+            src for src in applicable
+            if isinstance(src, (NpsSource, NaverLocalSource, FscSource))
         ]
         if not applicable:
             # NPS 미적용 KR 세그먼트(브로드 '전체'·3층매핑 미커버 라벨·persist=False 로

@@ -106,7 +106,7 @@ def test_discover_segment_merges_applicable_sources() -> None:
     sources = {r.source for r in rows}
     # KR 세그먼트: DART + 집계원(GLEIF/Wikidata/OpenCorporates) + 검색 적용,
     # EDGAR(미국)·CompaniesHouse(영국)는 미적용.
-    assert sources == {"dart", "gleif", "wikidata", "opencorporates", "search"}
+    assert sources == {"dart", "fsc", "gleif", "wikidata", "opencorporates", "search"}
     # 병합 후 canonical_key 는 중복이 없어야 한다(제약 ①).
     keys = [r.canonical_key for r in rows]
     assert len(keys) == len(set(keys))
@@ -264,7 +264,7 @@ def test_search_has_key_compound_logic() -> None:
 def test_build_sources_registers_all_adapters() -> None:
     names = {src.name for src in build_sources(_dry_settings())}
     assert names == {
-        "edgar", "dart", "companies_house", "pse", "set", "sgx", "idx", "bursa",
+        "edgar", "dart", "fsc", "companies_house", "pse", "set", "sgx", "idx", "bursa",
         "hose", "hnx", "gleif", "wikidata", "opencorporates", "search", "ai_directory",
         "naver_local", "nps",
     }
@@ -628,12 +628,13 @@ def test_kr_whitelist_region_fanout_runs_naver_local_only() -> None:
     assert rows and {r.source for r in rows} == {"naver_local"}
 
 
-def test_kr_whitelist_broad_industry_returns_empty_without_error() -> None:
-    """NPS 미적용 KR 세그먼트(브로드 '전체')는 예외 없이 빈 결과(경고 로그 경로).
+def test_kr_whitelist_broad_industry_covered_by_fsc() -> None:
+    """브로드 '전체' KR 세그먼트 — 종전 발견 0 사각을 FSC(금융위 등록처)가 메운다(2026-08-24).
 
-    구 동작은 DART/검색이 커버하던 사각 — 정책 on 에서는 per-업종(택소노미) 트리거가 전제.
+    NPS/지역검색 미적용이어도 화이트리스트에 포함된 FSC 는 돈다(공식 인가 명부 — 오탐 무관).
     """
-    assert discover_segment(Segment(country="KR", industry="전체"), Settings(dry_run=True)) == []
+    rows = discover_segment(Segment(country="KR", industry="전체"), Settings(dry_run=True))
+    assert {r.source for r in rows} == {"fsc"}
 
 
 def test_kr_nps_only_policy_leaves_other_countries() -> None:
