@@ -260,6 +260,93 @@ export interface BackfillOverview {
   queue_pending: number;
 }
 
+// --- 세그먼트 작업 큐(#403 · BE v1.14.0) --------------------------------
+// 관리자가 지정한 세그먼트(국가·업종·상장·지역)를 발견→승격(실존검증·이메일·리뷰큐 적재)까지
+// 백그라운드로 완주시키는 트랙 S 작업. **한 번에 1건만 running**, 나머지는 우선순위 큐로 대기.
+
+// 백필(지속형)과 달리 대상이 유한해 '완료(done)'가 있고, 대기(queued)·일시중지(paused)가 있다.
+export type SegmentJobStatus =
+  | "queued"
+  | "running"
+  | "paused"
+  | "done"
+  | "cancelled"
+  | "failed"
+  | "budget_exhausted";
+
+// running 중 세부 단계 — ""(시작 전) → discover → promote → done.
+// discover 는 대상 총량을 모르는 구간이라 **진행률이 없다**(발견 건수만 표시).
+export type SegmentJobStage = "" | "discover" | "promote" | "done";
+
+// = BackfillJob 전 필드 + 트랙 S 전용(listed·regions·priority·stage·discovered·failed_items·
+// promote_cursor·queue_position). 목록·상세가 같은 스키마라 상세 조회 없이 목록만으로 그린다.
+export interface SegmentJobInfo {
+  id: string;
+  track: string; // "S" 고정 — 내부 개념이라 화면엔 노출하지 않는다.
+  status: SegmentJobStatus;
+  countries: string;
+  industries: string;
+  listed: Listed;
+  regions: string; // "" | "all" | "서울,경기" — countries 에 KR 포함 시에만 유효(아니면 422)
+  priority: number; // 0~1000, **낮을수록 먼저**
+  stage: SegmentJobStage;
+  discovered: number;
+  // 시작 시점 스냅샷이지만 discover 단계에선 **0 = 아직 모름**(백필의 '대상 없음'과 다르다).
+  initial_target: number;
+  remaining: number;
+  processed: number;
+  promoted: number;
+  emails: number;
+  failed_items: number;
+  batches_done: number;
+  promote_cursor: string | null;
+  queue_position: number | null; // queued 일 때만 값, 그 외 null
+  generation: number;
+  recycles: number;
+  crash_restarts: number;
+  pid: number | null;
+  // running 에 대한 pause/cancel 은 즉시 반영되지 않는다 — 이 플래그로 200 을 받고 수 초 내 전이.
+  cancel_requested: boolean;
+  stop_reason: string | null;
+  error: string | null;
+  triggered_by: string | null;
+  started_at: string | null; // 트랙 S 에선 **요청 생성 시각**(실행 시작이 아니다)
+  updated_at: string | null;
+  progress_at: string | null;
+  finished_at: string | null;
+  // 백필과 공유하는 실행 파라미터 — 트랙 S 폼에는 없어 화면 표시도 하지 않는다.
+  exclude_industries: string;
+  exclude_listed: boolean;
+  batch: number;
+  workers: number;
+  max_batches: number;
+  min_queue: number;
+  resolved: number;
+}
+
+// 정렬은 BE 고정 — running → queued(priority, 요청시각) → 나머지 최신순.
+export interface SegmentJobList {
+  items: SegmentJobInfo[];
+  total: number;
+}
+
+// 제출 전 규모 확인. 원장 COUNT 라 **폴링 금지**(입력 확정 시 1회).
+// segments > max_segments 면 생성이 422 로 거부되므로 사전 경고에 쓴다.
+export interface SegmentJobPreview {
+  segments: number;
+  promote_pending: number;
+  max_segments: number;
+}
+
+// POST /admin/segment-jobs 본문 — countries·industries 는 CSV 필수(빈값 422).
+export interface SegmentJobRequest {
+  countries: string;
+  industries: string;
+  listed: Listed;
+  regions: string;
+  priority: number;
+}
+
 // --- 보유 데이터 대시보드(#378) ----------------------------------------
 // GET /dashboard/summary — 원장·회사·큐 한 응답 스냅샷(진입 1회 + 수동 새로고침, 폴링 금지).
 

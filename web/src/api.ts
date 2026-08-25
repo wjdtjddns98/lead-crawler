@@ -20,6 +20,10 @@ import type {
   ReviewItem,
   ReviewStatus,
   Role,
+  SegmentJobInfo,
+  SegmentJobList,
+  SegmentJobPreview,
+  SegmentJobRequest,
   SendPreview,
   SendResult,
   UserStats,
@@ -122,7 +126,11 @@ async function apiGet<T>(path: string): Promise<T> {
   return jsonOrThrow<T>(await fetch(`${BASE}${path}`, { headers: authHeaders() }));
 }
 
-async function apiSend<T>(method: "POST" | "PUT", path: string, body?: unknown): Promise<T> {
+async function apiSend<T>(
+  method: "POST" | "PUT" | "PATCH",
+  path: string,
+  body?: unknown,
+): Promise<T> {
   return jsonOrThrow<T>(
     await fetch(`${BASE}${path}`, {
       method,
@@ -403,6 +411,61 @@ export async function fetchBackfillStatus(): Promise<BackfillStatus> {
 // 활성 백필 전부에 취소 요청(마감은 수 초 내 비동기). 활성이 없으면 404.
 export async function stopBackfill(): Promise<BackfillStatus> {
   return apiSend("POST", "/admin/backfill/stop");
+}
+
+// --- 세그먼트 작업 큐(#403 · BE v1.14.0, admin 전용) --------------------
+
+// 제출 전 규모 확인 — 원장 COUNT 라 **폴링 금지**(입력 확정 시 1회, BE 계약).
+// 생성과 같은 검증을 타므로 조건이 잘못됐으면 여기서 먼저 422 가 난다.
+export async function fetchSegmentJobPreview(f: {
+  countries: string;
+  industries: string;
+  listed: Listed;
+  regions: string;
+}): Promise<SegmentJobPreview> {
+  const q = new URLSearchParams({
+    countries: f.countries,
+    industries: f.industries,
+    listed: f.listed,
+    regions: f.regions,
+  });
+  return apiGet(`/admin/segment-jobs/preview?${q.toString()}`);
+}
+
+// 작업 요청 — 실행 중인 S 잡이 없으면 즉시 running, 있으면 queued(+queue_position).
+// 조건 위반(빈 국가·업종, KR 없는데 지역 지정, 세그먼트 상한 초과 등)은 422 + 한국어 detail.
+export async function createSegmentJob(f: SegmentJobRequest): Promise<SegmentJobInfo> {
+  return apiSend("POST", "/admin/segment-jobs", f);
+}
+
+// 목록 — 저장 카운터만 읽으므로 진행 중 폴링해도 된다(백필 status 와 같은 주기).
+// 정렬은 BE 고정: running → queued(priority, 요청시각) → 나머지 최신순.
+export async function fetchSegmentJobs(limit = 50, offset = 0): Promise<SegmentJobList> {
+  return apiGet(`/admin/segment-jobs?limit=${limit}&offset=${offset}`);
+}
+
+// 일시중지 — running·queued 만 허용(그 외 409, 이미 paused 포함). running 은 즉시 전이하지
+// 않고 cancel_requested 만 서고 수 초 내 paused 가 된다(폴링이 확인).
+export async function pauseSegmentJob(id: string): Promise<SegmentJobInfo> {
+  return apiSend("POST", `/admin/segment-jobs/${id}/pause`);
+}
+
+// 재개 — paused·failed·budget_exhausted 만 허용(그 외 409).
+export async function resumeSegmentJob(id: string): Promise<SegmentJobInfo> {
+  return apiSend("POST", `/admin/segment-jobs/${id}/resume`);
+}
+
+// 취소 — 이미 종료된 작업이면 409. running 은 pause 와 마찬가지로 수 초 내 전이한다.
+export async function cancelSegmentJob(id: string): Promise<SegmentJobInfo> {
+  return apiSend("POST", `/admin/segment-jobs/${id}/cancel`);
+}
+
+// 우선순위 변경(0~1000, 낮을수록 먼저) — queued·paused 만 허용(그 외 409).
+export async function updateSegmentJobPriority(
+  id: string,
+  priority: number,
+): Promise<SegmentJobInfo> {
+  return apiSend("PATCH", `/admin/segment-jobs/${id}`, { priority });
 }
 
 // 확정분 엑셀 다운로드. 인증 헤더가 필요해 평범한 링크 대신 fetch→blob 으로 받아 저장한다.

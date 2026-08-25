@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { CrawlTargetSection } from "./admin/CrawlSection";
 import { BackfillSection } from "./admin/BackfillSection";
+import { SegmentJobSection } from "./admin/SegmentJobSection";
 import { ExportSection } from "./admin/ExportSection";
 import { SendSection } from "./admin/SendSection";
 import { AccountsSection } from "./admin/AccountsSection";
@@ -9,8 +10,8 @@ import { tabCls } from "../ui";
 type AdminGroup = "운영" | "관리";
 
 // 관리자 페이지 셸 — 운영(크롤·추출·발송) / 관리(계정) 두 군 서브탭.
-// ponytail: 5섹션 항상 렌더 트리에 유지 — Crawl·Backfill 섹션의 mount-effect(진행중 작업
-//           복원)·3초 폴링이 마운트에 묶여 있어, 언마운트 시 새로고침 복원이 깨진다.
+// ponytail: 6섹션 항상 렌더 트리에 유지 — Crawl·Backfill·SegmentJob 섹션의 mount-effect(진행중
+//           작업 복원)·3초 폴링이 마운트에 묶여 있어, 언마운트 시 새로고침 복원이 깨진다.
 //           비활성 패널은 hidden 속성(display:none)으로만 숨긴다.
 export function Admin() {
   const [group, setGroupState] = useState<AdminGroup>(() => {
@@ -49,9 +50,11 @@ export function Admin() {
         hidden={group !== "운영"}
         className="flex flex-col gap-7"
       >
-        {/* 데이터 흐름 순서 — 크롤(신규 발견) → 백필(기존 보강) → 추출 → 발송 */}
+        {/* 데이터 흐름 순서 — 크롤(신규 발견) → 백필(기존 보강) → 세그먼트 작업(발견+승격
+            일괄 위임) → 추출 → 발송 */}
         <CrawlTargetSection />
         <BackfillSection />
+        <SegmentJobSection />
         <ExportSection />
         <SendSection />
       </div>
