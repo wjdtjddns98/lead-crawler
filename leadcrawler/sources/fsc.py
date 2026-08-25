@@ -79,6 +79,27 @@ _FIN_LABELS = frozenset(rule_label for _, rule_label in _NAME_LABEL_RULES)
 _BAS_DT_LOOKBACK = 14
 
 
+# 상장일/폐지일 필드쌍(유가·코스닥·KRX). 상장일 있고 폐지일 없는 시장이 하나라도 있으면
+# 현재 상장. 이력(상장일이든 폐지일이든)이 있는데 현재 상장 시장이 없으면 상장폐지=unlisted.
+_LSTG_PAIRS = (
+    ("fncoXchgLstgDt", "fncoXchgLstgAbolDt"),
+    ("fncoKosdaqLstgDt", "fncoKosdaqLstgAbolDt"),
+    ("fncoKrxLstgDt", "fncoKrxLstgAbolDt"),
+)
+
+
+def _listed_status(rec: dict) -> str | None:
+    """응답 레코드의 상장 이력으로 listed/unlisted 를 판정한다(이력 전무 = None)."""
+    seen = False
+    for on_key, off_key in _LSTG_PAIRS:
+        on, off = opt_str(rec.get(on_key)), opt_str(rec.get(off_key))
+        if on and not off:
+            return "listed"
+        if on or off:
+            seen = True
+    return "unlisted" if seen else None
+
+
 def _search_terms(label: str) -> list[str]:
     """라벨의 규칙 정규식 alternation 리터럴을 서버 검색어(fncoNm)로 재사용한다."""
     return [t for pat, lab in _NAME_LABEL_RULES if lab == label for t in pat.pattern.split("|")]
@@ -236,15 +257,19 @@ class FscSource:
         키워드당 모집단이 수백 행(2026-08-25 실측: 자산운용 267)이라 한 런에 완주한다 —
         커서 미사용. 키워드 간 사명 중복(예: '증권'과 '투자증권')은 crno 로 제거한다.
         """
+        terms = _search_terms(want)
+        if not terms:  # 검색어 없는 라벨(applies_to 우회 호출) — 프로브 낭비 전에 종료.
+            return []
         bas_dt = self._latest_bas_dt(fetcher, key)
         if bas_dt is None:
             log.info("fsc.search.no_snapshot", segment=segment.label)
             return []
         out: list[DiscoveredCompany] = []
         seen: set[str] = set()
-        for term in _search_terms(want):
+        budget = _MAX_PAGES  # 페이지 예산은 키워드 전체가 공유 — 런당 절대 상한 유지.
+        for term in terms:
             page = 1
-            while page <= _MAX_PAGES:
+            while budget > 0:
                 params = {
                     "serviceKey": key,
                     "resultType": "json",
@@ -269,6 +294,8 @@ class FscSource:
                     dc = self._candidate(segment, rec, want)
                     if dc is None:
                         continue
+                    # seen 키 = crno or name — 하류 canonical_key 티어링(reg:fsc:→name:)과
+                    # 의도적 동형(같은 판정을 앞당길 뿐 새 손실 없음).
                     k = dc.registry_id or dc.name
                     if k in seen:
                         continue
@@ -279,6 +306,7 @@ class FscSource:
                         log.info("fsc.search.cap", segment=segment.label, n=len(out))
                         return out
                 page += 1
+                budget -= 1
         log.info("fsc.search", segment=segment.label, bas_dt=bas_dt, n=len(out))
         return out
 
@@ -297,6 +325,12 @@ class FscSource:
                 payload = fetcher.get_json(_API_URL, params=params)
             except Exception as exc:
                 log.info("fsc.basdt.error", err=_redact_key(str(exc), key))
+                return None
+            code = self._result_code(payload)
+            if code is not None and code != "00":
+                # 쿼터/미승인 오류를 "스냅샷 없음"으로 오진하면 14일치 역탐색을 전부
+                # 낭비하고 원인이 로그에서 사라진다 — 즉시 구분 중단(broad 동일 계열).
+                log.info("fsc.basdt.result_error", code=code)
                 return None
             if self._items(payload):
                 return d.strftime("%Y%m%d")
@@ -343,9 +377,15 @@ class FscSource:
         raw_url = opt_str(rec.get("fncoHmpgUrl"))
         domain = normalize_domain(raw_url) if raw_url else None
         crno = opt_str(rec.get("crno"))
+        # 상장여부 — 응답의 상장일/폐지일로 사실 판정(DART corp_cls 패턴). 이력 자체가
+        # 없으면 세그먼트 스코프값 유지(비상장 단정 금지 — 스코프값 오염 실사고 계열).
+        status = _listed_status(rec)
+        seg = segment
+        if status is not None:
+            seg = Segment(country=segment.country, industry=segment.industry, listed=status)
         return build_company(
             source=self.name,
-            segment=segment,
+            segment=seg,
             name=name,
             domain=domain,
             registry="fsc" if crno else None,
@@ -353,4 +393,6 @@ class FscSource:
             industry_code_label=label,
             address=opt_str(rec.get("fncoAdr")),
             phone=opt_str(rec.get("fncoTelno") or rec.get("fncoTlno")),
+            ticker=opt_str(rec.get("isinCd")),
+            listed_verified=status is not None,
         )

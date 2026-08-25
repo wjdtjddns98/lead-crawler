@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
+import re
+
 from leadcrawler.config import Settings
 from leadcrawler.sources.base import Segment
-from leadcrawler.sources.fsc import FscSource, _label_for, _redact_key
+from leadcrawler.sources.fsc import (
+    _FIN_LABELS,
+    FscSource,
+    _label_for,
+    _redact_key,
+    _search_terms,
+)
 
 
 def _seg(industry: str = "증권·자산운용", country: str = "KR") -> Segment:
@@ -131,7 +139,10 @@ def test_live_single_item_dict_envelope() -> None:
 
 def test_live_no_key_is_noop() -> None:
     spy = _SpyFetcher([_envelope(_RECORDS)])
-    src = FscSource(Settings(dry_run=False, data_go_kr_service_key=""), fetcher=spy)
+    # fsc_service_key 도 명시 "" — 로컬 .env 의 실키가 폴백으로 새어 들어오는 오염 차단.
+    src = FscSource(
+        Settings(dry_run=False, data_go_kr_service_key="", fsc_service_key=""), fetcher=spy
+    )
     assert src.discover(_seg()) == []
     assert spy.calls == []  # 네트워크 0.
 
@@ -271,3 +282,50 @@ def test_kr_whitelist_includes_fsc() -> None:
     s = Settings(dry_run=True, kr_discovery_nps_only=True)
     rows = discover_segment(_seg("전체"), s)
     assert "fsc" in {r.source for r in rows}
+
+
+def test_search_terms_are_plain_literals() -> None:
+    # 규칙에 정규식 메타문자가 들어오면 fncoNm 검색어가 깨져 라벨 재현율이 조용히 0 이 된다.
+    for lab in _FIN_LABELS:
+        for t in _search_terms(lab):
+            assert re.fullmatch(r"[\w가-힣]+", t), (lab, t)
+
+
+def test_search_basdt_result_error_aborts_probe() -> None:
+    # basDt 프로브가 오류 응답(쿼터/미승인)을 "스냅샷 없음"으로 오진하면 14일치 역탐색을
+    # 전부 낭비한다 — 즉시 중단·빈 결과·소수 콜만 나가야 한다.
+    err = {"response": {"header": {"resultCode": "22", "resultMsg": "LIMITED"}, "body": {}}}
+
+    class _AlwaysErr(_SpyFetcher):
+        def get_json(self, url: str, *, params: dict | None = None) -> dict:
+            self.calls.append(dict(params or {}))
+            return err
+
+    spy = _AlwaysErr([])
+    src = FscSource(_live_settings(), fetcher=spy)
+    assert src.discover(_seg("증권·자산운용")) == []
+    assert len(spy.calls) <= 2  # 프로브 1콜에서 끊김(역탐색 낭비 없음).
+
+
+def test_search_mode_cap_early_return() -> None:
+    # 검색 모드 cap 절단 — 즉시 반환(무커서라 절단분 유실은 로그로 가시화).
+    spy = _SpyFetcher([_envelope(_RECORDS)])
+    src = FscSource(
+        Settings(dry_run=False, data_go_kr_service_key="k", discovery_max_per_source=1),
+        fetcher=spy,
+    )
+    got = src.discover(_seg("증권·자산운용"))
+    assert len(got) == 1
+
+
+def test_listed_mapping_from_lstg_dates() -> None:
+    # 상장일/폐지일 → 사실 상장여부(DART corp_cls 패턴). 이력 전무 = 스코프값 유지.
+    listed = {"fncoNm": "가상장증권", "crno": "1", "fncoXchgLstgDt": "76/06/24", "fncoXchgLstgAbolDt": ""}
+    delisted = {"fncoNm": "나폐지증권", "crno": "2", "fncoXchgLstgDt": "", "fncoXchgLstgAbolDt": "15/09/15"}
+    nohist = {"fncoNm": "다비상장증권", "crno": "3"}
+    spy = _SpyFetcher([_envelope([listed, delisted, nohist])])
+    got = FscSource(_live_settings(), fetcher=spy).discover(_seg("증권·자산운용"))
+    by = {c.name: c for c in got}
+    assert by["가상장증권"].listed == "listed" and by["가상장증권"].listed_verified
+    assert by["나폐지증권"].listed == "unlisted" and by["나폐지증권"].listed_verified
+    assert by["다비상장증권"].listed == "unknown" and not by["다비상장증권"].listed_verified

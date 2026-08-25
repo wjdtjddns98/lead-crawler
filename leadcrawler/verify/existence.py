@@ -132,6 +132,15 @@ def _host_variants(domain: str) -> tuple[str, ...]:
     return (domain, f"www.{domain}")
 
 
+# 실존 프로브 전용 브라우저형 UA — 기본 httpx UA 는 관공서/공제회류 WAF 가 타르핏(무응답
+# 타임아웃)하거나 즉시 차단해 살아있는 사이트가 죽음으로 오탐된다(2026-08-25 공제회 실측:
+# 동일 사이트가 브라우저 UA 로는 200). 생존 판정 1~2회 프로브라 크롤 정중함 규약과 별개.
+_PROBE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    " (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+}
+
+
 class HttpSiteProbe:
     """httpx 기반 실 HTTP HEAD 프로버(graceful — 오류 시 False)."""
 
@@ -148,17 +157,19 @@ class HttpSiteProbe:
         for scheme in ("https", "http"):
             url = f"{scheme}://{host}"
             try:
-                resp = httpx.head(url, timeout=self._timeout, follow_redirects=True)
+                resp = httpx.head(
+                    url, timeout=self._timeout, follow_redirects=True, headers=_PROBE_HEADERS
+                )
             except Exception as exc:  # 연결 실패·타임아웃 등 → 다음 스킴.
                 log.debug("existence.http.fail", domain=host, scheme=scheme, err=str(exc))
                 continue
-            # B2: HEAD 차단(405/501 미지원, 403 WAF/안티봇)이면 GET 폴백 — 살아있는데 HEAD 만
-            # 막힌 사이트의 오탐(false-negative=리드손실)을 줄인다. GET 도 죽음/파킹이면 그대로 탈락.
-            if resp.status_code in (403, 405, 501):
-                if self._get_alive(url):
-                    return True
-                continue
             if resp.status_code < 400:
+                return True
+            # B2 일반화: HEAD 가 4xx/5xx 면 무조건 GET 1회로 재판정 — WAF 마다 HEAD 거절
+            # 코드가 제각각(400/403/405/406/501… 2026-08-25 공제회 3곳 실측)이라 상태코드
+            # 화이트리스트는 계속 구멍이 난다. 진짜 판정자는 GET+파킹 가드(_get_alive)이고
+            # HEAD 는 최적화일 뿐 — 죽은 사이트는 GET 도 4xx/파킹이라 그대로 탈락한다.
+            if self._get_alive(url):
                 return True
         return False
 
@@ -167,7 +178,9 @@ class HttpSiteProbe:
         import httpx
 
         try:
-            resp = httpx.get(url, timeout=self._timeout, follow_redirects=True)
+            resp = httpx.get(
+                url, timeout=self._timeout, follow_redirects=True, headers=_PROBE_HEADERS
+            )
         except Exception as exc:
             log.debug("existence.http.get_fail", url=url, err=str(exc))
             return False

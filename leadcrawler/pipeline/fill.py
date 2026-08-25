@@ -110,6 +110,7 @@ def _scoped(
     exclude_industries: Iterable[str] | None = None,
     exclude_listed: bool = False,
     only_listed: bool = False,
+    regions: Iterable[str] | None = None,
 ):
     """SQL 템플릿의 ``{scope}`` 슬롯에 대상 필터를 조합 주입한다 — (stmt, params) 반환.
 
@@ -121,6 +122,8 @@ def _scoped(
     ``exclude_listed`` 는 상장 확정(listed='listed')만 제외한다(unknown 은 대상 유지 —
     NPS 미스=비상장 경향이라 실질 비상장일 가능성이 높다),
     ``only_listed`` 는 상장 확정만 대상(상장사 세그먼트 타겟 보충 — exclude 와 배타 사용).
+    ``regions`` 는 ``discovered_company.region``(KR 시/도 등) 값 그대로 정확 일치(별칭
+    확장 없음 — 세그먼트 잡 트랙 S 전용, 2026-08-25). 비면 지역 필터 없음(기존 동작 유지).
     """
     if exclude_listed and only_listed:
         # 모순 조합은 SQL 이 항상 거짓(0건 조용한 no-op)이 되므로 즉시 거부한다.
@@ -152,6 +155,11 @@ def _scoped(
         clauses.append(f"and {_INDUSTRY_EXPR} not in :industry_excl")
         params["industry_excl"] = excl
         binds.append(bindparam("industry_excl", expanding=True))
+    regs = sorted({r.strip() for r in (regions or []) if r and r.strip()})
+    if regs:
+        clauses.append("and d.region in :region_scope")
+        params["region_scope"] = regs
+        binds.append(bindparam("region_scope", expanding=True))
     stmt = text(sql_tpl.format(scope="".join(f" {c}" for c in clauses)))
     if binds:
         stmt = stmt.bindparams(*binds)

@@ -245,6 +245,7 @@ def run_pipeline(
     seen: set[str] | None = None,
     settings: Settings | None = None,
     persist: bool = False,
+    record_only: bool = False,
     on_progress: ProgressCallback | None = None,
     should_cancel: Callable[[], bool] | None = None,
     target_saved: int | None = None,
@@ -254,6 +255,12 @@ def run_pipeline(
     ``persist=True`` 면 DB 세션을 열어 ① 발견 원장(discovered_company)에 모든 신규
     기업을 기록(죽은 기업도 — 제약 ① 재추출 방지)하고, ② 실존(active) 기업만 회사·
     연락처 테이블에 저장한다(제약 ②). 기존 ``seen`` 은 원장 key 와 합쳐 dedup 시드가 된다.
+
+    ``record_only=True`` 면 dedup·inline 도메인 해석까지는 그대로 하되 ②를 건너뛴다 —
+    신규 기업을 추출 큐(``pending``)에 넣지 않고 원장에만 기록한다(``_persist_touch``).
+    트랙 S(세그먼트 작업 큐, ``docs/segment-jobs-design.md`` §3)의 발견 단계 전용 — 승격
+    (추출)은 별도 ``pipeline/promote.py`` 가 원장을 다시 훑어 담당한다. ``persist=False``
+    와 조합하면(세션 없음) 아무것도 기록되지 않고 dedup 만 수행된다(호출자 계약 밖).
 
     ``on_progress`` 가 주어지면 발견/보강/저장·세그먼트 진행 카운터 dict 를 단계마다
     호출한다(웹 직접 크롤의 실시간 현황). ``should_cancel`` 이 매 기업 처리 직전 True 를
@@ -496,6 +503,13 @@ def run_pipeline(
                 # 도메인 없는(name: 티어) 신규 기업만 렉시컬 후보 대조(워크벤치 적재, 추출은 진행).
                 if lexical_matcher is not None and dc.canonical_key.startswith("name:"):
                     lexical_matcher.consider(session, dc.canonical_key, dc.name, dc.country or "")
+                if record_only:
+                    # 트랙 S 발견 단계: 원장에만 기록 — 추출(pending)은 promote 단계(별도
+                    # 원장 재조회)가 맡는다. _flush 는 pending 이 비어 있어 사실상 no-op.
+                    if session is not None:
+                        _persist_touch(session, dc)
+                    _emit()
+                    continue
                 pending.append(dc)  # 배치 적재 — _flush 에서 (병렬이면 풀로) 동시 처리.
                 if len(pending) >= batch_size:
                     _flush()
