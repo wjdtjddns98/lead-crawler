@@ -316,3 +316,16 @@ def test_search_mode_cap_early_return() -> None:
     )
     got = src.discover(_seg("증권·자산운용"))
     assert len(got) == 1
+
+
+def test_listed_mapping_from_lstg_dates() -> None:
+    # 상장일/폐지일 → 사실 상장여부(DART corp_cls 패턴). 이력 전무 = 스코프값 유지.
+    listed = {"fncoNm": "가상장증권", "crno": "1", "fncoXchgLstgDt": "76/06/24", "fncoXchgLstgAbolDt": ""}
+    delisted = {"fncoNm": "나폐지증권", "crno": "2", "fncoXchgLstgDt": "", "fncoXchgLstgAbolDt": "15/09/15"}
+    nohist = {"fncoNm": "다비상장증권", "crno": "3"}
+    spy = _SpyFetcher([_envelope([listed, delisted, nohist])])
+    got = FscSource(_live_settings(), fetcher=spy).discover(_seg("증권·자산운용"))
+    by = {c.name: c for c in got}
+    assert by["가상장증권"].listed == "listed" and by["가상장증권"].listed_verified
+    assert by["나폐지증권"].listed == "unlisted" and by["나폐지증권"].listed_verified
+    assert by["다비상장증권"].listed == "unknown" and not by["다비상장증권"].listed_verified
