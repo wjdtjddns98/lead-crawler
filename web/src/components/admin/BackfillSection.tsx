@@ -2,18 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { RefreshCw, Square } from "lucide-react";
 import { toast } from "sonner";
 import {
+  UNCLASSIFIED_INDUSTRY_OPTION,
   errStatus,
   fetchBackfillOverview,
   fetchBackfillStatus,
-  fetchCountries,
-  fetchIndustries,
   startBackfill,
   stopBackfill,
 } from "../../api";
 import type { BackfillJob, BackfillJobStatus, BackfillOverview, BackfillStatus } from "../../types";
 import { errMsg } from "../../format";
-import { toCountryOpts } from "../../filterOptions";
-import { MultiPicker, type PickerOption } from "../MultiPicker";
+import { useQueueFilterOpts } from "../../filterOptions";
+import { MultiPicker } from "../MultiPicker";
 import { ErrorBox } from "../ErrorBox";
 import { BTN, BTN_CONFIRM, BTN_REJECT } from "../../ui";
 import { SECTION_H2, FIELD, FIELD_INLINE, CRAWL_TARGET, fmt } from "./shared";
@@ -48,6 +47,68 @@ const STOP_REASON_LABEL: Record<string, string> = {
   cancelled_before_resume: "재개 전 취소 확인",
 };
 
+// 업종 조건 방향(#372) — BE 가 포함식(industries)·제외식(exclude_industries) 동시 지정을
+// 422 로 거부하므로, 값 하나에 모드를 붙여 **구조적으로 한쪽만** 전송한다.
+type IndustryMode = "include" | "exclude";
+
+// 모드별 문구 — 라벨·플레이스홀더·요약을 통째로 갈아끼워 의미 반전을 삼중 명시한다.
+// 같은 픽커·같은 어휘라 표기가 약하면 정반대 조건으로 대량 백필이 도는 사고가 난다.
+const INDUSTRY_MODE: Record<
+  IndustryMode,
+  {
+    seg: string;
+    label: string;
+    hint: string;
+    placeholder: string;
+    emptyHint: string;
+    summary: (picked: string[]) => string;
+  }
+> = {
+  include: {
+    seg: "선택 업종만",
+    label: "대상 업종",
+    hint: "(선택 안 함 = 전 업종)",
+    placeholder: "대상 업종 검색 (예: 반도체·디스플레이, 미분류)",
+    emptyHint: "전 업종 대상",
+    summary: (p) => `${p.join(", ")} 만 대상 — 나머지 업종 제외`,
+  },
+  exclude: {
+    seg: "선택 업종 제외",
+    label: "제외할 업종",
+    hint: "(선택 안 함 = 제외 없음)",
+    placeholder: "제외할 업종 검색 (예: 건설·엔지니어링)",
+    emptyHint: "제외 없음 — 전 업종 대상",
+    summary: (p) => `${p.join(", ")} 제외 — 나머지 전 업종 대상`,
+  },
+};
+
+// 폼 상태 → 전송 조건. 모드가 고르지 않은 쪽은 **항상 빈 문자열**이라 포함·제외 동시
+// 지정(422)이 구조적으로 불가능하다. overview·start 가 같은 함수를 써 미리보기와 실제
+// 실행 대상이 어긋나지 않게 한다.
+function backfillFilters(f: {
+  countries: string;
+  mode: IndustryMode;
+  industries: string;
+  excludeListed: boolean;
+}) {
+  const csv = f.industries.trim();
+  return {
+    countries: f.countries.trim(),
+    industries: f.mode === "include" ? csv : "",
+    exclude_industries: f.mode === "exclude" ? csv : "",
+    exclude_listed: f.excludeListed,
+  };
+}
+
+const MODE_SEG_BASE =
+  "py-0.5 px-2 rounded-md border text-xs cursor-pointer transition-colors " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " +
+  "focus-visible:ring-offset-2 focus-visible:ring-offset-canvas";
+const modeSegCls = (active: boolean): string =>
+  active
+    ? `${MODE_SEG_BASE} border-accent text-ink bg-accent/15`
+    : `${MODE_SEG_BASE} border-line text-muted bg-panel`;
+
 const jobs = (s: BackfillStatus): BackfillJob[] => [s.resolve, s.fill];
 
 // 액션 게이트 — 버튼 노출/잠금은 오직 이것으로 판단한다. 표시 상태와 분리하지 않으면
@@ -68,11 +129,11 @@ const n = (v: number): string => v.toLocaleString();
 // 잔여는 두 소스를 전환해 쓴다 — 대기 중엔 overview(대형 조인이라 폴링 금지), 진행 중엔
 // status.remaining(3초 폴링). 검증 큐만 진행 중에도 overview 값이라 수동 새로고침을 둔다.
 export function BackfillSection() {
-  const [countryOpts, setCountryOpts] = useState<PickerOption[]>([]);
-  const [industryOpts, setIndustryOpts] = useState<PickerOption[]>([]);
   const [countries, setCountries] = useState("");
-  // 제외식(크롤 섹션의 포함식 업종과 반대) — 빈값 = 제외 없음 = 전 업종 대상.
-  const [excludeIndustries, setExcludeIndustries] = useState("");
+  // 업종 값은 하나, 방향만 모드로 가른다(기본=제외식 — 기존 동작 유지). 빈값이면 어느
+  // 모드든 업종 조건 없음(전 업종 대상)이라 모드 전환이 무해하다.
+  const [industryMode, setIndustryMode] = useState<IndustryMode>("exclude");
+  const [industries, setIndustries] = useState("");
   const [excludeListed, setExcludeListed] = useState(false);
   const [status, setStatus] = useState<BackfillStatus | null>(null);
   const [overview, setOverview] = useState<BackfillOverview | null>(null);
@@ -84,16 +145,14 @@ export function BackfillSection() {
 
   const running = status ? isRunning(status) : false;
 
-  // 픽커 어휘 + 진행 중 백필 복원(새로고침 대비). 현황 조회가 실패해도 폼은 살린다.
+  // 백필 필터는 원장 행의 저장 어휘(구분 택소노미+미분류)와 일치해야 매치된다 —
+  // 크롤 타깃용 /admin/industries(코드 매핑되는 라벨만)가 아니라 /queue/filters 를
+  // 출처로 쓴다(추출·발송 섹션과 동일 사유). 국가 어휘는 양쪽이 같은 supported_countries().
+  const { countryOpts, industryOpts } = useQueueFilterOpts(setErr);
+
+  // 진행 중 백필 복원(새로고침 대비). 현황 조회가 실패해도 폼은 살린다.
   useEffect(() => {
     let alive = true;
-    Promise.all([fetchCountries(), fetchIndustries()])
-      .then(([countryList, industryList]) => {
-        if (!alive) return;
-        setCountryOpts(toCountryOpts(countryList));
-        setIndustryOpts(industryList);
-      })
-      .catch((e) => alive && setErr(errMsg(e)));
     fetchBackfillStatus()
       .then((s) => alive && setStatus(s))
       .catch(() => undefined);
@@ -107,11 +166,9 @@ export function BackfillSection() {
     let alive = true;
     const timer = setTimeout(() => {
       setOvLoading(true);
-      fetchBackfillOverview({
-        countries: countries.trim(),
-        exclude_industries: excludeIndustries.trim(),
-        exclude_listed: excludeListed,
-      })
+      fetchBackfillOverview(
+        backfillFilters({ countries, mode: industryMode, industries, excludeListed }),
+      )
         .then((o) => alive && setOverview(o))
         .catch((e) => alive && setErr(errMsg(e)))
         .finally(() => {
@@ -122,7 +179,7 @@ export function BackfillSection() {
       alive = false;
       clearTimeout(timer);
     };
-  }, [countries, excludeIndustries, excludeListed, ovKey]);
+  }, [countries, industryMode, industries, excludeListed, ovKey]);
 
   // 진행 중에만 3초 폴링(크롤 섹션과 동일 주기). 종료 상태가 되면 해제.
   useEffect(() => {
@@ -149,11 +206,9 @@ export function BackfillSection() {
     setErr(null);
     try {
       setStatus(
-        await startBackfill({
-          countries: countries.trim(),
-          exclude_industries: excludeIndustries.trim(),
-          exclude_listed: excludeListed,
-        }),
+        await startBackfill(
+          backfillFilters({ countries, mode: industryMode, industries, excludeListed }),
+        ),
       );
       toast.success("백필 시작");
     } catch (e2) {
@@ -204,10 +259,15 @@ export function BackfillSection() {
       .filter((j) => j.status === "running")
       .every((j) => j.cancel_requested);
 
-  const excluded = excludeIndustries
+  const picked = industries
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const mode = INDUSTRY_MODE[industryMode];
+  // 제외식의 '미분류'는 라벨이 문자열 '미분류'인 행만 빼고 **라벨 빈값 행은 남는다**
+  // (포함식만 빈값까지 대칭 매칭 — BE #372). 조용히 남으면 제외한 줄 알고 넘어간다.
+  const unclassifiedExcludeGap =
+    industryMode === "exclude" && picked.includes(UNCLASSIFIED_INDUSTRY_OPTION.value);
 
   return (
     <section>
@@ -239,22 +299,39 @@ export function BackfillSection() {
             emptyHint="전체 국가"
           />
         </div>
-        {/* 제외식 — 크롤 실행의 업종(포함식)과 의미가 반대라 라벨·힌트·요약으로 삼중 명시.
-            같은 픽커 모양이라 아무 표기 없이 두면 반대로 이해하는 사고가 난다. */}
+        {/* 업종 조건 — 포함식/제외식을 모드로 고른다(BE 는 동시 지정 422, #372). 같은 픽커
+            모양이라 라벨·플레이스홀더·요약을 모드에 따라 통째로 갈아끼워 삼중 명시한다. */}
         <div className={FIELD}>
-          <span>
-            제외할 업종 <span className="text-muted">(선택 안 함 = 제외 없음)</span>
-          </span>
+          <div className="flex items-center gap-2">
+            <span>
+              {mode.label} <span className="text-muted">{mode.hint}</span>
+            </span>
+            <span className="inline-flex gap-1" role="group" aria-label="업종 조건 방향">
+              {(Object.keys(INDUSTRY_MODE) as IndustryMode[]).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  className={modeSegCls(industryMode === m)}
+                  aria-pressed={industryMode === m}
+                  onClick={() => setIndustryMode(m)}
+                >
+                  {INDUSTRY_MODE[m].seg}
+                </button>
+              ))}
+            </span>
+          </div>
           <MultiPicker
             options={industryOpts}
-            value={excludeIndustries}
-            onChange={setExcludeIndustries}
-            placeholder="제외할 업종 검색 (예: 건설, construction)"
-            emptyHint="제외 없음 — 전 업종 대상"
+            value={industries}
+            onChange={setIndustries}
+            placeholder={mode.placeholder}
+            emptyHint={mode.emptyHint}
           />
-          {excluded.length > 0 && (
-            <span className="text-warn text-xs">
-              {excluded.join(", ")} 제외 — 나머지 전 업종 대상
+          {picked.length > 0 && <span className="text-warn text-xs">{mode.summary(picked)}</span>}
+          {unclassifiedExcludeGap && (
+            <span className="text-muted text-xs">
+              '{UNCLASSIFIED_INDUSTRY_OPTION.value}' 제외는 라벨이 비어 있는 회사까지 빼지는
+              않습니다
             </span>
           )}
         </div>
@@ -327,7 +404,7 @@ function RemainingPanel({
       label: "검증 큐 대기",
       value: overview?.queue_pending,
       live: false,
-      // BE 계약 — 큐 카운트는 포함식 업종 필터 체계라 제외식과 맞물리지 않아 국가만 반영한다.
+      // BE 계약 — 큐 카운트만 업종 조건(포함·제외 어느 쪽도)을 반영하지 않고 국가만 반영한다.
       hint: "국가 조건만 반영",
     },
   ];

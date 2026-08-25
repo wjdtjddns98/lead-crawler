@@ -368,15 +368,22 @@ export async function cancelCrawl(): Promise<CrawlJob> {
 
 // --- 백필 제어(#352, admin 전용) ---------------------------------------
 
-// 조건별 잔여 미리보기. 수십만 행 조인이라 **폴링 금지** — 마운트/조건 변경/수동
-// 새로고침에서만 호출한다(진행 중 잔여는 fetchBackfillStatus 의 remaining).
-export async function fetchBackfillOverview(f: {
+// 백필 대상 조건(#372) — 업종은 포함식(industries)·제외식(exclude_industries) 중 **하나만**
+// 채운다. 둘 다 채우면 BE 가 422 로 거부하므로(조용한 AND 방지), 호출부는 모드 하나를 골라
+// 반대쪽을 빈 문자열로 보낸다. 빈값 = 조건 없음(전 업종 대상).
+interface BackfillFilters {
   countries: string;
+  industries: string;
   exclude_industries: string;
   exclude_listed: boolean;
-}): Promise<BackfillOverview> {
+}
+
+// 조건별 잔여 미리보기. 수십만 행 조인이라 **폴링 금지** — 마운트/조건 변경/수동
+// 새로고침에서만 호출한다(진행 중 잔여는 fetchBackfillStatus 의 remaining).
+export async function fetchBackfillOverview(f: BackfillFilters): Promise<BackfillOverview> {
   const q = new URLSearchParams({
     countries: f.countries,
+    industries: f.industries,
     exclude_industries: f.exclude_industries,
     exclude_listed: String(f.exclude_listed),
   });
@@ -384,11 +391,7 @@ export async function fetchBackfillOverview(f: {
 }
 
 // 백필 시작(딸깍) — 조건 하나로 두 트랙을 함께 가동한다. 이미 활성이면 409.
-export async function startBackfill(f: {
-  countries: string;
-  exclude_industries: string;
-  exclude_listed: boolean;
-}): Promise<BackfillStatus> {
+export async function startBackfill(f: BackfillFilters): Promise<BackfillStatus> {
   return apiSend("POST", "/admin/backfill/start", f);
 }
 

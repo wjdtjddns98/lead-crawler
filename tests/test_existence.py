@@ -547,3 +547,45 @@ def test_dns_resolves_falls_back_to_www(monkeypatch) -> None:
 
     monkeypatch.setattr(dns.resolver, "resolve", fake_resolve)
     assert DnsProbe().resolves("acme.co.kr") is True
+
+
+def test_site_probe_head_400_falls_back_to_get(monkeypatch) -> None:
+    # 일부 WAF 는 HEAD 를 400 으로 거절한다(2026-08-25 실측) — GET 폴백으로 생존 판정.
+    import httpx
+
+    from leadcrawler.verify.existence import HttpSiteProbe
+
+    calls: list[str] = []
+
+    def fake_head(url, **kw):
+        calls.append(f"HEAD {url}")
+        return httpx.Response(400, request=httpx.Request("HEAD", url))
+
+    def fake_get(url, **kw):
+        calls.append(f"GET {url}")
+        return httpx.Response(
+            200, request=httpx.Request("GET", url),
+            text="<html><body>공제회 공식 홈페이지 안내와 사업 소개</body></html>",
+        )
+
+    monkeypatch.setattr(httpx, "head", fake_head)
+    monkeypatch.setattr(httpx, "get", fake_get)
+    assert HttpSiteProbe().head_ok("pmaa.or.kr") is True
+    assert any(c.startswith("GET ") for c in calls)
+
+
+def test_site_probe_sends_browser_ua(monkeypatch) -> None:
+    # 기본 httpx UA 는 WAF 타르핏 오탐 원인 — 프로브는 브라우저형 UA 를 보낸다.
+    import httpx
+
+    from leadcrawler.verify.existence import HttpSiteProbe
+
+    seen: dict = {}
+
+    def fake_head(url, **kw):
+        seen["headers"] = kw.get("headers") or {}
+        return httpx.Response(200, request=httpx.Request("HEAD", url))
+
+    monkeypatch.setattr(httpx, "head", fake_head)
+    assert HttpSiteProbe().head_ok("example.co.kr") is True
+    assert "Mozilla" in seen["headers"].get("User-Agent", "")
