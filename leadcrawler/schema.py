@@ -456,11 +456,18 @@ class BackfillJobRow(Base):
         String(1024), default="", server_default=text("''")
     )  # 쉼표구분 CSV(crawl_target 관례)
     exclude_listed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # 트랙 S(세그먼트 승격 큐) 전용 필터 스냅샷 — 'unknown'=상장여부 무필터(기존 API 의미).
+    listed: Mapped[str] = mapped_column(
+        String(16), default="unknown", server_default=text("'unknown'")
+    )
+    regions: Mapped[str] = mapped_column(String(512), default="", server_default=text("''"))
     # 실행 스냅샷.
     batch: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     workers: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     max_batches: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     min_queue: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # 대기열 정렬 우선순위(트랙 S 전용, 낮을수록 먼저) — set_segment_priority 가 갱신.
+    priority: Mapped[int] = mapped_column(Integer, default=100, server_default=text("100"))
     # 진행 카운터(자식 자기보고 누계) — record_progress 가 원자 증가시킨다.
     initial_target: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     remaining: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
@@ -469,6 +476,11 @@ class BackfillJobRow(Base):
     promoted: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     emails: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     batches_done: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # 트랙 S 발견→승격 2단계 진행(record_progress 전용 — 세대 펜싱과 함께 반영).
+    stage: Mapped[str] = mapped_column(String(16), default="", server_default=text("''"))
+    discovered: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    promote_cursor: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    failed_items: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     # 세대(프로세스 재기동) 관리 — generation 은 진행 갱신의 펜싱 키.
     generation: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     recycles: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))

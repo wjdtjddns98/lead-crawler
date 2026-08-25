@@ -20,7 +20,7 @@ from ..logging import get_logger
 log = get_logger("storage.track_lock")
 
 # 트랙별 고정 키(64bit 정수 공간에서 임의 고정값 — 프로젝트 내 다른 advisory lock 없음).
-_TRACK_LOCK_KEYS = {"A": 852_001, "C": 852_003}
+_TRACK_LOCK_KEYS = {"A": 852_001, "C": 852_003, "S": 852_005}
 
 
 class TrackLock:
