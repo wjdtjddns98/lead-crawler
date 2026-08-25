@@ -79,6 +79,27 @@ _FIN_LABELS = frozenset(rule_label for _, rule_label in _NAME_LABEL_RULES)
 _BAS_DT_LOOKBACK = 14
 
 
+# 상장일/폐지일 필드쌍(유가·코스닥·KRX). 상장일 있고 폐지일 없는 시장이 하나라도 있으면
+# 현재 상장. 이력(상장일이든 폐지일이든)이 있는데 현재 상장 시장이 없으면 상장폐지=unlisted.
+_LSTG_PAIRS = (
+    ("fncoXchgLstgDt", "fncoXchgLstgAbolDt"),
+    ("fncoKosdaqLstgDt", "fncoKosdaqLstgAbolDt"),
+    ("fncoKrxLstgDt", "fncoKrxLstgAbolDt"),
+)
+
+
+def _listed_status(rec: dict) -> str | None:
+    """응답 레코드의 상장 이력으로 listed/unlisted 를 판정한다(이력 전무 = None)."""
+    seen = False
+    for on_key, off_key in _LSTG_PAIRS:
+        on, off = opt_str(rec.get(on_key)), opt_str(rec.get(off_key))
+        if on and not off:
+            return "listed"
+        if on or off:
+            seen = True
+    return "unlisted" if seen else None
+
+
 def _search_terms(label: str) -> list[str]:
     """라벨의 규칙 정규식 alternation 리터럴을 서버 검색어(fncoNm)로 재사용한다."""
     return [t for pat, lab in _NAME_LABEL_RULES if lab == label for t in pat.pattern.split("|")]
@@ -356,9 +377,15 @@ class FscSource:
         raw_url = opt_str(rec.get("fncoHmpgUrl"))
         domain = normalize_domain(raw_url) if raw_url else None
         crno = opt_str(rec.get("crno"))
+        # 상장여부 — 응답의 상장일/폐지일로 사실 판정(DART corp_cls 패턴). 이력 자체가
+        # 없으면 세그먼트 스코프값 유지(비상장 단정 금지 — 스코프값 오염 실사고 계열).
+        status = _listed_status(rec)
+        seg = segment
+        if status is not None:
+            seg = Segment(country=segment.country, industry=segment.industry, listed=status)
         return build_company(
             source=self.name,
-            segment=segment,
+            segment=seg,
             name=name,
             domain=domain,
             registry="fsc" if crno else None,
@@ -366,4 +393,6 @@ class FscSource:
             industry_code_label=label,
             address=opt_str(rec.get("fncoAdr")),
             phone=opt_str(rec.get("fncoTelno") or rec.get("fncoTlno")),
+            ticker=opt_str(rec.get("isinCd")),
+            listed_verified=status is not None,
         )
