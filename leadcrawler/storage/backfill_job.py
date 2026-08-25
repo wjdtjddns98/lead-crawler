@@ -216,6 +216,7 @@ def record_progress(
     cursor: str | None = None,
     discovered: int = 0,
     failed_items: int = 0,
+    initial_target: int | None = None,
 ) -> bool:
     """자식(--job-id)의 배치 완료 자기보고 — SQL 원자 증가 + generation 펜싱.
 
@@ -242,6 +243,10 @@ def record_progress(
     }
     if remaining is not None:
         values["remaining"] = remaining
+    if initial_target is not None:
+        # 트랙 S: 적재 시점엔 발견 전이라 대상 수를 모른다 — discover→promote 전이 보고가 확정
+        # (진행률 분모, 설계 §5). A/C 는 create 시점에 세팅하므로 넘기지 않는다.
+        values["initial_target"] = initial_target
     if stage is not None:
         values["stage"] = stage
     if cursor is not None:
@@ -367,6 +372,9 @@ def enqueue_segment_job(
     if max_batches < 1:
         # create_backfill_job 과 동일 — 세대 리셋 없는 무한 자식은 2026-08-03 메모리 폭주 재현.
         raise ValueError("max_batches 는 1 이상이어야 한다(프로세스 리셋 필수)")
+    if not countries.strip() or not industries.strip():
+        # 빈 필터는 _scoped 가 "무필터"로 흡수해 전 우주 승격이 돈다(리뷰 MED) — 적재부터 거부.
+        raise ValueError("countries 와 industries 는 비어 있을 수 없다")
     row = BackfillJobRow(
         id=_new_id(),
         track=TRACK_S,

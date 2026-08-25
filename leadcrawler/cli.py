@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 import typer
@@ -161,7 +162,6 @@ class _ManagedJob:
 
     def wait(self, seconds: float) -> bool:
         """대기 — 관리형이면 5초 청크로 취소를 살피고, 취소 시 True(조기 반환)."""
-        import time
 
         if self._job_id is None:
             time.sleep(seconds)
@@ -174,6 +174,32 @@ class _ManagedJob:
             if left <= 0:
                 return False
             time.sleep(min(5.0, left))
+
+
+def _throttled(should_stop, *, sec: float = 5.0):  # noqa: ANN001, ANN202
+    """짧은 세션을 여는 폴 함수(예: ``_ManagedJob.should_stop``)를 스로틀한다.
+
+    ``background._make_cancel_poller`` 와 동일 관례 — 기업/세그먼트 단위로 매번 DB 를
+    왕복하면 그 자체가 병목이 된다. ``sec`` 마다 1회만 조회하고 사이엔 마지막 값을 반환.
+    첫 호출은 즉시 조회(시작 전 취소·pause 즉시 반영). 한 번 True 면 계속 True(래치).
+    """
+    last = float("-inf")
+    latched = False
+
+    def _poll() -> bool:
+        nonlocal last, latched
+        if latched:
+            return True
+        now = time.monotonic()
+        if now - last < sec:
+            return False
+        last = now
+        if should_stop():
+            latched = True
+            return True
+        return False
+
+    return _poll
 
 
 def _acquire_track_lock_or_exit(settings, track: str, label: str):  # noqa: ANN001, ANN202
@@ -462,6 +488,170 @@ def backfill_resolve_domains(
             if mj.wait(interval):
                 typer.echo("[resolve] 중지 신호 감지(취소/세대 교체/종료) — 정상종료.")
                 return
+
+
+@app.command("segment-run")
+def segment_run(
+    job_id: str = typer.Option(..., "--job-id", help="트랙 S 작업 행 id(필수 — 관리형 전용)"),
+    job_generation: int = typer.Option(
+        ..., "--job-generation", help="이 프로세스의 세대(진행 보고 펜싱 키, 필수)"
+    ),
+    batch: int = typer.Option(100, help="promote 배치당 최대 회사 수"),
+    workers: int = typer.Option(3, help="promote 단계 병렬"),
+    max_batches: int = typer.Option(
+        20, min=1, help="promote 배치 이 수만큼 처리 후 정상종료(세대교체용 메모리 리셋)"
+    ),
+    stall_exit_secs: float = typer.Option(
+        900.0, "--stall-exit-secs", min=0,
+        help="발견/승격 진행이 이 초 동안 정체되면 프로세스 종료(재기동용, 0=끔)",
+    ),
+) -> None:
+    """트랙 S(세그먼트 승격 큐) 자식 — 발견(record_only)→승격(promote) 을 순차 처리한다.
+
+    필터(countries/industries/listed/regions)는 CLI 인자가 아니라 ``backfill_job`` 행에서
+    로드한다(웹 요청 그대로 재현 — supervisor 가 만든 요청과 자식 인자가 어긋나지 않게).
+    **DRY_RUN 게이트는 적용하지 않는다**(다른 관리형 CLI 와 차이) — ``run_pipeline``·
+    ``_build_lead``·``promote_batch`` 는 dry_run 에서도 네트워크 없이 결정적 더미로
+    동작해, 테스트가 review_queue 적재까지 실제로 검증할 수 있다(설계 §3).
+    """
+    from .pipeline.promote import (
+        PromoteRun,
+        _load_domain_guards,
+        count_promote_targets,
+        promote_batch,
+    )
+    from .storage.backfill_job import RUNNING, TRACK_S, get_backfill_job
+    from .storage.db import get_sessionmaker
+
+    configure_logging()
+    settings = get_settings()
+    sm = get_sessionmaker(settings)
+    mj = _ManagedJob(sm, job_id, job_generation)
+    # 트랙 실행 잠금 — 다른 S 자식·수동 스크립트 중복 실행 차단(과금 이중화 방지).
+    _lock = _acquire_track_lock_or_exit(settings, "S", "segment-run")
+
+    with sm() as s:
+        row = get_backfill_job(s, job_id)
+    if (
+        row is None
+        or row.track != TRACK_S
+        or row.status != RUNNING
+        or row.generation != job_generation
+    ):
+        state = "없음" if row is None else f"{row.track}/{row.status}/gen={row.generation}"
+        typer.echo(f"[segment-run] job 검증 실패({state}) — 중단.")
+        raise typer.Exit(1)
+
+    ctys = [c.strip() for c in row.countries.split(",") if c.strip()] or None
+    inds = [i.strip() for i in row.industries.split(",") if i.strip()]
+    if not ctys or not inds:
+        # 빈 필터는 _scoped 가 무필터로 흡수 → 전 우주 승격(리뷰 MED). enqueue 가드의 2중 방어.
+        typer.echo("[segment-run] countries/industries 가 비어 있음 — 중단.")
+        raise typer.Exit(1)
+    regs = parse_regions(row.regions)
+    listed = row.listed
+    stall_s = stall_exit_secs if stall_exit_secs > 0 else None
+    should_stop = _throttled(mj.should_stop)
+
+    def _rejected() -> None:
+        typer.echo("[segment-run] 진행 보고 거부(세대 교체/일시정지) — 종료.")
+
+    if row.stage in ("", "discover"):
+        # 유료 발견 전에 세대 펜싱을 먼저 확인하고 stage='discover' 를 기록(''=미시작과 구분).
+        if not mj.report(stage="discover"):
+            _rejected()
+            return
+        segments = generate_segments(inds, countries=ctys, listed=[listed], regions=regs)
+        seg_discovered = 0
+        reported = 0
+        rejected = False
+        last_report_t = time.monotonic()
+
+        def _on_progress(counts: dict[str, int]) -> None:
+            nonlocal seg_discovered, reported, last_report_t, rejected
+            seg_discovered = counts["discovered"]
+            now = time.monotonic()
+            if now - last_report_t < 5.0:
+                return
+            last_report_t = now
+            delta = seg_discovered - reported
+            if delta:
+                # 거부(세대 교체/일시정지)면 로컬 누계를 전진시키지 않고 발견을 멈춘다.
+                if mj.report(discovered=delta):
+                    reported = seg_discovered
+                else:
+                    rejected = True
+
+        # ponytail: 발견 단계는 정체 워치독을 걸지 않는다 — discover_segment 가 세그먼트 단위
+        # 블로킹이라 beat 가 세그먼트 완료 후에만 오고, 등록처 레이트리밋 세그먼트는 정상이어도
+        # 수백~수천 초라 stall-exit 이 정상 실행을 죽인다(리뷰 HIGH). 발견 정체는 supervisor 가
+        # progress_at 로 감시한다(PR4). 워치독은 promote 배치(회사 단위 beat)에만 적용.
+        run_pipeline(
+            segments, settings=settings, persist=True, record_only=True,
+            on_progress=_on_progress, should_cancel=lambda: rejected or should_stop(),
+        )
+        if rejected or mj.should_stop():  # 협조 중단된 발견을 promote 로 고착시키지 않는다.
+            typer.echo("[segment-run] 발견 중 중지 신호 — promote 전이 없이 종료.")
+            return
+        tail = seg_discovered - reported
+        if tail and not mj.report(discovered=tail):
+            _rejected()
+            return
+        remaining = count_promote_targets(
+            sm, ctys, industries=inds, listed=listed, regions=regs
+        )
+        # initial_target 은 이 전이에서 확정(진행률 분모 — 적재 시점엔 알 수 없다).
+        if not mj.report(stage="promote", remaining=remaining, initial_target=remaining):
+            _rejected()
+            return
+        typer.echo(
+            f"[segment-run] 발견 완료(신규 {seg_discovered}) — promote 진입(대상 {remaining})"
+        )
+    else:
+        remaining = count_promote_targets(
+            sm, ctys, industries=inds, listed=listed, regions=regs
+        )
+
+    run = PromoteRun.open(settings)
+    try:
+        with sm() as s:
+            guards = _load_domain_guards(s)
+        after = row.promote_cursor or ""  # 커서를 쓰는 프로세스는 자기 자신뿐 — 재조회 불요.
+        batches_done = 0
+        while True:
+            if should_stop():
+                typer.echo("[segment-run] 중지 신호 감지(취소/세대 교체/일시정지) — 정상종료.")
+                return
+            rows, last_key, promoted, emails, failed = promote_batch(
+                settings, sm, run=run, after=after, limit=batch, workers=workers,
+                guards=guards, countries=ctys, industries=inds, listed=listed,
+                regions=regs, stall_exit_s=stall_s,
+            )
+            if rows == 0:
+                if not mj.report(stage="done", remaining=0):
+                    _rejected()
+                    return
+                typer.echo("[segment-run] 승격 대상 소진 — 작업 완료.")
+                return
+            after = last_key
+            # ponytail: remaining 은 로컬 감산 근사(배치당 원장 전체 COUNT 회피 — 표시 전용이라
+            # fill 의 min_queue 게이팅 같은 정밀 수요 없음). 세대 교체 시 재count 로 보정된다.
+            remaining = max(0, remaining - rows)
+            if not mj.report(
+                processed=rows, promoted=promoted, emails=emails, failed_items=failed,
+                batches=1, cursor=after, remaining=remaining,
+            ):
+                _rejected()
+                return
+            typer.echo(
+                f"[segment-run] 배치 처리 {rows}, 승격 {promoted}, 이메일 {emails}, 실패 {failed}"
+            )
+            batches_done += 1
+            if batches_done >= max_batches:
+                typer.echo(f"[segment-run] max_batches={max_batches} 도달 — 정상종료(세대교체).")
+                return
+    finally:
+        run.close()
 
 
 @app.command("nps-import")
