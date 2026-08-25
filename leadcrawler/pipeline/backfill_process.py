@@ -33,6 +33,7 @@ from ..logging import get_logger
 from ..storage.backfill_job import (
     BUDGET_EXHAUSTED,
     CANCELLED,
+    DONE,
     FAILED,
     TERMINAL,
     backfill_job_dict,
@@ -46,10 +47,12 @@ from .winjob import create_job_for
 
 log = get_logger("pipeline.backfill_process")
 
-_TRACK_CMD = {"A": "fill-emails", "C": "backfill-resolve-domains"}
+_TRACK_CMD = {"A": "fill-emails", "C": "backfill-resolve-domains", "S": "segment-run"}
+_S_STALL_EXIT_S = 900.0  # 트랙 S 자식의 --stall-exit-secs(정체 자기종료) 기본값.
 _TRACK_DEFAULTS = {  # (batch, workers, interval) — 현행 운영값(cli 기본과 bat 러너 절충).
     "A": (200, 2, 30.0),
     "C": (200, 2, 60.0),
+    # S: batch/workers/max_batches 는 job 행(enqueue_segment_job 기본값)에서 오므로 여기선
 }
 _CRASH_LIMIT = 3  # 연속 비정상종료 회로차단(테스트가 monkeypatch).
 _CRASH_BACKOFF = 30.0  # 크래시 재기동 백오프 초.
@@ -58,7 +61,7 @@ _CANCEL_POLL = 2.0  # 자식 생존 감시 주기(취소 감지 지연 상한).
 # 트랙별 감독 스레드 단일화 가드 — DB active_track 유니크가 정본이고, 이건 같은
 # 프로세스 안의 이중 스레드 방지(crawl background._guard 선례).
 _guard = threading.Lock()
-_running: dict[str, bool] = {"A": False, "C": False}
+_running: dict[str, bool] = {"A": False, "C": False, "S": False}
 
 
 class BackfillProcessError(Exception):
@@ -140,6 +143,18 @@ def _budget_exhausted(settings: Settings, sm) -> bool:  # noqa: ANN001
 def _child_argv(job: dict, generation: int) -> list[str]:
     """DB 스냅샷에서만 argv 를 재구성한다(최신 UI 입력·설정으로 바꾸지 않음 — 설계 계약)."""
     track = str(job["track"])
+    if track == "S":
+        # 필터(countries/industries/listed/regions)는 자식이 job 행에서 직접 로드한다
+        # (설계 §3) — argv 에는 실행 파라미터만 싣는다.
+        return [
+            sys.executable, "-m", "leadcrawler.cli", _TRACK_CMD[track],
+            "--job-id", str(job["id"]),
+            "--job-generation", str(generation),
+            "--batch", str(job["batch"]),
+            "--workers", str(job["workers"]),
+            "--max-batches", str(job["max_batches"]),
+            "--stall-exit-secs", str(_S_STALL_EXIT_S),
+        ]
     argv = [
         sys.executable, "-m", "leadcrawler.cli", _TRACK_CMD[track], "--loop",
         "--max-batches", str(job["max_batches"]),
@@ -183,7 +198,7 @@ def _supervise(settings: Settings, job: dict, *, launcher, start_generation: int
         log_path = _repo_root() / "logs" / f"backfill-web-{track}.log"
         while True:
             if _cancel_requested(sm, job_id):
-                _finish(sm, job_id, CANCELLED, stop_reason="operator")
+                _finish_cancel(sm, track, job_id)
                 return
             if _budget_exhausted(settings, sm):
                 _finish(sm, job_id, BUDGET_EXHAUSTED, stop_reason="monthly_budget")
@@ -199,6 +214,11 @@ def _supervise(settings: Settings, job: dict, *, launcher, start_generation: int
             log.info("backfill.spawn", track=track, job=job_id, gen=generation, pid=proc.pid)
 
             # 자식 감시 — 취소가 오면 Job 트리를 즉시 종료(협조 폴링은 보조).
+            # ponytail: 트랙 S 발견 단계의 progress_at 정체 감시는 두지 않는다 — 발견은 세그먼트
+            # 단위 블로킹이라 신규 0건 구간이 정상적으로 1시간을 넘을 수 있고(설계 §7 "발견
+            # 단계 코드 제한 없음"), 재시작 직후 오래된 progress_at 으로 즉시 오탐·상한 없는
+            # kill 루프가 실증됐다(리뷰 HIGH). 승격 단계는 자식 자체 워치독(rc 86)이 크래시
+            # 회로차단을 탄다. 취소/pause 는 발견 중에도 세그먼트 경계에서 협조 중단된다.
             cancelled = False
             while proc.poll() is None:
                 if _cancel_requested(sm, job_id):
@@ -207,13 +227,19 @@ def _supervise(settings: Settings, job: dict, *, launcher, start_generation: int
                     break
                 time.sleep(_CANCEL_POLL)
             if cancelled:
-                _finish(sm, job_id, CANCELLED, stop_reason="operator")
+                _finish_cancel(sm, track, job_id)
                 return
             rc = proc.wait()
             proc.release()
             proc = None  # 이 세대는 종료·정리 완료 — 예외 핸들러의 이중 정리 방지.
 
             if rc == 0:  # max_batches 정상종료 — 세대 교체(메모리 리셋) 후 즉시 재기동.
+                if track == "S":
+                    with sm() as s:
+                        row_now = get_backfill_job(s, job_id)
+                    if row_now is not None and row_now.stage == "done":
+                        _finish(sm, job_id, DONE)
+                        return
                 crash = 0
                 generation += 1
                 with sm() as s:
@@ -232,7 +258,7 @@ def _supervise(settings: Settings, job: dict, *, launcher, start_generation: int
             if crash >= _CRASH_LIMIT:
                 if _cancel_requested(sm, job_id):
                     # 마지막 크래시와 취소가 겹치면 사용자 의도(취소)로 기록한다.
-                    _finish(sm, job_id, CANCELLED, stop_reason="operator")
+                    _finish_cancel(sm, track, job_id)
                     return
                 _finish(
                     sm, job_id, FAILED,
@@ -266,12 +292,36 @@ def _supervise(settings: Settings, job: dict, *, launcher, start_generation: int
     finally:
         with _guard:
             _running[track] = False
+        if track == "S":
+            # 이 잡의 슬롯이 막 비었다 — 대기열 다음 건을 바로 이어 돌린다(설계 §3).
+            try:
+                dispatch_next_segment_job(settings, launcher=launcher)
+            except Exception:
+                log.info("backfill.dispatch.error", track=track)
 
 
 def _finish(sm, job_id: str, status: str, *, stop_reason=None, error=None) -> None:  # noqa: ANN001
     with sm() as s:
         finish_backfill_job(s, job_id, status, stop_reason=stop_reason, error=error)
         s.commit()
+
+
+def _finish_cancel(sm, track: str, job_id: str) -> None:  # noqa: ANN001
+    """취소 종료 판정 — 트랙 S 이고 pause 요청(``stop_reason='pause'``)이면 paused 로 닫고,
+    아니면 기존 CANCELLED 로 닫는다(설계 §3 취소 분기)."""
+    if track == "S":
+        from ..storage.backfill_job import pause_backfill_job
+
+        with sm() as s:
+            row = get_backfill_job(s, job_id)
+            if row is not None and row.stop_reason == "pause":
+                paused = pause_backfill_job(s, job_id)
+                s.commit()
+                if paused is not None:
+                    return
+                # 전이 실패(이미 종료 등)면 아래 CANCELLED 로 폴백 — running+active_track 점유
+                # 상태로 남아 대기열이 멈추는 무증상 데드락 방지(리뷰 MED).
+    _finish(sm, job_id, CANCELLED, stop_reason="operator")
 
 
 def start_backfill(
@@ -366,7 +416,12 @@ def resume_active_jobs(settings: Settings, *, launcher=None) -> int:  # noqa: AN
         job_id = str(job["id"])
         track = str(job["track"])
         if job["cancel_requested"]:
-            _finish(sm, job_id, CANCELLED, stop_reason="cancelled_before_resume")
+            # 트랙 S pause 요청(stop_reason='pause') 중 재시작이면 paused 로 복구 — CANCELLED 로
+            # 닫으면 requeue 대상이 아니라 커서째 영구 종료된다(리뷰 HIGH). 그 외는 기존대로.
+            if track == "S":
+                _finish_cancel(sm, track, job_id)
+            else:
+                _finish(sm, job_id, CANCELLED, stop_reason="cancelled_before_resume")
             continue
         with _guard:
             if _running.get(track):
@@ -381,6 +436,11 @@ def resume_active_jobs(settings: Settings, *, launcher=None) -> int:  # noqa: AN
         _spawn_supervisor(settings, job, launcher=launcher, start_generation=next_gen)
         resumed += 1
         log.info("backfill.resume", track=track, job=job_id, gen=next_gen)
+    # 트랙 S: running 재개가 없었던 경우(대기열만 남음)도 서버 재시작 후 자동 재개(설계 §3).
+    try:
+        dispatch_next_segment_job(settings, launcher=launcher)
+    except Exception:  # A/C 재개 결과(resumed·로그)를 S 디스패치 실패가 삼키지 않게.
+        log.info("backfill.dispatch.error", track="S")
     return resumed
 
 
@@ -413,6 +473,7 @@ def _reset_running_guard_for_tests() -> None:
     with _guard:
         _running["A"] = False
         _running["C"] = False
+        _running["S"] = False
 
 
 def get_backfill_job_dict(settings: Settings, job_id: str) -> dict[str, object] | None:
@@ -421,3 +482,88 @@ def get_backfill_job_dict(settings: Settings, job_id: str) -> dict[str, object] 
     with sm() as s:
         row = get_backfill_job(s, job_id)
         return backfill_job_dict(row) if row else None
+
+
+def dispatch_next_segment_job(settings: Settings, *, launcher=None) -> str | None:  # noqa: ANN001
+    """대기열의 다음 세그먼트 작업을 자동 시작한다(공개 — PR5·``_supervise`` finally·
+    ``resume_active_jobs`` 말미가 호출). 예산 소진·활성 S 자식 존재·대기열 공백이면 None
+    (대기 유지) — 활성 S 자식이 있으면 절대 두 번째를 띄우지 않는다.
+
+    경쟁은 ``activate_segment_job`` 의 ``active_track`` UNIQUE(짧은 단독 트랜잭션) + 프로세스
+    내 ``_running`` 가드가 이중 방어한다(설계 §3).
+    """
+    from ..storage.backfill_job import BackfillBusy, activate_segment_job, next_queued_segment_job
+
+    sm = get_sessionmaker(settings)
+    if _budget_exhausted(settings, sm):
+        return None
+    with _guard:
+        if _running.get("S"):
+            return None
+        _running["S"] = True
+    job: dict[str, object] | None = None
+    try:
+        # 후보가 SELECT→UPDATE 사이에 pause/cancel 로 무효화(rowcount 0)되면 다음 후보로 재시도
+        # (상한 3 — 리뷰 MED). BackfillBusy(다른 S 활성)는 정상 케이스라 즉시 포기.
+        for _attempt in range(3):
+            with sm() as s:
+                candidate = next_queued_segment_job(s)
+                if candidate is None:
+                    break
+                try:
+                    row = activate_segment_job(s, candidate.id)
+                except BackfillBusy:
+                    break
+                if row is not None:
+                    s.commit()
+                    job = backfill_job_dict(row)
+                    break
+    except BaseException:
+        with _guard:
+            _running["S"] = False
+        raise
+    if job is None:
+        with _guard:
+            _running["S"] = False
+        return None
+    _spawn_supervisor(settings, job, launcher=launcher, start_generation=int(job["generation"]))
+    return str(job["id"])
+
+
+def request_pause_segment_job(settings: Settings, job_id: str) -> dict[str, object] | None:
+    """세그먼트 작업 일시정지 요청(PR5 API 가 호출) — 즉시 반영 또는 협조 중단 신호.
+
+    running: ``stop_reason='pause'`` 를 먼저 기록한 뒤 ``request_cancel``(cancel_requested=True)
+    — 실제 paused 전이는 ``_supervise`` 의 취소 분기(자식 종료 확인 후, :func:`_finish_cancel`)
+    에서 일어난다(수초 지연, 자식 kill 은 기존 취소 감시 경로). queued: 자식이 없으므로
+    ``pause_backfill_job`` 으로 즉시 전이. 그 외 상태(이미 paused·종료건)는 현재 DTO 를
+    그대로 반환 — 409 판정은 PR5(API) 몫. 대상 없음(트랙 불일치 포함)이면 None.
+    """
+    from ..storage.backfill_job import QUEUED, RUNNING, TRACK_S, pause_backfill_job, request_cancel
+
+    sm = get_sessionmaker(settings)
+    with sm() as s:
+        row = get_backfill_job(s, job_id)
+        if row is None or row.track != TRACK_S:
+            return None
+        if row.status == QUEUED:
+            row = pause_backfill_job(s, job_id) or row
+            s.commit()
+            return backfill_job_dict(row)
+        if row.status == RUNNING:
+            # running 조건부 원자 UPDATE — 자식이 막 DONE 으로 닫은 행에 'pause' 잔존 방지(리뷰 LOW).
+            from sqlalchemy import update as _update
+
+            from ..schema import BackfillJobRow
+
+            s.execute(
+                _update(BackfillJobRow)
+                .where(BackfillJobRow.id == job_id, BackfillJobRow.status == RUNNING)
+                .values(stop_reason="pause")
+                .execution_options(synchronize_session=False)
+            )
+            row = request_cancel(s, job_id) or row
+            s.commit()
+            s.refresh(row)
+            return backfill_job_dict(row)
+        return backfill_job_dict(row)
