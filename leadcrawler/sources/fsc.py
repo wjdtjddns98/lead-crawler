@@ -153,7 +153,7 @@ class FscSource:
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         """실 발견 — 전수 페이징 + 커서 + (구체 업종이면) 사명 키워드 필터."""
-        key = (self._settings.fsc_service_key or self._settings.data_go_kr_service_key or "").strip()
+        key = self._settings.fsc_service_key.strip() or self._settings.data_go_kr_service_key.strip()
         if not key:  # 무키 → no-op(다른 유키 소스와 동일 관례).
             return []
         want: str | None = None  # None=broad(전 금융 레코드), str=이 라벨만.
