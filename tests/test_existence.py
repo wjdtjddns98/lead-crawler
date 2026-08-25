@@ -97,13 +97,23 @@ def test_home_html_output_matches_head_ok_path() -> None:
     )
 
 
-def test_parked_home_html_is_not_alive() -> None:
-    # M-1: enrich 가 GET 200 받았어도 본문이 파킹이면 실존 아님(제약② — head_ok GET폴백 동치).
-    site = _CountingSite(True)
+def test_parked_home_html_reprobed_dead_stays_dead() -> None:
+    # M-1: 본문이 파킹으로 보이면 프로브로 재확인 — 프로브도 죽음이면 그대로 reject(제약②).
+    site = _CountingSite(False)
     v = ExistenceVerifier(Settings(dry_run=False), site_probe=site, dns_probe=_Dns(True))
     r = v.verify("parked.com", home_html=_PARKED_HOME)
-    assert site.calls == 0  # 프로브는 여전히 생략(중복 왕복 0)
-    assert not r.is_active and not r.site_alive and r.confidence == 0.0  # 파킹 → reject
+    assert site.calls == 1  # 파킹 의심 → 프로브 재확인 1회(브라우저 UA GET+파킹 가드).
+    assert not r.is_active and not r.site_alive and r.confidence == 0.0
+
+
+def test_parked_looking_home_html_rescued_by_probe() -> None:
+    # 크롤러 UA 로 받은 WAF 챌린지 셸은 파킹과 동형 — 프로브(브라우저 UA)가 살아있다고
+    # 판정하면 생존(2026-08-25 공제회 실측 오탐 구제). 진짜 파킹은 프로브도 파킹이라 불변.
+    site = _CountingSite(True)
+    v = ExistenceVerifier(Settings(dry_run=False), site_probe=site, dns_probe=_Dns(True))
+    r = v.verify("waf-shell.co.kr", home_html=_PARKED_HOME)
+    assert site.calls == 1
+    assert r.is_active and r.site_alive
 
 
 def test_home_html_ignored_when_no_domain() -> None:
@@ -119,9 +129,11 @@ _BLANK_SPA_HOME = "<html><body><div id='root'></div></body></html>"
 
 
 def test_blank_spa_home_html_rejected_without_headless() -> None:
-    # verify_headless OFF(기본): 정적 JS-blank 는 최종 비생존(제약② 강화, 정적으로는 확인불가).
+    # verify_headless OFF(기본): 정적 JS-blank 는 프로브 재확인까지 죽음이면 최종 비생존.
     v = ExistenceVerifier(
-        Settings(dry_run=False, verify_headless=False), dns_probe=_Dns(True)
+        Settings(dry_run=False, verify_headless=False),
+        site_probe=_CountingSite(False),
+        dns_probe=_Dns(True),
     )
     r = v.verify("spa.com", home_html=_BLANK_SPA_HOME)
     assert not r.is_active and not r.site_alive

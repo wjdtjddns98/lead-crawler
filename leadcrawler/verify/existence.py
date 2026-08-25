@@ -272,6 +272,12 @@ class ExistenceVerifier:
             # 가 켜졌는데 정적 본문이 파킹/blank 로 보이면 정적 GET 으로는 모호한 bare SPA 일 수
             # 있으므로 단정하지 않고 아래 헤드리스 렌더 검사에 위임한다(정상 SPA recall 보호).
             static_alive = not looks_parked(home_html)
+            if not static_alive and not self.settings.verify_headless:
+                # enrich 본문이 파킹/blank 로 보여도 단정하지 않는다 — 크롤러 UA 로 받은
+                # WAF 챌린지 셸이 파킹과 동형이라 실존 기관이 떨어지는 오탐(2026-08-25
+                # 공제회 7곳 실측). 브라우저 UA 프로브(GET+파킹 가드)로 재확인 — 진짜
+                # 파킹은 프로브 GET 본문도 파킹이라 판정이 뒤집히지 않는다(왕복 +1).
+                static_alive = self._site().head_ok(domain)
             site_alive = (
                 True if (not static_alive and self.settings.verify_headless) else static_alive
             )
