@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
+from ..logging import get_logger
 from ..pipeline.background import CrawlBusy, CrawlTooLarge, trigger_crawl_job
 from ..schema import CrawlTargetRow, UserRow
 from ..security import (
@@ -24,8 +25,10 @@ from ..security import (
     delete_user_sessions,
     validate_role,
 )
-from ..sources.countries import korean_label, supported_countries
+from ..region import KR_REGIONS
+from ..sources.countries import korean_label, resolve_country, supported_countries
 from ..sources.industry import supported_industries
+from ..sources.taxonomy import UNCLASSIFIED, is_taxonomy_label
 from ..storage.audit import daily_review_stats, recent_audit, user_stats
 from ..storage.review import admin_reclaim
 from ..storage.crawl_job import (
@@ -51,8 +54,16 @@ from .schemas import (
     IndustryOption,
     ReviewDailyStats,
     RoleUpdateRequest,
+    SegmentJobCreateRequest,
+    SegmentJobInfo,
+    SegmentJobList,
+    SegmentJobPreview,
+    SegmentJobPriorityRequest,
     UserStatsItem,
 )
+
+
+log = get_logger("api.admin")
 
 
 def _lock_admin_rows(db: Session) -> None:
@@ -509,6 +520,278 @@ def register_admin(
         return BackfillStatusResponse(
             resolve=_track_info(settings, "C"), fill=_track_info(settings, "A")
         )
+
+    # ------------------------------------------------------------------
+    # 세그먼트 작업 큐(트랙 S, #398 PR⑤) — 관리자가 국가·업종·상장·지역을 지정하면
+    # 발견→승격까지 대기열로 순차 처리. 설계 docs/segment-jobs-design.md §5.
+    # ------------------------------------------------------------------
+
+    def _validate_segment_filters(
+        countries: str, industries: str, listed: str, regions: str
+    ) -> tuple[list[str], list[str], str]:
+        """세그먼트 잡 필터 검증(설계 §5) — 위반은 422.
+
+        국가는 :func:`resolve_country` 로 ISO2 정규화, 업종은 닫힌 택소노미 소속 검사,
+        regions 는 countries 에 KR 이 있을 때만 허용하고 각 값은 KR_REGIONS 또는 'all'.
+        ``(ctys, inds, regions_csv)`` 를 돌려준다 — regions_csv 는 원문 그대로(빈 값 허용)로,
+        세그먼트 생성/카운트 시엔 :func:`parse_regions` 로 펼쳐 쓴다(``segment-run`` 자식과
+        동일 관례 — 설계 §3).
+        """
+        from .app import _split_csv
+
+        ctys_raw = _split_csv(countries)
+        if not ctys_raw:
+            raise HTTPException(status_code=422, detail="countries 는 비어 있을 수 없습니다")
+        ctys: list[str] = []
+        for token in ctys_raw:
+            country = resolve_country(token)
+            if country is None:
+                raise HTTPException(status_code=422, detail=f"지원하지 않는 국가: {token}")
+            ctys.append(country.iso2)
+        # 중복·별칭 수렴 제거(순서 보존) — 'KR,kr,대한민국' 이 세그먼트를 N배로 만들어 유료
+        # 발견을 중복 소진하는 경로 차단(리뷰 HIGH).
+        ctys = list(dict.fromkeys(ctys))
+
+        inds = list(dict.fromkeys(_split_csv(industries)))
+        if not inds:
+            raise HTTPException(status_code=422, detail="industries 는 비어 있을 수 없습니다")
+        for label in inds:
+            # '미분류' 는 저장값으로만 의미 — 발견 키워드로는 헛쿼리이고 광역(broad) 취급이라
+            # GLEIF/Wikidata/거래소 전-업종 스캔을 세그먼트 1개로 켠다(상한 우회, 리뷰 HIGH).
+            if label == UNCLASSIFIED or not is_taxonomy_label(label):
+                raise HTTPException(status_code=422, detail=f"택소노미 밖 업종: {label}")
+
+        if listed not in ("unknown", "listed", "unlisted"):
+            raise HTTPException(
+                status_code=422, detail="listed 는 unknown/listed/unlisted 중 하나"
+            )
+
+        regs_raw = list(dict.fromkeys(_split_csv(regions)))
+        if regs_raw:
+            if "KR" not in ctys:
+                raise HTTPException(
+                    status_code=422,
+                    detail="regions 는 countries 에 KR 포함 시에만 지정 가능합니다",
+                )
+            for r in regs_raw:
+                if r.lower() != "all" and r not in KR_REGIONS:
+                    raise HTTPException(status_code=422, detail=f"지원하지 않는 지역: {r}")
+
+        return ctys, inds, ",".join(regs_raw)
+
+    def _segment_job_info(session: Session, row) -> SegmentJobInfo:  # noqa: ANN001
+        from ..storage.backfill_job import QUEUED, backfill_job_dict, queue_position
+
+        qpos = queue_position(session, row.id) if row.status == QUEUED else None
+        return SegmentJobInfo(**backfill_job_dict(row), queue_position=qpos)
+
+    def _dispatch_best_effort(settings, job_id: str) -> None:  # noqa: ANN001
+        """적재/재개는 이미 커밋됨 — 전개 실패는 로그만(다음 finally/resume 이 재시도).
+        예외를 올리면 201 이 500 으로 바뀌어 운영자가 재제출 → 중복 잡(리뷰 MED)."""
+        from ..pipeline.backfill_process import dispatch_next_segment_job
+
+        try:
+            dispatch_next_segment_job(settings)
+        except Exception:
+            log.warning("segment_job.dispatch_failed", job=job_id, exc_info=True)
+
+    @app.post("/admin/segment-jobs", response_model=SegmentJobInfo, status_code=201)
+    def create_segment_job(
+        body: SegmentJobCreateRequest,
+        db: Session = Depends(get_db),
+        admin: UserRow = Depends(require_admin),
+    ) -> SegmentJobInfo:
+        """세그먼트 승격 요청을 대기열에 적재한다 — 활성 S 없으면 즉시 running(설계 §5)."""
+        from ..sources.segments import generate_segments, parse_regions
+        from ..storage.backfill_job import enqueue_segment_job
+
+        ctys, inds, regs_csv = _validate_segment_filters(
+            body.countries, body.industries, body.listed, body.regions
+        )
+        settings = get_settings()
+        regs = parse_regions(regs_csv) if regs_csv else None
+        segs = generate_segments(inds, countries=ctys, listed=[body.listed], regions=regs)
+        if len(segs) > settings.crawl_max_segments:
+            raise HTTPException(
+                status_code=422,
+                detail=f"세그먼트 {len(segs)}개가 상한({settings.crawl_max_segments})을 초과합니다.",
+            )
+        row = enqueue_segment_job(
+            db, countries=",".join(ctys), industries=",".join(inds), listed=body.listed,
+            regions=regs_csv, priority=body.priority, triggered_by=admin.username,
+        )
+        db.commit()
+        _dispatch_best_effort(settings, row.id)  # 활성 없으면 즉시 activate, 있으면 대기 유지.
+        db.refresh(row)  # dispatch 가 다른 세션에서 커밋(expire_on_commit=False라 명시 갱신).
+        return _segment_job_info(db, row)
+
+    @app.get("/admin/segment-jobs", response_model=SegmentJobList)
+    def list_segment_jobs(
+        status: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> SegmentJobList:
+        """트랙 S 작업 목록 — running→queued(priority,started_at)→나머지 최신순."""
+        from ..schema import BackfillJobRow
+        from ..storage.backfill_job import QUEUED, RUNNING, TRACK_S
+
+        stmt = select(BackfillJobRow).where(BackfillJobRow.track == TRACK_S)
+        if status:
+            stmt = stmt.where(BackfillJobRow.status == status)
+        rows = list(db.scalars(stmt))
+        running = [r for r in rows if r.status == RUNNING]
+        queued = sorted(
+            (r for r in rows if r.status == QUEUED),
+            key=lambda r: (r.priority, r.started_at, r.id),
+        )
+        rest = sorted(
+            (r for r in rows if r.status not in (RUNNING, QUEUED)),
+            key=lambda r: (r.started_at, r.id),
+            reverse=True,
+        )
+        ordered = running + queued + rest
+        page = ordered[offset : offset + limit]
+        # ponytail: 전량 적재 후 파이썬 정렬 — 트랙 S 이력은 작다(설계 §1). 대기열 순번은
+        # 이미 정렬된 queued 에서 1회 계산(행마다 queue_position 재조회 = N+1, 리뷰 MED).
+        from ..storage.backfill_job import backfill_job_dict
+
+        qpos = {r.id: i + 1 for i, r in enumerate(queued)}
+        items = [SegmentJobInfo(**backfill_job_dict(r), queue_position=qpos.get(r.id)) for r in page]
+        return SegmentJobList(items=items, total=len(ordered))
+
+    @app.get("/admin/segment-jobs/preview", response_model=SegmentJobPreview)
+    def preview_segment_job(
+        countries: str = Query(default="", max_length=256),
+        industries: str = Query(default="", max_length=1024),
+        listed: str = Query(default="unknown"),
+        regions: str = Query(default="", max_length=512),
+        _admin: UserRow = Depends(require_admin),
+    ) -> SegmentJobPreview:
+        """세그먼트 수·승격 대기 수 미리보기 — 온디맨드(설계 §5, 폴링 금지)."""
+        from ..pipeline.promote import count_promote_targets
+        from ..sources.segments import generate_segments, parse_regions
+        from ..storage.db import get_sessionmaker
+
+        ctys, inds, regs_csv = _validate_segment_filters(countries, industries, listed, regions)
+        settings = get_settings()
+        regs = parse_regions(regs_csv) if regs_csv else None
+        segs = generate_segments(inds, countries=ctys, listed=[listed], regions=regs)
+        sm = get_sessionmaker(settings)
+        pending = count_promote_targets(sm, ctys, industries=inds, listed=listed, regions=regs)
+        return SegmentJobPreview(
+            segments=len(segs), promote_pending=pending, max_segments=settings.crawl_max_segments
+        )
+
+    @app.get("/admin/segment-jobs/{job_id}", response_model=SegmentJobInfo)
+    def get_segment_job(
+        job_id: str,
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> SegmentJobInfo:
+        """세그먼트 작업 1건 상세(트랙 S 아니면 404)."""
+        from ..storage.backfill_job import TRACK_S, get_backfill_job
+
+        row = get_backfill_job(db, job_id)
+        if row is None or row.track != TRACK_S:
+            raise HTTPException(status_code=404, detail="세그먼트 작업을 찾을 수 없습니다")
+        return _segment_job_info(db, row)
+
+    @app.post("/admin/segment-jobs/{job_id}/cancel", response_model=SegmentJobInfo)
+    def cancel_segment_job(
+        job_id: str,
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> SegmentJobInfo:
+        """running: 협조 취소 요청(supervisor 가 닫음). queued|paused: 즉시 cancelled.
+
+        상태 분기는 파이썬 if 가 아니라 **원자 조건부 UPDATE 순서**로 한다 — queued 를 읽은
+        직후 디스패처가 activate 하면 running 잡을 강제 종료해 자식이 고아가 된다(리뷰 HIGH).
+        """
+        from ..storage.backfill_job import (
+            RUNNING,
+            TRACK_S,
+            cancel_idle_segment_job,
+            get_backfill_job,
+            request_cancel as request_cancel_segment,
+        )
+
+        row = get_backfill_job(db, job_id)
+        if row is None or row.track != TRACK_S:
+            raise HTTPException(status_code=404, detail="세그먼트 작업을 찾을 수 없습니다")
+        done = cancel_idle_segment_job(db, job_id)  # queued|paused 만 잡힌다(원자).
+        if done is None:
+            db.refresh(row)
+            if row.status != RUNNING:
+                raise HTTPException(status_code=409, detail="이미 종료된 작업입니다")
+            done = request_cancel_segment(db, job_id) or row  # running → 협조 취소.
+        db.commit()
+        return _segment_job_info(db, done)
+
+    @app.post("/admin/segment-jobs/{job_id}/pause", response_model=SegmentJobInfo)
+    def pause_segment_job(
+        job_id: str,
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> SegmentJobInfo:
+        """running 은 협조 중단(수초 내 paused), queued 는 즉시 paused. 종료건은 409."""
+        from ..pipeline.backfill_process import request_pause_segment_job
+        from ..storage.backfill_job import QUEUED, RUNNING, TRACK_S, get_backfill_job
+
+        before = get_backfill_job(db, job_id)
+        if before is None or before.track != TRACK_S:
+            raise HTTPException(status_code=404, detail="세그먼트 작업을 찾을 수 없습니다")
+        # 설계 §5: running|queued 외(이미 paused 포함)는 409 — 사전 상태로 판정한다
+        # (request_pause 는 queued 를 즉시 paused 로 바꾼 뒤의 DTO 를 돌려준다).
+        if before.status not in (RUNNING, QUEUED):
+            raise HTTPException(status_code=409, detail="일시정지할 수 없는 상태입니다")
+        if request_pause_segment_job(get_settings(), job_id) is None:
+            raise HTTPException(status_code=404, detail="세그먼트 작업을 찾을 수 없습니다")
+        db.expire_all()  # 별도 세션 커밋분 재적재.
+        row = get_backfill_job(db, job_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="세그먼트 작업을 찾을 수 없습니다")
+        return _segment_job_info(db, row)
+
+    @app.post("/admin/segment-jobs/{job_id}/resume", response_model=SegmentJobInfo)
+    def resume_segment_job(
+        job_id: str,
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> SegmentJobInfo:
+        """paused|failed|budget_exhausted → queued(활성 S 없으면 즉시 running)."""
+        from ..storage.backfill_job import TRACK_S, get_backfill_job, requeue_segment_job
+
+        existing = get_backfill_job(db, job_id)
+        if existing is None or existing.track != TRACK_S:
+            raise HTTPException(status_code=404, detail="세그먼트 작업을 찾을 수 없습니다")
+        row = requeue_segment_job(db, job_id)
+        if row is None:
+            raise HTTPException(status_code=409, detail="재개할 수 없는 상태입니다")
+        db.commit()
+        _dispatch_best_effort(get_settings(), row.id)
+        db.refresh(row)  # dispatch 가 다른 세션에서 커밋(expire_on_commit=False라 명시 갱신).
+        return _segment_job_info(db, row)
+
+    @app.patch("/admin/segment-jobs/{job_id}", response_model=SegmentJobInfo)
+    def update_segment_job_priority(
+        job_id: str,
+        body: SegmentJobPriorityRequest,
+        db: Session = Depends(get_db),
+        _admin: UserRow = Depends(require_admin),
+    ) -> SegmentJobInfo:
+        """대기열 우선순위 변경 — queued|paused 만(그 외 409), 대상 없음은 404."""
+        from ..storage.backfill_job import TRACK_S, get_backfill_job, set_segment_priority
+
+        existing = get_backfill_job(db, job_id)
+        if existing is None or existing.track != TRACK_S:
+            raise HTTPException(status_code=404, detail="세그먼트 작업을 찾을 수 없습니다")
+        row = set_segment_priority(db, job_id, body.priority)
+        if row is None:
+            raise HTTPException(status_code=409, detail="우선순위를 바꿀 수 없는 상태입니다")
+        db.commit()
+        return _segment_job_info(db, row)
 
 
 def _target_info(row: CrawlTargetRow) -> CrawlTargetInfo:
