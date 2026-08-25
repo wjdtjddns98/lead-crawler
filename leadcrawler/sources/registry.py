@@ -35,6 +35,7 @@ from .exchanges import (
     SgxSource,
 )
 from .ai_directory import AiDirectorySource
+from .edinet import EdinetSource
 from .fsc import FscSource
 from .gleif import GleifSource
 from .naver_local import NaverLocalSource
@@ -80,6 +81,9 @@ def build_sources(
         # KR 금융회사 등록처(금융위 공공데이터, reg:fsc 키) — 홈페이지 URL 동봉이라
         # 도메인 해석 없이 승격 가능. DART 와 같은 등록처 tier(첫 등장 우선 신뢰도).
         FscSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        # 일본 상장사 등록처(금융청 EDINET 코드리스트, reg:edinet 키) — 상장 전수 3,822사
+        # (2026-08-25 실측). FSC 와 같은 등록처 tier(거래소 목록·GLEIF JP 보다 앞).
+        EdinetSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         PseSource(settings, rate_limiters=rate_limiters),
         SetSource(settings, rate_limiters=rate_limiters),
         SgxSource(settings, rate_limiters=rate_limiters),
