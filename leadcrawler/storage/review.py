@@ -155,14 +155,17 @@ def _has_queue_filters(
 
 
 def list_regions(session: Session) -> list[str]:
-    """수집된 지역 라벨 distinct 목록(정렬) — 큐 지역필터 옵션의 단일 출처.
+    """수집된 KR 지역 라벨 distinct 목록(정렬) — 큐 지역필터 옵션의 단일 출처.
 
     고정 목록 대신 실제 저장값을 쓴다(데이터 없는 지역 옵션 방지). 지역 미상(NULL)은
     옵션이 아니라 '필터 안 걸었을 때 전체'로만 접근 가능하다.
+    KR 로 한정한다 — 해외 소스(CH·EDGAR·GLEIF…)는 region 에 도시/주 원문을 그대로
+    넣어(GB 만 1,600+ 도시) 옵션 목록을 오염시키고, PO 결정(2026-08-25)으로 해외 지역
+    필터는 불필요하다.
     """
     rows = session.scalars(
         select(DiscoveredCompanyRow.region)
-        .where(DiscoveredCompanyRow.region.is_not(None))
+        .where(DiscoveredCompanyRow.region.is_not(None), DiscoveredCompanyRow.country == "KR")
         .distinct()
         .order_by(DiscoveredCompanyRow.region)
     ).all()
