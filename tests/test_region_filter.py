@@ -90,3 +90,22 @@ def test_list_regions_distinct_sorted(settings) -> None:
     _seed(settings)
     with session_scope(settings) as s:
         assert list_regions(s) == ["부산", "서울"]
+
+
+def test_list_regions_excludes_foreign(settings) -> None:
+    """해외 소스가 넣은 도시 원문(London 등)은 지역 옵션에 나오지 않는다."""
+    _seed(settings)
+    with session_scope(settings) as s:
+        lead = CompanyLead(
+            company=Company(
+                canonical_key="dom:gb0.com", name="GB0", country="GB",
+                industry="건설", domain="gb0.com", homepage="https://gb0.com",
+                is_active=True, site_alive=True, listed=Listed.LISTED,
+            ),
+            email=Contact(type=ContactType.EMAIL, value="ir@gb0.com", role=EmailRole.IR),
+            email_validation=EmailValidation(status=ValidationStatus.VALID, mx=True),
+        )
+        save_lead(s, lead, source="t")
+        s.get(DiscoveredCompanyRow, "dom:gb0.com").region = "London"
+    with session_scope(settings) as s:
+        assert list_regions(s) == ["부산", "서울"]
