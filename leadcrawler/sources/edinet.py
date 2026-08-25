@@ -81,6 +81,9 @@ _SECTOR_TAXO: dict[str, str | None] = {
     "非鉄金属": "철강·금속",
     "金属製品": "철강·금속",
     "機械": "기계·산업장비",
+    # 電気機器·輸送用機器 는 TSE 기준 광의 버킷(반도체장비·항공철도 포함)이지만 다수가
+    # 인접 정라벨이라 유지한다 — None 으로 낮추면 상장사 400+ 가 도메인 없는 상태로
+    # 미분류에 쌓여 LLM 재분류(홈페이지 필요)도 못 받는다(리뷰 MED 트레이드오프 결정).
     "電気機器": "전자·전기부품",
     "輸送用機器": "자동차·모빌리티",
     "電気・ガス業": "에너지·전력",
@@ -115,6 +118,8 @@ def _parse_codelist(blob: bytes) -> list[dict[str, str]]:
     try:
         with zipfile.ZipFile(io.BytesIO(blob)) as zf:
             csv_names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+            # 멤버가 여럿이면 코드리스트 본체(Edinetcode*) 우선 — 순서 의존 제거(리뷰 MED).
+            csv_names.sort(key=lambda n: (0 if "edinetcode" in n.lower() else 1, n))
             if not csv_names:
                 return []
             text = zf.read(csv_names[0]).decode("cp932", errors="replace")
@@ -129,6 +134,10 @@ def _parse_codelist(blob: bytes) -> list[dict[str, str]]:
         header = next(reader)
     except StopIteration:
         return []
+    if _COL_CODE not in header:
+        # 메타 행 부재·헤더 개편 등 상류 포맷 변경 — 침묵 0건 대신 경고로 가시화(리뷰 MED).
+        log.warning("edinet.header_mismatch", header=header[:3])
+        return []
     out: list[dict[str, str]] = []
     for row in reader:
         if not row:
@@ -138,9 +147,14 @@ def _parse_codelist(blob: bytes) -> list[dict[str, str]]:
 
 
 def _ticker(sec_code: str | None) -> str | None:
-    """증권코드 5자(4자+체크자리) → 종목코드 4자('13760'→'1376', '130A0'→'130A')."""
+    """증권코드 5자(4자+체크자리) → 종목코드 4자('13760'→'1376', '130A0'→'130A').
+
+    실데이터는 5자 또는 공란뿐(2026-08-25 실측) — 그 외 길이는 오염값으로 보고 버린다.
+    """
     code = (sec_code or "").strip()
-    return code[:4] if len(code) == 5 else (code or None)
+    if len(code) == 5:
+        return code[:4]
+    return code if len(code) == 4 else None
 
 
 class EdinetSource:
@@ -190,7 +204,7 @@ class EdinetSource:
                 source=self.name,
                 segment=listed_seg,
                 name=f"{segment.industry} EDINET Co {i}",
-                domain=f"jp-edinet{i}.co.jp",
+                domain=None,  # live 계약과 정합 — 이 소스는 도메인을 못 준다(리뷰 MED).
                 registry="edinet",
                 registry_id=f"E{i:05d}",
                 listed_verified=True,
@@ -210,18 +224,34 @@ class EdinetSource:
         return self._fetcher
 
     def _rows(self) -> list[dict[str, str]]:
-        """코드리스트 원시 행 — 런 내 1회만 내려받아 메모(다중 세그먼트 재fetch 방지)."""
+        """코드리스트 원시 행 — 런 내 1회만 내려받아 메모(다중 세그먼트 재fetch 방지).
+
+        fetch 실패는 **메모하지 않는다** — 빈 결과를 고착하면 첫 타임아웃 1번이 런의
+        JP 발견 전량을 침묵 0건으로 만든다(리뷰 HIGH — DART 는 세그먼트마다 재시도).
+        """
         if self._rows_memo is None:
             try:
                 blob = self._client().get_bytes(_CODELIST_URL)
-            except Exception as exc:  # 네트워크/차단 → graceful 빈 결과(무해 no-op).
+            except Exception as exc:  # 네트워크/차단 → 이번 세그먼트만 빈 결과(재시도 가능).
                 log.info("edinet.fetch_error", err=str(exc))
-                blob = b""
-            self._rows_memo = _parse_codelist(blob)
+                return []
+            rows = _parse_codelist(blob)
+            if len(rows) < 1000:
+                # 정상 코드리스트는 1만 행 이상(2026-08-25 실측 11,384) — 급감은 파싱
+                # 붕괴(따옴표 불균형 흡수 등)나 상류 이변 신호(리뷰 MED, 침묵 유실 방지).
+                log.warning("edinet.parse_suspect", n=len(rows))
+            self._rows_memo = rows
         return self._rows_memo
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         """상장 내국법인 필터 → (구체 업종이면 매핑 일치) → 커서 슬라이스 → 캡."""
+        cap = self._settings.discovery_max_per_source
+        if cap <= 0:
+            return []  # 0/음수 캡 설정에서 1건 누수 방지(리뷰 LOW).
+        if not self._settings.resolve_domains:
+            # 이 소스는 도메인을 못 준다 — resolve_domains 없이는 enrich·교차키 dedup 이
+            # 전부 무력화된다(리뷰 MED, 운영 계약). 침묵 대신 경고로 가시화.
+            log.warning("edinet.no_resolver", hint="JP 크롤은 resolve_domains=true 권장")
         want: str | None = None
         if not is_broad_industry(segment.industry):
             want = resolve_industry_label(segment.industry)
@@ -235,7 +265,9 @@ class EdinetSource:
                 continue
             pool.append(rec)
 
-        cap = self._settings.discovery_max_per_source
+        # 커서 키 = segment.label(업종별 풀이 달라 라벨 단위가 정확). listed 파티션이
+        # 키에 섞이는 트레이드오프는 FSC/GLEIF 와 동일 계열 — 호출부가 런당 단일 listed
+        # 값이라 실해 없음(리뷰 LOW 기록).
         start = cursor_offset(self._cursor_store, self.name, segment, len(pool))
         out: list[DiscoveredCompany] = []
         pos = start

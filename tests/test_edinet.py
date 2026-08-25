@@ -190,3 +190,52 @@ def test_live_cursor_advance_and_reset() -> None:
     got = src2.discover(_seg("전체"))
     assert [c.name for c in got] == ["テスト通信"]  # 이어읽기.
     assert cur2.saved[-1][2] == 0  # 소진 → 0 리셋.
+
+
+def test_live_fetch_fail_then_recover() -> None:
+    # 실패를 메모하면 런 전체가 침묵 0건(리뷰 HIGH) — 다음 discover 에서 재시도돼야 한다.
+    class _FlakyFetcher:
+        def __init__(self, blob: bytes) -> None:
+            self._blob = blob
+            self.calls = 0
+
+        def get_bytes(self, url: str, **kw: Any) -> bytes:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("timeout")
+            return self._blob
+
+    spy = _FlakyFetcher(_zip_bytes())
+    src = EdinetSource(_live_settings(), fetcher=spy)
+    assert src.discover(_seg("전체")) == []  # 1회차 실패 → 빈 결과.
+    got = src.discover(_seg("전체"))  # 2회차 재시도 성공.
+    assert len(got) == 2 and spy.calls == 2
+
+
+def test_parse_codelist_header_mismatch_returns_empty() -> None:
+    # 메타 행 부재/헤더 개편 — 첫 데이터 행이 헤더로 소모되면 빈 결과(경고 로그, 침묵 0건 방지).
+    body = _HEADER + "\n" + _ROWS[0]  # 메타 행 없음 → 헤더 자리에 데이터.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("EdinetcodeDlInfo.csv", body.encode("cp932"))
+    assert _parse_codelist(buf.getvalue()) == []
+
+
+def test_parse_codelist_prefers_edinetcode_member() -> None:
+    # zip 멤버 순서가 아니라 Edinetcode* 본체를 고른다(리뷰 MED — README 류 오독 방지).
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("AAA_README.csv", "meta\nno,header\n1,2".encode("cp932"))
+        zf.writestr(
+            "EdinetcodeDlInfo.csv",
+            ("メタ行,ダウンロード\n" + _HEADER + "\n" + _ROWS[0]).encode("cp932"),
+        )
+    rows = _parse_codelist(buf.getvalue())
+    assert rows and rows[0]["ＥＤＩＮＥＴコード"] == "E00001"
+
+
+def test_live_cap_zero_returns_empty() -> None:
+    src = EdinetSource(
+        _live_settings(discovery_max_per_source=0), fetcher=_FakeFetcher(_zip_bytes())
+    )
+    assert src.discover(_seg("전체")) == []
