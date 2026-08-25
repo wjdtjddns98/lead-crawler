@@ -236,15 +236,19 @@ class FscSource:
         키워드당 모집단이 수백 행(2026-08-25 실측: 자산운용 267)이라 한 런에 완주한다 —
         커서 미사용. 키워드 간 사명 중복(예: '증권'과 '투자증권')은 crno 로 제거한다.
         """
+        terms = _search_terms(want)
+        if not terms:  # 검색어 없는 라벨(applies_to 우회 호출) — 프로브 낭비 전에 종료.
+            return []
         bas_dt = self._latest_bas_dt(fetcher, key)
         if bas_dt is None:
             log.info("fsc.search.no_snapshot", segment=segment.label)
             return []
         out: list[DiscoveredCompany] = []
         seen: set[str] = set()
-        for term in _search_terms(want):
+        budget = _MAX_PAGES  # 페이지 예산은 키워드 전체가 공유 — 런당 절대 상한 유지.
+        for term in terms:
             page = 1
-            while page <= _MAX_PAGES:
+            while budget > 0:
                 params = {
                     "serviceKey": key,
                     "resultType": "json",
@@ -269,6 +273,8 @@ class FscSource:
                     dc = self._candidate(segment, rec, want)
                     if dc is None:
                         continue
+                    # seen 키 = crno or name — 하류 canonical_key 티어링(reg:fsc:→name:)과
+                    # 의도적 동형(같은 판정을 앞당길 뿐 새 손실 없음).
                     k = dc.registry_id or dc.name
                     if k in seen:
                         continue
@@ -279,6 +285,7 @@ class FscSource:
                         log.info("fsc.search.cap", segment=segment.label, n=len(out))
                         return out
                 page += 1
+                budget -= 1
         log.info("fsc.search", segment=segment.label, bas_dt=bas_dt, n=len(out))
         return out
 
@@ -297,6 +304,12 @@ class FscSource:
                 payload = fetcher.get_json(_API_URL, params=params)
             except Exception as exc:
                 log.info("fsc.basdt.error", err=_redact_key(str(exc), key))
+                return None
+            code = self._result_code(payload)
+            if code is not None and code != "00":
+                # 쿼터/미승인 오류를 "스냅샷 없음"으로 오진하면 14일치 역탐색을 전부
+                # 낭비하고 원인이 로그에서 사라진다 — 즉시 구분 중단(broad 동일 계열).
+                log.info("fsc.basdt.result_error", code=code)
                 return None
             if self._items(payload):
                 return d.strftime("%Y%m%d")
