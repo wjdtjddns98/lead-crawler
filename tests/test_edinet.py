@@ -234,8 +234,25 @@ def test_parse_codelist_prefers_edinetcode_member() -> None:
     assert rows and rows[0]["ＥＤＩＮＥＴコード"] == "E00001"
 
 
-def test_live_cap_zero_returns_empty() -> None:
-    src = EdinetSource(
-        _live_settings(discovery_max_per_source=0), fetcher=_FakeFetcher(_zip_bytes())
-    )
+def test_live_cap_zero_returns_empty_without_fetch() -> None:
+    spy = _FakeFetcher(_zip_bytes())
+    src = EdinetSource(_live_settings(discovery_max_per_source=0), fetcher=spy)
     assert src.discover(_seg("전체")) == []
+    assert spy.calls == 0  # 조기 반환의 실질 가치 = 다운로드 회피(2차 리뷰 m6).
+
+
+def test_live_garbage_body_not_memoized() -> None:
+    # 200 + 쓰레기 본문(CDN 오류 페이지)도 고착 금지 — 다음 discover 에서 재시도(m1).
+    class _GarbageThenGood:
+        def __init__(self, blob: bytes) -> None:
+            self._blob = blob
+            self.calls = 0
+
+        def get_bytes(self, url: str, **kw: Any) -> bytes:
+            self.calls += 1
+            return b"<html>error</html>" if self.calls == 1 else self._blob
+
+    spy = _GarbageThenGood(_zip_bytes())
+    src = EdinetSource(_live_settings(), fetcher=spy)
+    assert src.discover(_seg("전체")) == []
+    assert len(src.discover(_seg("전체"))) == 2 and spy.calls == 2

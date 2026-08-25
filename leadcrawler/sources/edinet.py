@@ -14,7 +14,7 @@
   은행이 타 라벨로 오라벨되는 실사고 계열 방지).
 - 커서: 단일 GET 으로 전 모집단이 오므로(570KB) 페이징 대신 **로컬 슬라이스** —
   ``base.cursor_offset/advance_cursor`` 재사용(키=segment.label, 소진 시 0 리셋).
-  네트워크는 런당 1콜(인스턴스 메모로 같은 런 내 다중 세그먼트 재fetch 방지).
+  네트워크는 **인스턴스당 1콜**(메모) — 병렬 발견은 워커별 인스턴스라 워커 수만큼.
 - 실존: 말소·비상장 제출자는 上場区分 필터로 제외, 外国法人・組合 은 국가 오분류
   방지를 위해 제외(SGX ADR 제외와 동일 논리). 하류 실존 게이트(제약②)가 백스톱.
 - dry_run 은 네트워크 없이 결정적 더미(전 소스 계약).
@@ -64,10 +64,12 @@ _COL_CORP_NO = "提出者法人番号"
 
 _LISTED_MARK = "上場"
 _DOMESTIC_KIND = "内国法人・組合"
+# 헤더 검증 대상 — 필터 판정에 쓰는 핵심 열(하나라도 개칭되면 침묵 0건이 되므로).
+_REQUIRED_COLS = (_COL_CODE, _COL_KIND, _COL_LISTED, _COL_NAME)
 
 # TSE 33업종 → INDUSTRY_TAXONOMY. 명확 단일매치만 — 모호분은 None(미분류→LLM 후속).
 # 情報・通信業(618)을 'IT·소프트웨어'로 강제하면 통신·방송사가 오라벨된다(닫힌 택소노미
-# 파편화 실사고 계열)라 배제. 매핑 근거는 설계문서(2026-08-25) 표.
+# 파편화 실사고 계열)라 배제. 매핑은 2026-08-25 설계 검토에서 확정.
 _SECTOR_TAXO: dict[str, str | None] = {
     "水産・農林業": "농림·수산",
     "建設業": "건설·엔지니어링",
@@ -134,9 +136,11 @@ def _parse_codelist(blob: bytes) -> list[dict[str, str]]:
         header = next(reader)
     except StopIteration:
         return []
-    if _COL_CODE not in header:
-        # 메타 행 부재·헤더 개편 등 상류 포맷 변경 — 침묵 0건 대신 경고로 가시화(리뷰 MED).
-        log.warning("edinet.header_mismatch", header=header[:3])
+    missing = [c for c in _REQUIRED_COLS if c not in header]
+    if missing:
+        # 메타 행 부재·헤더 개편 등 상류 포맷 변경 — 필터 핵심 열(코드·종별·상장·상호)
+        # 중 하나라도 빠지면 전 행이 조용히 탈락하므로 경고 후 중단(2차 리뷰 M1).
+        log.warning("edinet.header_mismatch", missing=missing)
         return []
     out: list[dict[str, str]] = []
     for row in reader:
@@ -176,7 +180,9 @@ class EdinetSource:
         self._fetcher = fetcher
         self._rate_limiters = rate_limiters
         self._cursor_store = cursor_store
-        self._rows_memo: list[dict[str, str]] | None = None  # 런 내 fetch-once.
+        # 인스턴스당 fetch-once(병렬 발견은 워커별 인스턴스라 최대 워커 수만큼 fetch).
+        self._rows_memo: list[dict[str, str]] | None = None
+        self._warned_no_resolver = False
 
     def applies_to(self, segment: Segment) -> bool:
         """JP 전용 + (broad 또는 매핑 가능 구체 업종). 비매핑 업종은 전 행이 필터에서
@@ -204,7 +210,9 @@ class EdinetSource:
                 source=self.name,
                 segment=listed_seg,
                 name=f"{segment.industry} EDINET Co {i}",
-                domain=None,  # live 계약과 정합 — 이 소스는 도메인을 못 준다(리뷰 MED).
+                # 라이브 레코드엔 도메인이 없지만 dry 더미는 '실존 active 기업' 시뮬레이션을
+                # 위해 도메인을 부여한다(GLEIF gleif.py:83 명문 규약 — dry 전부 active).
+                domain=f"jp-edinet{i}.co.jp",
                 registry="edinet",
                 registry_id=f"E{i:05d}",
                 listed_verified=True,
@@ -236,9 +244,14 @@ class EdinetSource:
                 log.info("edinet.fetch_error", err=str(exc))
                 return []
             rows = _parse_codelist(blob)
+            if not rows:
+                # 200 + 쓰레기 본문(CDN 오류 페이지 등)도 고착시키지 않는다 — 전송 실패와
+                # 동일하게 다음 세그먼트에서 재시도(2차 리뷰 m1, 침묵 고착 방지).
+                log.warning("edinet.parse_empty")
+                return []
             if len(rows) < 1000:
                 # 정상 코드리스트는 1만 행 이상(2026-08-25 실측 11,384) — 급감은 파싱
-                # 붕괴(따옴표 불균형 흡수 등)나 상류 이변 신호(리뷰 MED, 침묵 유실 방지).
+                # 붕괴(따옴표 불균형 흡수 등)나 상류 이변 신호(침묵 유실 방지).
                 log.warning("edinet.parse_suspect", n=len(rows))
             self._rows_memo = rows
         return self._rows_memo
@@ -248,9 +261,10 @@ class EdinetSource:
         cap = self._settings.discovery_max_per_source
         if cap <= 0:
             return []  # 0/음수 캡 설정에서 1건 누수 방지(리뷰 LOW).
-        if not self._settings.resolve_domains:
+        if not self._settings.resolve_domains and not self._warned_no_resolver:
             # 이 소스는 도메인을 못 준다 — resolve_domains 없이는 enrich·교차키 dedup 이
-            # 전부 무력화된다(리뷰 MED, 운영 계약). 침묵 대신 경고로 가시화.
+            # 전부 무력화된다(운영 계약). 침묵 대신 경고 — 인스턴스당 1회(스팸 방지).
+            self._warned_no_resolver = True
             log.warning("edinet.no_resolver", hint="JP 크롤은 resolve_domains=true 권장")
         want: str | None = None
         if not is_broad_industry(segment.industry):
