@@ -12,8 +12,11 @@ resolve 수율이 소진됨 — 등록처가 유일한 확대 경로).
   세그먼트가 구체 업종이면 **사명 키워드 매핑으로 레코드를 필터**해 순도를 지킨다
   (라벨 규칙상 비-broad 세그먼트는 세그먼트 라벨이 그대로 구분값이 되므로, 필터
   없이 반환하면 은행이 '증권·자산운용'으로 오라벨되는 실사고 패턴 — GLEIF 2026-07-13).
-- 커서: **업종 필터 단위 키**(구체 라벨 또는 'ALL')로 page 를 영속한다 — 공유 키 하나로
-  하면 A 업종 런이 넘긴 페이지의 B 업종 레코드가 랩 전까지 영영 스킵된다(설계 교차검증).
+- 모드 2종(2026-08-25 실측 재설계): 이 데이터셋은 basDt(기준일) 스냅샷 누적이라 원시
+  230만 행 — 전수 페이징은 구체 세그먼트에 실용 불가. **구체 업종 = 서버측 검색 모드**
+  (라벨의 키워드별 ``fncoNm`` 부분일치 + 최신 ``basDt`` 스냅샷 — 키워드당 수백 행이라
+  커서 없이 런 내 완주, 런 내 crno 중복 제거). **broad = 종전 전수 페이징 + 'ALL' 커서**
+  (스냅샷 중복은 하류 canonical_key dedup 이 흡수).
   listed 파티션은 키에 안 넣는다(GLEIF 국가키와 동일 트레이드오프 — 같은 모집단을
   listed 값별로 재순회하지 않는 대신, 혼용 배치에선 커서를 공유한다).
 - 이 API 가 말소/해산 법인을 포함하는지는 미확인(활용신청 승인 후 샘플로 확인 예정) —
@@ -21,13 +24,14 @@ resolve 수율이 소진됨 — 등록처가 유일한 확대 경로).
 - canonical_key = ``reg:fsc:<법인등록번호>`` (제약 ①). 법인등록번호 없으면 name 키 폴백.
 - dry_run 은 네트워크 없이 결정적 더미(전 소스 계약).
 
-ponytail: basDt/crno/fncoNm 조회 파라미터는 안 쓴다(전수 페이징이면 충분) —
-증분 갱신이 필요해지면 basDt 를 추가.
+ponytail: broad 전수 페이징은 스냅샷 전 이력을 훑는다(230만 행·quota 1만/일 — 수일
+소요) — broad 실사용 증거가 생기면 basDt 필터를 broad 에도 확장.
 """
 
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta
 from typing import Any
 
 from ..config import Settings
@@ -70,6 +74,14 @@ _NAME_LABEL_RULES: list[tuple[re.Pattern[str], str]] = [
 ]
 # applies_to 게이트 — 이 소스가 순도 있게 공급 가능한 구체 업종 라벨 집합.
 _FIN_LABELS = frozenset(rule_label for _, rule_label in _NAME_LABEL_RULES)
+
+# 최신 스냅샷 역탐색 상한(일) — 업로드 지연·연휴 흡수(2026-08-25 실측: 영업일 단위 적재).
+_BAS_DT_LOOKBACK = 14
+
+
+def _search_terms(label: str) -> list[str]:
+    """라벨의 규칙 정규식 alternation 리터럴을 서버 검색어(fncoNm)로 재사용한다."""
+    return [t for pat, lab in _NAME_LABEL_RULES if lab == label for t in pat.pattern.split("|")]
 
 
 def _redact_key(text: str, key: str) -> str:
@@ -152,7 +164,7 @@ class FscSource:
         return self._fetcher
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
-        """실 발견 — 전수 페이징 + 커서 + (구체 업종이면) 사명 키워드 필터."""
+        """실 발견 — broad=전수 페이징+커서 / 구체 업종=서버측 검색(_live_search)."""
         key = self._settings.fsc_service_key.strip() or self._settings.data_go_kr_service_key.strip()
         if not key:  # 무키 → no-op(다른 유키 소스와 동일 관례).
             return []
@@ -161,9 +173,11 @@ class FscSource:
             want = resolve_industry_label(segment.industry)
         fetcher = self._client()
         cap = self._settings.discovery_max_per_source
+        if want is not None:  # 구체 업종 → 서버측 검색 모드(모듈 독스트링 참조).
+            return self._live_search(segment, want, key, fetcher, cap)
 
         out: list[DiscoveredCompany] = []
-        ckey = want or "ALL"  # 커서 키 = 업종 필터 단위(모듈 독스트링 참조).
+        ckey = "ALL"  # broad 전용 커서 키(구체 업종은 검색 모드라 커서 미사용).
         page = 1
         if self._cursor_store is not None:
             stored = self._cursor_store.get(self.name, ckey)
@@ -208,6 +222,86 @@ class FscSource:
             self._cursor_store.advance(self.name, ckey, 0 if exhausted else page)
         log.info("fsc.live", segment=segment.label, n=len(out), page=page)
         return out
+
+    def _live_search(
+        self,
+        segment: Segment,
+        want: str,
+        key: str,
+        fetcher: SupportsFetch,
+        cap: int,
+    ) -> list[DiscoveredCompany]:
+        """구체 업종 — 키워드별 fncoNm 부분일치 + 최신 basDt 스냅샷으로 좁혀 읽는다.
+
+        키워드당 모집단이 수백 행(2026-08-25 실측: 자산운용 267)이라 한 런에 완주한다 —
+        커서 미사용. 키워드 간 사명 중복(예: '증권'과 '투자증권')은 crno 로 제거한다.
+        """
+        bas_dt = self._latest_bas_dt(fetcher, key)
+        if bas_dt is None:
+            log.info("fsc.search.no_snapshot", segment=segment.label)
+            return []
+        out: list[DiscoveredCompany] = []
+        seen: set[str] = set()
+        for term in _search_terms(want):
+            page = 1
+            while page <= _MAX_PAGES:
+                params = {
+                    "serviceKey": key,
+                    "resultType": "json",
+                    "numOfRows": _PAGE,
+                    "pageNo": page,
+                    "fncoNm": term,
+                    "basDt": bas_dt,
+                }
+                try:
+                    payload = fetcher.get_json(_API_URL, params=params)
+                except Exception as exc:  # 403/쿼터/깨진 응답 → 부분 결과 보존 후 중단.
+                    log.info("fsc.search.error", term=term, err=_redact_key(str(exc), key))
+                    return out
+                code = self._result_code(payload)
+                if code is not None and code != "00":
+                    log.info("fsc.search.result_error", term=term, code=code)
+                    return out
+                items = self._items(payload)
+                if not items:
+                    break  # 이 키워드 소진 → 다음 키워드.
+                for rec in items:
+                    dc = self._candidate(segment, rec, want)
+                    if dc is None:
+                        continue
+                    k = dc.registry_id or dc.name
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    out.append(dc)
+                    if len(out) >= cap:
+                        # 커서가 없어 절단분은 이번 런에서 유실 — 침묵 금지(no silent caps).
+                        log.info("fsc.search.cap", segment=segment.label, n=len(out))
+                        return out
+                page += 1
+        log.info("fsc.search", segment=segment.label, bas_dt=bas_dt, n=len(out))
+        return out
+
+    def _latest_bas_dt(self, fetcher: SupportsFetch, key: str) -> str | None:
+        """최신 스냅샷 기준일(YYYYMMDD) — 오늘부터 최대 14일 역탐색(적재 지연·연휴 흡수)."""
+        d = date.today()
+        for _ in range(_BAS_DT_LOOKBACK):
+            params = {
+                "serviceKey": key,
+                "resultType": "json",
+                "numOfRows": 1,
+                "pageNo": 1,
+                "basDt": d.strftime("%Y%m%d"),
+            }
+            try:
+                payload = fetcher.get_json(_API_URL, params=params)
+            except Exception as exc:
+                log.info("fsc.basdt.error", err=_redact_key(str(exc), key))
+                return None
+            if self._items(payload):
+                return d.strftime("%Y%m%d")
+            d -= timedelta(days=1)
+        return None
 
     @staticmethod
     def _result_code(payload: Any) -> str | None:

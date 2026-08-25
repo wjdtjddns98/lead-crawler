@@ -202,13 +202,29 @@ def test_live_result_error_preserves_cursor() -> None:
     assert cur.saved == [("fsc", "ALL", 1)]
 
 
-def test_specific_segment_cursor_key_is_label() -> None:
-    # 커서 키 = 업종 필터 단위 — 공유 키의 skip-forever 결함 회귀가드.
+def test_specific_segment_search_mode_no_cursor() -> None:
+    # 구체 업종 = 서버측 검색 모드 — 런 내 완주라 커서를 쓰지 않는다.
     spy = _SpyFetcher([_envelope(_RECORDS)])
     cur = _Cursor()
     src = FscSource(_live_settings(), fetcher=spy, cursor_store=cur)
-    src.discover(_seg("은행"))
-    assert cur.saved and cur.saved[0][1] == "은행"
+    got = src.discover(_seg("은행"))
+    assert [c.name for c in got] == ["라마바은행"]
+    assert cur.saved == []
+
+
+def test_search_mode_sends_fncoNm_and_basdt() -> None:
+    # 검색 모드 — basDt 역탐색 후 키워드별 fncoNm 파라미터로 서버측 필터.
+    spy = _SpyFetcher([_envelope(_RECORDS)])
+    src = FscSource(_live_settings(), fetcher=spy)
+    src.discover(_seg("증권·자산운용"))
+    probe = spy.calls[0]  # 첫 호출 = 최신 basDt 역탐색(오늘, numOfRows=1).
+    assert probe["numOfRows"] == 1 and "basDt" in probe and "fncoNm" not in probe
+    search = spy.calls[1]
+    assert search["fncoNm"] == "자산운용"  # 규칙 첫 리터럴부터.
+    assert search["basDt"] == probe["basDt"]
+    # 키워드 여러 개가 같은 레코드를 반환해도 crno 중복 제거로 1건만 나온다.
+    got = src.discover(_seg("증권·자산운용"))
+    assert [c.name for c in got] == ["가나다자산운용"]
 
 
 def test_live_cap_truncates_and_advances_cursor() -> None:
