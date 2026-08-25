@@ -15,7 +15,7 @@ import { useQueueFilterOpts } from "../../filterOptions";
 import { MultiPicker } from "../MultiPicker";
 import { ErrorBox } from "../ErrorBox";
 import { BTN, BTN_CONFIRM, BTN_REJECT } from "../../ui";
-import { SECTION_H2, FIELD, FIELD_INLINE, CRAWL_TARGET, fmt } from "./shared";
+import { SECTION_H2, FIELD, FIELD_INLINE, CRAWL_TARGET, fmt, segCls } from "./shared";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 // 백필 상태 → 한글 라벨. 지속형 consumer 라 '완료'가 없다(대상 소진=대기).
@@ -99,15 +99,6 @@ function backfillFilters(f: {
     exclude_listed: f.excludeListed,
   };
 }
-
-const MODE_SEG_BASE =
-  "py-0.5 px-2 rounded-md border text-xs cursor-pointer transition-colors " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " +
-  "focus-visible:ring-offset-2 focus-visible:ring-offset-canvas";
-const modeSegCls = (active: boolean): string =>
-  active
-    ? `${MODE_SEG_BASE} border-accent text-ink bg-accent/15`
-    : `${MODE_SEG_BASE} border-line text-muted bg-panel`;
 
 const jobs = (s: BackfillStatus): BackfillJob[] => [s.resolve, s.fill];
 
@@ -311,7 +302,7 @@ export function BackfillSection() {
                 <button
                   key={m}
                   type="button"
-                  className={modeSegCls(industryMode === m)}
+                  className={segCls(industryMode === m)}
                   aria-pressed={industryMode === m}
                   onClick={() => setIndustryMode(m)}
                 >

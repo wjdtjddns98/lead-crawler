@@ -619,6 +619,149 @@ function backfillStatusJson(): { resolve: BackfillJobJson; fill: BackfillJobJson
   return { resolve, fill };
 }
 
+// --- 세그먼트 작업 큐(#403) --------------------------------------------
+// 트랙 S 는 한 번에 1건만 실행 — 나머지는 우선순위 큐(낮을수록 먼저). 진행은 시간 기반으로
+// 계산해 discover(발견) → promote(승격) → done 단계 전이를 눈으로 확인할 수 있게 한다.
+const SEG_DISCOVER_MS = 6_000;
+const SEG_PROMOTE_MS = 24_000;
+const SEG_DISCOVERED = 119; // 라이브 E2E 실측치와 같은 자릿수
+const SEG_TARGET = 127;
+// running 에 건 pause/cancel 은 즉시 반영되지 않는다 — 이만큼 지나야 실제로 전이한다.
+const SEG_STOP_LAG_MS = 2_500;
+
+type SegStatus = "queued" | "running" | "paused" | "done" | "cancelled";
+
+interface SegJob {
+  id: string;
+  countries: string;
+  industries: string;
+  listed: Listed;
+  regions: string;
+  priority: number;
+  createdAt: number;
+  startedAt: number | null; // 실행 시작(대기 중이면 null) — 일시중지 누적분만큼 뒤로 민다
+  progressMs: number; // 일시중지 시점까지 누적 진행 시간
+  status: SegStatus;
+  pending: null | "pause" | "cancel"; // running 에 접수된 요청(수 초 뒤 실제 전이)
+  pendingAt: number;
+  finishedAt: number | null;
+}
+
+const segJobs: SegJob[] = [];
+let segSeq = 0;
+
+const segElapsed = (j: SegJob, now: number): number =>
+  j.startedAt === null ? j.progressMs : now - j.startedAt;
+
+// 상태 전이 — 조회·변경 요청마다 1회 돌려 '살아 있는 큐'처럼 보이게 한다.
+// ① 접수된 pause/cancel 을 지연 후 반영 ② 완주 판정 ③ 빈 슬롯에 대기열 1건 투입.
+function segTick(): void {
+  const now = Date.now();
+  for (const j of segJobs) {
+    if (j.status !== "running") continue;
+    if (j.pending && now - j.pendingAt >= SEG_STOP_LAG_MS) {
+      j.progressMs = segElapsed(j, now);
+      j.startedAt = null;
+      j.status = j.pending === "pause" ? "paused" : "cancelled";
+      if (j.status === "cancelled") j.finishedAt = now;
+      j.pending = null;
+      continue;
+    }
+    if (segElapsed(j, now) >= SEG_DISCOVER_MS + SEG_PROMOTE_MS) {
+      j.status = "done";
+      j.finishedAt = now;
+      j.progressMs = SEG_DISCOVER_MS + SEG_PROMOTE_MS;
+      j.startedAt = null;
+    }
+  }
+  // 디스패처 — 실행 중이 없으면 우선순위(낮을수록 먼저)·요청시각 순으로 1건만 올린다.
+  if (!segJobs.some((j) => j.status === "running")) {
+    const next = segQueued()[0];
+    if (next) {
+      next.status = "running";
+      next.startedAt = now - next.progressMs;
+    }
+  }
+}
+
+const segQueued = (): SegJob[] =>
+  segJobs
+    .filter((j) => j.status === "queued")
+    .sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt);
+
+// 진행 카운터 — discover 구간엔 initial_target 이 0(아직 모름), promote 구간부터 확정된다.
+function segCounters(j: SegJob): {
+  stage: string;
+  discovered: number;
+  initial_target: number;
+  processed: number;
+} {
+  const el = Math.max(0, Math.min(segElapsed(j, Date.now()), SEG_DISCOVER_MS + SEG_PROMOTE_MS));
+  if (j.status === "queued") return { stage: "", discovered: 0, initial_target: 0, processed: 0 };
+  if (el < SEG_DISCOVER_MS) {
+    const r = el / SEG_DISCOVER_MS;
+    return {
+      stage: "discover",
+      discovered: Math.round(SEG_DISCOVERED * r),
+      initial_target: 0,
+      processed: 0,
+    };
+  }
+  const r = (el - SEG_DISCOVER_MS) / SEG_PROMOTE_MS;
+  return {
+    stage: j.status === "done" ? "done" : "promote",
+    discovered: SEG_DISCOVERED,
+    initial_target: SEG_TARGET,
+    processed: Math.min(SEG_TARGET, Math.round(SEG_TARGET * r)),
+  };
+}
+
+function segInfo(j: SegJob): Record<string, unknown> {
+  const c = segCounters(j);
+  const queue = segQueued();
+  const at = new Date(j.finishedAt ?? Date.now()).toISOString();
+  return {
+    id: j.id,
+    track: "S",
+    status: j.status,
+    countries: j.countries,
+    industries: j.industries,
+    listed: j.listed,
+    regions: j.regions,
+    priority: j.priority,
+    stage: c.stage,
+    discovered: c.discovered,
+    initial_target: c.initial_target,
+    remaining: Math.max(0, c.initial_target - c.processed),
+    processed: c.processed,
+    promoted: Math.round(c.processed * 0.08),
+    emails: Math.round(c.processed * 0.02),
+    failed_items: 0,
+    batches_done: Math.floor(c.processed / 100),
+    promote_cursor: c.processed > 0 ? `mock-cursor-${c.processed}` : null,
+    queue_position: j.status === "queued" ? queue.indexOf(j) + 1 : null,
+    generation: 0,
+    recycles: 0,
+    crash_restarts: 0,
+    pid: j.status === "running" ? 39064 : null,
+    cancel_requested: j.pending !== null,
+    stop_reason: j.status === "cancelled" ? "operator" : null,
+    error: null,
+    triggered_by: "mock-admin",
+    started_at: new Date(j.createdAt).toISOString(), // 트랙 S 는 '요청 생성 시각'
+    updated_at: at,
+    progress_at: at,
+    finished_at: j.finishedAt ? new Date(j.finishedAt).toISOString() : null,
+    exclude_industries: "",
+    exclude_listed: false,
+    batch: 100,
+    workers: 3,
+    max_batches: 20,
+    min_queue: 0,
+    resolved: 0,
+  };
+}
+
 // 확정/거부 요청 본문(BE 스키마와 같은 snake_case) — 필드 부재·null = 변경 없음.
 interface ConfirmBody {
   selected?: string | null;
@@ -1049,6 +1192,117 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     if (backfillJob && backfillJob.cancelRequestedAt === null)
       backfillJob.cancelRequestedAt = Date.now();
     return jsonRes(backfillStatusJson());
+  }
+
+  // --- 세그먼트 작업 큐(#403) -------------------------------------------
+  if (path === "/admin/segment-jobs/preview") {
+    const countries = csvSet(u.searchParams.get("countries"));
+    const industries = csvSet(u.searchParams.get("industries"));
+    if (!countries.size || !industries.size)
+      return jsonRes({ detail: "국가·업종은 각각 1개 이상 지정해야 합니다" }, 422);
+    const regions = u.searchParams.get("regions") ?? "";
+    // 세그먼트 = 국가 × 업종 × 지역(전 지역이면 KR 17개, 직접 선택이면 고른 수).
+    const regionFactor = regions === "all" ? 17 : Math.max(1, csvSet(regions).size);
+    return jsonRes({
+      segments: countries.size * industries.size * regionFactor,
+      promote_pending: 2_413,
+      max_segments: 300,
+    });
+  }
+  if (path === "/admin/segment-jobs" && method === "GET") {
+    segTick();
+    // 정렬은 BE 계약 그대로 — running → queued(priority, 요청시각) → 나머지 최신순.
+    const rank = (j: SegJob) => (j.status === "running" ? 0 : j.status === "queued" ? 1 : 2);
+    const sorted = [...segJobs].sort(
+      (a, b) =>
+        rank(a) - rank(b) ||
+        (rank(a) === 1 ? a.priority - b.priority || a.createdAt - b.createdAt : 0) ||
+        b.createdAt - a.createdAt,
+    );
+    const offset = Number(u.searchParams.get("offset") ?? "0");
+    const limit = Number(u.searchParams.get("limit") ?? "50");
+    return jsonRes({
+      items: sorted.slice(offset, offset + limit).map(segInfo),
+      total: sorted.length,
+    });
+  }
+  if (path === "/admin/segment-jobs" && method === "POST") {
+    let body: { countries?: string; industries?: string; listed?: Listed; regions?: string; priority?: number } = {};
+    try {
+      body = JSON.parse(String(init?.body ?? "{}"));
+    } catch {
+      // 본문 없음 — 아래 필수값 검증에서 422.
+    }
+    if (!csvSet(body.countries).size || !csvSet(body.industries).size)
+      return jsonRes({ detail: "국가·업종은 각각 1개 이상 지정해야 합니다" }, 422);
+    if (body.regions && !csvSet(body.countries).has("kr"))
+      return jsonRes({ detail: "지역은 국가에 KR 이 포함될 때만 지정할 수 있습니다" }, 422);
+    segTick();
+    const job: SegJob = {
+      id: `bf_mock${(++segSeq).toString().padStart(4, "0")}`,
+      countries: body.countries ?? "",
+      industries: body.industries ?? "",
+      listed: body.listed ?? "unknown",
+      regions: body.regions ?? "",
+      priority: body.priority ?? 100,
+      createdAt: Date.now(),
+      startedAt: null,
+      progressMs: 0,
+      status: "queued",
+      pending: null,
+      pendingAt: 0,
+      finishedAt: null,
+    };
+    segJobs.push(job);
+    segTick(); // 실행 중이 없으면 이 자리에서 바로 running 으로 올라간다
+    return jsonRes(segInfo(job), 201);
+  }
+  if (path.startsWith("/admin/segment-jobs/")) {
+    segTick();
+    const [id, action] = path.slice("/admin/segment-jobs/".length).split("/");
+    const job = segJobs.find((j) => j.id === id);
+    if (!job) return jsonRes({ detail: "작업을 찾을 수 없습니다" }, 404);
+    if (!action && method === "GET") return jsonRes(segInfo(job));
+    // 우선순위 변경 — queued·paused 만(그 외 409).
+    if (!action && method === "PATCH") {
+      if (job.status !== "queued" && job.status !== "paused")
+        return jsonRes({ detail: "대기·일시중지 상태에서만 우선순위를 바꿀 수 있습니다" }, 409);
+      try {
+        job.priority = JSON.parse(String(init?.body ?? "{}")).priority ?? job.priority;
+      } catch {
+        // 본문 없음 — 변경 없이 현재 상태 반환.
+      }
+      return jsonRes(segInfo(job));
+    }
+    if (method !== "POST") return jsonRes({ detail: "지원하지 않는 요청" }, 404);
+    if (action === "pause" || action === "cancel") {
+      if (job.status === "queued") {
+        // 대기 중이면 즉시 전이(실행 중일 때만 지연 반영).
+        job.status = action === "pause" ? "paused" : "cancelled";
+        if (job.status === "cancelled") job.finishedAt = Date.now();
+        segTick();
+        return jsonRes(segInfo(job));
+      }
+      if (action === "cancel" && job.status === "paused") {
+        job.status = "cancelled";
+        job.finishedAt = Date.now();
+        return jsonRes(segInfo(job));
+      }
+      if (job.status !== "running")
+        return jsonRes({ detail: "이미 종료된 작업입니다" }, 409);
+      if (!job.pending) {
+        job.pending = action;
+        job.pendingAt = Date.now();
+      }
+      return jsonRes(segInfo(job));
+    }
+    if (action === "resume") {
+      if (job.status !== "paused") return jsonRes({ detail: "일시중지 상태가 아닙니다" }, 409);
+      job.status = "queued";
+      segTick();
+      return jsonRes(segInfo(job));
+    }
+    return jsonRes({ detail: "지원하지 않는 요청" }, 404);
   }
 
   if (path === "/send/preview")
