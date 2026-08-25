@@ -216,6 +216,8 @@ export interface BackfillJob {
   track: string;
   status: BackfillJobStatus;
   countries: string;
+  // 업종 조건은 포함식·제외식 배타(#372) — 한쪽이 채워지면 다른 쪽은 항상 빈 문자열.
+  industries: string;
   exclude_industries: string;
   exclude_listed: boolean;
   batch: number;
@@ -251,7 +253,7 @@ export interface BackfillStatus {
 }
 
 // 시작 전 잔여 미리보기. 대형 조인이라 폴링 금지(진행 중 잔여는 status.remaining).
-// queue_pending 은 국가 조건만 반영한다(BE 주석 — 업종 필터 체계가 포함식이라 제외식과 불일치).
+// queue_pending 은 국가 조건만 반영한다(BE 주석 — 업종 조건은 포함·제외 어느 쪽도 미반영).
 export interface BackfillOverview {
   resolve_pending: number;
   fill_pending: number;

@@ -517,6 +517,7 @@ let backfillDrained = false; // 종료분 차감 1회성 가드
 type BackfillJobState = {
   id: string;
   countries: string;
+  industries: string; // 포함식(#372) — excludeIndustries 와 배타(둘 중 하나만 채워진다)
   excludeIndustries: string;
   excludeListed: boolean;
   startedAt: number;
@@ -529,7 +530,7 @@ type BackfillJobJson = { status: string } & Record<string, unknown>;
 
 function idleBackfill(track: "C" | "A"): BackfillJobJson {
   return {
-    id: null, track, status: "idle", countries: "", exclude_industries: "",
+    id: null, track, status: "idle", countries: "", industries: "", exclude_industries: "",
     exclude_listed: false, batch: 0, workers: 0, max_batches: 0, min_queue: 0,
     initial_target: 0, remaining: 0, processed: 0, resolved: 0, promoted: 0, emails: 0,
     batches_done: 0, generation: 0, recycles: 0, crash_restarts: 0, pid: null,
@@ -568,6 +569,7 @@ function backfillTrackInfo(track: "C" | "A"): BackfillJobJson {
     track,
     status: end ? end.status : "running",
     countries: j.countries,
+    industries: j.industries,
     exclude_industries: j.excludeIndustries,
     exclude_listed: j.excludeListed,
     batch: 200,
@@ -595,6 +597,14 @@ function backfillTrackInfo(track: "C" | "A"): BackfillJobJson {
     progress_at: new Date(endMs).toISOString(),
     finished_at: end ? new Date(end.at).toISOString() : null,
   };
+}
+
+// 포함식·제외식 동시 지정 거부(#372) — FE 는 모드 하나만 보내는 계약이라 여기 걸리면 버그다.
+function backfillIndustryConflict(): Response {
+  return jsonRes(
+    { detail: "industries 와 exclude_industries 는 동시 지정 불가(둘 중 하나만)" },
+    422,
+  );
 }
 
 // 두 트랙 스냅샷 + 전부 종료했으면 잔여 풀에서 처리분 1회 차감(overview 재조회 시 감소 확인용).
@@ -978,14 +988,18 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
   // --- 백필 제어(#352) ---------------------------------------------------
   if (path === "/admin/backfill/overview") {
     const countries = csvSet(u.searchParams.get("countries"));
+    const included = csvSet(u.searchParams.get("industries"));
     const excluded = csvSet(u.searchParams.get("exclude_industries"));
+    if (included.size && excluded.size) return backfillIndustryConflict();
     const exclListed = u.searchParams.get("exclude_listed") === "true";
     // 대략치 축소 계수 — 실 BE 의 조인 결과가 아니라 필터 반응을 눈으로 보기 위한 흉내.
     let f = 1;
     if (countries.size) f *= Math.min(1, (countries.size * 2) / MOCK_COUNTRIES.length);
+    // 포함식은 고른 업종만 남고(택소노미 비중), 제외식은 고른 만큼 깎인다 — 방향 반대.
+    if (included.size) f *= Math.min(1, included.size / MOCK_QUEUE_INDUSTRIES.length);
     f *= Math.max(0.1, 1 - excluded.size * 0.07);
     if (exclListed) f *= 0.8;
-    // 검증 큐는 BE 계약대로 **국가 조건만** 반영한다(업종은 포함식이라 제외식과 불일치).
+    // 검증 큐는 BE 계약대로 **국가 조건만** 반영한다(업종은 포함·제외 어느 쪽도 미반영).
     const queue = pending().filter(
       (x) => !countries.size || countries.has(x.country.toLowerCase()),
     ).length;
@@ -997,18 +1011,28 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
   }
   if (path === "/admin/backfill/status") return jsonRes(backfillStatusJson());
   if (path === "/admin/backfill/start" && method === "POST") {
-    const s = backfillStatusJson();
-    if (s.resolve.status === "running" || s.fill.status === "running")
-      return jsonRes({ detail: "활성 백필 존재(트랙 C, A)" }, 409);
-    let body: { countries?: string; exclude_industries?: string; exclude_listed?: boolean } = {};
+    let body: {
+      countries?: string;
+      industries?: string;
+      exclude_industries?: string;
+      exclude_listed?: boolean;
+    } = {};
     try {
       body = JSON.parse(String(init?.body ?? "{}"));
     } catch {
       // 본문 없음 — 전부 기본값(전세계 전체).
     }
+    // 422(포함·제외 배타)를 409(활성 존재)보다 먼저 — BE 와 같은 순서(잘못된 요청은
+    // 서버 상태와 무관하게 항상 같은 응답).
+    if (csvSet(body.industries).size && csvSet(body.exclude_industries).size)
+      return backfillIndustryConflict();
+    const s = backfillStatusJson();
+    if (s.resolve.status === "running" || s.fill.status === "running")
+      return jsonRes({ detail: "활성 백필 존재(트랙 C, A)" }, 409);
     backfillJob = {
       id: `mock-backfill-${Date.now()}`,
       countries: body.countries ?? "",
+      industries: body.industries ?? "",
       excludeIndustries: body.exclude_industries ?? "",
       excludeListed: !!body.exclude_listed,
       startedAt: Date.now(),
