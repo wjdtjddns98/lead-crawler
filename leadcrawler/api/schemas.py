@@ -545,6 +545,62 @@ class BackfillStatusResponse(BaseModel):
     fill: BackfillJobInfo  # A 트랙(이메일 채우기).
 
 
+class SegmentJobCreateRequest(BaseModel):
+    """세그먼트 작업 큐 적재 요청(관리자, PR5) — 국가·업종은 필수(≥1), 나머지는 선택.
+
+    형식 외 의미 검증(국가 미지원·업종 택소노미 밖·regions 비KR·세그먼트 상한)은 라우트가
+    한다(:func:`_validate_segment_filters`) — 422. ``priority`` 는 낮을수록 먼저 실행된다.
+    """
+
+    countries: str = Field(min_length=1, max_length=256)
+    industries: str = Field(min_length=1, max_length=1024)
+    listed: Literal["unknown", "listed", "unlisted"] = "unknown"
+    regions: str = Field(default="", max_length=512)
+    # 낮을수록 먼저. 범위 제한 — PG int4 오버플로(500)·음수 새치기 방지(리뷰 MED).
+    priority: int = Field(default=100, ge=0, le=1000)
+
+    @field_validator("countries", "industries", mode="before")
+    @classmethod
+    def _strip(cls, v: object) -> object:
+        # 공백만 입력한 값이 min_length 를 통과해 빈 필터로 저장되는 것을 막는다
+        # (CrawlTargetRequest._strip_industries 와 동일 관례).
+        return v.strip() if isinstance(v, str) else v
+
+
+class SegmentJobInfo(BackfillJobInfo):
+    """세그먼트 작업(트랙 S) 1건 — ``BackfillJobInfo`` 확장(대기열·발견/승격 단계 필드)."""
+
+    listed: str = "unknown"
+    regions: str = ""
+    priority: int = 100
+    stage: str = ""  # ''|discover|promote|done
+    discovered: int = 0
+    failed_items: int = 0
+    promote_cursor: str | None = None
+    queue_position: int | None = None  # queued 일 때만(그 외 None).
+
+
+class SegmentJobList(BaseModel):
+    """세그먼트 작업 목록 응답(페이지네이션 메타 포함)."""
+
+    items: list[SegmentJobInfo]
+    total: int
+
+
+class SegmentJobPriorityRequest(BaseModel):
+    """대기열 우선순위 변경 요청 — 낮을수록 먼저."""
+
+    priority: int = Field(ge=0, le=1000)
+
+
+class SegmentJobPreview(BaseModel):
+    """세그먼트 잡 생성 전 미리보기 — 온디맨드(폴링 금지)."""
+
+    segments: int
+    promote_pending: int
+    max_segments: int  # crawl_max_segments — FE 가 제출 전에 상한 초과를 경고할 수 있게.
+
+
 class BackfillOverview(BaseModel):
     """상시 잔여 패널 — 조건 변경 시 즉시 재계산되는 깔때기 카운트.
 

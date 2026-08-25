@@ -510,6 +510,38 @@ def requeue_segment_job(session: Session, job_id: str) -> BackfillJobRow | None:
     return row
 
 
+def cancel_idle_segment_job(session: Session, job_id: str) -> BackfillJobRow | None:
+    """queued|paused 트랙 S 작업을 즉시 CANCELLED 로 닫는다(원자 조건부 UPDATE).
+
+    API 가 "queued 를 읽고 → finish" 로 두 단계로 처리하면 그 사이 디스패처가 activate 한
+    running 잡을 강제 종료해 자식이 고아가 된다(리뷰 HIGH TOCTOU). running 이면 0행(None) —
+    호출자는 협조 취소(``request_cancel``)로 돌린다.
+    """
+    result = session.execute(
+        update(BackfillJobRow)
+        .where(
+            BackfillJobRow.id == job_id,
+            BackfillJobRow.track == TRACK_S,
+            BackfillJobRow.status.in_((QUEUED, PAUSED)),
+        )
+        .values(
+            status=CANCELLED,
+            active_track=None,
+            stop_reason="operator",
+            finished_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    session.flush()
+    if not result.rowcount:
+        return None
+    row = session.get(BackfillJobRow, job_id)
+    if row is not None:
+        session.refresh(row)
+    return row
+
+
 def set_segment_priority(session: Session, job_id: str, priority: int) -> BackfillJobRow | None:
     """대기열 우선순위를 바꾼다 — queued|paused 인 트랙 S 작업만(실행 중 재정렬은 무의미).
 
