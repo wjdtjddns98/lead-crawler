@@ -5,7 +5,8 @@
 바로 승격 파이프라인을 태울 수 있다(2026-08-24 실측: KR 금융 세그먼트는 검색 기반
 resolve 수율이 소진됨 — 등록처가 유일한 확대 경로).
 
-- 인증: ``settings.data_go_kr_service_key`` (데이터셋 활용신청 필요 — 미승인이면 403,
+- 인증: ``settings.fsc_service_key``(비면 ``data_go_kr_service_key`` 폴백 — 활용신청
+  계정이 nps-sync 와 달라 분리) (데이터셋 활용신청 필요 — 미승인이면 403,
   이 소스는 로그만 남기고 빈 결과로 무해 종료한다).
 - 업권 필터가 없어 전 금융회사(은행·보험·증권·운용 등)가 한 모집단으로 온다.
   세그먼트가 구체 업종이면 **사명 키워드 매핑으로 레코드를 필터**해 순도를 지킨다
@@ -152,7 +153,7 @@ class FscSource:
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         """실 발견 — 전수 페이징 + 커서 + (구체 업종이면) 사명 키워드 필터."""
-        key = (self._settings.data_go_kr_service_key or "").strip()
+        key = self._settings.fsc_service_key.strip() or self._settings.data_go_kr_service_key.strip()
         if not key:  # 무키 → no-op(다른 유키 소스와 동일 관례).
             return []
         want: str | None = None  # None=broad(전 금융 레코드), str=이 라벨만.

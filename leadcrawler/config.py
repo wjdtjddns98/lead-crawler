@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     # 공공데이터포털(data.go.kr) 인증키 — 국민연금 사업장 API 동기화(nps-sync)용.
     # 활용신청(자동승인) 후 발급되는 serviceKey. 무료, dev 10,000콜/일.
     data_go_kr_service_key: str = Field(default="")
+    # FSC(금융위 금융회사기본정보, 15043232) 전용 인증키 — 활용신청 계정이 nps-sync 키와
+    # 달라 분리(2026-08-25 실측: 두 키가 서로의 데이터셋에서 403/401). 비면 위 키로 폴백.
+    fsc_service_key: str = Field(default="")
 
     # 도메인 해석(opt-in) — 발견 소스가 도메인을 못 준 기업(GLEIF 등)을 회사명+국가로
     # 검색해 공식 도메인을 채운다. Google CSE 키 필요(무료 100/일), dry_run no-op.

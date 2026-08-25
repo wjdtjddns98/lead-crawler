@@ -136,6 +136,27 @@ def test_live_no_key_is_noop() -> None:
     assert spy.calls == []  # 네트워크 0.
 
 
+def test_live_fsc_key_alone_enables() -> None:
+    # 전용 키만 있어도 동작(폴백 아님 — 전용 키가 1순위).
+    spy = _SpyFetcher([_envelope(_RECORDS)])
+    src = FscSource(
+        Settings(dry_run=False, data_go_kr_service_key="", fsc_service_key="fk"), fetcher=spy
+    )
+    got = src.discover(_seg())
+    assert got  # 발견됨
+    assert spy.calls and spy.calls[0]["serviceKey"] == "fk"
+
+
+def test_live_fsc_key_takes_precedence() -> None:
+    # 두 키가 다 있으면 전용 키가 이긴다 — or 순서가 뒤집히면 실패.
+    spy = _SpyFetcher([_envelope(_RECORDS)])
+    src = FscSource(
+        Settings(dry_run=False, data_go_kr_service_key="k", fsc_service_key="fk"), fetcher=spy
+    )
+    src.discover(_seg())
+    assert spy.calls[0]["serviceKey"] == "fk"
+
+
 class _Cursor:
     def __init__(self) -> None:
         self.saved: list[tuple[str, str, int]] = []
