@@ -139,9 +139,6 @@ _PROBE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     " (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 }
-# HEAD 가 막혔을 때 GET 으로 재확인할 상태코드 — 405/501(HEAD 미지원), 403(WAF/안티봇),
-# 400(일부 WAF 가 HEAD 를 Bad Request 로 거절 — 2026-08-25 경찰공제회 실측).
-_HEAD_BLOCKED = (400, 403, 405, 501)
 
 
 class HttpSiteProbe:
@@ -166,13 +163,13 @@ class HttpSiteProbe:
             except Exception as exc:  # 연결 실패·타임아웃 등 → 다음 스킴.
                 log.debug("existence.http.fail", domain=host, scheme=scheme, err=str(exc))
                 continue
-            # B2: HEAD 차단이면 GET 폴백 — 살아있는데 HEAD 만
-            # 막힌 사이트의 오탐(false-negative=리드손실)을 줄인다. GET 도 죽음/파킹이면 그대로 탈락.
-            if resp.status_code in _HEAD_BLOCKED:
-                if self._get_alive(url):
-                    return True
-                continue
             if resp.status_code < 400:
+                return True
+            # B2 일반화: HEAD 가 4xx/5xx 면 무조건 GET 1회로 재판정 — WAF 마다 HEAD 거절
+            # 코드가 제각각(400/403/405/406/501… 2026-08-25 공제회 3곳 실측)이라 상태코드
+            # 화이트리스트는 계속 구멍이 난다. 진짜 판정자는 GET+파킹 가드(_get_alive)이고
+            # HEAD 는 최적화일 뿐 — 죽은 사이트는 GET 도 4xx/파킹이라 그대로 탈락한다.
+            if self._get_alive(url):
                 return True
         return False
 
