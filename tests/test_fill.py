@@ -369,6 +369,7 @@ def test_cli_stall_option_mapping(monkeypatch) -> None:
     import leadcrawler.storage.db as db
 
     monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(dry_run=False))
+    monkeypatch.setattr(cli, "_open_run", lambda s: None)
     monkeypatch.setattr(db, "get_sessionmaker", lambda s: object())
     monkeypatch.setattr(cli, "_acquire_track_lock_or_exit", lambda *a, **k: object())
     monkeypatch.setattr(fill_mod, "count_targets", lambda sm, countries=None, **kw: 100)

@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -334,6 +335,49 @@ def count_targets(
         return int(s.execute(stmt, params).scalar() or 0)
 
 
+@dataclass
+class PromoteRun:
+    """런(세대) 범위 공유 컴포넌트 — 배치 간 재사용한다(fill/resolve/promote 공용).
+
+    ``classifier`` 의 ``industry_llm_max_calls`` 는 **런당** 상한(config)이라 배치마다 새로
+    만들면 상한이 배치마다 리셋돼 과금 보호가 무력화된다(트랙 S 리뷰 HIGH — 트랙 A/C 도
+    같은 결함이 있어 여기로 승격). ``registry_checker`` 는 httpx 를 지연 보유하므로 런 종료 시
+    :meth:`close` 로 1회 정리. 호출자(CLI 루프·``segment-run``)가 :meth:`open` 으로 만들고
+    ``try/finally`` 로 닫는다. ``run=None`` 인 호출(웹 companion·테스트)은 배치 로컬로 만든다.
+    """
+
+    cost_ledger: CostLedger
+    registry_checker: object | None
+    classifier: object | None
+
+    @classmethod
+    def open(cls, settings: Settings) -> PromoteRun:
+        ledger = CostLedger(settings, persist=True)
+        # 공유 호스트 캡 — CH `/company` 조회가 워커 수와 무관하게 합산 2req/s 를 지키게(429 방지,
+        # 2026-07-10 실사고). fill/resolve/segment-run 모두 같은 캡(비대칭 제거 — 리뷰 MED).
+        limiters = HostRateLimiters(default_rate=settings.discovery_rate_per_host)
+        return cls(
+            cost_ledger=ledger,
+            registry_checker=build_registry_checker(settings, rate_limiters=limiters),
+            classifier=build_classifier(settings, ledger=ledger),  # 스텝리스 공유 안전.
+        )
+
+    def close(self) -> None:
+        close = getattr(self.registry_checker, "close", None)
+        if callable(close):
+            close()
+
+
+def _run_or_local(settings: Settings, run: PromoteRun | None) -> tuple[PromoteRun, bool]:
+    """주입된 런 컴포넌트가 있으면 그대로, 없으면 배치 로컬로 연다(반환 두 번째 = 로컬 여부)."""
+    if run is not None:
+        # 배치마다 월예산 캐시 재시드 — 공유 ledger 는 인스턴스당 1회만 DB 를 읽어 다른 러너
+        # (A/C/웹 크롤)의 과금을 못 보면 월 예산 하드캡(§4)이 런 시작 시점에 얼어붙는다(리뷰 HIGH).
+        run.cost_ledger.refresh()
+        return run, False
+    return PromoteRun.open(settings), True
+
+
 def fill_batch(
     settings: Settings, sm: sessionmaker, *, limit: int, workers: int,
     countries: Iterable[str] | None = None,
@@ -341,6 +385,7 @@ def fill_batch(
     exclude_industries: Iterable[str] | None = None,
     exclude_listed: bool = False,
     stall_exit_s: float | None = None,
+    run: PromoteRun | None = None,
 ) -> tuple[int, int]:
     """대상 최대 ``limit`` 개를 ``workers`` 병렬로 enrich 해 이메일을 채운다.
 
@@ -361,12 +406,11 @@ def fill_batch(
         return 0, 0
     _stamp_attempt(sm, [t.canonical_key for t in targets])  # 선스탬프 — 재기동 전진 보장.
 
-    cost_ledger = CostLedger(settings, persist=True)
     # 공유 호스트 캡 — CH `/company` 조회가 워커 수와 무관하게 합산 2req/s 를 지키게(429 방지).
-    registry_checker = build_registry_checker(
-        settings, rate_limiters=HostRateLimiters(default_rate=settings.discovery_rate_per_host)
+    run, local_run = _run_or_local(settings, run)
+    cost_ledger, registry_checker, classifier = (
+        run.cost_ledger, run.registry_checker, run.classifier
     )
-    classifier = build_classifier(settings, ledger=cost_ledger)  # 스텝리스 공유 안전.
     tl = threading.local()
     created: list[object] = []
     lock = threading.Lock()
@@ -397,8 +441,13 @@ def fill_batch(
                 wd.beat()
                 processed += 1
                 if lead is not None:
-                    _persist_lead(ws, dc, lead)
-                    if lead.email is not None:
+                    # 커밋 성공만 집계 — 저장 실패를 이메일 확보로 세던 부풀림 차단.
+                    # 커밋 성공 + 실존(=save_lead 로 연락처가 실제 저장됨)만 이메일로 집계.
+                    if (
+                        _persist_lead(ws, dc, lead)
+                        and lead.company.is_active
+                        and lead.email is not None
+                    ):
                         emails += 1
             # Playwright 보유 컴포넌트는 만든 워커 스레드만 닫을 수 있다(메인스레드 close 는
             # greenlet.error 로 조용히 no-op → 배치마다 브라우저 누수 = 2026-07-31 OOM 뿌리).
@@ -409,6 +458,8 @@ def fill_batch(
         close = getattr(obj, "close", None)
         if callable(close):
             close()
+    if local_run:
+        run.close()
     return processed, emails
 
 
@@ -463,6 +514,7 @@ def resolve_batch(
     exclude_industries: Iterable[str] | None = None,
     exclude_listed: bool = False,
     stall_exit_s: float | None = None,
+    run: PromoteRun | None = None,
 ) -> tuple[int, int, int]:
     """대상 최대 ``limit`` 개의 도메인을 해석해 채우고, 실존이면 승격까지 시도한다.
 
@@ -499,11 +551,10 @@ def resolve_batch(
         return 0, 0, 0
     _stamp_attempt(sm, [t.canonical_key for t in targets])  # 선스탬프 — 재기동 전진 보장.
 
-    cost_ledger = CostLedger(settings, persist=True)
-    registry_checker = build_registry_checker(
-        settings, rate_limiters=HostRateLimiters(default_rate=settings.discovery_rate_per_host)
+    run, local_run = _run_or_local(settings, run)
+    cost_ledger, registry_checker, classifier = (
+        run.cost_ledger, run.registry_checker, run.classifier
     )
-    classifier = build_classifier(settings, ledger=cost_ledger)
     # 해석기용 공유 호스트 레이트리미터 — 워커가 provider(=Fetcher)를 공유하는데(아래)
     # 없으면 openapi.naver.com/google.serper.dev 를 워커 각자 min_interval 로 racy 하게
     # 때린다(2026-07-10 적대 리뷰 MED-3).
@@ -577,8 +628,8 @@ def resolve_batch(
                 if rdom is not None:
                     seen_domains.add(rdom)
                 if lead is not None:
-                    _persist_lead(ws, dc, lead)
-                    if lead.company.is_active:
+                    # 커밋 성공만 승격으로 집계(저장 실패는 promoted 미증가).
+                    if _persist_lead(ws, dc, lead) and lead.company.is_active:
                         promoted += 1
             # fill_batch 와 동일 — Playwright 보유 컴포넌트는 워커 스레드 자신이 닫는다.
             _close_in_workers(pool, lambda: _close_own(tl))
@@ -587,4 +638,6 @@ def resolve_batch(
         close = getattr(obj, "close", None)
         if callable(close):
             close()
+    if local_run:
+        run.close()
     return processed, resolved, promoted
