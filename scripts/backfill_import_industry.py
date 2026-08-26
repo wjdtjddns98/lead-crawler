@@ -1,7 +1,7 @@
 """미승격 기존 임포트 행(source='import') 업종 LLM 분류 백필 — 2026-08-19 PO 지시.
 
 기존 제공 엑셀 시드는 업종을 안 담아 미승격분 ~20,910행이 전량 미분류다. 승격을 기다리지
-않고 원장(discovered_company) 단계에서 분류를 소급한다 — cli.backfill_industries(company
+않고 원장(discovered_company) 단계에서 분류를 소급한다 — pipeline.column_backfill.backfill_industries(company
 대상)와 같은 규칙:
   · 홈페이지 본문이 있을 때만 분류(블라인드 분류 금지 — 없으면 스킵, 미분류 유지)
   · 분류기 abstain(None)·닫힌 택소노미 밖 값은 갱신 안 함 → 반복 실행 멱등
@@ -57,7 +57,7 @@ def main() -> int:
             .where(
                 DiscoveredCompanyRow.source == "import",
                 CompanyRow.id.is_(None),
-                # 선례(cli.backfill_industries)와 동일 대상: 미분류 + catch-all(기타 제조).
+                # 선례(pipeline.column_backfill.backfill_industries)와 동일 대상: 미분류 + catch-all(기타 제조).
                 DiscoveredCompanyRow.industry.in_(["", *AMBIGUOUS_LABELS]),
                 DiscoveredCompanyRow.domain.is_not(None),
             )
