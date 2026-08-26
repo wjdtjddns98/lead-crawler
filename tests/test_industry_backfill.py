@@ -129,14 +129,16 @@ def test_fetch_industry_html_http_fallback_only_on_connect_error():
     """https 접속 실패(ConnectError)한 호스트만 http:// 로 재시도한다."""
     from leadcrawler.cli import fetch_industry_html
 
+    import httpx
+
     get, calls = _get_from({
-        "https://a.kr": ConnectionError(), "https://www.a.kr": ConnectionError(),
+        "https://a.kr": httpx.ConnectError("x"), "https://www.a.kr": httpx.ConnectError("x"),
         "http://a.kr": _Resp(200, "<p>alive over http</p>"),
     })
     assert fetch_industry_html("https://a.kr", get=get, render=lambda u: None) == \
         "<p>alive over http</p>"
-    # 404 응답을 받은 호스트는 http 폴백 안 함(응답은 받았으므로).
-    get, calls = _get_from({"https://b.kr": _Resp(404), "https://www.b.kr": _Resp(404)})
+    # 404 응답·읽기 타임아웃을 받은 호스트는 http 폴백 안 함(접속은 됐으므로).
+    get, calls = _get_from({"https://b.kr": _Resp(404), "https://www.b.kr": httpx.ReadTimeout("x")})
     assert fetch_industry_html("https://b.kr", get=get, render=lambda u: None) is None
     assert calls == ["https://b.kr", "https://www.b.kr"]
 

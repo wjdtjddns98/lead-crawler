@@ -1548,23 +1548,29 @@ def fetch_industry_html(url: str, *, get, render) -> str | None:
     - **헤드리스**: 403 은 대부분 봇차단(Cloudflare 등)이라 실브라우저는 통과 — 9곳 중 6곳 회수.
       406(KR 호스팅 차원 차단)은 브라우저도 막혀 제외. 미통과 챌린지 페이지는 본문으로 안 친다.
     """
+    import httpx
+
     scheme, sep, host = url.partition("://")
     if not sep:
         scheme, host = "https", url
     hosts = [host] if host.startswith("www.") else [host, f"www.{host}"]
-    blocked = False
+    blocked_url: str | None = None  # 403 을 낸 실제 후보 — 헤드리스는 이 URL 을 렌더한다.
     for h in hosts:
         for s in dict.fromkeys((scheme, "http")):
+            candidate = f"{s}://{h}"
             try:
-                r = get(f"{s}://{h}")
-            except Exception:  # 접속 실패 → 다음 스킴/호스트.
+                r = get(candidate)
+            except (httpx.ConnectError, httpx.ConnectTimeout):  # 접속 자체 실패 → 다음 스킴.
                 continue
+            except Exception:  # 읽기 타임아웃 등 — 접속은 됐으니 http 로 또 기다리지 않는다.
+                break
             if r.status_code < 400 and r.text:
                 return r.text
-            blocked = blocked or r.status_code == 403
+            if r.status_code == 403 and blocked_url is None:
+                blocked_url = candidate
             break  # 응답은 받았다(4xx/5xx) — 같은 호스트의 다른 스킴은 안 본다.
-    if blocked:
-        html = render(url) or ""
+    if blocked_url:
+        html = render(blocked_url) or ""
         low = html[:4000].lower()
         if html and "just a moment" not in low and "cf-chl" not in low:
             return html
