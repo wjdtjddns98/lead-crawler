@@ -700,10 +700,8 @@ def nps_sync(
     스웨거 문서에서 최신 경로를 골라 페이지 순회 후 통째 교체 적재한다(멱등).
     LEADCRAWLER_DATA_GO_KR_SERVICE_KEY(활용신청 후 발급) 필요. 매달 1회 실행(또는 스케줄).
     """
-    import re as _re
-
-    from .config import get_settings
     from .sources.http import Fetcher
+    from .sources.nps import iter_snapshot_rows, pick_latest_dataset
     from .storage.db import get_sessionmaker
     from .storage.nps import ingest_nps_rows
 
@@ -724,9 +722,6 @@ def nps_sync(
         timeout=settings.http_timeout,
     )
     try:
-        # 최신 월 경로 선택(적대 리뷰 H3 반영) — 날짜는 **요약(summary)에서만** 추출
-        # (경로의 uddi UUID 숫자열이 lexicographic max 를 오염시키던 결함). 6~8자리
-        # 숫자를 int 로 비교하고, 요약에 데이터셋 키워드가 있는 경로만 후보로 삼는다.
         docs = fetcher.get_json(
             "https://infuser.odcloud.kr/oas/docs", params={"namespace": "15083277/v1"}
         )
@@ -734,42 +729,16 @@ def nps_sync(
         if not isinstance(paths, dict) or not paths:
             typer.echo("스웨거 문서에서 API 경로를 찾지 못했습니다.")
             raise typer.Exit(code=1)
-
-        def _summary(spec: object) -> str:
-            get_spec = spec.get("get") if isinstance(spec, dict) else None
-            return str(get_spec.get("summary") or "") if isinstance(get_spec, dict) else ""
-
-        candidates: list[tuple[int, str, str]] = []  # (날짜, 경로, 요약)
-        for path, spec in paths.items():
-            summary = _summary(spec)
-            if "사업장" not in summary and "가입" not in summary:
-                continue  # 네임스페이스에 섞인 다른 데이터셋 방어.
-            dates = [int(d) for d in _re.findall(r"\d{6,8}", summary)]
-            if dates:
-                # 8자리(YYYYMMDD)와 6자리(YYYYMM)를 같은 자릿수로 정규화해 비교.
-                candidates.append((max(d if d >= 10**7 else d * 100 for d in dates), path, summary))
-        if not candidates:
+        latest = pick_latest_dataset(paths)
+        if latest is None:
             typer.echo("요약에 날짜가 있는 사업장 데이터셋 경로를 찾지 못했습니다(스웨거 형식 변경?).")
             raise typer.Exit(code=1)
-        _, latest_path, summary = max(candidates)
+        latest_path, summary = latest
         typer.echo(f"최신 데이터셋: {summary}")
-
-        def _pages():
-            page = 1
-            while page <= max_pages:
-                payload = fetcher.get_json(
-                    f"https://api.odcloud.kr/api{latest_path}",
-                    params={"page": page, "perPage": per_page, "serviceKey": key},
-                )
-                data = payload.get("data") if isinstance(payload, dict) else None
-                if not data:
-                    return
-                yield from (d for d in data if isinstance(d, dict))
-                if len(data) < per_page:
-                    return
-                page += 1
-
-        inserted, skipped = ingest_nps_rows(get_sessionmaker(), _pages())
+        rows = iter_snapshot_rows(
+            fetcher, latest_path, service_key=key, per_page=per_page, max_pages=max_pages
+        )
+        inserted, skipped = ingest_nps_rows(get_sessionmaker(), rows)
     except typer.Exit:
         raise
     except Exception as exc:  # 키 누출 차단 — 원문 대신 마스킹 문자열로 보고.
@@ -1179,31 +1148,6 @@ def dedup_report(
     typer.echo("주의: C1 은 비완전(이름·도메인 둘 다 다른 동일기업은 C2/C4 위임)")
 
 
-def confirmed_pairs_from_report(
-    data: dict, *, include_llm: bool, min_confidence: float
-) -> list[tuple[str, str]]:
-    """리포트(dict)에서 **확정 중복 쌍**을 수집한다(머지 입력). 결정적·순수.
-
-    - 확정 티어(reg_no=등록번호 일치, auto=이름高+도메인일치)는 항상 포함.
-    - ``include_llm`` 이면 LLM 판정도 포함하되 ① same=True ② confidence>=임계 ③ **비-스텁**만.
-      스텁(dry_run/키없음)은 도메인root 동일이면 무조건 same 이라 실제 머지 근거로 쓰면
-      공유호스팅·별개 사업부를 오병합한다(제약② — 확실치 않으면 보존). key_a<key_b 보장됨.
-    """
-    from .dedup_resolve.near_dup import CONFIRMED_TIERS
-
-    pairs: list[tuple[str, str]] = [
-        (c["key_a"], c["key_b"])
-        for c in data.get("candidates", [])
-        if c.get("tier") in CONFIRMED_TIERS
-    ]
-    if include_llm:
-        for j in data.get("judged", []):
-            v = j.get("verdict", {})
-            if v.get("same") and v.get("confidence", 0) >= min_confidence and v.get("model") != "stub":
-                pairs.append((j["candidate"]["key_a"], j["candidate"]["key_b"]))
-    return pairs
-
-
 @app.command("dedup-merge")
 def dedup_merge(
     report_path: str = typer.Option(
@@ -1228,6 +1172,7 @@ def dedup_merge(
     from pathlib import Path
 
     from .dedup_resolve.golden import apply_golden, load_cluster_members, resolve_all
+    from .dedup_resolve.report import confirmed_pairs_from_report
     from .storage.db import get_sessionmaker
 
     configure_logging()
@@ -1404,35 +1349,17 @@ def enqueue() -> None:
     사람이 워크벤치에서 직접 이메일을 찾거나 문의폼으로 처리한다. 이미 큐에 있으면 후보만
     갱신(상태·선택 보존)된다.
     """
-    from sqlalchemy import select
-
-    from .schema import CompanyRow, ContactRow
     from .storage.db import get_sessionmaker
-    from .storage.review import enqueue_email_review
+    from .storage.review import enqueue_all_active
 
     configure_logging()
     session = get_sessionmaker(get_settings())()
     try:
-        # 회사별 이메일 후보 맵(있는 회사만).
-        emails = session.execute(
-            select(ContactRow.company_id, ContactRow.value)
-            .where(ContactRow.type == "email")
-            .order_by(ContactRow.company_id, ContactRow.id)
-        ).all()
-        by_company: dict[str, list[str]] = {}
-        for company_id, value in emails:
-            by_company.setdefault(company_id, []).append(value)
-        # 실존(active) 회사 전체를 enqueue — 이메일 없는 회사도 빈 후보로 포함.
-        active_ids = list(
-            session.scalars(select(CompanyRow.id).where(CompanyRow.is_active.is_(True))).all()
-        )
-        for company_id in active_ids:
-            enqueue_email_review(session, company_id, by_company.get(company_id, []))
+        total, with_email = enqueue_all_active(session)
         session.commit()
-        with_email = sum(1 for cid in active_ids if cid in by_company)
         typer.echo(
-            f"검증 큐 백필 완료: 실존 회사 {len(active_ids)}곳 enqueue "
-            f"(이메일 보유 {with_email}곳 / 이메일 없음 {len(active_ids) - with_email}곳)"
+            f"검증 큐 백필 완료: 실존 회사 {total}곳 enqueue "
+            f"(이메일 보유 {with_email}곳 / 이메일 없음 {total - with_email}곳)"
         )
     finally:
         session.close()
@@ -1448,133 +1375,22 @@ def purge_dead_sites(
     (제약 ②: active + 도메인 생존)에 맞춰 정리한다. ``is_active=False`` 로 내려(재-enqueue
     방지) 대기(pending) 검증 큐 행을 제거한다 — 확정·거부분은 감사 위해 보존. 멱등.
     """
-    from sqlalchemy import delete, func, select, update
-
-    from .schema import CompanyRow, ReviewQueueRow
     from .storage.db import get_sessionmaker
+    from .storage.review import count_dead_sites, purge_dead_sites as _purge
 
     configure_logging()
     session = get_sessionmaker(get_settings())()
     try:
-        dead_q = select(CompanyRow.id).where(
-            CompanyRow.site_alive.is_(False), CompanyRow.is_active.is_(True)
-        )
-        n_comp = session.scalar(select(func.count()).select_from(dead_q.subquery())) or 0
-        n_pending = (
-            session.scalar(
-                select(func.count())
-                .select_from(ReviewQueueRow)
-                .where(ReviewQueueRow.company_id.in_(dead_q), ReviewQueueRow.status == "pending")
-            )
-            or 0
-        )
+        n_comp, n_pending = count_dead_sites(session)
         typer.echo(f"대상: 사이트死 회사 {n_comp:,}곳 / 대기 큐 {n_pending:,}건")
         if not apply:
             typer.echo("드라이런(미반영) — 실제 반영하려면 --apply")
             return
-        # 큐 행 삭제를 먼저(dead_q 가 is_active=True 를 참조) → 그 다음 회사 비활성화.
-        session.execute(
-            delete(ReviewQueueRow).where(
-                ReviewQueueRow.company_id.in_(dead_q), ReviewQueueRow.status == "pending"
-            )
-        )
-        session.execute(
-            update(CompanyRow)
-            .where(CompanyRow.site_alive.is_(False), CompanyRow.is_active.is_(True))
-            .values(is_active=False)
-        )
+        _purge(session)
         session.commit()
         typer.echo(f"정리 완료: {n_comp:,}곳 비활성화 + 대기 큐 {n_pending:,}건 제거")
     finally:
         session.close()
-
-
-def backfill_industries(
-    session, classifier, *, fetch_html, limit: int = 0, commit_every: int = 50
-) -> tuple[int, int]:
-    """'미분류'·catch-all 구분의 실존 회사를 재분류해 갱신한다 — (검토, 갱신) 건수 반환.
-
-    파이프라인 유입 시점과 같은 규칙(AMBIGUOUS_LABELS → 분류기, abstain=원래값 유지)을
-    기존 행에 소급 적용한다. 홈페이지 본문(``fetch_html``)이 있을 때만 분류한다 — 없으면
-    (홈페이지 없음·fetch 실패) 이름만 블라인드 분류(오라벨·과금)하지 않고 스킵한다
-    (파이프라인 홈페이지 게이트와 동일 규칙). 닫힌 택소노미 밖 값은 절대 쓰지 않고
-    abstain 은 원래값을 유지하므로 반복 실행해도 안전하다(멱등).
-
-    ``commit_every`` 건마다 중간 커밋한다 — 전체 런은 행당 유료 호출이 있어, 중단 시
-    전량 롤백이면 그만큼의 LLM 지출이 통째로 증발한다(0=끄기, 마지막 커밋은 호출부).
-    """
-    from sqlalchemy import select
-
-    from .schema import CompanyRow, DiscoveredCompanyRow
-    from .sources.taxonomy import AMBIGUOUS_LABELS
-
-    stmt = (
-        select(CompanyRow, DiscoveredCompanyRow.domain)
-        .join(
-            DiscoveredCompanyRow,
-            DiscoveredCompanyRow.canonical_key == CompanyRow.canonical_key,
-        )
-        .where(CompanyRow.is_active.is_(True), CompanyRow.industry.in_(AMBIGUOUS_LABELS))
-        .order_by(CompanyRow.id)
-    )
-    if limit:
-        stmt = stmt.limit(limit)
-    rows = session.execute(stmt).all()
-    updated = 0
-    for i, (company, domain) in enumerate(rows, start=1):
-        html = fetch_html(company.homepage) if company.homepage else None
-        # 홈페이지 게이트(파이프라인 run.py 와 동일): 본문 없으면 이름만 블라인드 분류로
-        # 오라벨(자동차 편중)·과금하지 않고 스킵 — 미분류 유지, 다음 실행에서 재시도(멱등).
-        if not html:
-            continue
-        # 분류기는 계약상 실패를 abstain(None)으로 흡수한다 — 확신 라벨일 때만 갱신.
-        verdict = classifier.classify(company.name, domain, html)
-        if verdict.label and verdict.label != company.industry:
-            company.industry = verdict.label
-            updated += 1
-        if commit_every and i % commit_every == 0:
-            session.commit()  # 중단돼도 여기까지의 재분류(=지출)는 살린다.
-    return len(rows), updated
-
-
-def fetch_industry_html(url: str, *, get, render) -> str | None:
-    """업종 백필용 홈페이지 본문 확보 — 폴백 사다리(www → http → 헤드리스). 실패=None.
-
-    ``get(url)`` 은 httpx 응답(status_code·text), ``render(url)`` 은 헤드리스 렌더 HTML
-    (실패 None)을 돌려주는 주입 함수(테스트=스텁). 2026-08-26 잔여 미분류 표본 40곳 실측:
-    - www 폴백(기존): 루트 무응답·www 만 서빙하는 사이트 회수.
-    - **http 폴백**: https 접속 자체가 실패(ConnectError — 인증서 만료·https 미서빙)한 호스트만
-      http:// 로 1회 더 — ConnectError 12곳 중 3곳 회수. 4xx/5xx 응답을 받은 호스트는 안 한다.
-    - **헤드리스**: 403 은 대부분 봇차단(Cloudflare 등)이라 실브라우저는 통과 — 9곳 중 6곳 회수.
-      406(KR 호스팅 차원 차단)은 브라우저도 막혀 제외. 미통과 챌린지 페이지는 본문으로 안 친다.
-    """
-    import httpx
-
-    scheme, sep, host = url.partition("://")
-    if not sep:
-        scheme, host = "https", url
-    hosts = [host] if host.startswith("www.") else [host, f"www.{host}"]
-    blocked_url: str | None = None  # 403 을 낸 실제 후보 — 헤드리스는 이 URL 을 렌더한다.
-    for h in hosts:
-        for s in dict.fromkeys((scheme, "http")):
-            candidate = f"{s}://{h}"
-            try:
-                r = get(candidate)
-            except (httpx.ConnectError, httpx.ConnectTimeout):  # 접속 자체 실패 → 다음 스킴.
-                continue
-            except Exception:  # 읽기 타임아웃 등 — 접속은 됐으니 http 로 또 기다리지 않는다.
-                break
-            if r.status_code < 400 and r.text:
-                return r.text
-            if r.status_code == 403 and blocked_url is None:
-                blocked_url = candidate
-            break  # 응답은 받았다(4xx/5xx) — 같은 호스트의 다른 스킴은 안 본다.
-    if blocked_url:
-        html = render(blocked_url) or ""
-        low = html.lower()
-        if html and "just a moment" not in low and "cf-chl" not in low:
-            return html
-    return None
 
 
 @app.command("backfill-industry")
@@ -1592,6 +1408,7 @@ def backfill_industry(
 
     from .cost_ledger import CostLedger
     from .enrich.industry_classify import build_classifier
+    from .pipeline.column_backfill import backfill_industries, fetch_industry_html
     from .storage.db import get_sessionmaker
 
     configure_logging()
@@ -1630,58 +1447,6 @@ def backfill_industry(
     )
 
 
-def backfill_dart_markets(
-    session, get_info, *, limit: int = 0, commit_every: int = 50
-) -> tuple[int, int]:
-    """DART 원장 행의 상장여부(listed)·시장 보드(market)를 corp_cls 로 소급 기입한다
-    — (검토, 갱신) 건수 반환.
-
-    대상: registry='dart' 이고 ① listed='unknown'(#130 corp_cls 세분화 이전 코드가 남긴
-    잔재) 또는 ② listed='listed' 인데 market 미상. ``get_info(corp_code)`` 는 DART
-    company.json 응답 dict(실패/미확인=None)를 돌려주는 주입 함수(테스트=스텁, 라이브=API).
-    corp_cls 를 못 받으면 원래값을 유지하므로 반복 실행해도 안전하다(멱등).
-    ``commit_every`` 건마다 중간 커밋한다(중단 시 진행분 보존, 0=끄기).
-    """
-    from sqlalchemy import and_, or_, select
-
-    from .schema import DiscoveredCompanyRow
-    from .sources.dart import _LISTED_CLS, _MARKET_CLS
-
-    stmt = (
-        select(DiscoveredCompanyRow)
-        .where(
-            DiscoveredCompanyRow.registry == "dart",
-            DiscoveredCompanyRow.registry_id.is_not(None),
-            or_(
-                DiscoveredCompanyRow.listed == "unknown",
-                and_(
-                    DiscoveredCompanyRow.listed == "listed",
-                    DiscoveredCompanyRow.market.is_(None),
-                ),
-            ),
-        )
-        .order_by(DiscoveredCompanyRow.canonical_key)
-    )
-    if limit:
-        stmt = stmt.limit(limit)
-    rows = session.scalars(stmt).all()
-    updated = 0
-    for i, row in enumerate(rows, start=1):
-        info = get_info(row.registry_id)
-        cls = (info or {}).get("corp_cls", "")
-        new_listed = _LISTED_CLS.get(cls)
-        if new_listed is None:  # 응답 실패/미지 corp_cls → 원래값 유지(멱등·보수적).
-            continue
-        new_market = _MARKET_CLS.get(cls)
-        if (row.listed, row.market) != (new_listed, new_market):
-            row.listed = new_listed
-            row.market = new_market
-            updated += 1
-        if commit_every and i % commit_every == 0:
-            session.commit()  # 중단돼도 여기까지의 기입(=API 콜 소비분)은 살린다.
-    return len(rows), updated
-
-
 @app.command("backfill-market")
 def backfill_market(
     limit: int = typer.Option(0, help="처리 상한(0=전체) — 소량 시험용"),
@@ -1692,6 +1457,7 @@ def backfill_market(
     company.json 재조회로 채운다. 행당 1콜(무료 쿼터) — DRY-RUN/키 없음이면 무과금
     계약(§2)에 따라 아무것도 하지 않는다.
     """
+    from .pipeline.column_backfill import backfill_dart_markets
     from .sources.dart import _COMPANY_URL
     from .sources.http import Fetcher
     from .storage.db import get_sessionmaker

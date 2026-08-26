@@ -9,7 +9,7 @@ from __future__ import annotations
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from leadcrawler.cli import backfill_industries
+from leadcrawler.pipeline.column_backfill import backfill_industries, fetch_industry_html
 from leadcrawler.enrich.industry_classify import StubClassifier
 from leadcrawler.schema import Base, CompanyRow, DiscoveredCompanyRow
 from leadcrawler.sources.taxonomy import UNCLASSIFIED
@@ -127,7 +127,6 @@ def _get_from(table: dict[str, object]):
 
 def test_fetch_industry_html_http_fallback_only_on_connect_error():
     """https 접속 실패(ConnectError)한 호스트만 http:// 로 재시도한다."""
-    from leadcrawler.cli import fetch_industry_html
 
     import httpx
 
@@ -149,7 +148,6 @@ def test_fetch_industry_html_http_fallback_only_on_connect_error():
 
 def test_fetch_industry_html_headless_on_403_but_not_406():
     """403(봇차단)만 헤드리스로 1회 재시도, 챌린지 페이지는 본문 취급 안 함. 406 은 제외."""
-    from leadcrawler.cli import fetch_industry_html
 
     get, _ = _get_from({"https://c.com": _Resp(403, "blocked")})
     assert fetch_industry_html("https://c.com", get=get, render=lambda u: "<h1>Real</h1>") == \

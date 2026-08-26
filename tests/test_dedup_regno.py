@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from leadcrawler.cli import confirmed_pairs_from_report
 from leadcrawler.dedup import normalize_reg_no
 from leadcrawler.dedup_resolve.near_dup import CompanyRecord, find_duplicate_candidates
-from leadcrawler.dedup_resolve.report import build_report
+from leadcrawler.dedup_resolve.report import build_report, confirmed_pairs_from_report
 
 
 def test_normalize_reg_no() -> None:

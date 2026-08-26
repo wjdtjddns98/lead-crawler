@@ -160,3 +160,26 @@ def run_dedup_report(
     )
     write_report(report, out)
     return report
+
+
+def confirmed_pairs_from_report(
+    data: dict, *, include_llm: bool, min_confidence: float
+) -> list[tuple[str, str]]:
+    """리포트(dict)에서 **확정 중복 쌍**을 수집한다(머지 입력). 결정적·순수.
+
+    - 확정 티어(reg_no=등록번호 일치, auto=이름高+도메인일치)는 항상 포함.
+    - ``include_llm`` 이면 LLM 판정도 포함하되 ① same=True ② confidence>=임계 ③ **비-스텁**만.
+      스텁(dry_run/키없음)은 도메인root 동일이면 무조건 same 이라 실제 머지 근거로 쓰면
+      공유호스팅·별개 사업부를 오병합한다(제약② — 확실치 않으면 보존). key_a<key_b 보장됨.
+    """
+    pairs: list[tuple[str, str]] = [
+        (c["key_a"], c["key_b"])
+        for c in data.get("candidates", [])
+        if c.get("tier") in CONFIRMED_TIERS
+    ]
+    if include_llm:
+        for j in data.get("judged", []):
+            v = j.get("verdict", {})
+            if v.get("same") and v.get("confidence", 0) >= min_confidence and v.get("model") != "stub":
+                pairs.append((j["candidate"]["key_a"], j["candidate"]["key_b"]))
+    return pairs
