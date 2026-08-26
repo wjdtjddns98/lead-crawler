@@ -50,6 +50,42 @@ def suppress_child_windows() -> None:
         _child_windows_suppressed = True
 
 
+def patch_proactor_connection_lost() -> None:
+    """Windows Proactor 루프의 접속 종료 정리에서 소켓 shutdown 실패를 삼킨다(멱등).
+
+    CPython(3.14.5 기준) ``_ProactorBasePipeTransport._call_connection_lost`` 는 ``finally`` 에서
+    ``sock.shutdown()`` 을 무방비로 호출한다 — 브라우저가 keep-alive 를 RST 로 끊으면
+    ``ConnectionResetError(10054)`` 가 터져 uvicorn 콘솔에 "Exception in callback" 트레이스백이
+    찍히고, 그 뒤의 ``close()``·``server._detach()`` 까지 건너뛴다(소켓이 GC 까지 안 닫힘).
+    원본과 같은 본문에서 ``shutdown()`` 한 줄만 ``OSError`` 로 보호한다(10053 abort 등 형제 포함).
+    프로세스 전역 패치 — HTTP 소켓뿐 아니라 모든 Proactor 전송(서브프로세스 파이프 등)에 적용된다.
+    ponytail: 비-Windows 에서도 클래스는 있지만 쓰이지 않으므로 무조건 패치해도 무해.
+    """
+    import socket
+    from asyncio.proactor_events import _ProactorBasePipeTransport as _T
+
+    def _call_connection_lost(self, exc):  # type: ignore[no-untyped-def]
+        if self._called_connection_lost:
+            return
+        try:
+            self._protocol.connection_lost(exc)
+        finally:
+            if hasattr(self._sock, "shutdown") and self._sock.fileno() != -1:
+                try:
+                    self._sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass  # 원격이 먼저 끊은 소켓 — 어차피 바로 close 한다.
+            self._sock.close()
+            self._sock = None
+            server = self._server
+            if server is not None:
+                server._detach(self)
+                self._server = None
+            self._called_connection_lost = True
+
+    _T._call_connection_lost = _call_connection_lost  # type: ignore[method-assign]
+
+
 def configure_logging(level: int = logging.INFO) -> None:
     """structlog 를 표준 로깅 위에 구성한다(중복 호출 안전)."""
     structlog.configure(
