@@ -104,3 +104,56 @@ def test_backfill_limit_caps_examined_rows() -> None:
     assert (examined, updated) == (1, 1)
     assert _industry(s, "a1") == "반도체·디스플레이"
     assert _industry(s, "a2") == UNCLASSIFIED  # limit 밖 — 미검토
+
+
+class _Resp:
+    def __init__(self, status: int, text: str = "") -> None:
+        self.status_code, self.text = status, text
+
+
+def _get_from(table: dict[str, object]):
+    """URL→응답 표. 값이 Exception 이면 접속 실패로 raise."""
+    calls: list[str] = []
+
+    def get(url: str):
+        calls.append(url)
+        v = table.get(url, _Resp(404))
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+    return get, calls
+
+
+def test_fetch_industry_html_http_fallback_only_on_connect_error():
+    """https 접속 실패(ConnectError)한 호스트만 http:// 로 재시도한다."""
+    from leadcrawler.cli import fetch_industry_html
+
+    get, calls = _get_from({
+        "https://a.kr": ConnectionError(), "https://www.a.kr": ConnectionError(),
+        "http://a.kr": _Resp(200, "<p>alive over http</p>"),
+    })
+    assert fetch_industry_html("https://a.kr", get=get, render=lambda u: None) == \
+        "<p>alive over http</p>"
+    # 404 응답을 받은 호스트는 http 폴백 안 함(응답은 받았으므로).
+    get, calls = _get_from({"https://b.kr": _Resp(404), "https://www.b.kr": _Resp(404)})
+    assert fetch_industry_html("https://b.kr", get=get, render=lambda u: None) is None
+    assert calls == ["https://b.kr", "https://www.b.kr"]
+
+
+def test_fetch_industry_html_headless_on_403_but_not_406():
+    """403(봇차단)만 헤드리스로 1회 재시도, 챌린지 페이지는 본문 취급 안 함. 406 은 제외."""
+    from leadcrawler.cli import fetch_industry_html
+
+    get, _ = _get_from({"https://c.com": _Resp(403, "blocked")})
+    assert fetch_industry_html("https://c.com", get=get, render=lambda u: "<h1>Real</h1>") == \
+        "<h1>Real</h1>"
+    assert fetch_industry_html(
+        "https://c.com", get=get, render=lambda u: "<title>Just a moment...</title>"
+    ) is None
+    get, _ = _get_from({"https://d.kr": _Resp(406), "https://www.d.kr": _Resp(406)})
+    rendered: list[str] = []
+    assert fetch_industry_html(
+        "https://d.kr", get=get, render=lambda u: rendered.append(u) or "<p>x</p>"
+    ) is None
+    assert rendered == []

@@ -1537,6 +1537,40 @@ def backfill_industries(
     return len(rows), updated
 
 
+def fetch_industry_html(url: str, *, get, render) -> str | None:
+    """업종 백필용 홈페이지 본문 확보 — 폴백 사다리(www → http → 헤드리스). 실패=None.
+
+    ``get(url)`` 은 httpx 응답(status_code·text), ``render(url)`` 은 헤드리스 렌더 HTML
+    (실패 None)을 돌려주는 주입 함수(테스트=스텁). 2026-08-26 잔여 미분류 표본 40곳 실측:
+    - www 폴백(기존): 루트 무응답·www 만 서빙하는 사이트 회수.
+    - **http 폴백**: https 접속 자체가 실패(ConnectError — 인증서 만료·https 미서빙)한 호스트만
+      http:// 로 1회 더 — ConnectError 12곳 중 3곳 회수. 4xx/5xx 응답을 받은 호스트는 안 한다.
+    - **헤드리스**: 403 은 대부분 봇차단(Cloudflare 등)이라 실브라우저는 통과 — 9곳 중 6곳 회수.
+      406(KR 호스팅 차원 차단)은 브라우저도 막혀 제외. 미통과 챌린지 페이지는 본문으로 안 친다.
+    """
+    scheme, sep, host = url.partition("://")
+    if not sep:
+        scheme, host = "https", url
+    hosts = [host] if host.startswith("www.") else [host, f"www.{host}"]
+    blocked = False
+    for h in hosts:
+        for s in dict.fromkeys((scheme, "http")):
+            try:
+                r = get(f"{s}://{h}")
+            except Exception:  # 접속 실패 → 다음 스킴/호스트.
+                continue
+            if r.status_code < 400 and r.text:
+                return r.text
+            blocked = blocked or r.status_code == 403
+            break  # 응답은 받았다(4xx/5xx) — 같은 호스트의 다른 스킴은 안 본다.
+    if blocked:
+        html = render(url) or ""
+        low = html[:4000].lower()
+        if html and "just a moment" not in low and "cf-chl" not in low:
+            return html
+    return None
+
+
 @app.command("backfill-industry")
 def backfill_industry(
     limit: int = typer.Option(0, help="처리 상한(0=전체) — 소량 시험용"),
@@ -1564,24 +1598,14 @@ def backfill_industry(
         headers={"User-Agent": settings.discovery_user_agent},
     )
 
+    from .enrich.headless import PlaywrightRenderer
+
+    renderer = PlaywrightRenderer(timeout=settings.headless_timeout)
+
     def fetch_html(url: str) -> str | None:
         if classifier.model == "stub":  # dry_run/키없음 — 네트워크 0 계약(§2) 유지.
             return None
-        candidates = [url]
-        # www 폴백 — 루트 도메인이 응답 안 하고 www.* 만 서빙하는 사이트 회수(2026-08-24
-        # 실측: 미분류 잔여 표본 ConnectError 8곳 중 5곳이 www 로 200. 원장용 백필
-        # 스크립트의 www 폴백 선례와 동일 규칙).
-        scheme, sep, rest = url.partition("://")
-        if sep and rest and not rest.startswith("www."):
-            candidates.append(f"{scheme}://www.{rest}")
-        for u in candidates:
-            try:
-                r = client.get(u)
-                if r.status_code < 400 and r.text:
-                    return r.text
-            except Exception:  # 죽은 사이트·타임아웃 → 다음 후보(소진 시 본문 없이 스킵).
-                continue
-        return None
+        return fetch_industry_html(url, get=client.get, render=renderer.render)
 
     session = get_sessionmaker(settings)()
     try:
@@ -1592,6 +1616,7 @@ def backfill_industry(
     finally:
         session.close()
         client.close()
+        renderer.close()
     mode = "스텁(무과금)" if classifier.model == "stub" else f"LLM({classifier.model})"
     typer.echo(
         f"구분 백필 완료[{mode}]: 검토 {examined}건 → 재분류 {updated}건 "
