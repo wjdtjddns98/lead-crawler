@@ -17,14 +17,17 @@ import { krInScope, toCountryOpts } from "../../filterOptions";
 import { MultiPicker, type PickerOption } from "../MultiPicker";
 import { ErrorBox } from "../ErrorBox";
 import { BTN_CONFIRM, BTN_REJECT, EMPTY, TD, TH } from "../../ui";
-import { SECTION_H2, FIELD, FIELD_INLINE, INPUT_WIDE, CRAWL_TARGET, fmt } from "./shared";
+import {
+  SECTION_H2,
+  FIELD,
+  FIELD_INLINE,
+  INPUT_WIDE,
+  CRAWL_TARGET,
+  KR_REGION_OPTS,
+  LISTED_TARGET_OPTIONS,
+  fmt,
+} from "./shared";
 import { ConfirmDialog } from "./ConfirmDialog";
-
-const LISTED_OPTIONS: { value: Listed; label: string }[] = [
-  { value: "unknown", label: "전체" },
-  { value: "listed", label: "상장" },
-  { value: "unlisted", label: "비상장" },
-];
 
 // 크롤 작업 상태 → 한글 라벨. cancelled 는 UI 액션명(중지)과 워딩을 맞춘다.
 const CRAWL_STATUS_LABEL: Record<CrawlJob["status"], string> = {
@@ -60,13 +63,6 @@ function collapseAllIndustries(csv: string, opts: PickerOption[]): string {
   const isAll = opts.length > 0 && opts.every((o) => picked.has(o.value));
   return isAll ? "" : csv;
 }
-
-// KR 17개 시/도(표준 축약형) — BE region.KR_REGIONS 와 동일 목록·순서(#139).
-// 지역 팬아웃은 KR 세그먼트 전용이라 조회 API 없이 고정 목록으로 둔다.
-const KR_REGION_OPTS: PickerOption[] = [
-  "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
-  "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
-].map((r) => ({ value: r, label: r }));
 
 // 크롤 실행 — 국가·업종·상장여부·DB적재 타깃을 저장하고 즉시 크롤을 시작한다(#87 제거분
 // 재통합). 타깃 저장을 함께 유지해 일일 스케줄러 타깃과 동기화 — 이후 '다음 크롤 예약'
@@ -261,7 +257,7 @@ export function CrawlTargetSection() {
               value={listed}
               onChange={(e) => setListed(e.target.value as Listed)}
             >
-              {LISTED_OPTIONS.map((o) => (
+              {LISTED_TARGET_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>

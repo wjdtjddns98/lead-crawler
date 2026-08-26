@@ -244,3 +244,14 @@ def test_segment_helpers_do_not_touch_track_a_jobs(session: Session) -> None:
     assert requeue_segment_job(session, a.id) is None
     session.refresh(a)
     assert a.status == FAILED and a.track == "A" and a.error == "x"
+
+
+def test_requeue_from_cancelled_keeps_cursor_and_bumps_generation(session: Session) -> None:
+    """취소된 잡도 커서 보존 재개(PO 2026-08-26) — 세대 bump 로 구 자식 보고 펜싱."""
+    job = enqueue_segment_job(session, countries="KR", industries="바이오")
+    activate_segment_job(session, job.id)
+    assert record_progress(session, job.id, 0, cursor="dom:kr:c.co.kr", stage="promote")
+    finish_backfill_job(session, job.id, CANCELLED, stop_reason="operator")
+    row = requeue_segment_job(session, job.id)
+    assert row.status == QUEUED and row.promote_cursor == "dom:kr:c.co.kr"
+    assert row.generation == 1 and row.finished_at is None and row.stop_reason is None

@@ -14,6 +14,7 @@ import leadcrawler.pipeline.fill as fill
 
 def _stub_common(monkeypatch, settings) -> None:
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(cli, "_open_run", lambda s: object())  # 스텁 런 — 동일 객체 공유 검증용.
     import leadcrawler.storage.db as db
 
     monkeypatch.setattr(db, "get_sessionmaker", lambda s: object())
@@ -97,3 +98,19 @@ def test_resolve_max_batches_도달시_종료(monkeypatch):
         loop=True, batch=5, workers=1, interval=0.0, min_queue=0, max_batches=2
     )
     assert calls["n"] == 2
+
+
+def test_fill_loop_shares_one_run_across_batches(monkeypatch) -> None:
+    """--loop 의 배치들이 같은 PromoteRun 객체를 받는다(런당 1회 — LLM 상한·registry 체커 공유)."""
+    _stub_common(monkeypatch, SimpleNamespace(dry_run=False))
+    monkeypatch.setattr(fill, "count_targets", lambda sm, countries=None, **kw: 100)
+    runs: list[object] = []
+
+    def fake_fill_batch(settings, sm, *, limit, workers, countries=None, **kw):
+        runs.append(kw["run"])
+        return 1, 0
+
+    monkeypatch.setattr(fill, "fill_batch", fake_fill_batch)
+    cli.fill_emails(loop=True, batch=5, workers=1, interval=0.0, min_queue=0, max_batches=3)
+    assert len(runs) == 3 and len({id(r) for r in runs}) == 1  # 배치 3회, 런 객체 1개.
+    assert runs[0] is not None
