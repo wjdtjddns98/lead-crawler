@@ -137,6 +137,10 @@ def test_fetch_industry_html_http_fallback_only_on_connect_error():
     })
     assert fetch_industry_html("https://a.kr", get=get, render=lambda u: None) == \
         "<p>alive over http</p>"
+    # 루트 404 → www 200 회수(www 폴백).
+    get, calls = _get_from({"https://w.kr": _Resp(404), "https://www.w.kr": _Resp(200, "<p>www</p>")})
+    assert fetch_industry_html("https://w.kr", get=get, render=lambda u: None) == "<p>www</p>"
+    assert calls == ["https://w.kr", "https://www.w.kr"]
     # 404 응답·읽기 타임아웃을 받은 호스트는 http 폴백 안 함(접속은 됐으므로).
     get, calls = _get_from({"https://b.kr": _Resp(404), "https://www.b.kr": httpx.ReadTimeout("x")})
     assert fetch_industry_html("https://b.kr", get=get, render=lambda u: None) is None
@@ -152,6 +156,9 @@ def test_fetch_industry_html_headless_on_403_but_not_406():
         "<h1>Real</h1>"
     assert fetch_industry_html(
         "https://c.com", get=get, render=lambda u: "<title>Just a moment...</title>"
+    ) is None
+    assert fetch_industry_html(  # 마커가 본문 뒤쪽에 있어도 챌린지 페이지로 판정.
+        "https://c.com", get=get, render=lambda u: "<style>" + "a" * 5000 + "</style>cf-chl"
     ) is None
     get, _ = _get_from({"https://d.kr": _Resp(406), "https://www.d.kr": _Resp(406)})
     rendered: list[str] = []

@@ -80,7 +80,9 @@ def main() -> int:
         by_label: dict[str, list[str]] = defaultdict(list)
         for key, name in rows:
             label = resolved.get(normalize_name(name or ""))
-            if label:
+            # company 대상은 catch-all('기타 제조') 부착 금지 — 정보량 없이 라벨만 바뀌고
+            # 다음 실행에서 또 대상으로 잡힌다(멱등 약속 위반).
+            if label and not (args.target == "company" and label in AMBIGUOUS_LABELS):
                 by_label[label].append(key)
         planned = sum(len(v) for v in by_label.values())
         print(f"[nps-match] 대상 {len(rows):,} 중 매칭 {planned:,}", flush=True)

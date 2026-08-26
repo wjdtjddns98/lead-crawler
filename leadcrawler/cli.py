@@ -1571,7 +1571,7 @@ def fetch_industry_html(url: str, *, get, render) -> str | None:
             break  # 응답은 받았다(4xx/5xx) — 같은 호스트의 다른 스킴은 안 본다.
     if blocked_url:
         html = render(blocked_url) or ""
-        low = html[:4000].lower()
+        low = html.lower()
         if html and "just a moment" not in low and "cf-chl" not in low:
             return html
     return None
