@@ -23,7 +23,7 @@ from starlette.background import BackgroundTask
 
 from .. import __version__
 from ..config import get_settings
-from ..logging import get_logger
+from ..logging import get_logger, patch_proactor_connection_lost
 from ..outreach import preview as outreach_preview
 from ..outreach import send_campaign
 from ..schema import CompanyRow, ReviewQueueRow, UserRow
@@ -101,6 +101,7 @@ _backfill_resume_done = False
 
 def create_app() -> FastAPI:
     """FastAPI 앱 인스턴스를 생성한다."""
+    patch_proactor_connection_lost()  # Windows: 원격 RST 로 끊긴 접속의 종료 트레이스백 억제.
     app = FastAPI(title="lead-crawler 검증 웹앱", version=__version__)
     # 당겨가기(claim) 배타성은 PG 의 FOR UPDATE SKIP LOCKED 에 의존한다 — SQLite 는 행잠금이
     # 없어 다중 사용자 동시 점유에서 충돌이 날 수 있다. 운영(다중 직원)은 반드시 PostgreSQL.
