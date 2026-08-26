@@ -297,10 +297,17 @@ class EdinetSource:
         return out
 
     def _candidate(self, segment: Segment, rec: dict[str, str]) -> DiscoveredCompany | None:
-        """레코드 1건 → DiscoveredCompany(형식 불일치는 제외)."""
-        name = opt_str(rec.get(_COL_NAME))
+        """레코드 1건 → DiscoveredCompany(형식 불일치는 제외).
+
+        표시명은 **공식 영문 상호 우선**(검증 UI·엑셀 담당자가 일문을 못 읽는 운영 요구,
+        2026-08-26 PO 결정 — 기존 행도 같은 규칙으로 일괄 전환됨). 일문 상호는 name_eng
+        자리에 보관한다(필드명과 어긋나지만 원문 보존·재식별용 — 스키마 증설 없이).
+        영문명 없는 ~10% 는 일문 그대로.
+        """
+        jp_name = opt_str(rec.get(_COL_NAME))
+        eng_name = opt_str(rec.get(_COL_NAME_ENG))
         code = opt_str(rec.get(_COL_CODE))
-        if not name or not code:
+        if not jp_name or not code:
             return None
         listed_seg = Segment(
             country=segment.country, industry=segment.industry, listed="listed"
@@ -308,7 +315,7 @@ class EdinetSource:
         return build_company(
             source=self.name,
             segment=listed_seg,
-            name=name,
+            name=eng_name or jp_name,
             domain=None,  # 코드리스트에 URL 없음 — resolve_domains 가 영문명으로 해석.
             registry="edinet",
             registry_id=code,
@@ -316,6 +323,6 @@ class EdinetSource:
             address=opt_str(rec.get(_COL_ADDR)),
             reg_no=opt_str(rec.get(_COL_CORP_NO)),
             ticker=_ticker(rec.get(_COL_SEC_CODE)),
-            name_eng=opt_str(rec.get(_COL_NAME_ENG)),
+            name_eng=jp_name if eng_name else None,
             listed_verified=True,  # 上場区分 필터 통과 — 상장은 항상 실측값.
         )
