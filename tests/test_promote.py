@@ -166,7 +166,8 @@ def test_promote_batch_isolates_single_company_failure(tmp_path, monkeypatch) ->
     monkeypatch.setattr(pmod, "_build_lead", _fake_build_lead)
     persisted: list[str] = []
     monkeypatch.setattr(
-        pmod, "_persist_lead", lambda ws, dc, lead: persisted.append(dc.canonical_key)
+        pmod, "_persist_lead",
+        lambda ws, dc, lead: persisted.append(dc.canonical_key) or True,
     )
     for cls in ("Enricher", "ExistenceVerifier", "EmailValidator"):
         monkeypatch.setattr(pmod, cls, lambda *a, **k: SimpleNamespace())
@@ -192,7 +193,9 @@ def test_promote_batch_isolates_single_company_failure(tmp_path, monkeypatch) ->
 
 def _fake_run():
     """런 범위 컴포넌트 스텁 — 네트워크/LLM 없이 promote_batch 배선만 검증."""
-    return pmod.PromoteRun(cost_ledger=object(), registry_checker=None, classifier=None)
+    return pmod.PromoteRun(
+        cost_ledger=SimpleNamespace(refresh=lambda: None), registry_checker=None, classifier=None
+    )
 
 
 def test_promote_batch_applies_domain_guards_and_still_advances(tmp_path, monkeypatch) -> None:
@@ -221,7 +224,7 @@ def test_promote_batch_applies_domain_guards_and_still_advances(tmp_path, monkey
         return SimpleNamespace(company=SimpleNamespace(is_active=True), email=None)
 
     monkeypatch.setattr(pmod, "_build_lead", _fake_build_lead)
-    monkeypatch.setattr(pmod, "_persist_lead", lambda ws, dc, lead: None)
+    monkeypatch.setattr(pmod, "_persist_lead", lambda ws, dc, lead: True)
     for cls in ("Enricher", "ExistenceVerifier", "EmailValidator"):
         monkeypatch.setattr(pmod, cls, lambda *a, **k: SimpleNamespace())
 
@@ -282,3 +285,28 @@ def test_count_promote_targets_matches_filters(tmp_path) -> None:
     # 모순 조합(exclude+only)은 조용한 0건 no-op 대신 즉시 거부(하위 _scoped 계약 그대로).
     with pytest.raises(ValueError):
         pmod._scoped(pmod._TARGET_SQL, ["KR"], exclude_listed=True, only_listed=True)
+
+
+def test_promote_batch_counts_only_committed(tmp_path, monkeypatch) -> None:
+    """_persist_lead 가 False(저장 실패)면 promoted/emails 미증가·failed +1, 커서는 전진."""
+    s, sm = _mk_sm(tmp_path, "pd_persistfail")
+    with sm() as session:
+        for key, dom in [("dom:kr:p1.co.kr", "p1.co.kr"), ("dom:kr:p2.co.kr", "p2.co.kr")]:
+            session.add(DiscoveredCompanyRow(
+                canonical_key=key, name=dom, country="KR",
+                industry="게임", source="nps", domain=dom,
+            ))
+        session.commit()
+    monkeypatch.setattr(pmod, "_build_lead", lambda dc, **kw: SimpleNamespace(
+        company=SimpleNamespace(is_active=True), email="x@y.kr",
+    ))
+    monkeypatch.setattr(
+        pmod, "_persist_lead", lambda ws, dc, lead: dc.canonical_key.endswith("p2.co.kr")
+    )
+    for cls in ("Enricher", "ExistenceVerifier", "EmailValidator"):
+        monkeypatch.setattr(pmod, cls, lambda *a, **k: SimpleNamespace())
+    rows, last_key, promoted, emails, failed = pmod.promote_batch(
+        s, sm, run=_fake_run(), after="", limit=10, workers=1, guards=(set(), set()),
+    )
+    assert (rows, promoted, emails, failed) == (2, 1, 1, 1)
+    assert last_key == "dom:kr:p2.co.kr"

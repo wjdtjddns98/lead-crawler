@@ -176,6 +176,17 @@ class _ManagedJob:
             time.sleep(min(5.0, left))
 
 
+def _open_run(settings):  # noqa: ANN001, ANN202
+    """관리형 CLI 런당 1회 여는 공유 컴포넌트(:class:`PromoteRun`) — 테스트가 스텁하는 지점.
+
+    ponytail: 관리형 자식은 루프 종료 = 프로세스 종료라 registry 체커를 명시 close 하지 않는다
+    (OS 가 회수). 장수 프로세스에서 쓰게 되면 try/finally 로 ``run.close()`` 를 넣을 것.
+    """
+    from .pipeline.fill import PromoteRun
+
+    return PromoteRun.open(settings)
+
+
 def _throttled(should_stop, *, sec: float = 5.0):  # noqa: ANN001, ANN202
     """짧은 세션을 여는 폴 함수(예: ``_ManagedJob.should_stop``)를 스로틀한다.
 
@@ -297,6 +308,7 @@ def fill_emails(
     # 프로세스 수명 동안 보유한다(1 CLI 호출 = 1 프로세스 불변식 — 같은 프로세스에서
     # 이 커맨드를 재호출하면 PG 에선 자기 잠금에 막힌다. 재호출 용도가 생기면 try/finally).
     _lock = _acquire_track_lock_or_exit(settings, "A", "fill")
+    _run = _open_run(settings)  # 런당 1회 — LLM 호출 상한·registry 체커를 배치 간 공유.
     bad = mj.invalid_reason("A")
     if bad:
         typer.echo(f"[fill] 관리형 job 검증 실패 — {bad}. 중단.")
@@ -309,6 +321,7 @@ def fill_emails(
         processed, emails = fill_batch(
             settings, sm, limit=batch, workers=workers, countries=scope,
             stall_exit_s=stall_s, **filters,
+            run=_run,
         )
         mj.report(processed=processed, emails=emails, batches=1)
         typer.echo(f"[fill] 처리 {processed}, 신규이메일 {emails}")
@@ -333,6 +346,7 @@ def fill_emails(
         processed, emails = fill_batch(
             settings, sm, limit=batch, workers=workers, countries=scope,
             stall_exit_s=stall_s, **filters,
+            run=_run,
         )
         # ponytail: remaining 은 배치 직전 카운트(한 배치 지연 근사) — 정밀해지면 재count.
         if not mj.report(processed=processed, emails=emails, batches=1, remaining=pending):
@@ -434,6 +448,7 @@ def backfill_resolve_domains(
     # 프로세스 수명 동안 보유한다(1 CLI 호출 = 1 프로세스 불변식 — 같은 프로세스에서
     # 이 커맨드를 재호출하면 PG 에선 자기 잠금에 막힌다. 재호출 용도가 생기면 try/finally).
     _lock = _acquire_track_lock_or_exit(settings, "C", "resolve")
+    _run = _open_run(settings)  # 런당 1회 — LLM 호출 상한·registry 체커를 배치 간 공유.
     bad = mj.invalid_reason("C")
     if bad:
         typer.echo(f"[resolve] 관리형 job 검증 실패 — {bad}. 중단.")
@@ -446,6 +461,7 @@ def backfill_resolve_domains(
         processed, resolved, promoted = resolve_batch(
             settings, sm, limit=batch, workers=workers, countries=scope,
             stall_exit_s=stall_s, **filters,
+            run=_run,
         )
         mj.report(processed=processed, resolved=resolved, promoted=promoted, batches=1)
         typer.echo(f"[resolve] 처리 {processed}, 도메인해석 {resolved}, 신규승격 {promoted}")
@@ -470,6 +486,7 @@ def backfill_resolve_domains(
         processed, resolved, promoted = resolve_batch(
             settings, sm, limit=batch, workers=workers, countries=scope,
             stall_exit_s=stall_s, **filters,
+            run=_run,
         )
         # ponytail: remaining 은 배치 직전 카운트(한 배치 지연 근사) — 정밀해지면 재count.
         if not mj.report(

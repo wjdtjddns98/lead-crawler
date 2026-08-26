@@ -21,6 +21,7 @@ def settings(tmp_path, monkeypatch) -> Settings:
     s = Settings(database_url=f"sqlite:///{tmp_path}/mc.db", dry_run=False)
     init_db(s)
     monkeypatch.setattr(cli, "get_settings", lambda: s)
+    monkeypatch.setattr(cli, "_open_run", lambda s: None)  # 배치 함수가 스텁이라 컴포넌트 불요.
     return s
 
 

@@ -477,7 +477,7 @@ def pause_backfill_job(session: Session, job_id: str) -> BackfillJobRow | None:
 
 
 def requeue_segment_job(session: Session, job_id: str) -> BackfillJobRow | None:
-    """일시정지·실패·예산소진 트랙 S 작업을 대기열로 되돌린다(커서·카운터 보존).
+    """일시정지·실패·예산소진·취소 트랙 S 작업을 대기열로 되돌린다(커서·카운터 보존).
 
     이전 실행의 잔재(에러·취소 플래그·종료시각·정지사유·pid)를 지운다 — 취소 플래그가 남으면
     재활성 직후 자식이 ``should_stop`` 으로 즉시 종료되는 조용한 루프가 생긴다(리뷰 MED).
@@ -487,7 +487,7 @@ def requeue_segment_job(session: Session, job_id: str) -> BackfillJobRow | None:
         .where(
             BackfillJobRow.id == job_id,
             BackfillJobRow.track == TRACK_S,
-            BackfillJobRow.status.in_((PAUSED, FAILED, BUDGET_EXHAUSTED)),
+            BackfillJobRow.status.in_((PAUSED, FAILED, BUDGET_EXHAUSTED, CANCELLED)),
         )
         .values(
             status=QUEUED,
@@ -497,6 +497,9 @@ def requeue_segment_job(session: Session, job_id: str) -> BackfillJobRow | None:
             finished_at=None,
             stop_reason=None,
             pid=None,
+            # 세대 bump — 취소된 잡의 (혹시 남은) 구 자식 보고를 펜싱(PO 결정 2026-08-26: 취소건도
+            # 커서 보존 재개 허용 — 실수로 취소한 잡을 처음부터 다시 발견하지 않게).
+            generation=BackfillJobRow.generation + 1,
             updated_at=datetime.now(timezone.utc),
         )
         .execution_options(synchronize_session=False)

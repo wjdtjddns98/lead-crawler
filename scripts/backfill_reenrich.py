@@ -107,8 +107,12 @@ def main() -> int:
             for dc, lead in pool.map(_work, targets):
                 done += 1
                 if lead is not None:
-                    _persist_lead(write_session, dc, lead)
-                    if lead.email is not None:
+                    # 커밋 성공 + 실존 저장분만 이메일로 집계(_persist_lead bool 반환).
+                    if (
+                        _persist_lead(write_session, dc, lead)
+                        and lead.company.is_active
+                        and lead.email is not None
+                    ):
                         emails += 1
                 if done % 50 == 0 or done == total:
                     el = time.monotonic() - t0

@@ -726,23 +726,27 @@ def _persist_inline_dup(session: Session, dc: DiscoveredCompany, survivor_key: s
         log.info("persist.skip.conflict", key=dc.canonical_key)
 
 
-def _persist_lead(session: Session, dc: DiscoveredCompany, lead: CompanyLead) -> None:
+def _persist_lead(session: Session, dc: DiscoveredCompany, lead: CompanyLead) -> bool:
     """한 기업을 독립 트랜잭션으로 영속화한다.
 
     원장은 항상 기록(제약 ①), 회사 본체는 실존(active)만 저장(제약 ②). 동시 워커가
     같은 기업을 먼저 적재해 PK/UNIQUE 충돌이 나면 해당 기업만 스킵(배치 전체 보호).
     그 외 DB 예외도 기업 1건 격리로 흡수한다 — 비정상 데이터 1건(예: 컬럼 길이 초과)이
     연속(24/7) 크롤 잡 전체를 죽인 실사고의 방어선. rollback 으로 세션을 살려 다음
-    기업 적재를 계속한다.
+    기업 적재를 계속한다. 반환 = 커밋 성공 여부 — 호출자는 이 값으로만 promoted/emails 를
+    센다(저장 실패를 성공으로 집계하던 카운터 부풀림 차단, 세그먼트 잡 대시보드 신뢰도).
     """
     try:
         save_discovered(session, dc)
         if lead.company.is_active:
             save_lead(session, lead, source=dc.source)
         session.commit()
+        return True
     except IntegrityError:
         session.rollback()
         log.info("persist.skip.conflict", key=dc.canonical_key)
+        return False
     except Exception as exc:
         session.rollback()
         log.warning("persist.skip.error", key=dc.canonical_key, err=str(exc)[:300])
+        return False
