@@ -65,8 +65,12 @@ def send_one(
         server = smtplib.SMTP(
             settings.smtp_send_host, settings.smtp_send_port, timeout=settings.smtp_timeout
         )
-        server.starttls()
-        server.login(sender, settings.smtp_send_password)
+        try:
+            server.starttls()
+            server.login(sender, settings.smtp_send_password)
+        except Exception:  # TLS/로그인 실패 — 열린 소켓을 호출자가 못 받으므로 여기서 닫는다.
+            server.close()
+            raise
     server.send_message(msg)
     return server
 

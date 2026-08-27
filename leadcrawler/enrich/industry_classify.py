@@ -206,7 +206,7 @@ class ClaudeClassifier:
                 text=_text_from_html(text) or "(없음)",
             )
             # auth_token 이면 Authorization: Bearer(구독 auth), 아니면 x-api-key(종량 API).
-            # 인스턴스당 1회 생성 — SDK 클라이언트는 스레드-안전(워커 공유 OK).
+            # 인스턴스당 1회 생성 — 워커 공유 근거는 llm.py 모듈 docstring.
             if self._client is None:
                 with self._lock:  # 워커 공유 인스턴스 — 최초 버스트에서 중복 생성 방지(더블체크).
                     if self._client is None:

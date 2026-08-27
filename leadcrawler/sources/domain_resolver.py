@@ -479,6 +479,8 @@ _MODEL_ALIASES = {
 
 @lru_cache(maxsize=4)
 def _sdk_client(api_key: str, auth_token: str) -> Any:
+    # ponytail: lru_cache 는 미스 시 본문을 락 밖에서 실행 — 동시 최초호출에 여분 클라이언트가
+    # 잠깐 생길 수 있으나 1회성·비용 미미라 방치(필요하면 industry_classify 의 더블체크 락 패턴).
     return anthropic_client(api_key=api_key, auth_token=auth_token, max_retries=8)
 
 
