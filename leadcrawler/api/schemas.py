@@ -45,6 +45,7 @@ class ReviewItem(BaseModel):
     homepage: str | None = None
     site_alive: bool = False
     form: str | None = None  # 문의폼 URL(이메일 없을 때 폼으로 처리)
+    phone: str | None = None  # 대표 전화(크롤 tel:/본문 또는 등록처 폴백) — 엑셀 C(연락처) 컬럼
     note: str | None = None  # 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼
     has_attachment: bool | None = None  # 첨부파일 유무(검수자 체크, None=미확인)
     manager: str | None = None  # 상대 회사 담당자명(검수자 기입) — 엑셀 H(담당자) 컬럼

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from urllib.parse import unquote, urljoin, urlparse
 
 from selectolax.parser import HTMLParser
@@ -15,8 +16,32 @@ from ..dedup import normalize_domain
 from ..emailrules import classify_role, is_accepted
 from ..models import Contact, ContactType, ExtractMethod
 
-# 이메일 추출 정규식(TLD 길이 상한으로 백트래킹 억제). 전화는 tel: 링크만 신뢰.
+# 이메일 추출 정규식(TLD 길이 상한으로 백트래킹 억제).
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,24}")
+# 본문 전화 패턴 — tel: 링크 없이 텍스트로만 표기하는 사이트(KR 다수)용. 정밀도 우선:
+# 구분자(-.공백)로 묶인 정형 서식만 잡고, 앞뒤로 숫자가 이어지면(IP·날짜·사업자번호·금액)
+# 차단한다. 무구분 숫자열(0212345678)은 안 잡는다 — 등록처 phone 폴백이 보완.
+# ponytail: 국가별 정밀 검증(libphonenumber)은 오탐이 실측되면.
+_PHONE_TEXT_RE = re.compile(
+    r"(?<![\d\-])(?<!\d\.)(?:"
+    r"\+\d{1,3}[-.\s]?\(?\d{1,4}\)?(?:[-.\s]?\d{2,4}){1,3}"  # +82-2-1234-5678 · +1 (760) 245-2600
+    # 02-1234-5678 · (031) 123-4567. 지역번호 뒤 구분자 필수 — 미국 ZIP+4(02138-1234) 오탐 차단.
+    r"|(?:\(0\d{1,2}\)\s?|0\d{1,2}[-.\s])\d{3,4}[-.\s]\d{4}"
+    # 1588-1234 (KR 대표번호 — 실제 접두만, 뒤 4자리가 연도면 저작권 연도범위 오탐이라 제외)
+    r"|1(?:5(?:44|66|77|88|99)|6(?:00|44|61|66|70|88)|8(?:00|11|33|55|66|77|99))"
+    r"[-.\s](?!(?:19|20)\d\d(?!\d))\d{4}"
+    # (760) 245-2600 · 760-245-2600 (NANP). 공백·점 구분(123 456 7890 · v1.234.5678)은 계좌번호·
+    # 버전 오탐이라 제외. ponytail: 점 구분 US 번호는 tel: 링크·등록처(EDGAR) 폴백이 보완.
+    r"|(?:\(\d{3}\)\s?|\d{3}-)\d{3}-\d{4}"
+    r")(?![.\-]?\d)"
+)
+# 팩스 표기 제외 — 직전("FAX : 02-…", "팩스번호: 02-…", "F. 02-…", "Facsimile", "전송")·
+# 직후("02-… (FAX)", "02-… 팩스"). 본문은 NFKC 정규화 후 스캔(전각 ＦＡＸ·０２－… → 반각).
+_FAX_BEFORE_RE = re.compile(
+    r"(?:fax|facsimile|팩스|전송)(?:\s*\(?fax\)?)?(?:\s*(?:번호|no))?\s*[.:]?\s*$|\bf\s*[.:]\s*$",
+    re.IGNORECASE,
+)
+_FAX_AFTER_RE = re.compile(r"^\s*[(:]?\s*(?:fax|facsimile|팩스|전송)", re.IGNORECASE)
 # 신뢰불가 페이지의 본문 정규식 스캔 길이 상한(ReDoS/대용량 CPU 방지).
 _MAX_TEXT_SCAN = 200_000
 
@@ -230,7 +255,20 @@ def extract_phones(
 
     for node in tree.css("a[href^='tel:']"):
         href = (node.attributes.get("href") or "")[len("tel:"):]
-        _add(href, 0.85)
+        _add(unquote(href), 0.85)
+
+    # 본문 텍스트 서식 매치 — tel: 보다 낮은 신뢰도(사람이 워크벤치에서 확인). body 안의
+    # script/style(트래킹 ID·인라인 JSON·CSS) 텍스트는 제외 — 공유 ``tree`` 는 다른 추출기가
+    # 이어 쓰므로 변형하지 않고 스캔용으로 한 번 더 파싱한다.
+    scan = HTMLParser(html or "")
+    scan.strip_tags(["script", "style", "noscript", "template"])
+    text = unicodedata.normalize("NFKC", (scan.text(separator=" ") or "")[:_MAX_TEXT_SCAN])
+    for m in _PHONE_TEXT_RE.finditer(text):
+        if _FAX_BEFORE_RE.search(text[max(0, m.start() - 14) : m.start()]):
+            continue
+        if _FAX_AFTER_RE.search(text[m.end() : m.end() + 12]):
+            continue
+        _add(m.group(0), 0.5)
 
     return list(found.values())
 

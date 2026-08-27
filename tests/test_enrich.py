@@ -80,6 +80,32 @@ def test_extract_phones() -> None:
     assert all(p.type is ContactType.PHONE for p in phones)
 
 
+def test_extract_phones_from_body_text() -> None:
+    # tel: 링크 없이 텍스트로만 표기하는 사이트(KR 다수) — 정형 서식만 잡고 팩스·사업자번호·
+    # 법인번호·IP·날짜·금액·무구분 숫자열은 안 잡는다(정밀도 우선).
+    html = (
+        "<p>TEL : 02-1234-5678</p><p>FAX : 02-1234-5679</p><p>F. 02-1234-5670</p>"
+        "<p>팩스번호 : 02-1234-5671 · 02-1234-5672 (FAX) · 02-1234-5673 팩스</p>"
+        "<p>Cambridge, MA 02138-1234 · Boston, MA 02116-0001</p>"
+        "<p>계좌번호 123 456 7890 · Build v123.456.7890 · Facsimile: 02-1234-5674</p>"
+        "<p>전송(FAX) : 02-1234-5675 · ＦＡＸ：０２－１２３４－５６７６ · T.02-1234-5677</p>"
+        '<script>var t = "02-9999-8888";</script><style>.a:before{content:"02-7777-6666"}</style>'
+        "<p>고객센터 1588-1234 · 해외 +82-2-9876-5432 · US (760) 245-2600</p>"
+        "<p>사업자등록번호 123-45-67890 법인번호 110111-1234567</p>"
+        "<p>서버 192.168.160.100 · 2026-08-27 · 2026.08.27 · 매출 10 000 000 000원</p>"
+        "<p>무구분 0212345678 · (c) 1999-2024 · Copyright 1588-2024</p>"
+        '<a href="tel:02-1234-5678">대표</a>'
+    )
+    phones = {c.value: c.confidence for c in extract_phones(html)}
+    assert phones == {
+        "02-1234-5678": 0.85,  # tel: 링크가 본문 매치보다 우선(같은 번호는 1건).
+        "1588-1234": 0.5,
+        "+82-2-9876-5432": 0.5,
+        "(760) 245-2600": 0.5,
+        "02-1234-5677": 0.5,  # "T.02-…" — 점 직전이 숫자가 아니면 허용.
+    }
+
+
 def test_extract_form_detects_contact_form() -> None:
     form = extract_form(_CONTACT, page_url="https://acme.co.kr/contact")
     assert form is not None
