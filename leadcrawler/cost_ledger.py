@@ -242,12 +242,19 @@ class CostLedger:
         ``month_total_krw`` 가 과소집계되어 예산 가드가 잠깐 눈멀 수 있으므로 warning 으로
         운영자가 인지하게 한다(info 아님).
         """
+        from sqlalchemy import text
+
         from .schema import CostLedgerRow
         from .storage.db import get_sessionmaker
 
         try:
             session = get_sessionmaker(self.settings)()
             try:
+                # 과금 1건당 커밋 1회 = WAL fsync 1회(업종 LLM 런당 최대 5,000회). 비동기 커밋은
+                # 커밋 즉시 다른 세션에 보이므로(예산가드 정확도 불변) PG 크래시 직전 수백 ms 분만
+                # 유실 가능 — 원장 과소집계 허용 범위. SQLite(테스트)엔 해당 없음.
+                if session.bind is not None and session.bind.dialect.name == "postgresql":
+                    session.execute(text("SET LOCAL synchronous_commit = off"))
                 session.add(
                     CostLedgerRow(
                         id=uuid4().hex[:12],

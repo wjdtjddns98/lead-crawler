@@ -19,11 +19,12 @@ C1(:mod:`near_dup`)이 분류한 후보 중 **자동제거(auto)도 둘다유지
 from __future__ import annotations
 
 import json
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
 from ..cost_ledger import SupportsCostLedger
+from ..llm import anthropic_client
 from ..logging import get_logger
 from .near_dup import DuplicateCandidate
 
@@ -128,6 +129,7 @@ class ClaudeJudge:
         self._api_key = api_key
         self.model = model  # public — SupportsJudge 계약(과금 판별·audit 단일 출처)
         self._max_tokens = max_tokens
+        self._client: Any = None  # 지연 생성 후 재사용.
 
     def judge(self, candidate: DuplicateCandidate) -> JudgeVerdict:
         prompt = _PROMPT.format(
@@ -138,10 +140,9 @@ class ClaudeJudge:
             country=candidate.country,
         )
         try:
-            import anthropic
-
-            client = anthropic.Anthropic(api_key=self._api_key)
-            msg = client.messages.create(
+            if self._client is None:
+                self._client = anthropic_client(api_key=self._api_key)
+            msg = self._client.messages.create(
                 model=self.model,
                 max_tokens=self._max_tokens,
                 messages=[{"role": "user", "content": prompt}],

@@ -75,7 +75,7 @@ def test_enabled_sends_logs_and_dedups(db_settings, monkeypatch) -> None:
     sent: list[str] = []
     monkeypatch.setattr(
         outreach, "send_one",
-        lambda settings, *, to, subject, body, from_display="": sent.append(to),
+        lambda settings, *, to, subject, body, from_display="", server=None: sent.append(to),
     )
     s = _settings(email_send_enabled=True)
     with session_scope(s) as sess:
@@ -93,7 +93,7 @@ def test_country_industry_filter(db_settings, monkeypatch) -> None:
     sent: list[str] = []
     monkeypatch.setattr(
         outreach, "send_one",
-        lambda settings, *, to, subject, body, from_display="": sent.append(to),
+        lambda settings, *, to, subject, body, from_display="", server=None: sent.append(to),
     )
     s = _settings(email_send_enabled=True)
     with session_scope(s) as sess:
@@ -113,7 +113,7 @@ def test_daily_cap_limits_send(db_settings, monkeypatch) -> None:
 
 
 def test_failure_is_logged_and_continues(db_settings, monkeypatch) -> None:
-    def _boom(settings, *, to, subject, body, from_display=""):
+    def _boom(settings, *, to, subject, body, from_display="", server=None):
         if to == "ir@a.co.kr":
             raise RuntimeError("smtp refused")
 
@@ -132,7 +132,7 @@ def test_sends_persist_across_request_rollback(db_settings, monkeypatch) -> None
     sent: list[str] = []
     monkeypatch.setattr(
         outreach, "send_one",
-        lambda settings, *, to, subject, body, from_display="": sent.append(to),
+        lambda settings, *, to, subject, body, from_display="", server=None: sent.append(to),
     )
     s = _settings(email_send_enabled=True)
     # 요청 세션(get_db)을 모사: 발송 후 핸들러 예외처럼 rollback 한다.
@@ -236,3 +236,46 @@ def test_stale_sending_of_other_email_releases_cap(db_settings) -> None:
         db_settings, email="ir@b.co.kr", company_id="c2", subject="s",
         sent_by=None, cap=1, now=later,
     ) == "reserved"
+
+
+def test_send_campaign_reuses_smtp_connection(db_settings, monkeypatch) -> None:
+    """send_one 이 돌려준 연결을 다음 수신자에 그대로 넘긴다(수신자마다 접속·로그인 X)."""
+    seen: list = []
+
+    def fake_send_one(settings, *, to, subject, body, from_display="", server=None):
+        seen.append(server)
+        return server if server is not None else object()
+
+    monkeypatch.setattr(outreach, "send_one", fake_send_one)
+    monkeypatch.setattr(outreach, "_smtp_alive", lambda s: True)  # 연결 생존(더미엔 noop 없음).
+    monkeypatch.setattr(outreach, "_smtp_quit", lambda s: seen.append(("quit", s)))
+    s = _settings(email_send_enabled=True)
+    with session_scope(s) as sess:
+        out = outreach.send_campaign(s, sess, subject="제목", body="본문")
+    assert out["sent"] == 3
+    assert seen[0] is None and seen[1] is seen[2] is not None  # 2번째부터 같은 연결 재사용.
+    assert seen[-1] == ("quit", seen[1])  # 캠페인 끝에 정리.
+
+
+def test_send_campaign_dead_idle_connection_is_replaced_not_retried(db_settings, monkeypatch) -> None:
+    """NOOP 실패한 재사용 연결은 버리고 새 연결로 발송. 발송 중 예외는 재시도 없이 failed 1건."""
+    import smtplib
+
+    calls: list = []
+
+    def fake_send_one(settings, *, to, subject, body, from_display="", server=None):
+        calls.append(("send", to, server))
+        if to == "ir@b.co.kr":  # 발송 중 끊김 — 재시도(이중발송) 금지.
+            raise smtplib.SMTPServerDisconnected("mid-DATA")
+        return server if server is not None else object()
+
+    monkeypatch.setattr(outreach, "send_one", fake_send_one)
+    monkeypatch.setattr(outreach, "_smtp_alive", lambda s: False)  # 유휴 끊김 시뮬레이션.
+    monkeypatch.setattr(outreach, "_smtp_quit", lambda s: None)
+    s = _settings(email_send_enabled=True)
+    with session_scope(s) as sess:
+        out = outreach.send_campaign(s, sess, subject="제목", body="본문")
+    assert out["sent"] == 2 and out["failed"] == 1
+    sends = [c for c in calls if c[0] == "send"]
+    assert len(sends) == 3  # 수신자 3명 = 발송 시도 3회(실패 건 재시도 0).
+    assert all(c[2] is None for c in sends)  # 죽은 연결은 매번 교체돼 server=None 으로 진입.

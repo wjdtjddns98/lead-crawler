@@ -40,10 +40,18 @@ def _utcnow() -> datetime:
 
 
 def send_one(
-    settings: Settings, *, to: str, subject: str, body: str, from_display: str = ""
-) -> None:
-    """SMTP(STARTTLS+로그인)로 1통 발송한다. 실패 시 예외를 던진다.
+    settings: Settings,
+    *,
+    to: str,
+    subject: str,
+    body: str,
+    from_display: str = "",
+    server: smtplib.SMTP | None = None,
+) -> smtplib.SMTP:
+    """SMTP(STARTTLS+로그인)로 1통 발송하고 **사용한 연결을 돌려준다**. 실패 시 예외.
 
+    ``server`` 를 주면 그 연결로 보내고(캠페인 재사용 — 수신자마다 접속+TLS+로그인 왕복
+    제거), 없으면 새로 접속·로그인한다. 연결 종료(``quit``)는 호출자 책임.
     From 은 인증 계정(``smtp_send_user``)으로 고정하고, ``from_display`` 가 있으면
     표시명만 붙인다(임의 From 은 Gmail 이 거부/스팸 처리하므로).
     """
@@ -53,12 +61,34 @@ def send_one(
     msg["To"] = to
     msg["Subject"] = subject
     msg.set_content(body)
-    with smtplib.SMTP(
-        settings.smtp_send_host, settings.smtp_send_port, timeout=settings.smtp_timeout
-    ) as server:
-        server.starttls()
-        server.login(sender, settings.smtp_send_password)
-        server.send_message(msg)
+    if server is None:
+        server = smtplib.SMTP(
+            settings.smtp_send_host, settings.smtp_send_port, timeout=settings.smtp_timeout
+        )
+        try:
+            server.starttls()
+            server.login(sender, settings.smtp_send_password)
+        except Exception:  # TLS/로그인 실패 — 열린 소켓을 호출자가 못 받으므로 여기서 닫는다.
+            server.close()
+            raise
+    server.send_message(msg)
+    return server
+
+
+def _smtp_alive(server: smtplib.SMTP) -> bool:
+    """유휴(레이트리밋 sleep) 중 서버가 끊었는지 — NOOP 1왕복(접속+TLS+로그인보다 훨씬 싸다)."""
+    try:
+        return server.noop()[0] == 250
+    except Exception:
+        return False
+
+
+def _smtp_quit(server: smtplib.SMTP | None) -> None:
+    if server is not None:
+        try:
+            server.quit()
+        except Exception:  # 이미 끊긴 연결 — 정리 실패는 무시.
+            pass
 
 
 def recipients(
@@ -281,38 +311,53 @@ def send_campaign(
     cap = max(0, settings.email_send_daily_cap)
     sent = failed = skipped = 0
     capped = 0
-    for i, (company_id, email) in enumerate(recips):
-        # 예약·확정 시각은 수신자마다 신선하게 — 캠페인 시작 시각을 재사용하면 레이트리밋으로
-        # 긴 캠페인의 후반 예약이 '이미 stale' 로 태어나 동시 캠페인이 이중발송한다(교차리뷰 HIGH).
-        tick = injected_now or _utcnow()
-        # 발송 **전** DB 선점(격리 커밋) — 동시 요청/더블클릭의 상대편이 이 수신자·상한
-        # 슬롯을 쓸 수 없게 한다. 'dup'=상대가 선점/기발송(스킵), 'capped'=오늘 상한 소진.
-        outcome = _reserve_send(
-            settings, email=email, company_id=company_id, subject=subject,
-            sent_by=sent_by, cap=cap, now=tick,
-        )
-        if outcome == "capped":
-            capped = len(recips) - i
-            break
-        if outcome == "dup":
-            skipped += 1
-            continue
-        try:
-            send_one(settings, to=email, subject=subject, body=body, from_display=from_display)
-            status, error = "sent", None
-            sent += 1
-        except Exception as exc:  # 한 통 실패가 캠페인 전체를 막지 않게(로그 후 계속).
-            status, error = "failed", str(exc)[:500]
-            failed += 1
-            log.info("outreach.send_error", email=email, err=str(exc))
-        # 비가역 SMTP 발송 직후 **격리 트랜잭션**으로 결과를 즉시 영속화한다(예약행을
-        # sent/failed 로 확정). SMTP 직후 프로세스가 죽어도 예약행(sending)이 남아,
-        # 재실행 중복발송은 stale 창(_RESERVE_STALE_SEC) 이후에만 가능하도록 좁힌다.
-        with session_scope(settings) as log_session:
-            _log_send(log_session, email=email, company_id=company_id, subject=subject,
-                      status=status, error=error, sent_by=sent_by, now=injected_now or _utcnow())
-        if i < len(recips) - 1 and settings.email_send_min_interval > 0:
-            sleep(settings.email_send_min_interval)  # 레이트리밋(계정 차단 방지).
+    conn: smtplib.SMTP | None = None  # 캠페인 동안 SMTP 연결 1개 재사용(send_one 이 돌려줌).
+    try:
+        for i, (company_id, email) in enumerate(recips):
+            # 예약·확정 시각은 수신자마다 신선하게 — 캠페인 시작 시각을 재사용하면 레이트리밋으로
+            # 긴 캠페인의 후반 예약이 '이미 stale' 로 태어나 동시 캠페인이 이중발송한다(교차리뷰 HIGH).
+            tick = injected_now or _utcnow()
+            # 발송 **전** DB 선점(격리 커밋) — 동시 요청/더블클릭의 상대편이 이 수신자·상한
+            # 슬롯을 쓸 수 없게 한다. 'dup'=상대가 선점/기발송(스킵), 'capped'=오늘 상한 소진.
+            outcome = _reserve_send(
+                settings, email=email, company_id=company_id, subject=subject,
+                sent_by=sent_by, cap=cap, now=tick,
+            )
+            if outcome == "capped":
+                capped = len(recips) - i
+                break
+            if outcome == "dup":
+                skipped += 1
+                continue
+            try:
+                # 재사용 연결 생존 확인은 **발송 전 NOOP** 으로만 — 발송 중 끊김을 재시도하면
+                # DATA 수락 후 응답 읽기에서 끊긴 경우(같은 SMTPServerDisconnected)에 이중발송.
+                # 발송 자체는 절대 재시도하지 않는다(실패=failed 1건, 다음 수신자는 새 연결).
+                if conn is not None and not _smtp_alive(conn):
+                    _smtp_quit(conn)
+                    conn = None
+                conn = send_one(
+                    settings, to=email, subject=subject, body=body,
+                    from_display=from_display, server=conn,
+                )
+                status, error = "sent", None
+                sent += 1
+            except Exception as exc:  # 한 통 실패가 캠페인 전체를 막지 않게(로그 후 계속).
+                _smtp_quit(conn)
+                conn = None  # 연결 상태 불명 → 다음 수신자는 새로 접속.
+                status, error = "failed", str(exc)[:500]
+                failed += 1
+                log.info("outreach.send_error", email=email, err=str(exc))
+            # 비가역 SMTP 발송 직후 **격리 트랜잭션**으로 결과를 즉시 영속화한다(예약행을
+            # sent/failed 로 확정). SMTP 직후 프로세스가 죽어도 예약행(sending)이 남아,
+            # 재실행 중복발송은 stale 창(_RESERVE_STALE_SEC) 이후에만 가능하도록 좁힌다.
+            with session_scope(settings) as log_session:
+                _log_send(log_session, email=email, company_id=company_id, subject=subject,
+                          status=status, error=error, sent_by=sent_by, now=injected_now or _utcnow())
+            if i < len(recips) - 1 and settings.email_send_min_interval > 0:
+                sleep(settings.email_send_min_interval)  # 레이트리밋(계정 차단 방지).
+    finally:
+        _smtp_quit(conn)
     log.info("outreach.sent", sent=sent, failed=failed, skipped=skipped, capped=capped)
     return {
         "dry_run": False,

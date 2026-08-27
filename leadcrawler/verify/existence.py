@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import re
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
@@ -146,20 +146,33 @@ class HttpSiteProbe:
 
     def __init__(self, *, timeout: float = 10.0) -> None:
         self._timeout = timeout
+        self._client: Any = None
+
+    def _http(self) -> Any:
+        """httpx.Client 1개를 프로버 수명 동안 재사용 — 구 ``httpx.head()``/``get()`` 모듈함수는
+        호출마다 Client(SSL 컨텍스트·커넥션풀)를 새로 만들어 도메인당 최대 4회 버렸다."""
+        if self._client is None:
+            import httpx
+
+            self._client = httpx.Client(
+                timeout=self._timeout, follow_redirects=True, headers=_PROBE_HEADERS
+            )
+        return self._client
+
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
 
     def head_ok(self, domain: str) -> bool:
         # bare + www. 변형을 순차 프로브 — www-only 사이트 구제(_host_variants).
         return any(self._host_ok(host) for host in _host_variants(domain))
 
     def _host_ok(self, host: str) -> bool:
-        import httpx
-
         for scheme in ("https", "http"):
             url = f"{scheme}://{host}"
             try:
-                resp = httpx.head(
-                    url, timeout=self._timeout, follow_redirects=True, headers=_PROBE_HEADERS
-                )
+                resp = self._http().head(url)
             except Exception as exc:  # 연결 실패·타임아웃 등 → 다음 스킴.
                 log.debug("existence.http.fail", domain=host, scheme=scheme, err=str(exc))
                 continue
@@ -175,12 +188,8 @@ class HttpSiteProbe:
 
     def _get_alive(self, url: str) -> bool:
         """GET 으로 생존을 재확인한다(B2) — 200대이고 본문이 파킹/blank 가 아니면 True."""
-        import httpx
-
         try:
-            resp = httpx.get(
-                url, timeout=self._timeout, follow_redirects=True, headers=_PROBE_HEADERS
-            )
+            resp = self._http().get(url)
         except Exception as exc:
             log.debug("existence.http.get_fail", url=url, err=str(exc))
             return False
