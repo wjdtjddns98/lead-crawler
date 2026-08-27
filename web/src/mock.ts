@@ -993,9 +993,18 @@ function companyMatches(c: CompanySearchItem, needle: string): boolean {
 function companySearchJson(u: URL): Response {
   const q = (u.searchParams.get("q") ?? "").trim();
   if (!q) return jsonRes({ detail: [{ loc: ["query", "q"], msg: "검색어가 필요합니다" }] }, 422);
+  // 검증 큐 상태 필터(BE #424) — 선택 파라미터. enum 밖 값은 BE 와 같이 422.
+  const rs = u.searchParams.get("review_status");
+  if (rs !== null && !["pending", "confirmed", "rejected"].includes(rs))
+    return jsonRes(
+      { detail: [{ loc: ["query", "review_status"], msg: "허용되지 않는 상태" }] },
+      422,
+    );
   const needle = q.toLowerCase();
   const all = [...db.map(companyRow), ...MOCK_UNQUEUED]
     .filter((c) => companyMatches(c, needle))
+    // 큐 미적재(review_status=null)는 어떤 상태 값에도 매치되지 않는다(BE 계약).
+    .filter((c) => !rs || c.review_status === rs)
     .sort((a, b) => a.name.localeCompare(b.name, "ko") || a.id.localeCompare(b.id));
   const limit = Number(u.searchParams.get("limit") ?? "50") || 50;
   const offset = Number(u.searchParams.get("offset") ?? "0") || 0;
