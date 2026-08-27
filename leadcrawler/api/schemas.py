@@ -331,6 +331,7 @@ class SendResult(BaseModel):
     attempted: int = 0
     sent: int = 0
     failed: int = 0
+    uncertain: int = 0  # DATA 후 응답 못 읽음 — 전달됐을 수 있어 자동 재발송 제외
     skipped: int = 0  # 동시 캠페인 선점/기발송 스킵(pydantic 이 조용히 드롭하지 않게 명시)
     capped: int = 0  # 일일 상한 초과로 미발송
 

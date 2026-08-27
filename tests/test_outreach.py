@@ -279,3 +279,53 @@ def test_send_campaign_dead_idle_connection_is_replaced_not_retried(db_settings,
     sends = [c for c in calls if c[0] == "send"]
     assert len(sends) == 3  # 수신자 3명 = 발송 시도 3회(실패 건 재시도 0).
     assert all(c[2] is None for c in sends)  # 죽은 연결은 매번 교체돼 server=None 으로 진입.
+
+
+def test_send_one_disconnect_after_data_is_uncertain(monkeypatch) -> None:
+    """send_message 단계 끊김/타임아웃 → SendUncertain(전달 불명). 서버 거절 응답은 그대로 예외."""
+    import smtplib
+
+    class _Srv:
+        def __init__(self, exc):
+            self._exc = exc
+
+        def send_message(self, msg):
+            raise self._exc
+
+    s = _settings()
+    with pytest.raises(outreach.SendUncertain):
+        outreach.send_one(s, to="a@x.com", subject="s", body="b", server=_Srv(smtplib.SMTPServerDisconnected("eof")))
+    with pytest.raises(outreach.SendUncertain):
+        outreach.send_one(s, to="a@x.com", subject="s", body="b", server=_Srv(TimeoutError("read")))
+    with pytest.raises(smtplib.SMTPDataError):  # 서버가 명시 거절 → 실패(재시도 가능).
+        outreach.send_one(s, to="a@x.com", subject="s", body="b", server=_Srv(smtplib.SMTPDataError(554, b"no")))
+
+
+def test_uncertain_is_logged_counted_and_never_auto_resent(db_settings, monkeypatch) -> None:
+    """uncertain 은 로그 status·집계·일일상한에 반영되고, 다음 캠페인 수신자에서 빠진다."""
+    from leadcrawler.schema import EmailSendLogRow
+
+    def flaky(settings, *, to, subject, body, from_display="", server=None):
+        if to == "ir@b.co.kr":
+            raise outreach.SendUncertain("connection closed before 250")
+        return object()
+
+    monkeypatch.setattr(outreach, "send_one", flaky)
+    monkeypatch.setattr(outreach, "_smtp_alive", lambda s: True)
+    monkeypatch.setattr(outreach, "_smtp_quit", lambda s: None)
+    s = _settings(email_send_enabled=True, email_send_daily_cap=10)
+    with session_scope(s) as sess:
+        r1 = outreach.send_campaign(s, sess, subject="제목", body="본문")
+    assert r1["sent"] == 2 and r1["uncertain"] == 1 and r1["failed"] == 0
+    assert r1["attempted"] == 3
+    with session_scope(s) as sess:
+        row = sess.get(EmailSendLogRow, outreach._send_id("ir@b.co.kr"))
+        assert row.status == "uncertain" and "250" in (row.error or "")
+        assert outreach._today_used_count(sess, outreach._utcnow()) == 3  # 상한에 포함.
+        # 재발송 대상에서 제외(자동 재시도 금지) — failed 였다면 남았을 것.
+        assert outreach.recipients(sess) == []
+        assert outreach.preview(s, sess)["remaining_today"] == 7
+    # 예약 경로도 dup 으로 막는다(다른 캠페인이 같은 주소를 잡으려 해도).
+    assert outreach._reserve_send(
+        s, email="ir@b.co.kr", company_id="x", subject="s", sent_by=None, cap=10, now=outreach._utcnow()
+    ) == "dup"
