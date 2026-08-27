@@ -28,6 +28,8 @@ const COL_W = [
   "", // 메일(뱃지·MX·SMTP — 단위 사이에서만 줄바꿈)
   "", // 사이트
   "whitespace-nowrap", // 문의폼 유무
+  // 전화번호는 중간에서 접히면 자릿수를 잘못 읽게 되므로 한 줄로 잠근다(상장여부와 같은 이유).
+  "whitespace-nowrap", // 전화
   "min-w-[180px]", // 기타 메모(엑셀 L)·담당자(엑셀 H)·첨부 유무 — 한 셀에 세로로 묶음
   "", // 상태(뱃지는 자체 nowrap — 담당자·시각이 아래로 접힘)
   "min-w-[120px]", // 액션(버튼 2개 가로 고정 — flex 줄바꿈 없음)
@@ -41,6 +43,9 @@ const HEADERS = [
   "메일",
   "사이트",
   "문의폼",
+  // 전화는 연락수단 묶음(이메일→메일 상태→사이트→문의폼) 끝에 붙인다 — 읽기 전용 표시라
+  // 편집 입력이 없어 폭 부담이 작다.
+  "전화",
   // 메모 셀에 담당자·첨부 유무 입력이 함께 세로로 들어간다(#382) — 컬럼 수를 늘리지 않아
   // 표가 가로 스크롤 없이 유지된다. 각 입력이 자기 라벨(placeholder/옵션)을 가진다.
   "메모 · 담당자 · 첨부",
@@ -67,7 +72,8 @@ const SORT_KEY: Record<number, (it: ReviewItem) => string | number> = {
   2: (it) => it.industry,
   3: (it) => LISTED_RANK[it.listed],
   7: (it) => (it.form ? 0 : 1), // 문의폼 있음이 먼저
-  9: (it) => STATUS_RANK[it.status],
+  8: (it) => (it.phone ? 0 : 1), // 전화 있음이 먼저(번호 문자열 순서는 의미가 없어 유무로만)
+  10: (it) => STATUS_RANK[it.status],
 };
 
 type Sort = { col: number; dir: "asc" | "desc" };
@@ -300,9 +306,14 @@ const QueueRow = memo(
             />
           </div>
         </td>
+        {/* 대표 전화 — 읽기 전용. 이메일·사이트와 달리 검수자가 교정하는 값이 아니라(확정
+            요청 계약에도 없다) 표시만 한다. 자릿수를 잘못 읽지 않게 tabular-nums. */}
+        <td className={`${TD} ${COL_W[8]} font-mono text-[13px] tabular-nums`}>
+          {item.phone ? item.phone : <span className="text-muted">—</span>}
+        </td>
         {/* 메모 + 담당자 + 첨부 유무 — 세로로 묶는다(#382). 별도 컬럼을 두면 표가 13열이
             되어 좁은 화면에서 가로 스크롤이 생기므로 같은 셀에 쌓았다. */}
-        <td className={`${TD} ${COL_W[8]}`}>
+        <td className={`${TD} ${COL_W[9]}`}>
           <div className="flex flex-col gap-1">
             <input
               className="w-full bg-canvas border border-line text-ink text-xs py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
@@ -333,7 +344,7 @@ const QueueRow = memo(
             />
           </div>
         </td>
-        <td className={`${TD} ${COL_W[9]}`}>
+        <td className={`${TD} ${COL_W[10]}`}>
           <StatusBadge status={item.status} />
           {item.assignee && (
             <span className="text-muted text-xs block" title={item.reviewed_at ?? undefined}>
@@ -344,7 +355,7 @@ const QueueRow = memo(
             </span>
           )}
         </td>
-        <td className={`${TD} ${COL_W[10]}`}>
+        <td className={`${TD} ${COL_W[11]}`}>
           {/* 버튼 라벨은 TD 의 overflow-wrap:anywhere 상속으로 '확/정' 처럼 세로로
               접힐 수 있어 nowrap 으로 잠근다(액션 셀 한정). */}
           <div className="flex gap-1.5 whitespace-nowrap">

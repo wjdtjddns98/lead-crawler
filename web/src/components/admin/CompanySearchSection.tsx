@@ -5,7 +5,6 @@ import { errMsg, safeHref } from "../../format";
 import type { CompanyEmailInfo, CompanySearchItem, Listed } from "../../types";
 import { ErrorBox } from "../ErrorBox";
 import { TableSkeleton } from "../TableSkeleton";
-import { EmailBadge, StatusBadge } from "../StatusBadge";
 import { BTN, EMPTY, INPUT, LINK_FOCUS, TD, TH } from "../../ui";
 import { SECTION_H2 } from "./shared";
 
@@ -13,18 +12,6 @@ const PAGE = 50;
 
 // 상장여부 표기 — 큐 테이블(QueueTable LISTED_LABEL)과 같은 어휘.
 const LISTED_LABEL: Record<Listed, string> = { listed: "상장", unlisted: "비상장", unknown: "미상" };
-
-// 이메일 role 표기 — BE EmailRole 어휘. hr·press·personal 은 발송 배제 대상(제약 §3)이라
-// 검색 결과에는 보이되 muted 로 낮춰 "쓸 수 있는 주소"와 구분한다.
-const ROLE_LABEL: Record<string, string> = {
-  ir: "IR",
-  general: "일반",
-  hr: "인사",
-  press: "언론",
-  personal: "개인",
-  unknown: "미상",
-};
-const USABLE_ROLES = new Set(["ir", "general"]);
 
 // 한 행에 펼칠 이메일 상한 — 구식 데이터는 회사당 수십 개가 올 수 있어 표가 세로로 터진다.
 // BE 정렬이 값(value) 오름차순이라 '좋은 주소 먼저'가 아니므로, 잘린 개수를 반드시 알린다.
@@ -135,7 +122,8 @@ export function CompanySearchSection() {
                 <th className={`${TH} w-28`}>상장</th>
                 <th className={TH}>이메일</th>
                 <th className={`${TH} w-[15%]`}>사이트·문의폼</th>
-                <th className={`${TH} w-[11%]`}>검증 큐</th>
+                {/* 전화는 자릿수가 고정에 가까워 고정폭으로 잡는다(가변 폭은 이메일이 흡수). */}
+                <th className={`${TH} w-32`}>전화</th>
               </tr>
             </thead>
             <tbody>
@@ -195,10 +183,6 @@ function CompanyRow({ c }: { c: CompanySearchItem }) {
             </span>
           )}
         </div>
-        {/* 중복 확인의 실제 근거는 이름이 아니라 canonical_key(재추출 금지 판정 키, 제약 ①). */}
-        <div className="text-muted text-[11px] font-mono truncate" title={c.canonical_key}>
-          {c.canonical_key}
-        </div>
       </td>
       <td className={TD}>{c.country || "—"}</td>
       <td className={`${TD} truncate`} title={c.industry || undefined}>
@@ -251,37 +235,19 @@ function CompanyRow({ c }: { c: CompanySearchItem }) {
           </div>
         )}
       </td>
-      <td className={TD}>
-        {c.review_status ? (
-          <>
-            <StatusBadge status={c.review_status} />
-            {c.review_assignee && (
-              <div className="text-muted text-[11px] truncate" title={c.review_assignee}>
-                {c.review_assignee}
-              </div>
-            )}
-          </>
-        ) : (
-          // 큐 미적재 = 아직 검증 대상으로 올라오지 않은 회사(이메일 없음·백필 대기 등).
-          <span className="text-muted text-xs">미적재</span>
-        )}
+      {/* 대표 전화 — 검색어 매칭 대상은 아니고(회사명·홈페이지·이메일/폼·원장 영문명만)
+          중복 확인 시 같은 회사인지 대조하는 보조 단서로 표시한다. */}
+      <td className={`${TD} font-mono text-[13px] tabular-nums [overflow-wrap:anywhere]`}>
+        {c.phone ? c.phone : <span className="text-muted">—</span>}
       </td>
     </tr>
   );
 }
 
 function EmailLine({ email }: { email: CompanyEmailInfo }) {
-  const usable = USABLE_ROLES.has(email.role);
   return (
-    <div className="flex items-center gap-1.5 flex-wrap">
+    <div className="flex items-center flex-wrap">
       <span className="font-mono text-[13px] [overflow-wrap:anywhere]">{email.value}</span>
-      <span
-        className={`text-[11px] ${usable ? "text-muted" : "text-muted/70"}`}
-        title={usable ? undefined : "발송 대상에서 배제되는 역할(HR·언론·개인)"}
-      >
-        {ROLE_LABEL[email.role] ?? email.role}
-      </span>
-      <EmailBadge status={email.status} />
     </div>
   );
 }
