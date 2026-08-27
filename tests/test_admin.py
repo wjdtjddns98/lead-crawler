@@ -503,7 +503,13 @@ def test_company_search_rejects_empty_q(admin):
 def test_company_search_review_status_filter(admin):
     from sqlalchemy import select
 
-    from leadcrawler.schema import ReviewQueueRow
+    from leadcrawler.schema import CompanyRow, DiscoveredCompanyRow, ReviewQueueRow
+
+    # 큐 미적재 회사(동일 검색어 매치)는 어떤 상태 필터에도 안 걸린다.
+    with session_scope(get_settings()) as s:
+        s.add(DiscoveredCompanyRow(canonical_key="dom:acme2.kr", name="아크메둘"))
+        s.flush()
+        s.add(CompanyRow(id="c-acme2", canonical_key="dom:acme2.kr", name="아크메둘", country="KR"))
 
     params = {"q": "아크메", "review_status": "confirmed"}
     assert admin.get("/admin/companies", params=params).json()["total"] == 0
@@ -515,9 +521,9 @@ def test_company_search_review_status_filter(admin):
         rq.status = "confirmed"
     body = admin.get("/admin/companies", params=params).json()
     assert body["total"] == 1 and body["items"][0]["review_status"] == "confirmed"
-    # enum 밖 값은 422, 파라미터 생략 시 기존 전체 검색 그대로.
+    # enum 밖 값은 422, 파라미터 생략 시 기존 전체 검색 그대로(미적재 회사 포함 2곳).
     assert admin.get("/admin/companies", params={"q": "아크메", "review_status": "??"}).status_code == 422
-    assert admin.get("/admin/companies", params={"q": "아크메"}).json()["total"] == 1
+    assert admin.get("/admin/companies", params={"q": "아크메"}).json()["total"] == 2
 
 
 def test_company_search_pagination_name_eng_and_unqueued(app, admin):
