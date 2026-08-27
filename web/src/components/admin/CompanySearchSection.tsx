@@ -1,30 +1,27 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, Search, TriangleAlert } from "lucide-react";
 import { errStatus, searchCompanies } from "../../api";
 import { errMsg, safeHref } from "../../format";
-import type { CompanyEmailInfo, CompanySearchItem, Listed } from "../../types";
+import type { CompanyEmailInfo, CompanySearchItem, Listed, ReviewStatus } from "../../types";
 import { ErrorBox } from "../ErrorBox";
+import { StatusBadge } from "../StatusBadge";
 import { TableSkeleton } from "../TableSkeleton";
-import { EmailBadge, StatusBadge } from "../StatusBadge";
 import { BTN, EMPTY, INPUT, LINK_FOCUS, TD, TH } from "../../ui";
 import { SECTION_H2 } from "./shared";
 
 const PAGE = 50;
 
+// 검증 큐 상태 필터(BE #424) — ""=파라미터 생략(큐 상태 무관 전체). 라벨은 StatusBadge·내
+// 작업 탭과 같은 어휘(대기/확정/거부)를 쓴다.
+const STATUS_OPTIONS: { value: ReviewStatus | ""; label: string }[] = [
+  { value: "", label: "상태 전체" },
+  { value: "confirmed", label: "확정만" },
+  { value: "pending", label: "대기만" },
+  { value: "rejected", label: "거부만" },
+];
+
 // 상장여부 표기 — 큐 테이블(QueueTable LISTED_LABEL)과 같은 어휘.
 const LISTED_LABEL: Record<Listed, string> = { listed: "상장", unlisted: "비상장", unknown: "미상" };
-
-// 이메일 role 표기 — BE EmailRole 어휘. hr·press·personal 은 발송 배제 대상(제약 §3)이라
-// 검색 결과에는 보이되 muted 로 낮춰 "쓸 수 있는 주소"와 구분한다.
-const ROLE_LABEL: Record<string, string> = {
-  ir: "IR",
-  general: "일반",
-  hr: "인사",
-  press: "언론",
-  personal: "개인",
-  unknown: "미상",
-};
-const USABLE_ROLES = new Set(["ir", "general"]);
 
 // 한 행에 펼칠 이메일 상한 — 구식 데이터는 회사당 수십 개가 올 수 있어 표가 세로로 터진다.
 // BE 정렬이 값(value) 오름차순이라 '좋은 주소 먼저'가 아니므로, 잘린 개수를 반드시 알린다.
@@ -37,7 +34,11 @@ export function CompanySearchSection() {
   // 실행된 검색어 — 입력값과 분리한다. BE 가 선두 와일드카드 ILIKE(인덱스 미사용)라
   // 타이핑마다 조회하면 안 되고, 명시적 제출(Enter·버튼)에서만 돈다. tick 은 같은 검색어
   // 재제출(=새로고침)도 조회로 이어지게 하는 nonce.
-  const [run, setRun] = useState<{ q: string; tick: number } | null>(null);
+  const [run, setRun] = useState<{ q: string; status: ReviewStatus | ""; tick: number } | null>(
+    null,
+  );
+  // 검증 큐 상태 필터 — 검색어와 달리 고르는 즉시 재조회한다(셀렉트의 통상 기대).
+  const [status, setStatus] = useState<ReviewStatus | "">("");
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState<CompanySearchItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -51,7 +52,7 @@ export function CompanySearchSection() {
     const myReq = ++reqRef.current;
     setLoading(true);
     setError(null);
-    searchCompanies(run.q, PAGE, offset)
+    searchCompanies(run.q, PAGE, offset, run.status || undefined)
       .then((res) => {
         if (myReq !== reqRef.current) return;
         setItems(res.items);
@@ -79,11 +80,27 @@ export function CompanySearchSection() {
     const needle = q.trim();
     if (!needle) return;
     setOffset(0); // 새 검색은 항상 1페이지부터(이전 검색의 페이지 위치는 의미가 없다).
-    setRun({ q: needle, tick: Date.now() });
+    setRun({ q: needle, status, tick: Date.now() });
+  };
+
+  // 상태 필터 변경 — 검색 전이면 조건만 바꿔두고(네트워크 없음), 검색 중이면 즉시 재조회한다.
+  // 필터가 바뀌면 결과 집합 자체가 달라지므로 페이지는 1로 되돌린다.
+  const changeStatus = (next: ReviewStatus | "") => {
+    setStatus(next);
+    if (!run) return;
+    setOffset(0);
+    setRun({ q: run.q, status: next, tick: Date.now() });
   };
 
   const page = Math.floor(offset / PAGE) + 1;
   const pages = Math.max(1, Math.ceil(total / PAGE));
+
+  // 미배포 서버(BE #424 승격 전) 검출 — 모르는 쿼리파라미터는 조용히 버려지므로 필터를 건
+  // 채 '전체 결과'를 받는다. 오류가 아니라 200 이라 화면상 구분이 안 되는데, 확정 아닌 회사를
+  // 확정으로 오인해 발송하면 사고다. BE 가 필터를 적용했다면 모든 행이 요청 상태와 같으므로
+  // 한 행이라도 어긋나면 무시된 것으로 본다(조회 중에는 직전 결과라 판정하지 않는다).
+  const filterIgnored =
+    !loading && !!run?.status && items.some((c) => c.review_status !== run.status);
 
   return (
     <section>
@@ -104,6 +121,20 @@ export function CompanySearchSection() {
           onChange={(e) => setQ(e.target.value)}
           aria-label="회사 검색어"
         />
+        <select
+          className={INPUT}
+          value={status}
+          aria-label="검증 큐 상태 필터"
+          title="검증 큐 상태로 좁힙니다 — 큐에 없는 회사는 '상태 전체'에서만 보입니다"
+          disabled={loading}
+          onChange={(e) => changeStatus(e.target.value as ReviewStatus | "")}
+        >
+          {STATUS_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
         <button className={BTN} type="submit" disabled={!q.trim() || loading}>
           <span className="inline-flex items-center gap-1">
             <Search size={14} aria-hidden /> 검색
@@ -116,12 +147,25 @@ export function CompanySearchSection() {
 
       {error && <ErrorBox>{error}</ErrorBox>}
 
+      {filterIgnored && (
+        <div className="flex items-start gap-2 border-l-2 border-warn pl-3 py-1 mb-3 text-[13px] text-warn">
+          <TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden />
+          <span>
+            이 서버에는 상태 필터가 아직 배포되지 않아 <strong>필터가 적용되지 않은 전체 결과</strong>
+            입니다(백엔드 배포 후 정상 동작). 아래 상태 컬럼을 직접 확인하세요.
+          </span>
+        </div>
+      )}
+
       {loading && items.length === 0 ? (
         <TableSkeleton rows={5} />
       ) : !run ? (
         <p className={EMPTY}>검색어를 입력하면 회사 DB 전체에서 찾습니다.</p>
       ) : !error && items.length === 0 ? (
-        <p className={EMPTY}>일치하는 회사가 없습니다 — “{run.q}”</p>
+        <p className={EMPTY}>
+          일치하는 회사가 없습니다 — “{run.q}”
+          {run.status && " (상태 필터 적용 중 — 큐에 없는 회사는 제외됩니다)"}
+        </p>
       ) : items.length > 0 ? (
         <>
           {/* table-fixed: 검색어마다 행 내용이 크게 달라져도 컬럼 폭이 출렁이지 않게 고정. */}
@@ -133,9 +177,13 @@ export function CompanySearchSection() {
                 <th className={`${TH} w-[12%]`}>업종</th>
                 {/* 상장+보드를 한 줄에 담는 폭(w-24 면 'KOSDAQ' 이 줄바꿈된다). */}
                 <th className={`${TH} w-28`}>상장</th>
+                {/* 검증 큐 상태 — 상태 필터(#426)와 같은 어휘라, 필터가 실제로 걸렸는지 행에서
+                    대조할 수 있다. 큐 미적재 회사는 "—". */}
+                <th className={`${TH} w-20`}>상태</th>
                 <th className={TH}>이메일</th>
                 <th className={`${TH} w-[15%]`}>사이트·문의폼</th>
-                <th className={`${TH} w-[11%]`}>검증 큐</th>
+                {/* 전화는 자릿수가 고정에 가까워 고정폭으로 잡는다(가변 폭은 이메일이 흡수). */}
+                <th className={`${TH} w-32`}>전화</th>
               </tr>
             </thead>
             <tbody>
@@ -195,10 +243,6 @@ function CompanyRow({ c }: { c: CompanySearchItem }) {
             </span>
           )}
         </div>
-        {/* 중복 확인의 실제 근거는 이름이 아니라 canonical_key(재추출 금지 판정 키, 제약 ①). */}
-        <div className="text-muted text-[11px] font-mono truncate" title={c.canonical_key}>
-          {c.canonical_key}
-        </div>
       </td>
       <td className={TD}>{c.country || "—"}</td>
       <td className={`${TD} truncate`} title={c.industry || undefined}>
@@ -208,6 +252,15 @@ function CompanyRow({ c }: { c: CompanySearchItem }) {
         {LISTED_LABEL[c.listed] ?? c.listed}
         {/* 시장 보드는 큐 테이블과 같이 상장여부에 병기(별도 컬럼 없이 정보 밀도 절제). */}
         {c.market && <span className="text-muted text-xs ml-1">{c.market}</span>}
+      </td>
+      <td className={TD}>
+        {c.review_status ? (
+          <StatusBadge status={c.review_status} />
+        ) : (
+          <span className="text-muted" title="검증 큐에 적재되지 않은 회사">
+            —
+          </span>
+        )}
       </td>
       <td className={TD}>
         {c.emails.length === 0 ? (
@@ -251,37 +304,19 @@ function CompanyRow({ c }: { c: CompanySearchItem }) {
           </div>
         )}
       </td>
-      <td className={TD}>
-        {c.review_status ? (
-          <>
-            <StatusBadge status={c.review_status} />
-            {c.review_assignee && (
-              <div className="text-muted text-[11px] truncate" title={c.review_assignee}>
-                {c.review_assignee}
-              </div>
-            )}
-          </>
-        ) : (
-          // 큐 미적재 = 아직 검증 대상으로 올라오지 않은 회사(이메일 없음·백필 대기 등).
-          <span className="text-muted text-xs">미적재</span>
-        )}
+      {/* 대표 전화 — 검색어 매칭 대상은 아니고(회사명·홈페이지·이메일/폼·원장 영문명만)
+          중복 확인 시 같은 회사인지 대조하는 보조 단서로 표시한다. */}
+      <td className={`${TD} font-mono text-[13px] tabular-nums [overflow-wrap:anywhere]`}>
+        {c.phone ? c.phone : <span className="text-muted">—</span>}
       </td>
     </tr>
   );
 }
 
 function EmailLine({ email }: { email: CompanyEmailInfo }) {
-  const usable = USABLE_ROLES.has(email.role);
   return (
-    <div className="flex items-center gap-1.5 flex-wrap">
+    <div className="flex items-center flex-wrap">
       <span className="font-mono text-[13px] [overflow-wrap:anywhere]">{email.value}</span>
-      <span
-        className={`text-[11px] ${usable ? "text-muted" : "text-muted/70"}`}
-        title={usable ? undefined : "발송 대상에서 배제되는 역할(HR·언론·개인)"}
-      >
-        {ROLE_LABEL[email.role] ?? email.role}
-      </span>
-      <EmailBadge status={email.status} />
     </div>
   );
 }
