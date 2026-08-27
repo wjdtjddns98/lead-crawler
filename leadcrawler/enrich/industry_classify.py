@@ -22,11 +22,12 @@ from __future__ import annotations
 
 import re
 import threading
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
 from ..cost_ledger import SupportsCostLedger
+from ..llm import anthropic_client
 from ..logging import get_logger
 from ..sources.taxonomy import INDUSTRY_TAXONOMY, UNCLASSIFIED
 
@@ -179,6 +180,7 @@ class ClaudeClassifier:
         self._max_retries = max_retries
         self._lock = threading.Lock()  # 런당 호출 카운터 보호(워커 공유 인스턴스).
         self._calls = 0
+        self._client: Any = None  # 지연 생성 후 재사용(콜마다 SDK 클라이언트 재생성 방지).
 
     def _reserve(self) -> bool:
         """이번 호출을 진행할지 — 런당캡·예산 확인 후 카운터 선점(원자적)."""
@@ -203,14 +205,16 @@ class ClaudeClassifier:
                 domain=domain or "(없음)",
                 text=_text_from_html(text) or "(없음)",
             )
-            import anthropic
-
             # auth_token 이면 Authorization: Bearer(구독 auth), 아니면 x-api-key(종량 API).
-            if self._auth_token:
-                client = anthropic.Anthropic(auth_token=self._auth_token, max_retries=self._max_retries)
-            else:
-                client = anthropic.Anthropic(api_key=self._api_key, max_retries=self._max_retries)
-            msg = client.messages.create(
+            # 인스턴스당 1회 생성 — 워커 공유 근거는 llm.py 모듈 docstring.
+            if self._client is None:
+                with self._lock:  # 워커 공유 인스턴스 — 최초 버스트에서 중복 생성 방지(더블체크).
+                    if self._client is None:
+                        self._client = anthropic_client(
+                            api_key=self._api_key, auth_token=self._auth_token,
+                            max_retries=self._max_retries,
+                        )
+            msg = self._client.messages.create(
                 model=self.model,
                 max_tokens=self._max_tokens,
                 messages=[{"role": "user", "content": prompt}],

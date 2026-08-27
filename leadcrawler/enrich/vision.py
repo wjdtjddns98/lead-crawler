@@ -12,8 +12,9 @@ escalation 최종 티어로, 정적·헤드리스·OCR 이 모두 실패한 소�
 from __future__ import annotations
 
 import base64
-from typing import Protocol
+from typing import Any, Protocol
 
+from ..llm import anthropic_client
 from ..logging import get_logger
 
 log = get_logger("enrich.vision")
@@ -52,17 +53,17 @@ class ClaudeVision:
         self._api_key = api_key
         self._model = model
         self._max_tokens = max_tokens
+        self._client: Any = None  # 지연 생성 후 재사용.
 
     def extract_text(self, image: bytes, *, media_type: str = "image/png") -> str:
         if len(image) > _MAX_IMAGE_BYTES:  # 대형 이미지 → 호출 전 차단(과금·400 회피).
             log.info("enrich.vision.too_large", bytes=len(image))
             return ""
         try:
-            import anthropic
-
-            client = anthropic.Anthropic(api_key=self._api_key)
+            if self._client is None:
+                self._client = anthropic_client(api_key=self._api_key)
             b64 = base64.standard_b64encode(image).decode("ascii")
-            msg = client.messages.create(
+            msg = self._client.messages.create(
                 model=self._model,
                 max_tokens=self._max_tokens,
                 messages=[
