@@ -423,3 +423,20 @@ def test_build_lead_skips_inactive_company():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_claude_classifier_reuses_sdk_client(monkeypatch):
+    """SDK 클라이언트는 인스턴스당 1회 생성 — 콜마다 재생성(SSL·커넥션풀 낭비) 회귀 방지."""
+    inits: list[int] = []
+    fc = _install_fake_anthropic(monkeypatch, reply="게임")
+    orig = fc.__init__
+
+    def counting(self, **kw):
+        inits.append(1)
+        orig(self, **kw)
+
+    monkeypatch.setattr(fc, "__init__", counting)
+    c = ClaudeClassifier(model="m", api_key="sk-x")
+    for _ in range(3):
+        assert c.classify("X Games", "x.com", "<p>games</p>").label == "게임"
+    assert len(inits) == 1

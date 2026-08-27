@@ -28,6 +28,7 @@ import json
 import re
 import socket
 import threading
+from typing import Any
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ValidationError
@@ -35,6 +36,7 @@ from pydantic import BaseModel, ValidationError
 from ..config import Settings
 from ..cost_ledger import SupportsCostLedger
 from ..dedup import normalize_domain
+from ..llm import anthropic_client
 from ..logging import get_logger
 from .base import DiscoveredCompany, Segment, build_company
 from .countries import Country, resolve_country
@@ -201,6 +203,7 @@ class ClaudeDirectoryExtractor:
         self._max_retries = max_retries
         self._lock = threading.Lock()
         self._calls = 0
+        self._client: Any = None  # 지연 생성 후 재사용.
 
     def _reserve(self) -> bool:
         """이번 호출을 진행할지 — 캡(런당·워커당)·예산 확인 후 카운터 선점(원자적)."""
@@ -221,15 +224,12 @@ class ClaudeDirectoryExtractor:
             return []
         try:
             prompt = _PROMPT.format(industry=industry, text=text)
-            import anthropic
-
-            if self._auth_token:
-                client = anthropic.Anthropic(
-                    auth_token=self._auth_token, max_retries=self._max_retries
+            if self._client is None:
+                self._client = anthropic_client(
+                    api_key=self._api_key, auth_token=self._auth_token,
+                    max_retries=self._max_retries,
                 )
-            else:
-                client = anthropic.Anthropic(api_key=self._api_key, max_retries=self._max_retries)
-            msg = client.messages.create(
+            msg = self._client.messages.create(
                 model=self.model,
                 max_tokens=self._max_tokens,
                 messages=[{"role": "user", "content": prompt}],

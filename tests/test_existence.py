@@ -230,13 +230,13 @@ def test_http_probe_ok_and_fail(monkeypatch) -> None:
     class _Resp:
         status_code = 200
 
-    monkeypatch.setattr(httpx, "head", lambda url, **k: _Resp())
+    monkeypatch.setattr(httpx.Client, "head", lambda self, url, **k: _Resp())
     assert HttpSiteProbe().head_ok("acme.com") is True
 
-    def _boom(url, **k):
+    def _boom(self, url, **k):
         raise httpx.ConnectError("down")
 
-    monkeypatch.setattr(httpx, "head", _boom)
+    monkeypatch.setattr(httpx.Client, "head", _boom)
     assert HttpSiteProbe().head_ok("dead.com") is False
 
 
@@ -322,18 +322,18 @@ def _patch_head_get(monkeypatch, *, head_status: int, get_resp: _GetResp | None)
 
     calls = {"head": 0, "get": 0}
 
-    def fake_head(url, **kw):
+    def fake_head(self, url, **kw):
         calls["head"] += 1
         return _GetResp(head_status)
 
-    def fake_get(url, **kw):
+    def fake_get(self, url, **kw):
         calls["get"] += 1
         if get_resp is None:
             raise RuntimeError("refused")
         return get_resp
 
-    monkeypatch.setattr(httpx, "head", fake_head)
-    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(httpx.Client, "head", fake_head)
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
     return calls
 
 
@@ -537,13 +537,13 @@ def test_head_ok_falls_back_to_www(monkeypatch) -> None:
     class _Resp:
         status_code = 200
 
-    def fake_head(url, **_kw):
+    def fake_head(self, url, **_kw):
         tried.append(url)
         if "www." not in url:
             raise httpx.ConnectError("no A record on bare")
         return _Resp()
 
-    monkeypatch.setattr(httpx, "head", fake_head)
+    monkeypatch.setattr(httpx.Client, "head", fake_head)
     assert HttpSiteProbe().head_ok("acme.co.kr") is True
     assert any("www.acme.co.kr" in u for u in tried)  # www 변형을 실제로 시도했다.
 
@@ -569,19 +569,19 @@ def test_site_probe_head_400_falls_back_to_get(monkeypatch) -> None:
 
     calls: list[str] = []
 
-    def fake_head(url, **kw):
+    def fake_head(self, url, **kw):
         calls.append(f"HEAD {url}")
         return httpx.Response(400, request=httpx.Request("HEAD", url))
 
-    def fake_get(url, **kw):
+    def fake_get(self, url, **kw):
         calls.append(f"GET {url}")
         return httpx.Response(
             200, request=httpx.Request("GET", url),
             text="<html><body>공제회 공식 홈페이지 안내와 사업 소개</body></html>",
         )
 
-    monkeypatch.setattr(httpx, "head", fake_head)
-    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(httpx.Client, "head", fake_head)
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
     assert HttpSiteProbe().head_ok("pmaa.or.kr") is True
     assert any(c.startswith("GET ") for c in calls)
 
@@ -593,11 +593,18 @@ def test_site_probe_sends_browser_ua(monkeypatch) -> None:
     from leadcrawler.verify.existence import HttpSiteProbe
 
     seen: dict = {}
+    clients: list[int] = []
 
-    def fake_head(url, **kw):
-        seen["headers"] = kw.get("headers") or {}
+    def fake_head(self, url, **kw):
+        seen["headers"] = self.headers  # Client 생성 시 고정된 헤더.
+        clients.append(id(self))
         return httpx.Response(200, request=httpx.Request("HEAD", url))
 
-    monkeypatch.setattr(httpx, "head", fake_head)
-    assert HttpSiteProbe().head_ok("example.co.kr") is True
+    monkeypatch.setattr(httpx.Client, "head", fake_head)
+    probe = HttpSiteProbe()
+    assert probe.head_ok("example.co.kr") is True
+    assert probe.head_ok("example2.co.kr") is True
     assert "Mozilla" in seen["headers"].get("User-Agent", "")
+    assert len(set(clients)) == 1  # 프로버 수명 동안 Client 1개 재사용(호출마다 재생성 X).
+    probe.close()
+    assert probe._client is None

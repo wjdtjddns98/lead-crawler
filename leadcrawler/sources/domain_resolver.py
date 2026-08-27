@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import re
 import threading
-from typing import NamedTuple
+from functools import lru_cache
+from typing import Any, NamedTuple
 
 from ..config import Settings
 from ..cost_ledger import SupportsCostLedger
 from ..dedup import normalize_domain, normalize_name, tokenize_name
+from ..llm import anthropic_client
 from ..logging import get_logger
 from .base import DiscoveredCompany
 from .countries import resolve_country
@@ -475,6 +477,11 @@ _MODEL_ALIASES = {
 }
 
 
+@lru_cache(maxsize=4)
+def _sdk_client(api_key: str, auth_token: str) -> Any:
+    return anthropic_client(api_key=api_key, auth_token=auth_token, max_retries=8)
+
+
 def _sdk_complete(prompt: str, model: str, settings: Settings) -> str:
     """raw Anthropic API(구독 OAuth Bearer 우선)로 단발 완성 텍스트 — 실패는 예외로 위임.
 
@@ -484,12 +491,8 @@ def _sdk_complete(prompt: str, model: str, settings: Settings) -> str:
     (창 0·~1초/콜, 당일 996콜 실증). 인증정보 없음/호출 실패는 예외 → 호출측이
     (-1, False) 폴백. 구독 정액이라 cost_ledger 미적재(#240 과 동일 방침).
     """
-    import anthropic
-
-    if settings.anthropic_auth_token:  # OAuth Bearer(구독) 우선 — 업종분류기와 동일 규약.
-        client = anthropic.Anthropic(auth_token=settings.anthropic_auth_token, max_retries=8)
-    else:
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key, max_retries=8)
+    # OAuth Bearer(구독) 우선 — 업종분류기와 동일 규약. 인증정보당 1회 생성·프로세스 재사용.
+    client = _sdk_client(settings.anthropic_api_key, settings.anthropic_auth_token)
     msg = client.messages.create(
         model=_MODEL_ALIASES.get(model, model),
         max_tokens=16,
