@@ -281,24 +281,54 @@ def test_send_campaign_dead_idle_connection_is_replaced_not_retried(db_settings,
     assert all(c[2] is None for c in sends)  # 죽은 연결은 매번 교체돼 server=None 으로 진입.
 
 
-def test_send_one_disconnect_after_data_is_uncertain(monkeypatch) -> None:
-    """send_message 단계 끊김/타임아웃 → SendUncertain(전달 불명). 서버 거절 응답은 그대로 예외."""
+def test_send_one_only_data_stage_disconnect_is_uncertain() -> None:
+    """DATA 단계 끊김만 SendUncertain. MAIL/RCPT 단계 끊김·서버 거절은 그대로 예외(failed)."""
     import smtplib
 
     class _Srv:
-        def __init__(self, exc):
-            self._exc = exc
+        def __init__(self, *, mail_exc=None, rcpt_code=250, data_exc=None, data_code=250):
+            self._mail_exc, self._rcpt_code = mail_exc, rcpt_code
+            self._data_exc, self._data_code = data_exc, data_code
+            self.rset_calls = 0
+            self.payload = b""
 
-        def send_message(self, msg):
-            raise self._exc
+        def mail(self, sender):
+            if self._mail_exc:
+                raise self._mail_exc
+            return 250, b"ok"
+
+        def rcpt(self, to):
+            return self._rcpt_code, b"r"
+
+        def data(self, payload):
+            self.payload = payload
+            if self._data_exc:
+                raise self._data_exc
+            return self._data_code, b"queued"
+
+        def rset(self):
+            self.rset_calls += 1
 
     s = _settings()
+    kw = dict(to="a@x.com", subject="제목", body="본문 한글")
+    # ① DATA 단계 끊김 → 불명.
     with pytest.raises(outreach.SendUncertain):
-        outreach.send_one(s, to="a@x.com", subject="s", body="b", server=_Srv(smtplib.SMTPServerDisconnected("eof")))
-    with pytest.raises(outreach.SendUncertain):
-        outreach.send_one(s, to="a@x.com", subject="s", body="b", server=_Srv(TimeoutError("read")))
-    with pytest.raises(smtplib.SMTPDataError):  # 서버가 명시 거절 → 실패(재시도 가능).
-        outreach.send_one(s, to="a@x.com", subject="s", body="b", server=_Srv(smtplib.SMTPDataError(554, b"no")))
+        outreach.send_one(s, server=_Srv(data_exc=smtplib.SMTPServerDisconnected("eof")), **kw)
+    # ② MAIL 단계 끊김(페이로드 0바이트) → 그대로 실패(재시도 가능).
+    with pytest.raises(smtplib.SMTPServerDisconnected):
+        outreach.send_one(s, server=_Srv(mail_exc=smtplib.SMTPServerDisconnected("eof")), **kw)
+    # ③ RCPT 거절 → 실패 + RSET.
+    srv = _Srv(rcpt_code=550)
+    with pytest.raises(smtplib.SMTPRecipientsRefused):
+        outreach.send_one(s, server=srv, **kw)
+    assert srv.rset_calls == 1 and srv.payload == b""
+    # ④ DATA 본문 거절(554) → 실패(미전달 확정).
+    with pytest.raises(smtplib.SMTPDataError):
+        outreach.send_one(s, server=_Srv(data_code=554), **kw)
+    # ⑤ 정상 — 돌려준 연결이 같은 객체, 페이로드에 헤더·CRLF 포함.
+    srv = _Srv()
+    assert outreach.send_one(s, server=srv, **kw) is srv
+    assert b"Subject:" in srv.payload and b"\r\n" in srv.payload
 
 
 def test_uncertain_is_logged_counted_and_never_auto_resent(db_settings, monkeypatch) -> None:

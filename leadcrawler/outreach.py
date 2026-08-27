@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import smtplib
+from email.generator import BytesGenerator
+from io import BytesIO
 import time
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
@@ -41,7 +43,10 @@ def _utcnow() -> datetime:
 
 # "전달됐을 수 있음" 상태 묶음 — 재발송 제외·예약 dup·일일 상한 계산에 공통 적용.
 # uncertain = DATA 전송 후 응답을 못 읽음(끊김/타임아웃): 수신 MTA 가 이미 큐잉했을 수 있어
-# 자동 재시도(failed 재예약)에서 뺀다 — 재발송은 운영자가 확인 후 수동으로만.
+# 자동 재시도(failed 재예약)에서 뺀다 — 재발송은 운영자가 확인 후 수동으로만:
+#   조회  select email, error, sent_at from email_send_log where status='uncertain';
+#   재개  update email_send_log set status='failed' where id=<id>;  (다음 캠페인이 재예약)
+# ponytail: 관리 API/CLI 없음 — 건수가 쌓이면 admin 라우트로.
 _DELIVERED = ("sent", "uncertain")
 
 
@@ -81,13 +86,36 @@ def send_one(
         except Exception:  # TLS/로그인 실패 — 열린 소켓을 호출자가 못 받으므로 여기서 닫는다.
             server.close()
             raise
+    # send_message() 대신 MAIL→RCPT→DATA 를 직접 밟는다 — 끊김이 **DATA 단계**에서 났을 때만
+    # "불명"이다(MAIL/RCPT 단계 끊김은 페이로드 0바이트 = 확실한 미전송 → 그대로 실패·재시도).
+    # smtplib 은 소켓 OSError 를 전부 SMTPServerDisconnected 로 감싸므로 그 하나만 본다.
+    code, resp = server.mail(sender)
+    if code != 250:
+        _smtp_rset(server)
+        raise smtplib.SMTPSenderRefused(code, resp, sender)
+    code, resp = server.rcpt(to)
+    if code not in (250, 251):
+        _smtp_rset(server)
+        raise smtplib.SMTPRecipientsRefused({to: (code, resp)})
+    buf = BytesIO()
+    BytesGenerator(buf, policy=msg.policy.clone(linesep="\r\n")).flatten(msg)
     try:
-        server.send_message(msg)
-    except (smtplib.SMTPServerDisconnected, TimeoutError, ConnectionError) as exc:
-        # smtplib.data() 는 페이로드 전체를 보낸 뒤 250 을 읽는다 — 그 사이 끊김은 "미전달"이
-        # 아니라 "불명"(서버 거절 응답 SMTPResponseException 계열은 그대로 실패).
+        code, resp = server.data(buf.getvalue())
+    except smtplib.SMTPServerDisconnected as exc:
+        # data() 는 페이로드 전체를 보낸 뒤 250 을 읽는다 — 그 사이 끊김은 수신 MTA 가 이미
+        # 큐잉했을 수 있다. (354 응답 전 끊김도 여기 포함되는 잔여 한계 — 드물고 안전측.)
         raise SendUncertain(str(exc)) from exc
+    if code != 250:  # 서버가 본문을 명시 거절 — 미전달 확정(재시도 가능).
+        _smtp_rset(server)
+        raise smtplib.SMTPDataError(code, resp)
     return server
+
+
+def _smtp_rset(server: smtplib.SMTP) -> None:
+    try:
+        server.rset()
+    except smtplib.SMTPServerDisconnected:
+        pass
 
 
 def _smtp_alive(server: smtplib.SMTP) -> bool:
