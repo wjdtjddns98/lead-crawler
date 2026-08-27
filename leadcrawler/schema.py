@@ -52,7 +52,8 @@ class DiscoveredCompanyRow(Base):
     )
     registry: Mapped[str | None] = mapped_column(String(32), nullable=True)
     registry_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # index: 해석 배치의 과공유 COUNT(fill._domain_overshared, 배치당 최대 200회)·도메인 동치 조회.
+    domain: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     segment: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source: Mapped[str] = mapped_column(String(32), default="", server_default=text("''"))
     first_seen: Mapped[datetime] = mapped_column(
@@ -547,7 +548,7 @@ class EmailSendLogRow(Base):
     email: Mapped[str] = mapped_column(String(255), index=True)
     company_id: Mapped[str] = mapped_column(String(40), index=True)
     subject: Mapped[str] = mapped_column(String(512), default="", server_default=text("''"))
-    status: Mapped[str] = mapped_column(String(16), index=True)  # sent | failed | dryrun
+    status: Mapped[str] = mapped_column(String(16), index=True)  # sent | failed | dryrun | sending | uncertain
     error: Mapped[str | None] = mapped_column(String(512), nullable=True)
     sent_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sent_at: Mapped[datetime] = mapped_column(

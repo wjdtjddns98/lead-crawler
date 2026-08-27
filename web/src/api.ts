@@ -6,6 +6,7 @@ import type {
   BackfillOverview,
   BackfillStatus,
   ClaimFilter,
+  CompanySearchResponse,
   ConfirmEdits,
   CountryOption,
   CrawlJob,
@@ -285,6 +286,19 @@ export async function fetchAudit(limit = 500): Promise<AuditEntry[]> {
 // 직원별 하루 처리량(확정/거부) — date 생략 시 BE 기본(오늘 KST).
 export async function fetchReviewDaily(date?: string): Promise<ReviewDailyStats> {
   return apiGet(`/admin/stats/review-daily${date ? `?date=${date}` : ""}`);
+}
+
+// 회사 DB 검색(BE PR#418) — q(1~200자, 빈값이면 422)로 회사명·홈페이지·이메일/문의폼 URL·
+// 발견 원장 영문명을 부분일치 조회. 정렬은 이름순 고정, 페이지네이션은 서버 몫(total 동봉).
+// ponytail: 선두 와일드카드 ILIKE 라 인덱스를 안 타고 라이브에서 200~330ms — **타이핑마다
+// 호출 금지**(호출부는 Enter·검색 버튼 등 명시적 제출에서만 부른다).
+export async function searchCompanies(
+  q: string,
+  limit = 50,
+  offset = 0,
+): Promise<CompanySearchResponse> {
+  const p = new URLSearchParams({ q, limit: String(limit), offset: String(offset) });
+  return apiGet(`/admin/companies?${p.toString()}`);
 }
 
 export async function fetchCountries(): Promise<CountryOption[]> {

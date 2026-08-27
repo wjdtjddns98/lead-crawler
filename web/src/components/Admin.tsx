@@ -5,12 +5,13 @@ import { SegmentJobSection } from "./admin/SegmentJobSection";
 import { ExportSection } from "./admin/ExportSection";
 import { SendSection } from "./admin/SendSection";
 import { AccountsSection } from "./admin/AccountsSection";
+import { CompanySearchSection } from "./admin/CompanySearchSection";
 import { tabCls } from "../ui";
 
 type AdminGroup = "운영" | "관리";
 
-// 관리자 페이지 셸 — 운영(크롤·추출·발송) / 관리(계정) 두 군 서브탭.
-// ponytail: 6섹션 항상 렌더 트리에 유지 — Crawl·Backfill·SegmentJob 섹션의 mount-effect(진행중
+// 관리자 페이지 셸 — 운영(크롤·추출·발송) / 관리(회사 검색·계정) 두 군 서브탭.
+// ponytail: 7섹션 항상 렌더 트리에 유지 — Crawl·Backfill·SegmentJob 섹션의 mount-effect(진행중
 //           작업 복원)·3초 폴링이 마운트에 묶여 있어, 언마운트 시 새로고침 복원이 깨진다.
 //           비활성 패널은 hidden 속성(display:none)으로만 숨긴다.
 export function Admin() {
@@ -67,6 +68,9 @@ export function Admin() {
         hidden={group !== "관리"}
         className="flex flex-col gap-7"
       >
+        {/* 회사 검색이 계정보다 위 — 조회 빈도가 훨씬 높다(중복 확인·수동 조회는 상시,
+            계정 생성·회수는 드묾). 검색창이 스크롤 아래로 밀리면 도구로 쓰이지 않는다. */}
+        <CompanySearchSection />
         <AccountsSection />
       </div>
     </div>
