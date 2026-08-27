@@ -485,6 +485,7 @@ def test_company_search_no_match_and_wildcards_escaped(admin):
     assert admin.get("/admin/companies", params={"q": "없는회사"}).json()["total"] == 0
     # '%' 는 문자 그대로 — 전체 매치가 아니어야 한다.
     assert admin.get("/admin/companies", params={"q": "%"}).json()["total"] == 0
+    assert admin.get("/admin/companies", params={"q": "_"}).json()["total"] == 0
     assert admin.get("/admin/companies", params={"q": " "}).json()["total"] == 0
 
 
