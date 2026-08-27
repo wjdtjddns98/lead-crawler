@@ -557,6 +557,20 @@ export function SiteExplorer({
               <span className="text-muted whitespace-nowrap">SMTP {tri(item.email_smtp)}</span>
             </div>
 
+            {/* 대표 전화 — 읽기 전용(확정 요청 계약에 전화 교정 필드가 없어 표시만 한다).
+                이메일 블록 바로 뒤에 둔다: 쓸 만한 주소가 없을 때 '다음 연락 수단이 있나'를
+                사이트 탐색 중 그 자리에서 판단하는 값이라 편집 입력들 앞이 맞다. */}
+            <div className="text-xs flex items-center gap-2 flex-wrap">
+              <span className="text-muted">전화</span>
+              {item.phone ? (
+                <span className="font-mono tabular-nums text-ink [overflow-wrap:anywhere]">
+                  {item.phone}
+                </span>
+              ) : (
+                <span className="text-muted">—</span>
+              )}
+            </div>
+
             {/* 사이트 URL 직접 입력/수정 — 프리뷰로 '잘못된 사이트'임을 발견한 그 자리에서
                 교정한다(표 왕복 제거). Enter/blur 로 팝업이 수정 URL 로 이동해 눈으로 확인
                 후 확정 가능. 표의 편집 상태(sites)와 같은 소스 — 확정 시 함께 반영된다. */}

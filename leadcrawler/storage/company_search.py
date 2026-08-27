@@ -32,9 +32,18 @@ def _like_pattern(q: str) -> str:
 
 
 def search_companies(
-    session: Session, q: str, *, limit: int = 50, offset: int = 0
+    session: Session,
+    q: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    review_status: str | None = None,
 ) -> tuple[list[dict], int]:
-    """``q`` 부분일치 회사 목록(dict)과 전체 건수를 반환한다. 빈 ``q`` 는 (빈 목록, 0)."""
+    """``q`` 부분일치 회사 목록(dict)과 전체 건수를 반환한다. 빈 ``q`` 는 (빈 목록, 0).
+
+    ``review_status`` 가 주어지면 이메일 검증 큐가 그 상태인 회사만 남긴다
+    (예: ``"confirmed"`` = 확정만 — 큐 미적재 회사는 어떤 상태에도 안 걸린다).
+    """
     if not q.strip():
         return [], 0
     pattern = _like_pattern(q)
@@ -51,6 +60,11 @@ def search_companies(
         CompanyRow.id.in_(contact_hit),
         CompanyRow.canonical_key.in_(name_eng_hit),
     )
+    if review_status is not None:
+        status_hit = select(ReviewQueueRow.company_id).where(
+            ReviewQueueRow.field == "email", ReviewQueueRow.status == review_status
+        )
+        match = match & CompanyRow.id.in_(status_hit)
     # ponytail: 선두 와일드카드 ILIKE 라 인덱스 미사용(4만 행·라이브 실측 ~180ms). 느려지면
     # pg_trgm GIN 인덱스(name·homepage·contact.value) 추가.
     total = session.execute(select(func.count()).select_from(CompanyRow).where(match)).scalar_one()

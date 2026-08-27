@@ -34,6 +34,10 @@ export interface ReviewItem {
   email_status: string | null;
   email_mx: boolean | null;
   email_smtp: boolean | null;
+  // 대표 전화번호 — BE DB(company_detail.phone)·엑셀 C(연락처)엔 이미 있으나 큐 API 응답엔
+  // 아직 없다. **BE 계약 확장 필요**(GET /queue·/queue/mine·POST /queue/claim 응답에 추가).
+  // 미배포 서버에선 undefined 가 오므로 옵셔널로 두고 표시부에서 "—" 로 강등한다.
+  phone?: string | null;
   // 상장여부 — BE 계약 확장 필요(GET /queue·/queue/mine·POST /queue/claim 응답에 추가).
   listed: Listed;
   // 상장 시장 보드(KOSPI/KOSDAQ/KONEX/NASDAQ…, 미상=null) — BE #136 큐 API 노출.
@@ -417,9 +421,12 @@ export interface CompanySearchItem {
   site_alive: boolean;
   listed: Listed;
   market: string | null;
-  // 검색 대상·응답 연락처는 email·form 만(전화·주소 제외 — BE 계약).
+  // 검색 대상은 email·form 만(주소 제외 — BE 계약). 전화는 검색어 매칭 대상은 아니고
+  // 표시용으로만 내려온다 — **BE 계약 확장 필요**(GET /admin/companies 응답에 phone 추가).
+  // 미배포 서버에선 undefined 가 오므로 옵셔널(ReviewItem.phone 과 동일 규약).
   emails: CompanyEmailInfo[];
   form: string | null;
+  phone?: string | null;
   // 검증 큐(field="email") 적재분 — **미적재면 3필드 모두 null**.
   review_id: string | null;
   review_status: ReviewStatus | null;

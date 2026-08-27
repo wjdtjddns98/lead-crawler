@@ -292,12 +292,18 @@ export async function fetchReviewDaily(date?: string): Promise<ReviewDailyStats>
 // 발견 원장 영문명을 부분일치 조회. 정렬은 이름순 고정, 페이지네이션은 서버 몫(total 동봉).
 // ponytail: 선두 와일드카드 ILIKE 라 인덱스를 안 타고 라이브에서 200~330ms — **타이핑마다
 // 호출 금지**(호출부는 Enter·검색 버튼 등 명시적 제출에서만 부른다).
+// reviewStatus(BE #424, additive): 생략하면 기존과 동일하게 큐 상태 무관 전체 검색.
+// 값이 오면 이메일 검증 큐가 그 상태인 회사만 남고, 큐 미적재 회사는 어떤 값에도 안 걸린다.
+// 주의: 미배포 서버는 모르는 쿼리파라미터를 조용히 버려 필터 없는 결과를 200 으로 돌려준다
+// (404 처럼 티가 나지 않는다) — 호출부가 응답 행으로 무시 여부를 검출한다.
 export async function searchCompanies(
   q: string,
   limit = 50,
   offset = 0,
+  reviewStatus?: ReviewStatus,
 ): Promise<CompanySearchResponse> {
   const p = new URLSearchParams({ q, limit: String(limit), offset: String(offset) });
+  if (reviewStatus) p.set("review_status", reviewStatus);
   return apiGet(`/admin/companies?${p.toString()}`);
 }
 

@@ -175,6 +175,9 @@ function mk(p: Partial<ReviewItem> & { id: string; name: string }): ReviewItem {
     note: null,
     has_attachment: null,
     manager: null,
+    // 전화는 BE 계약 확장 제안분을 선반영한다 — 실서버가 아직 안 내려주면 컬럼이 전부
+    // "—" 가 되므로, mock 에서만이라도 채워진 셀을 확인할 수 있어야 한다.
+    phone: null,
     email_status: null,
     email_mx: null,
     email_smtp: null,
@@ -202,6 +205,7 @@ function handSamples(): ReviewItem[] {
       // 불가' 안내를 mock 만으로 확인할 수 있게 한다.
       has_attachment: true,
       manager: "김담당 과장",
+      phone: "02-1234-5678",
     }),
     mk({
       id: "c11",
@@ -212,6 +216,7 @@ function handSamples(): ReviewItem[] {
       email_mx: true,
       email_smtp: true,
       candidates: [cand("ir@seoulsemicon.com")],
+      phone: "+82-31-000-0000", // 국제표기 셀 — 폭·nowrap 확인용
     }),
     mk({
       id: "c2",
@@ -339,6 +344,8 @@ function synthSamples(count: number): ReviewItem[] {
         email_mx: variant === 2 ? null : true,
         email_smtp: variant === 0 ? true : null,
         candidates,
+        // 전화 유무를 섞어 '있음/—' 셀과 유무 정렬(전화 컬럼)을 함께 확인한다.
+        phone: variant === 2 ? null : `02-${1000 + (i % 9000)}-0000`,
       }),
     );
   }
@@ -891,6 +898,7 @@ const MOCK_UNQUEUED: CompanySearchItem[] = [
     market: null,
     emails: [],
     form: "https://bee-holdings.jp/contact",
+    phone: "+81-3-0000-0000",
     review_id: null,
     review_status: null,
     review_assignee: null,
@@ -909,6 +917,7 @@ const MOCK_UNQUEUED: CompanySearchItem[] = [
     // 채용 주소만 있는 회사 — 배제 role 이라 큐에 안 올라간다(제약 §3).
     emails: [{ value: "recruit@hanbit-precision.co.kr", role: "hr", status: null }],
     form: null,
+    phone: "031-000-0000",
     review_id: null,
     review_status: null,
     review_assignee: null,
@@ -926,6 +935,7 @@ const MOCK_UNQUEUED: CompanySearchItem[] = [
     market: null,
     emails: [],
     form: null,
+    phone: null, // 연락처가 아무것도 없는 회사 — 전화 컬럼 '—' 확인용
     review_id: null,
     review_status: null,
     review_assignee: null,
@@ -960,6 +970,7 @@ function companyRow(it: ReviewItem): CompanySearchItem {
       status: c.email_status,
     })),
     form: it.form,
+    phone: it.phone ?? null,
     review_id: it.id,
     review_status: it.status,
     review_assignee: it.assignee,
@@ -982,9 +993,18 @@ function companyMatches(c: CompanySearchItem, needle: string): boolean {
 function companySearchJson(u: URL): Response {
   const q = (u.searchParams.get("q") ?? "").trim();
   if (!q) return jsonRes({ detail: [{ loc: ["query", "q"], msg: "검색어가 필요합니다" }] }, 422);
+  // 검증 큐 상태 필터(BE #424) — 선택 파라미터. enum 밖 값은 BE 와 같이 422.
+  const rs = u.searchParams.get("review_status");
+  if (rs !== null && !["pending", "confirmed", "rejected"].includes(rs))
+    return jsonRes(
+      { detail: [{ loc: ["query", "review_status"], msg: "허용되지 않는 상태" }] },
+      422,
+    );
   const needle = q.toLowerCase();
   const all = [...db.map(companyRow), ...MOCK_UNQUEUED]
     .filter((c) => companyMatches(c, needle))
+    // 큐 미적재(review_status=null)는 어떤 상태 값에도 매치되지 않는다(BE 계약).
+    .filter((c) => !rs || c.review_status === rs)
     .sort((a, b) => a.name.localeCompare(b.name, "ko") || a.id.localeCompare(b.id));
   const limit = Number(u.searchParams.get("limit") ?? "50") || 50;
   const offset = Number(u.searchParams.get("offset") ?? "0") || 0;

@@ -56,6 +56,7 @@ from .schemas import (
     CreateUserRequest,
     IndustryOption,
     ReviewDailyStats,
+    ReviewStatus,
     RoleUpdateRequest,
     SegmentJobCreateRequest,
     SegmentJobInfo,
@@ -223,13 +224,22 @@ def register_admin(
     @app.get("/admin/companies", response_model=CompanySearchResponse)
     def search_companies_route(
         q: str = Query(min_length=1, max_length=200, description="회사명·홈페이지·이메일·영문명 부분일치"),
+        review_status: ReviewStatus | None = Query(
+            default=None, description="이메일 검증 큐 상태 필터(confirmed=확정만)"
+        ),
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
         db: Session = Depends(get_db),
         _: UserRow = Depends(require_admin),
     ) -> CompanySearchResponse:
-        """회사 DB 전체 검색(큐 상태 무관) — 중복 확인·수동 조회용. 결과엔 연락처·큐 상태 동봉."""
-        items, total = search_companies(db, q, limit=limit, offset=offset)
+        """회사 DB 전체 검색 — 중복 확인·수동 조회용. 결과엔 연락처·큐 상태 동봉.
+
+        기본은 큐 상태 무관 전체 검색, ``review_status`` 를 주면 그 상태만 남긴다.
+        """
+        items, total = search_companies(
+            db, q, limit=limit, offset=offset,
+            review_status=review_status.value if review_status else None,
+        )
         return CompanySearchResponse(
             items=[CompanySearchItem(**it) for it in items], total=total, limit=limit,
             offset=offset,
