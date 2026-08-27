@@ -500,6 +500,26 @@ def test_company_search_rejects_empty_q(admin):
     assert admin.get("/admin/companies", params={"q": ""}).status_code == 422
 
 
+def test_company_search_review_status_filter(admin):
+    from sqlalchemy import select
+
+    from leadcrawler.schema import ReviewQueueRow
+
+    params = {"q": "아크메", "review_status": "confirmed"}
+    assert admin.get("/admin/companies", params=params).json()["total"] == 0
+    assert admin.get("/admin/companies", params={"q": "아크메", "review_status": "pending"}).json()[
+        "total"
+    ] == 1
+    with session_scope(get_settings()) as s:
+        rq = s.scalars(select(ReviewQueueRow).where(ReviewQueueRow.field == "email")).one()
+        rq.status = "confirmed"
+    body = admin.get("/admin/companies", params=params).json()
+    assert body["total"] == 1 and body["items"][0]["review_status"] == "confirmed"
+    # enum 밖 값은 422, 파라미터 생략 시 기존 전체 검색 그대로.
+    assert admin.get("/admin/companies", params={"q": "아크메", "review_status": "??"}).status_code == 422
+    assert admin.get("/admin/companies", params={"q": "아크메"}).json()["total"] == 1
+
+
 def test_company_search_pagination_name_eng_and_unqueued(app, admin):
     from leadcrawler.schema import CompanyRow, DiscoveredCompanyRow
 
