@@ -6,6 +6,7 @@ import type {
   AuditEntry,
   CandidateInfo,
   ClaimFilter,
+  CompanySearchItem,
   DashboardSummary,
   Listed,
   ReviewItem,
@@ -868,6 +869,128 @@ function dashboardSummaryJson(): DashboardSummary {
   };
 }
 
+// --- 회사 DB 검색(#418) -------------------------------------------------
+// BE 와 같은 매칭 범위(회사명·홈페이지·이메일/문의폼 URL·발견 원장 영문명)·이름순 정렬·
+// 서버 페이지네이션을 흉내낸다. 큐(db) 회사 전량 + 큐 미적재 3건으로 구성해, 검증 큐에 없는
+// 회사(review_* = null)·배제 role 이메일·비활성 회사까지 화면에서 확인할 수 있게 한다.
+
+// 원장 영문명(name_eng) — 응답 스키마엔 없고 **매칭에만** 쓰이는 값이라 별도 맵으로 둔다.
+const MOCK_NAME_ENG: Record<string, string> = { "cs-jp1": "Bee Holdings Co., Ltd." };
+
+const MOCK_UNQUEUED: CompanySearchItem[] = [
+  {
+    id: "cs-jp1",
+    canonical_key: "dom:bee-holdings.jp",
+    name: "ビーホールディングス",
+    country: "JP",
+    industry: "기계·산업장비",
+    homepage: "https://bee-holdings.jp",
+    is_active: true,
+    site_alive: true,
+    listed: "listed",
+    market: null,
+    emails: [],
+    form: "https://bee-holdings.jp/contact",
+    review_id: null,
+    review_status: null,
+    review_assignee: null,
+  },
+  {
+    id: "cs-kr1",
+    canonical_key: "dom:hanbit-precision.co.kr",
+    name: "한빛정밀",
+    country: "KR",
+    industry: "기계·산업장비",
+    homepage: "https://hanbit-precision.co.kr",
+    is_active: true,
+    site_alive: true,
+    listed: "unlisted",
+    market: null,
+    // 채용 주소만 있는 회사 — 배제 role 이라 큐에 안 올라간다(제약 §3).
+    emails: [{ value: "recruit@hanbit-precision.co.kr", role: "hr", status: null }],
+    form: null,
+    review_id: null,
+    review_status: null,
+    review_assignee: null,
+  },
+  {
+    id: "cs-kr2",
+    canonical_key: "name:kr:대성산업기계",
+    name: "대성산업기계",
+    country: "KR",
+    industry: "기계·산업장비",
+    homepage: "https://daesung-machine.co.kr",
+    is_active: false, // 소멸 처리분 — 지금 연락하면 안 되는 회사
+    site_alive: false,
+    listed: "unknown",
+    market: null,
+    emails: [],
+    form: null,
+    review_id: null,
+    review_status: null,
+    review_assignee: null,
+  },
+];
+
+// 큐 항목 → 회사 검색 행. canonical_key 는 BE dedup.canonical_key() 티어 형식(dom:/name:)을
+// 형태만 흉내낸다(mock 은 원장이 없어 실제 키를 재현할 수 없다). 합성 샘플은 홈페이지 호스트가
+// 전부 example.com 이라 dom: 키가 겹쳐 보이는데, 실DB(회사마다 다른 도메인)에선 안 생기는
+// mock 데이터 특성이다.
+function companyRow(it: ReviewItem): CompanySearchItem {
+  let key = `name:${it.country.toLowerCase()}:${it.name}`;
+  try {
+    if (it.homepage) key = `dom:${new URL(it.homepage).hostname.replace(/^www\./, "")}`;
+  } catch {
+    // 무효 URL — name: 티어 유지.
+  }
+  return {
+    id: it.company_id,
+    canonical_key: key,
+    name: it.name,
+    country: it.country,
+    industry: it.industry,
+    homepage: it.homepage,
+    is_active: true,
+    site_alive: it.site_alive,
+    listed: it.listed,
+    market: it.market,
+    emails: it.candidates.map((c) => ({
+      value: c.value,
+      role: c.value.toLowerCase().startsWith("ir@") ? "ir" : "general",
+      status: c.email_status,
+    })),
+    form: it.form,
+    review_id: it.id,
+    review_status: it.status,
+    review_assignee: it.assignee,
+  };
+}
+
+// q 부분일치(대소문자 무시) — BE 와 동일하게 %·_ 는 와일드카드가 아닌 문자 그대로 취급된다
+// (JS includes 는 애초에 패턴 해석을 안 하므로 자연히 같은 결과).
+function companyMatches(c: CompanySearchItem, needle: string): boolean {
+  const hay = [
+    c.name,
+    c.homepage ?? "",
+    c.form ?? "",
+    MOCK_NAME_ENG[c.id] ?? "",
+    ...c.emails.map((e) => e.value),
+  ];
+  return hay.some((h) => h.toLowerCase().includes(needle));
+}
+
+function companySearchJson(u: URL): Response {
+  const q = (u.searchParams.get("q") ?? "").trim();
+  if (!q) return jsonRes({ detail: [{ loc: ["query", "q"], msg: "검색어가 필요합니다" }] }, 422);
+  const needle = q.toLowerCase();
+  const all = [...db.map(companyRow), ...MOCK_UNQUEUED]
+    .filter((c) => companyMatches(c, needle))
+    .sort((a, b) => a.name.localeCompare(b.name, "ko") || a.id.localeCompare(b.id));
+  const limit = Number(u.searchParams.get("limit") ?? "50") || 50;
+  const offset = Number(u.searchParams.get("offset") ?? "0") || 0;
+  return jsonRes({ items: all.slice(offset, offset + limit), total: all.length, limit, offset });
+}
+
 function jsonRes(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -1073,6 +1196,8 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     return jsonRes({ date, items });
   }
   // 크롤 타깃 픽커 옵션 — BE 와 동일하게 국가/업종 표준 목록 전량(/queue/filters 와 같은 출처).
+  // 회사 DB 검색(#418) — 큐 상태와 무관한 전체 조회라 db 외 미적재 회사도 함께 대상.
+  if (path === "/admin/companies" && method === "GET") return companySearchJson(u);
   if (path === "/admin/countries") return jsonRes(MOCK_COUNTRIES);
   if (path === "/admin/industries") return jsonRes(MOCK_INDUSTRIES);
   if (path === "/admin/crawl-target" && method === "GET") return jsonRes(crawlTarget);
