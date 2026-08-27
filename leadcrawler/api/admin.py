@@ -30,6 +30,7 @@ from ..sources.countries import korean_label, resolve_country, supported_countri
 from ..sources.industry import supported_industries
 from ..sources.taxonomy import UNCLASSIFIED, is_taxonomy_label
 from ..storage.audit import daily_review_stats, recent_audit, user_stats
+from ..storage.company_search import search_companies
 from ..storage.review import admin_reclaim
 from ..storage.crawl_job import (
     active_crawl_job,
@@ -45,6 +46,8 @@ from .schemas import (
     BackfillOverview,
     BackfillStartRequest,
     BackfillStatusResponse,
+    CompanySearchItem,
+    CompanySearchResponse,
     CountryOption,
     CrawlJobInfo,
     CrawlJobRequest,
@@ -216,6 +219,21 @@ def register_admin(
     ) -> list[AuditEntry]:
         """최근 검증 처리 이력(누가·언제·무엇), 최신순."""
         return [AuditEntry(**row) for row in recent_audit(db, limit=limit, offset=offset)]
+
+    @app.get("/admin/companies", response_model=CompanySearchResponse)
+    def search_companies_route(
+        q: str = Query(min_length=1, max_length=200, description="회사명·홈페이지·이메일·영문명 부분일치"),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+        db: Session = Depends(get_db),
+        _: UserRow = Depends(require_admin),
+    ) -> CompanySearchResponse:
+        """회사 DB 전체 검색(큐 상태 무관) — 중복 확인·수동 조회용. 결과엔 연락처·큐 상태 동봉."""
+        items, total = search_companies(db, q, limit=limit, offset=offset)
+        return CompanySearchResponse(
+            items=[CompanySearchItem(**it) for it in items], total=total, limit=limit,
+            offset=offset,
+        )
 
     @app.get("/admin/countries", response_model=list[CountryOption])
     def list_countries(
