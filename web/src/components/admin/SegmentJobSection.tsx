@@ -109,12 +109,13 @@ function targetOf(j: SegmentJobInfo): string {
   return parts.filter(Boolean).join(" · ");
 }
 
-// 승격 진행률 — initial_target 은 승격 단계 진입 시 확정된다. 아직 0 이면 '집계 중'이지
+// 처리 진행률 — initial_target 은 처리 단계 진입 시 확정된다. 아직 0 이면 '집계 중'이지
 // '대상 없음'이 아니다(백필과 정반대 해석이라 문구를 분명히 가른다).
+// 표기는 크롤 실행과 같은 어휘(발견·처리·저장)로 통일 — 내부 용어(승격) 비노출(#415, PO).
 function promoteProgress(j: SegmentJobInfo): { text: string; pct: number | null } {
-  if (j.initial_target <= 0) return { text: "승격 대상 집계 중", pct: null };
+  if (j.initial_target <= 0) return { text: "처리 대상 집계 중", pct: null };
   const pct = Math.min(100, Math.round((j.processed / j.initial_target) * 100));
-  return { text: `승격 ${n(j.processed)}/${n(j.initial_target)} (${pct}%)`, pct };
+  return { text: `처리 ${n(j.processed)}/${n(j.initial_target)} (${pct}%)`, pct };
 }
 
 // 진행 표시 — status 를 먼저 보고, running 일 때만 stage 로 갈라진다.
@@ -522,7 +523,7 @@ function PreviewPanel({
               </span>
             </div>
             <div className="flex flex-col gap-0.5">
-              <span className="text-muted text-xs">승격 대기</span>
+              <span className="text-muted text-xs">처리 대기</span>
               <span className="text-lg tabular-nums text-ink">
                 {preview ? n(preview.promote_pending) : "—"}
               </span>
@@ -596,15 +597,14 @@ function JobCard({
       )}
       <p className="text-muted text-xs tabular-nums my-1">{prog.text}</p>
 
-      {/* 깔때기 — 발견부터 이메일 확보까지 한 줄. 실패분은 0 이면 노이즈라 있을 때만 붙인다. */}
+      {/* 카운터 — 크롤 실행과 같은 어휘(발견·처리·저장(실존))로 통일(#415, PO). 이메일 등
+          내부 단계 수치는 비노출. 실패분은 0 이면 노이즈라 있을 때만 붙인다. */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted text-xs tabular-nums my-1">
         <Step label="발견" value={job.discovered} />
         <span aria-hidden>→</span>
         <Step label="처리" value={job.processed} />
         <span aria-hidden>→</span>
-        <Step label="승격" value={job.promoted} />
-        <span aria-hidden>→</span>
-        <Step label="이메일" value={job.emails} />
+        <Step label="저장(실존)" value={job.promoted} />
         {job.failed_items > 0 && <span className="text-warn">· 실패 {n(job.failed_items)}</span>}
       </div>
 
