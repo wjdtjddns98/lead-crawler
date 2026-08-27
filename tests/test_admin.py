@@ -461,3 +461,60 @@ def test_crawl_history_lists_recent_first_and_respects_limit(
 def _uid(client: TestClient, username: str) -> str:
     rows = client.get("/admin/users").json()
     return next(r["id"] for r in rows if r["username"] == username)
+
+
+# ── 회사 DB 검색(/admin/companies) ──────────────────────────────────────────
+
+
+def test_company_search_matches_name_homepage_email(admin):
+    for q in ("아크메", "ACME.COM", "ir@acme"):
+        r = admin.get("/admin/companies", params={"q": q})
+        assert r.status_code == 200, q
+        body = r.json()
+        assert body["total"] == 1, q
+        item = body["items"][0]
+        assert item["name"] == "아크메"
+        assert item["homepage"] == "https://acme.com"
+        assert item["emails"] == [{"value": "ir@acme.com", "role": "ir", "status": "valid"}]
+        assert item["form"] is None
+        assert item["review_status"] == "pending"  # save_lead 가 큐에 적재.
+        assert item["listed"] == "unknown"
+
+
+def test_company_search_no_match_and_wildcards_escaped(admin):
+    assert admin.get("/admin/companies", params={"q": "없는회사"}).json()["total"] == 0
+    # '%' 는 문자 그대로 — 전체 매치가 아니어야 한다.
+    assert admin.get("/admin/companies", params={"q": "%"}).json()["total"] == 0
+    assert admin.get("/admin/companies", params={"q": "_"}).json()["total"] == 0
+    assert admin.get("/admin/companies", params={"q": " "}).json()["total"] == 0
+
+
+def test_company_search_requires_admin(app):
+    worker = _client(app, _WORKER)
+    assert worker.get("/admin/companies", params={"q": "아크메"}).status_code == 403
+    assert TestClient(app).get("/admin/companies", params={"q": "아크메"}).status_code == 401
+
+
+def test_company_search_rejects_empty_q(admin):
+    assert admin.get("/admin/companies").status_code == 422
+    assert admin.get("/admin/companies", params={"q": ""}).status_code == 422
+
+
+def test_company_search_pagination_name_eng_and_unqueued(app, admin):
+    from leadcrawler.schema import CompanyRow, DiscoveredCompanyRow
+
+    with session_scope(get_settings()) as s:
+        # 큐 미적재 회사 2곳(직접 삽입, 원장 FK 먼저) — 그중 하나만 원장 영문명 매치.
+        s.add(DiscoveredCompanyRow(canonical_key="dom:a.jp", name="エー"))
+        s.add(DiscoveredCompanyRow(canonical_key="dom:b.jp", name="ビー", name_eng="Bee Holdings"))
+        s.flush()
+        s.add(CompanyRow(id="c-a", canonical_key="dom:a.jp", name="エー", country="JP"))
+        s.add(CompanyRow(id="c-b", canonical_key="dom:b.jp", name="ビー", country="JP"))
+    r = admin.get("/admin/companies", params={"q": "bee hold"}).json()
+    assert [i["id"] for i in r["items"]] == ["c-b"]
+    assert r["items"][0]["review_status"] is None and r["items"][0]["emails"] == []
+    # 페이지네이션: 장음부호 'ー' 로 두 JP 회사만 매치 → limit 1 두 페이지가 서로소·total 일치.
+    p1 = admin.get("/admin/companies", params={"q": "ー", "limit": 1}).json()
+    p2 = admin.get("/admin/companies", params={"q": "ー", "limit": 1, "offset": 1}).json()
+    assert p1["total"] == p2["total"] == 2
+    assert {p1["items"][0]["id"], p2["items"][0]["id"]} == {"c-a", "c-b"}
