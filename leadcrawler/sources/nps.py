@@ -15,6 +15,8 @@ cap 미만이면 소진 → 0 리셋(월간 스냅샷 교체 후 재검증 랩).
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterator
 from typing import Protocol
 
 from ..config import Settings
@@ -30,7 +32,7 @@ from .base import (
 )
 # DART corp_cls → listed/market 세분화 표 재사용(같은 corp 를 같은 규칙으로 해석).
 from .dart import _LISTED_CLS, _MARKET_CLS
-from .http import HostRateLimiters
+from .http import Fetcher, HostRateLimiters
 from .industry import ksic_prefixes
 from .taxonomy import UNCLASSIFIED
 
@@ -218,3 +220,51 @@ class NpsSource(DiscoverySource):
             )
             for i in range(self._count)
         ]
+
+
+def pick_latest_dataset(paths: dict) -> tuple[str, str] | None:
+    """odcloud 스웨거 ``paths`` 에서 최신 월 사업장 데이터셋 (경로, 요약)을 고른다. 순수.
+
+    data.go.kr 파일데이터(15083277)는 월별 업로드마다 새 uddi 경로가 생긴다. 날짜는
+    **요약(summary)에서만** 추출(경로의 uddi UUID 숫자열이 lexicographic max 를 오염시키던
+    결함 — 적대 리뷰 H3). 6~8자리 숫자를 같은 자릿수로 정규화해 int 비교하고, 요약에
+    데이터셋 키워드가 있는 경로만 후보로 삼는다(네임스페이스에 섞인 다른 데이터셋 방어).
+    """
+
+    def _summary(spec: object) -> str:
+        get_spec = spec.get("get") if isinstance(spec, dict) else None
+        return str(get_spec.get("summary") or "") if isinstance(get_spec, dict) else ""
+
+    candidates: list[tuple[int, str, str]] = []  # (날짜, 경로, 요약)
+    for path, spec in paths.items():
+        summary = _summary(spec)
+        if "사업장" not in summary and "가입" not in summary:
+            continue
+        dates = [int(d) for d in re.findall(r"\d{6,8}", summary)]
+        if dates:
+            # 8자리(YYYYMMDD)와 6자리(YYYYMM)를 같은 자릿수로 정규화해 비교.
+            candidates.append((max(d if d >= 10**7 else d * 100 for d in dates), path, summary))
+    if not candidates:
+        return None
+    _, path, summary = max(candidates)
+    return path, summary
+
+
+def iter_snapshot_rows(
+    fetcher: Fetcher, path: str, *, service_key: str, per_page: int, max_pages: int
+) -> Iterator[dict]:
+    """odcloud 데이터셋 ``path`` 를 페이지 순회하며 행(dict)을 낸다 — 빈 페이지·마지막 부분
+    페이지에서 종료, ``max_pages`` 로 폭주 방지."""
+    page = 1
+    while page <= max_pages:
+        payload = fetcher.get_json(
+            f"https://api.odcloud.kr/api{path}",
+            params={"page": page, "perPage": per_page, "serviceKey": service_key},
+        )
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not data:
+            return
+        yield from (d for d in data if isinstance(d, dict))
+        if len(data) < per_page:
+            return
+        page += 1

@@ -1006,3 +1006,64 @@ def _to_dict(
         "email_mx": rep_mx,
         "email_smtp": rep_smtp,
     }
+
+
+def enqueue_all_active(session: Session) -> tuple[int, int]:
+    """실존(active) 회사 전체를 검증 큐에 백필한다(멱등) — (전체, 이메일 보유) 곳수 반환.
+
+    이메일 후보가 있으면 후보를 싣고, 없으면 빈 후보로 등록해 사람이 워크벤치에서 직접
+    찾거나 문의폼으로 처리한다. 이미 큐에 있으면 후보만 갱신(상태·선택 보존). 커밋은 호출부.
+    """
+    emails = session.execute(
+        select(ContactRow.company_id, ContactRow.value)
+        .where(ContactRow.type == "email")
+        .order_by(ContactRow.company_id, ContactRow.id)
+    ).all()
+    by_company: dict[str, list[str]] = {}
+    for company_id, value in emails:
+        by_company.setdefault(company_id, []).append(value)
+    active_ids = list(
+        session.scalars(select(CompanyRow.id).where(CompanyRow.is_active.is_(True))).all()
+    )
+    for company_id in active_ids:
+        enqueue_email_review(session, company_id, by_company.get(company_id, []))
+    return len(active_ids), sum(1 for cid in active_ids if cid in by_company)
+
+
+def _dead_site_ids():
+    return select(CompanyRow.id).where(
+        CompanyRow.site_alive.is_(False), CompanyRow.is_active.is_(True)
+    )
+
+
+def count_dead_sites(session: Session) -> tuple[int, int]:
+    """사이트 미생존(site_alive=False)인데 active 인 회사 수와 그 회사들의 대기(pending)
+    큐 행 수 — ``purge_dead_sites`` 의 드라이런 카운트."""
+    dead_q = _dead_site_ids()
+    n_comp = session.scalar(select(func.count()).select_from(dead_q.subquery())) or 0
+    n_pending = (
+        session.scalar(
+            select(func.count())
+            .select_from(ReviewQueueRow)
+            .where(ReviewQueueRow.company_id.in_(dead_q), ReviewQueueRow.status == "pending")
+        )
+        or 0
+    )
+    return n_comp, n_pending
+
+
+def purge_dead_sites(session: Session) -> None:
+    """사이트死 회사를 비활성화하고 대기 큐에서 뺀다 — ``is_active=False`` 로 내려(재-enqueue
+    방지) pending 큐 행을 제거. 확정·거부분은 감사 위해 보존. 멱등. 커밋은 호출부."""
+    dead_q = _dead_site_ids()
+    # 큐 행 삭제를 먼저(dead_q 가 is_active=True 를 참조) → 그 다음 회사 비활성화.
+    session.execute(
+        delete(ReviewQueueRow).where(
+            ReviewQueueRow.company_id.in_(dead_q), ReviewQueueRow.status == "pending"
+        )
+    )
+    session.execute(
+        update(CompanyRow)
+        .where(CompanyRow.site_alive.is_(False), CompanyRow.is_active.is_(True))
+        .values(is_active=False)
+    )

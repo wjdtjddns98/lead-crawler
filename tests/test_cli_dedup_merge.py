@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from leadcrawler.cli import confirmed_pairs_from_report
+from leadcrawler.dedup_resolve.report import confirmed_pairs_from_report
 
 
 def _report() -> dict:

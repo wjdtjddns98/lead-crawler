@@ -127,16 +127,16 @@ def test_live_listed_domestic_only_and_mapping() -> None:
     src = EdinetSource(_live_settings(), fetcher=spy)
     got = src.discover(_seg("전체"))
     names = {c.name for c in got}
-    assert names == {"テスト銀行", "テスト通信"}  # 비상장·외국법인 제외.
-    bank = next(c for c in got if c.name == "テスト銀行")
+    assert names == {"Test Bank Inc.", "Test Telecom"}  # 영문 우선(PO 결정)·비상장·외국법인 제외.
+    bank = next(c for c in got if c.name == "Test Bank Inc.")
     assert bank.canonical_key == "reg:edinet:e00001"
     assert bank.industry == "은행"
     assert bank.ticker == "1376"
     assert bank.reg_no == "1234567890123"
-    assert bank.name_eng == "Test Bank Inc."
+    assert bank.name_eng == "テスト銀行"  # 일문 원문 보관(재식별용).
     assert bank.listed == "listed" and bank.listed_verified
     assert bank.domain is None
-    telecom = next(c for c in got if c.name == "テスト通信")
+    telecom = next(c for c in got if c.name == "Test Telecom")
     assert telecom.industry == "미분류"  # 모호 업종 → LLM 후속.
 
 
@@ -144,7 +144,7 @@ def test_live_specific_industry_filters() -> None:
     spy = _FakeFetcher(_zip_bytes())
     src = EdinetSource(_live_settings(), fetcher=spy)
     got = src.discover(_seg("은행"))
-    assert [c.name for c in got] == ["テスト銀行"]
+    assert [c.name for c in got] == ["Test Bank Inc."]
 
 
 def test_live_fetch_once_memo() -> None:
@@ -188,7 +188,7 @@ def test_live_cursor_advance_and_reset() -> None:
     cur2.start = 1
     src2 = EdinetSource(_live_settings(), fetcher=_FakeFetcher(_zip_bytes()), cursor_store=cur2)
     got = src2.discover(_seg("전체"))
-    assert [c.name for c in got] == ["テスト通信"]  # 이어읽기.
+    assert [c.name for c in got] == ["Test Telecom"]  # 이어읽기.
     assert cur2.saved[-1][2] == 0  # 소진 → 0 리셋.
 
 

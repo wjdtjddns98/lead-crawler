@@ -9,7 +9,7 @@ from __future__ import annotations
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from leadcrawler.cli import backfill_dart_markets
+from leadcrawler.pipeline.column_backfill import backfill_dart_markets
 from leadcrawler.schema import Base, DiscoveredCompanyRow
 
 

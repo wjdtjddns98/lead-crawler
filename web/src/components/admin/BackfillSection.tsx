@@ -53,6 +53,8 @@ type IndustryMode = "include" | "exclude";
 
 // 모드별 문구 — 라벨·플레이스홀더·요약을 통째로 갈아끼워 의미 반전을 삼중 명시한다.
 // 같은 픽커·같은 어휘라 표기가 약하면 정반대 조건으로 대량 백필이 도는 사고가 난다.
+// summaryAll 은 어휘를 전부 고른 경우 전용 — 그때는 '나머지'가 없어 summary 가 사실과
+// 반대가 된다(전 업종을 제외해놓고 "나머지 전 업종 대상").
 const INDUSTRY_MODE: Record<
   IndustryMode,
   {
@@ -62,6 +64,7 @@ const INDUSTRY_MODE: Record<
     placeholder: string;
     emptyHint: string;
     summary: (picked: string[]) => string;
+    summaryAll: string;
   }
 > = {
   include: {
@@ -70,7 +73,8 @@ const INDUSTRY_MODE: Record<
     hint: "(선택 안 함 = 전 업종)",
     placeholder: "대상 업종 검색 (예: 반도체·디스플레이, 미분류)",
     emptyHint: "전 업종 대상",
-    summary: (p) => `${p.join(", ")} 만 대상 — 나머지 업종 제외`,
+    summary: (p) => `${p.join(", ")}만 대상 — 나머지 업종 제외`,
+    summaryAll: "전 업종 대상 — 제외되는 업종 없음",
   },
   exclude: {
     seg: "선택 업종 제외",
@@ -79,6 +83,7 @@ const INDUSTRY_MODE: Record<
     placeholder: "제외할 업종 검색 (예: 건설·엔지니어링)",
     emptyHint: "제외 없음 — 전 업종 대상",
     summary: (p) => `${p.join(", ")} 제외 — 나머지 전 업종 대상`,
+    summaryAll: "전 업종 제외 — 남는 대상 없음",
   },
 };
 
@@ -255,6 +260,9 @@ export function BackfillSection() {
     .map((s) => s.trim())
     .filter(Boolean);
   const mode = INDUSTRY_MODE[industryMode];
+  // 어휘를 전부 고른 상태 — '나머지'가 없어 일반 요약이 정반대 사실을 말하게 된다.
+  // 옵션이 아직 안 왔으면(길이 0) 판정하지 않는다(빈 목록 vs 전량 선택 혼동 방지).
+  const allPicked = industryOpts.length > 0 && picked.length >= industryOpts.length;
   // 제외식의 '미분류'는 라벨이 문자열 '미분류'인 행만 빼고 **라벨 빈값 행은 남는다**
   // (포함식만 빈값까지 대칭 매칭 — BE #372). 조용히 남으면 제외한 줄 알고 넘어간다.
   const unclassifiedExcludeGap =
@@ -318,7 +326,11 @@ export function BackfillSection() {
             placeholder={mode.placeholder}
             emptyHint={mode.emptyHint}
           />
-          {picked.length > 0 && <span className="text-warn text-xs">{mode.summary(picked)}</span>}
+          {picked.length > 0 && (
+            <span className="text-warn text-xs">
+              {allPicked ? mode.summaryAll : mode.summary(picked)}
+            </span>
+          )}
           {unclassifiedExcludeGap && (
             <span className="text-muted text-xs">
               '{UNCLASSIFIED_INDUSTRY_OPTION.value}' 제외는 라벨이 비어 있는 회사까지 빼지는
