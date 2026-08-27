@@ -225,10 +225,12 @@ class ClaudeDirectoryExtractor:
         try:
             prompt = _PROMPT.format(industry=industry, text=text)
             if self._client is None:
-                self._client = anthropic_client(
-                    api_key=self._api_key, auth_token=self._auth_token,
-                    max_retries=self._max_retries,
-                )
+                with self._lock:  # 워커 공유 인스턴스 — 최초 버스트에서 중복 생성 방지(더블체크).
+                    if self._client is None:
+                        self._client = anthropic_client(
+                            api_key=self._api_key, auth_token=self._auth_token,
+                            max_retries=self._max_retries,
+                        )
             msg = self._client.messages.create(
                 model=self.model,
                 max_tokens=self._max_tokens,

@@ -208,10 +208,12 @@ class ClaudeClassifier:
             # auth_token 이면 Authorization: Bearer(구독 auth), 아니면 x-api-key(종량 API).
             # 인스턴스당 1회 생성 — SDK 클라이언트는 스레드-안전(워커 공유 OK).
             if self._client is None:
-                self._client = anthropic_client(
-                    api_key=self._api_key, auth_token=self._auth_token,
-                    max_retries=self._max_retries,
-                )
+                with self._lock:  # 워커 공유 인스턴스 — 최초 버스트에서 중복 생성 방지(더블체크).
+                    if self._client is None:
+                        self._client = anthropic_client(
+                            api_key=self._api_key, auth_token=self._auth_token,
+                            max_retries=self._max_retries,
+                        )
             msg = self._client.messages.create(
                 model=self.model,
                 max_tokens=self._max_tokens,

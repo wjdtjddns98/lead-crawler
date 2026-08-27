@@ -71,6 +71,14 @@ def send_one(
     return server
 
 
+def _smtp_alive(server: smtplib.SMTP) -> bool:
+    """유휴(레이트리밋 sleep) 중 서버가 끊었는지 — NOOP 1왕복(접속+TLS+로그인보다 훨씬 싸다)."""
+    try:
+        return server.noop()[0] == 250
+    except Exception:
+        return False
+
+
 def _smtp_quit(server: smtplib.SMTP | None) -> None:
     if server is not None:
         try:
@@ -318,18 +326,16 @@ def send_campaign(
                 skipped += 1
                 continue
             try:
-                try:
-                    conn = send_one(
-                        settings, to=email, subject=subject, body=body,
-                        from_display=from_display, server=conn,
-                    )
-                except smtplib.SMTPServerDisconnected:
-                    # 재사용 연결이 유휴 중 끊김(레이트리밋 sleep 동안) — 메시지 미수락 상태라
-                    # 새 연결로 1회만 재시도(중복발송 없음). 다른 실패는 그대로 failed.
+                # 재사용 연결 생존 확인은 **발송 전 NOOP** 으로만 — 발송 중 끊김을 재시도하면
+                # DATA 수락 후 응답 읽기에서 끊긴 경우(같은 SMTPServerDisconnected)에 이중발송.
+                # 발송 자체는 절대 재시도하지 않는다(실패=failed 1건, 다음 수신자는 새 연결).
+                if conn is not None and not _smtp_alive(conn):
                     _smtp_quit(conn)
-                    conn = send_one(
-                        settings, to=email, subject=subject, body=body, from_display=from_display
-                    )
+                    conn = None
+                conn = send_one(
+                    settings, to=email, subject=subject, body=body,
+                    from_display=from_display, server=conn,
+                )
                 status, error = "sent", None
                 sent += 1
             except Exception as exc:  # 한 통 실패가 캠페인 전체를 막지 않게(로그 후 계속).
