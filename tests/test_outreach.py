@@ -279,3 +279,83 @@ def test_send_campaign_dead_idle_connection_is_replaced_not_retried(db_settings,
     sends = [c for c in calls if c[0] == "send"]
     assert len(sends) == 3  # 수신자 3명 = 발송 시도 3회(실패 건 재시도 0).
     assert all(c[2] is None for c in sends)  # 죽은 연결은 매번 교체돼 server=None 으로 진입.
+
+
+def test_send_one_only_data_stage_disconnect_is_uncertain() -> None:
+    """DATA 단계 끊김만 SendUncertain. MAIL/RCPT 단계 끊김·서버 거절은 그대로 예외(failed)."""
+    import smtplib
+
+    class _Srv:
+        def __init__(self, *, mail_exc=None, rcpt_code=250, data_exc=None, data_code=250):
+            self._mail_exc, self._rcpt_code = mail_exc, rcpt_code
+            self._data_exc, self._data_code = data_exc, data_code
+            self.rset_calls = 0
+            self.payload = b""
+
+        def mail(self, sender):
+            if self._mail_exc:
+                raise self._mail_exc
+            return 250, b"ok"
+
+        def rcpt(self, to):
+            return self._rcpt_code, b"r"
+
+        def data(self, payload):
+            self.payload = payload
+            if self._data_exc:
+                raise self._data_exc
+            return self._data_code, b"queued"
+
+        def rset(self):
+            self.rset_calls += 1
+
+    s = _settings()
+    kw = dict(to="a@x.com", subject="제목", body="본문 한글")
+    # ① DATA 단계 끊김 → 불명.
+    with pytest.raises(outreach.SendUncertain):
+        outreach.send_one(s, server=_Srv(data_exc=smtplib.SMTPServerDisconnected("eof")), **kw)
+    # ② MAIL 단계 끊김(페이로드 0바이트) → 그대로 실패(재시도 가능).
+    with pytest.raises(smtplib.SMTPServerDisconnected):
+        outreach.send_one(s, server=_Srv(mail_exc=smtplib.SMTPServerDisconnected("eof")), **kw)
+    # ③ RCPT 거절 → 실패 + RSET.
+    srv = _Srv(rcpt_code=550)
+    with pytest.raises(smtplib.SMTPRecipientsRefused):
+        outreach.send_one(s, server=srv, **kw)
+    assert srv.rset_calls == 1 and srv.payload == b""
+    # ④ DATA 본문 거절(554) → 실패(미전달 확정).
+    with pytest.raises(smtplib.SMTPDataError):
+        outreach.send_one(s, server=_Srv(data_code=554), **kw)
+    # ⑤ 정상 — 돌려준 연결이 같은 객체, 페이로드에 헤더·CRLF 포함.
+    srv = _Srv()
+    assert outreach.send_one(s, server=srv, **kw) is srv
+    assert b"Subject:" in srv.payload and b"\r\n" in srv.payload
+
+
+def test_uncertain_is_logged_counted_and_never_auto_resent(db_settings, monkeypatch) -> None:
+    """uncertain 은 로그 status·집계·일일상한에 반영되고, 다음 캠페인 수신자에서 빠진다."""
+    from leadcrawler.schema import EmailSendLogRow
+
+    def flaky(settings, *, to, subject, body, from_display="", server=None):
+        if to == "ir@b.co.kr":
+            raise outreach.SendUncertain("connection closed before 250")
+        return object()
+
+    monkeypatch.setattr(outreach, "send_one", flaky)
+    monkeypatch.setattr(outreach, "_smtp_alive", lambda s: True)
+    monkeypatch.setattr(outreach, "_smtp_quit", lambda s: None)
+    s = _settings(email_send_enabled=True, email_send_daily_cap=10)
+    with session_scope(s) as sess:
+        r1 = outreach.send_campaign(s, sess, subject="제목", body="본문")
+    assert r1["sent"] == 2 and r1["uncertain"] == 1 and r1["failed"] == 0
+    assert r1["attempted"] == 3
+    with session_scope(s) as sess:
+        row = sess.get(EmailSendLogRow, outreach._send_id("ir@b.co.kr"))
+        assert row.status == "uncertain" and "250" in (row.error or "")
+        assert outreach._today_used_count(sess, outreach._utcnow()) == 3  # 상한에 포함.
+        # 재발송 대상에서 제외(자동 재시도 금지) — failed 였다면 남았을 것.
+        assert outreach.recipients(sess) == []
+        assert outreach.preview(s, sess)["remaining_today"] == 7
+    # 예약 경로도 dup 으로 막는다(다른 캠페인이 같은 주소를 잡으려 해도).
+    assert outreach._reserve_send(
+        s, email="ir@b.co.kr", company_id="x", subject="s", sent_by=None, cap=10, now=outreach._utcnow()
+    ) == "dup"

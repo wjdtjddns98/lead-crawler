@@ -393,3 +393,42 @@ export interface DashboardSummary {
   companies: CompaniesSummary;
   queue: QueueSummary;
 }
+
+// --- 관리자 회사 DB 검색(BE PR#418) ------------------------------------
+// GET /admin/companies — 큐 상태와 **무관하게** company 전체를 회사명·홈페이지·이메일/문의폼
+// URL·발견 원장 영문명(JP 등)으로 부분일치(대소문자 무시) 조회한다. 중복 확인·수동 조회용.
+
+// role 은 EmailRole 어휘(ir/general/hr/press/personal/unknown), status 는 이메일 검증
+// 상태(valid/risky/invalid/unknown) — **미검증이면 null**이라 큐의 email_status 와 같은 표기를 쓴다.
+export interface CompanyEmailInfo {
+  value: string;
+  role: string;
+  status: string | null;
+}
+
+export interface CompanySearchItem {
+  id: string;
+  canonical_key: string; // 재추출 금지 판정 키(제약 ①) — 중복 확인의 실제 근거
+  name: string;
+  country: string;
+  industry: string;
+  homepage: string | null;
+  is_active: boolean;
+  site_alive: boolean;
+  listed: Listed;
+  market: string | null;
+  // 검색 대상·응답 연락처는 email·form 만(전화·주소 제외 — BE 계약).
+  emails: CompanyEmailInfo[];
+  form: string | null;
+  // 검증 큐(field="email") 적재분 — **미적재면 3필드 모두 null**.
+  review_id: string | null;
+  review_status: ReviewStatus | null;
+  review_assignee: string | null;
+}
+
+export interface CompanySearchResponse {
+  items: CompanySearchItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}

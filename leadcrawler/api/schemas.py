@@ -331,6 +331,7 @@ class SendResult(BaseModel):
     attempted: int = 0
     sent: int = 0
     failed: int = 0
+    uncertain: int = 0  # DATA 후 응답 못 읽음 — 전달됐을 수 있어 자동 재발송 제외
     skipped: int = 0  # 동시 캠페인 선점/기발송 스킵(pydantic 이 조용히 드롭하지 않게 명시)
     capped: int = 0  # 일일 상한 초과로 미발송
 
@@ -669,3 +670,40 @@ class DashboardSummaryResponse(BaseModel):
     ledger: LedgerSummary
     companies: CompaniesSummary
     queue: QueueSummary
+
+
+class CompanyEmailInfo(BaseModel):
+    """회사 검색 결과의 이메일 1건 — 값·역할·검증 상태(미검증=None)."""
+
+    value: str
+    role: str
+    status: str | None = None
+
+
+class CompanySearchItem(BaseModel):
+    """관리자 회사 검색 결과 1행 — 회사 기본정보 + 연락처 + 검증 큐 상태(큐 미적재=None)."""
+
+    id: str
+    canonical_key: str
+    name: str
+    country: str
+    industry: str
+    homepage: str | None = None
+    is_active: bool
+    site_alive: bool
+    listed: str
+    market: str | None = None
+    emails: list[CompanyEmailInfo]
+    form: str | None = None
+    review_id: str | None = None
+    review_status: str | None = None
+    review_assignee: str | None = None
+
+
+class CompanySearchResponse(BaseModel):
+    """회사 검색 응답(페이지네이션 메타 포함)."""
+
+    items: list[CompanySearchItem]
+    total: int
+    limit: int
+    offset: int
