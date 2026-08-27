@@ -406,6 +406,22 @@ def _forms_by_company(
     return forms
 
 
+def _phones_by_company(session: Session, company_ids: Sequence[str]) -> dict[str, str]:
+    """회사별 대표 전화(회사당 1건 — 크롤 tel:/본문 또는 등록처 폴백). 엑셀 C(연락처) 표시용."""
+    if not company_ids:
+        return {}
+    rows = session.execute(
+        select(ContactRow.company_id, ContactRow.value)
+        .where(ContactRow.company_id.in_(list(company_ids)))
+        .where(ContactRow.type == ContactType.PHONE.value)
+        .order_by(ContactRow.confidence.desc(), ContactRow.id)  # 회사당 여러 건이면 결정적 선택.
+    ).all()
+    phones: dict[str, str] = {}
+    for cid, value in rows:
+        phones.setdefault(cid, value)
+    return phones
+
+
 def query_reviews(
     session: Session,
     *,
@@ -467,8 +483,11 @@ def query_reviews(
     ids = [company.id for _, company in rows]
     signals = _email_signals_by_value(session, ids)
     forms = _forms_by_company(session, ids)
+    phones = _phones_by_company(session, ids)
     listed_map = _listed_by_company(session, [company for _, company in rows])
-    return [_to_dict(rq, company, signals, forms, listed_map) for rq, company in rows]
+    return [
+        _to_dict(rq, company, signals, forms, listed_map, phones) for rq, company in rows
+    ]
 
 
 def get_review(session: Session, review_id: str) -> dict | None:
@@ -479,7 +498,10 @@ def get_review(session: Session, review_id: str) -> dict | None:
     company = session.get(CompanyRow, rq.company_id)
     signals = _email_signals_by_value(session, [rq.company_id])
     forms = _forms_by_company(session, [rq.company_id])
-    return _to_dict(rq, company, signals, forms, _listed_by_company(session, [company]))
+    phones = _phones_by_company(session, [rq.company_id])
+    return _to_dict(
+        rq, company, signals, forms, _listed_by_company(session, [company]), phones
+    )
 
 
 def _parse_candidates(rq: ReviewQueueRow) -> list[str]:
@@ -820,8 +842,11 @@ def _rows_to_dtos(
     ids = [c.id for _, c in rows]
     signals = _email_signals_by_value(session, ids)
     forms = _forms_by_company(session, ids)
+    phones = _phones_by_company(session, ids)
     listed_map = _listed_by_company(session, [company for _, company in rows])
-    return [_to_dict(rq, company, signals, forms, listed_map) for rq, company in rows]
+    return [
+        _to_dict(rq, company, signals, forms, listed_map, phones) for rq, company in rows
+    ]
 
 
 def my_work(session: Session, user_id: str) -> list[dict]:
@@ -958,6 +983,7 @@ def _to_dict(
     signals: dict[tuple[str, str], _EmailSignal],
     forms: dict[str, tuple[str, float]] | None = None,
     listed_map: dict[str, tuple[str, str | None]] | None = None,
+    phones: dict[str, str] | None = None,
 ) -> dict:
     """ORM 행 + 후보별 이메일 신호를 API DTO dict 로 평탄화한다."""
     candidates = _parse_candidates(rq)
@@ -1000,6 +1026,8 @@ def _to_dict(
         # 문의폼 URL + 신뢰도(없으면 None) — 저신뢰(폴백 0.3)면 리뷰레인서 '사람 확인' 표기.
         "form": form_url,
         "form_confidence": form_conf,
+        # 대표 전화(없으면 None) — 엑셀 C(연락처) 컬럼.
+        "phone": (phones or {}).get(rq.company_id),
         "form_low_confidence": form_url is not None and form_conf is not None
         and form_conf < FORM_REVIEW_THRESHOLD,
         "email_status": rep_status,

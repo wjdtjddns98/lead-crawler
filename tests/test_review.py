@@ -187,6 +187,21 @@ def test_email_lead_exposes_no_form(session: Session) -> None:
     assert query_reviews(session)[0]["form"] is None
 
 
+def test_queue_exposes_phone(session: Session) -> None:
+    # 대표 전화(크롤/등록처 폴백)는 DTO 'phone' 으로 노출 — 엑셀 C(연락처) 컬럼 대응.
+    assert query_reviews(session) == []
+    lead = _lead()
+    lead.phone = Contact(type=ContactType.PHONE, value="02-1234-5678", confidence=0.5)
+    save_lead(session, lead)
+    session.flush()
+    item = query_reviews(session)[0]
+    assert item["phone"] == "02-1234-5678"
+    assert get_review(session, item["id"])["phone"] == "02-1234-5678"
+    save_lead(session, _lead(domain="nophone.com"))
+    session.flush()
+    assert {it["phone"] for it in query_reviews(session)} == {"02-1234-5678", None}
+
+
 def test_enqueue_preserves_status_on_recrawl(session: Session) -> None:
     save_lead(session, _lead())
     session.flush()
