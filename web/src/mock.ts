@@ -1463,8 +1463,15 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
       return jsonRes(segInfo(job));
     }
     if (action === "resume") {
-      if (job.status !== "paused") return jsonRes({ detail: "일시중지 상태가 아닙니다" }, 409);
+      // BE requeue_segment_job 허용 집합 = paused·failed·budget_exhausted·cancelled(#407).
+      // 목은 failed·budget_exhausted 로 전이하지 않아 SegStatus 에 없다 — 나머지 둘만 검사.
+      if (job.status !== "paused" && job.status !== "cancelled")
+        return jsonRes({ detail: "재개할 수 없는 상태입니다" }, 409);
       job.status = "queued";
+      // BE 는 재개 시 finished_at·stop_reason·cancel_requested 를 지운다. segInfo 가 이 값들을
+      // finishedAt·pending 에서 파생하므로 함께 풀어야 재개 후 '종료' 흔적이 남지 않는다.
+      job.finishedAt = null;
+      job.pending = null;
       segTick();
       return jsonRes(segInfo(job));
     }

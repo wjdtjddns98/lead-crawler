@@ -473,7 +473,9 @@ export async function pauseSegmentJob(id: string): Promise<SegmentJobInfo> {
   return apiSend("POST", `/admin/segment-jobs/${id}/pause`);
 }
 
-// 재개 — paused·failed·budget_exhausted 만 허용(그 외 409).
+// 재개 — paused·failed·budget_exhausted·cancelled 만 허용(그 외 409). 취소건 재개는
+// BE #407(PO 결정 2026-08-26)로 열렸다 — 커서·카운터를 보존하므로 실수로 취소한 잡을
+// 처음부터 다시 발견하지 않는다. 재개하면 BE 가 stop_reason·error·finished_at 을 지운다.
 export async function resumeSegmentJob(id: string): Promise<SegmentJobInfo> {
   return apiSend("POST", `/admin/segment-jobs/${id}/resume`);
 }
