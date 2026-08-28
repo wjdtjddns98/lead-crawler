@@ -25,8 +25,10 @@ from ..logging import get_logger
 from ..models import (
     Company,
     CompanyLead,
+    Contact,
     ContactType,
     EmailValidation,
+    ExtractMethod,
     Listed,
 )
 from ..dedup import normalize_domain
@@ -152,6 +154,12 @@ def _build_lead(
     candidates = accepted_emails(contacts)
     email = candidates[0] if candidates else None
     phone = next((c for c in contacts if c.type is ContactType.PHONE), None)
+    if phone is None and dc.phone:
+        # 크롤로 못 잡으면 등록처(NPS·EDGAR·FSC·DART)가 준 대표전화로 폴백 — 무비용.
+        phone = Contact(
+            type=ContactType.PHONE, value=dc.phone,
+            extract_method=ExtractMethod.API, confidence=0.9,
+        )
     form = next((c for c in contacts if c.type is ContactType.FORM), None)
     # enrich 가 이미 받은 home 생존신호를 넘겨 실존검증의 중복 HTTP 왕복을 없앤다(architect C).
     # 헤드리스로 렌더한 home 도 넘겨, verify_headless 가 같은 도메인을 또 렌더하지 않게 한다.

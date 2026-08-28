@@ -406,6 +406,22 @@ def _forms_by_company(
     return forms
 
 
+def _phones_by_company(session: Session, company_ids: Sequence[str]) -> dict[str, str]:
+    """회사별 대표 전화(회사당 1건 — 크롤 tel:/본문 또는 등록처 폴백). 엑셀 C(연락처) 표시용."""
+    if not company_ids:
+        return {}
+    rows = session.execute(
+        select(ContactRow.company_id, ContactRow.value)
+        .where(ContactRow.company_id.in_(list(company_ids)))
+        .where(ContactRow.type == ContactType.PHONE.value)
+        .order_by(ContactRow.confidence.desc(), ContactRow.id)  # 회사당 여러 건이면 결정적 선택.
+    ).all()
+    phones: dict[str, str] = {}
+    for cid, value in rows:
+        phones.setdefault(cid, value)
+    return phones
+
+
 def query_reviews(
     session: Session,
     *,
@@ -467,8 +483,11 @@ def query_reviews(
     ids = [company.id for _, company in rows]
     signals = _email_signals_by_value(session, ids)
     forms = _forms_by_company(session, ids)
+    phones = _phones_by_company(session, ids)
     listed_map = _listed_by_company(session, [company for _, company in rows])
-    return [_to_dict(rq, company, signals, forms, listed_map) for rq, company in rows]
+    return [
+        _to_dict(rq, company, signals, forms, listed_map, phones) for rq, company in rows
+    ]
 
 
 def get_review(session: Session, review_id: str) -> dict | None:
@@ -479,7 +498,10 @@ def get_review(session: Session, review_id: str) -> dict | None:
     company = session.get(CompanyRow, rq.company_id)
     signals = _email_signals_by_value(session, [rq.company_id])
     forms = _forms_by_company(session, [rq.company_id])
-    return _to_dict(rq, company, signals, forms, _listed_by_company(session, [company]))
+    phones = _phones_by_company(session, [rq.company_id])
+    return _to_dict(
+        rq, company, signals, forms, _listed_by_company(session, [company]), phones
+    )
 
 
 def _parse_candidates(rq: ReviewQueueRow) -> list[str]:
@@ -522,6 +544,7 @@ def set_review_status(
     note: str | None = None,
     has_attachment: bool | None = None,
     manager: str | None = None,
+    phone: str | None = None,
     remove_emails: Sequence[str] | None = None,
     now: datetime | None = None,
 ) -> dict | None:
@@ -538,7 +561,8 @@ def set_review_status(
     후보와 연락처 행을 함께 지운다(:func:`_apply_email_removals`) — 삭제 후 남은 이메일이
     없고 문의폼이 있으면 엑셀 J 가 자연히 "사이트 내 문의폼"이 된다. ``note`` 는 검수자
     기타 메모(문의폼 미발송 사유 등, ``None``=변경 없음·
-    빈 문자열=지움) — 엑셀 L(기타) 컬럼으로 export 된다. 처리자(assignee/assignee_id)와
+    빈 문자열=지움) — 엑셀 L(기타) 컬럼으로 export 된다. ``phone`` 은 대표 전화 교정
+    (:func:`_apply_phone_correction` — 엑셀 C 컬럼). 처리자(assignee/assignee_id)와
     시각(reviewed_at)을 큐 행에 남기고, 변경 1건마다 :class:`ReviewAuditRow` 를 append 해
     책임추적 이력을 보존한다(홈페이지·폼 변경 전/후 값도 같은 행에 기록). 점유는 영구
     귀속이라 **타인이 점유한 항목이면 시간 경과와 무관하게** :class:`ReviewConflict`.
@@ -600,6 +624,7 @@ def set_review_status(
         rq.has_attachment = has_attachment
     if manager is not None:
         rq.manager = manager.strip() or None  # 빈 문자열=담당자 지움.
+    _apply_phone_correction(session, rq.company_id, phone)  # None=변경 없음·""=지움·값=교체.
     rq.status = status
     if status in (CONFIRMED, REJECTED):
         # 종료 상태로 가면 점유는 무의미 — 정리(귀속은 assignee/reviewed_at 가 보존).
@@ -680,6 +705,44 @@ def _apply_email_removals(
     if removed:
         log.info("review.emails_removed", company_id=rq.company_id, emails=removed)
     return removed
+
+
+def _apply_phone_correction(session: Session, company_id: str, phone: str | None) -> None:
+    """대표 전화 교정 — ``None`` 변경 없음, 빈 문자열 전화 삭제, 값이면 사람 입력으로 교체.
+
+    회사의 phone 연락처를 전부 지우고 사람 값 1건(method=manual·confidence=1.0)으로 바꾼다.
+    ponytail: 감사이력(before/after) 미기록 — note/manager 와 같은 판단. 재크롤 시
+    save_lead 의 stale 삭제로 덮일 수 있는 한계는 폼 교정과 동일(수용된 선례).
+    """
+    if phone is None:
+        return
+    value = phone.strip()
+    rows = session.scalars(
+        select(ContactRow)
+        .where(ContactRow.company_id == company_id)
+        .where(ContactRow.type == ContactType.PHONE.value)
+    ).all()
+    if any(r.value == value and r.extract_method == ExtractMethod.MANUAL.value for r in rows):
+        return  # 동일 사람 값 재확정 — 무변경(결정적 PK 재삽입 충돌 방지).
+    for row in rows:
+        session.delete(row)
+    if not value:
+        return
+    from .repository import contact_id_for  # 순환 import 회피(repository→review 역방향).
+
+    session.flush()  # 삭제 먼저 반영 — 같은 값을 다른 method 로 갖던 행과 PK 충돌 방지.
+    # ponytail: delete+insert 는 폼 교정과 같은 check-then-insert 한계(같은 회사의 두 큐 행을
+    # 동시에 교정하면 결정적 PK 충돌 가능) — 실측 발생 시 dialect upsert 로.
+    session.add(
+        ContactRow(
+            id=contact_id_for(company_id, ContactType.PHONE.value, value),
+            company_id=company_id,
+            type=ContactType.PHONE.value,
+            value=value,
+            extract_method=ExtractMethod.MANUAL.value,
+            confidence=1.0,
+        )
+    )
 
 
 def _apply_form_correction(
@@ -820,8 +883,11 @@ def _rows_to_dtos(
     ids = [c.id for _, c in rows]
     signals = _email_signals_by_value(session, ids)
     forms = _forms_by_company(session, ids)
+    phones = _phones_by_company(session, ids)
     listed_map = _listed_by_company(session, [company for _, company in rows])
-    return [_to_dict(rq, company, signals, forms, listed_map) for rq, company in rows]
+    return [
+        _to_dict(rq, company, signals, forms, listed_map, phones) for rq, company in rows
+    ]
 
 
 def my_work(session: Session, user_id: str) -> list[dict]:
@@ -958,6 +1024,7 @@ def _to_dict(
     signals: dict[tuple[str, str], _EmailSignal],
     forms: dict[str, tuple[str, float]] | None = None,
     listed_map: dict[str, tuple[str, str | None]] | None = None,
+    phones: dict[str, str] | None = None,
 ) -> dict:
     """ORM 행 + 후보별 이메일 신호를 API DTO dict 로 평탄화한다."""
     candidates = _parse_candidates(rq)
@@ -1000,6 +1067,8 @@ def _to_dict(
         # 문의폼 URL + 신뢰도(없으면 None) — 저신뢰(폴백 0.3)면 리뷰레인서 '사람 확인' 표기.
         "form": form_url,
         "form_confidence": form_conf,
+        # 대표 전화(없으면 None) — 엑셀 C(연락처) 컬럼.
+        "phone": (phones or {}).get(rq.company_id),
         "form_low_confidence": form_url is not None and form_conf is not None
         and form_conf < FORM_REVIEW_THRESHOLD,
         "email_status": rep_status,

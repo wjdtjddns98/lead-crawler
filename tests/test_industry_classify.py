@@ -355,6 +355,27 @@ def test_build_lead_classifies_when_unclassified():
     assert clf.calls == 1  # 미분류라 LLM 한번 거침
 
 
+def test_build_lead_falls_back_to_registry_phone():
+    # 크롤이 전화를 못 잡으면 등록처(NPS·EDGAR·FSC)가 준 대표전화로 폴백(무비용). 크롤 전화가
+    # 있으면 그것이 우선.
+    from leadcrawler.models import ExtractMethod
+    from leadcrawler.pipeline.run import _build_lead
+
+    dc = _dc("게임")
+    dc.phone = "02-3011-2518"
+    kw = dict(existence=_FakeExistence(), email_validator=_FakeValidator(),
+              classifier=_RecordingClassifier("게임"))
+    lead = _build_lead(dc, enricher=_FakeEnricher(), **kw)
+    assert lead.phone is not None
+    assert (lead.phone.value, lead.phone.extract_method) == ("02-3011-2518", ExtractMethod.API)
+
+    crawled = _FakeEnricher()
+    crawled.enrich = lambda dc: [Contact(type=ContactType.PHONE, value="02-1111-2222")]
+    assert _build_lead(dc, enricher=crawled, **kw).phone.value == "02-1111-2222"
+    dc.phone = None
+    assert _build_lead(dc, enricher=_FakeEnricher(), **kw).phone is None
+
+
 def test_build_lead_skips_classify_when_no_homepage():
     # 홈페이지 텍스트 없음(도메인·홈 없는 등록처 껍데기 회사) → 이름만 블라인드 분류
     # 금지(자동차 편중·비용 방지). 미분류 유지 + LLM 호출 0.

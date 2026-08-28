@@ -45,6 +45,7 @@ class ReviewItem(BaseModel):
     homepage: str | None = None
     site_alive: bool = False
     form: str | None = None  # 문의폼 URL(이메일 없을 때 폼으로 처리)
+    phone: str | None = None  # 대표 전화(크롤 tel:/본문 또는 등록처 폴백) — 엑셀 C(연락처) 컬럼
     note: str | None = None  # 검수자 기타 메모(문의폼 미발송 사유 등) — 엑셀 L(기타) 컬럼
     has_attachment: bool | None = None  # 첨부파일 유무(검수자 체크, None=미확인)
     manager: str | None = None  # 상대 회사 담당자명(검수자 기입) — 엑셀 H(담당자) 컬럼
@@ -89,7 +90,9 @@ class ConfirmRequest(BaseModel):
     ``note`` 는 검수자 기타 메모(문의폼 미발송 사유 등, 엑셀 L 컬럼): ``None`` = 변경
     없음, 빈 문자열 = 메모 지움. ``has_attachment`` 는 첨부파일 유무 체크(``None`` = 변경
     없음), ``manager`` 는 상대 회사 담당자명(엑셀 H 컬럼, ``None`` = 변경 없음·빈
-    문자열 = 지움) — 검증 UI 의 기타메모 아래 입력란.
+    문자열 = 지움) — 검증 UI 의 기타메모 아래 입력란. ``phone`` 은 대표 전화 교정값
+    (엑셀 C 컬럼, ``None`` = 변경 없음·빈 문자열 = 전화 지움·값 = 사람 입력으로 교체 —
+    크롤/등록처 전화를 대체). 숫자가 하나도 없으면 422.
     ``remove_emails`` 는 실제로 존재하지 않아 삭제할 이메일 목록(빈 목록/``None`` = 삭제
     없음) — 후보와 연락처에서 지운다. 남은 이메일이 없고 문의폼이 있으면 엑셀 J 가
     "사이트 내 문의폼"이 된다. 삭제 대상은 저장된 값과 대조되므로 형식 검증 대신 개수·
@@ -102,9 +105,18 @@ class ConfirmRequest(BaseModel):
     note: str | None = Field(default=None, max_length=512)
     has_attachment: bool | None = None
     manager: str | None = Field(default=None, max_length=64)
+    phone: str | None = Field(default=None, max_length=64)
     remove_emails: list[str] | None = Field(default=None, max_length=50)
 
-    @field_validator("note", "manager")
+    @field_validator("phone")
+    @classmethod
+    def _validate_phone(cls, v: str | None) -> str | None:
+        # 빈 문자열(지움)은 허용, 값이 있으면 숫자 최소 1개(오입력 차단 — 서식은 강제 안 함).
+        if v is not None and v.strip() and not any(ch.isdigit() for ch in v):
+            raise ValueError("전화번호에 숫자가 없습니다")
+        return v
+
+    @field_validator("note", "manager", "phone")
     @classmethod
     def _reject_nul(cls, v: str | None) -> str | None:
         # NUL 바이트는 PG TEXT/VARCHAR 저장 시 오류(500) — 422 로 조기 거절(Codex 리뷰 채택).
