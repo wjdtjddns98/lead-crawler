@@ -131,12 +131,20 @@ export interface SendPreview {
   sample: string[];
 }
 
+// 발송 결과 요약. 카운터는 서로 배타라 recipients = sent + failed + uncertain + skipped + capped
+// 가 성립한다 — 일부만 그리면 합이 안 맞아 보이므로 0 초과인 항목은 전부 표시한다.
 export interface SendResult {
   dry_run: boolean;
   recipients: number;
   attempted: number;
   sent: number;
   failed: number;
+  // 결과 불명(BE #422) — SMTP DATA 를 다 보낸 뒤 250 응답을 못 읽은 건. 전달됐을 수 있어
+  // BE 가 자동 재발송에서 **영구 제외**하고 운영자 수동 확인에 맡긴다. 화면에 안 띄우면
+  // 확인할 건이 있다는 사실 자체가 전달되지 않으므로 경고 톤으로 노출한다.
+  uncertain: number;
+  // 동시 캠페인 선점/기발송 스킵(BE #267) — 실패가 아니라 중복 방지로 건너뛴 건.
+  skipped: number;
   capped: number;
 }
 

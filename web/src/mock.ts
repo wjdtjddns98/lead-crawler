@@ -1481,7 +1481,16 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
       sample: [],
     });
   if (path === "/send" && method === "POST")
-    return jsonRes({ dry_run: true, recipients: 0, attempted: 0, sent: 0, failed: 0, capped: 0 });
+    return jsonRes({
+      dry_run: true,
+      recipients: 0,
+      attempted: 0,
+      sent: 0,
+      failed: 0,
+      uncertain: 0,
+      skipped: 0,
+      capped: 0,
+    });
   if (path === "/export")
     return new Response(new Blob([""]), {
       status: 200,
