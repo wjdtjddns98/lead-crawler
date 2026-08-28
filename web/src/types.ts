@@ -36,7 +36,9 @@ export interface ReviewItem {
   email_smtp: boolean | null;
   // 대표 전화번호(크롤 tel:·본문 서식 또는 등록처 폴백) — 엑셀 C(연락처) 컬럼과 같은 값.
   // BE #429 로 큐 API 3개 경로(GET /queue·/queue/mine·POST /queue/claim) 모두 내려온다.
-  // 아직 안 주는 구버전 서버가 있어 옵셔널 유지 — 표시부에서 "—" 로 강등한다.
+  // 아직 안 주는 구버전 서버가 있어 옵셔널 유지 — 표시부에서 "" 로 강등한다.
+  // BE #432 부터 검수자가 확정 시 교정할 수 있고(ConfirmEdits.phone), 확정 응답엔 교정된
+  // 값이 담겨 돌아온다.
   phone?: string | null;
   // 상장여부 — BE 계약 확장 필요(GET /queue·/queue/mine·POST /queue/claim 응답에 추가).
   listed: Listed;
@@ -56,6 +58,9 @@ export interface ConfirmEdits {
   // 되돌리는 요청은 표현할 수 없다(호출부가 미반영을 사용자에게 알린다).
   hasAttachment?: boolean;
   manager?: string; // 담당자명(#382, 최대 64자) — 빈 문자열 = 지움
+  // 대표 전화 교정(#432, 최대 64자) — 빈 문자열 = 지움. 크롤/등록처 값을 사람 입력으로
+  // 대체한다(엑셀 C 컬럼). 숫자가 하나도 없는 값은 BE 가 422 라 normPhone 이 먼저 거른다.
+  phone?: string;
 }
 
 export interface QueueResponse {
