@@ -34,9 +34,9 @@ export interface ReviewItem {
   email_status: string | null;
   email_mx: boolean | null;
   email_smtp: boolean | null;
-  // 대표 전화번호 — BE DB(company_detail.phone)·엑셀 C(연락처)엔 이미 있으나 큐 API 응답엔
-  // 아직 없다. **BE 계약 확장 필요**(GET /queue·/queue/mine·POST /queue/claim 응답에 추가).
-  // 미배포 서버에선 undefined 가 오므로 옵셔널로 두고 표시부에서 "—" 로 강등한다.
+  // 대표 전화번호(크롤 tel:·본문 서식 또는 등록처 폴백) — 엑셀 C(연락처) 컬럼과 같은 값.
+  // BE #429 로 큐 API 3개 경로(GET /queue·/queue/mine·POST /queue/claim) 모두 내려온다.
+  // 아직 안 주는 구버전 서버가 있어 옵셔널 유지 — 표시부에서 "—" 로 강등한다.
   phone?: string | null;
   // 상장여부 — BE 계약 확장 필요(GET /queue·/queue/mine·POST /queue/claim 응답에 추가).
   listed: Listed;
