@@ -292,7 +292,10 @@ export async function fetchReviewDaily(date?: string): Promise<ReviewDailyStats>
 }
 
 // 회사 DB 검색(BE PR#418) — q(1~200자, 빈값이면 422)로 회사명·홈페이지·이메일/문의폼 URL·
-// 발견 원장 영문명을 부분일치 조회. 정렬은 이름순 고정, 페이지네이션은 서버 몫(total 동봉).
+// 발견 원장의 보관 상호(name_eng)를 부분일치 조회. 정렬은 이름순 고정, 페이지네이션은 서버
+// 몫(total 동봉). name_eng 는 표기가 소스마다 다르다 — DART·NPS 는 국내 기업의 **영문명**,
+// EDINET 은 BE #412 이후 일본 기업의 **일문 원문**(표시명 name 이 영문 상호로 바뀌면서 자리를
+// 맞바꿨다). 그래서 "영문명"이라고 안내하면 일문 검색이 되는 사실이 가려진다.
 // ponytail: 선두 와일드카드 ILIKE 라 인덱스를 안 타고 라이브에서 200~330ms — **타이핑마다
 // 호출 금지**(호출부는 Enter·검색 버튼 등 명시적 제출에서만 부른다).
 // reviewStatus(BE #424, additive): 생략하면 기존과 동일하게 큐 상태 무관 전체 검색.

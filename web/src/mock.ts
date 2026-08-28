@@ -889,18 +889,25 @@ function dashboardSummaryJson(): DashboardSummary {
 }
 
 // --- 회사 DB 검색(#418) -------------------------------------------------
-// BE 와 같은 매칭 범위(회사명·홈페이지·이메일/문의폼 URL·발견 원장 영문명)·이름순 정렬·
+// BE 와 같은 매칭 범위(회사명·홈페이지·이메일/문의폼 URL·발견 원장 보관 상호)·이름순 정렬·
 // 서버 페이지네이션을 흉내낸다. 큐(db) 회사 전량 + 큐 미적재 3건으로 구성해, 검증 큐에 없는
 // 회사(review_* = null)·배제 role 이메일·비활성 회사까지 화면에서 확인할 수 있게 한다.
 
-// 원장 영문명(name_eng) — 응답 스키마엔 없고 **매칭에만** 쓰이는 값이라 별도 맵으로 둔다.
-const MOCK_NAME_ENG: Record<string, string> = { "cs-jp1": "Bee Holdings Co., Ltd." };
+// 원장 보관 상호(name_eng) — 응답 스키마엔 없고 **매칭에만** 쓰이는 값이라 별도 맵으로 둔다.
+// 표기는 소스마다 다르다: DART·NPS 는 국내 기업의 영문명, EDINET 은 일본 기업의 일문 원문
+// (BE #412 로 표시명 name 이 영문 상호가 되면서 자리를 맞바꿨다). 두 방향을 다 깔아 둬야
+// 안내 문구("국내 영문명, 일본 일문 원문")를 목에서 그대로 확인할 수 있다.
+const MOCK_NAME_ENG: Record<string, string> = {
+  "cs-jp1": "ビーホールディングス",
+  "cs-kr1": "Hanbit Precision Co., Ltd.",
+};
 
 const MOCK_UNQUEUED: CompanySearchItem[] = [
   {
     id: "cs-jp1",
     canonical_key: "dom:bee-holdings.jp",
-    name: "ビーホールディングス",
+    // EDINET 표시명은 공식 영문 상호(BE #412) — 일문 원문은 MOCK_NAME_ENG 에서 검색만 걸린다.
+    name: "Bee Holdings Co., Ltd.",
     country: "JP",
     industry: "기계·산업장비",
     homepage: "https://bee-holdings.jp",
