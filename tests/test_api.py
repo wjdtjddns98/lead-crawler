@@ -342,6 +342,35 @@ def test_confirm_has_form_false_removes_form(client: TestClient) -> None:
     assert row.form_after is None
 
 
+def test_confirm_phone_replaces_and_clears(client: TestClient) -> None:
+    # 대표 전화 교정: 값 → 크롤/등록처 전화를 사람 입력(manual·1.0)으로 교체, "" → 지움,
+    # None → 변경 없음. 숫자 없는 값은 422.
+    from leadcrawler.schema import ContactRow
+    from leadcrawler.storage.db import session_scope
+    from leadcrawler.storage.repository import contact_id_for
+
+    item = client.get("/queue").json()["items"][0]
+    rid, cid = item["id"], item["company_id"]
+    with session_scope(get_settings()) as s:
+        s.add(ContactRow(id=contact_id_for(cid, "phone", "02-1111-2222"), company_id=cid,
+                         type="phone", value="02-1111-2222", extract_method="api",
+                         confidence=0.9))
+    assert client.get(f"/queue/{rid}").json()["phone"] == "02-1111-2222"
+    r = client.post(f"/queue/{rid}/confirm", json={"phone": " 02-3333-4444 "})
+    assert r.status_code == 200 and r.json()["phone"] == "02-3333-4444"
+    with session_scope(get_settings()) as s:
+        rows = s.query(ContactRow).filter_by(company_id=cid, type="phone").all()
+        assert [(x.value, x.extract_method, x.confidence) for x in rows] == [
+            ("02-3333-4444", "manual", 1.0)
+        ]
+    # 같은 값 재확정·None 은 무변경.
+    assert client.post(f"/queue/{rid}/confirm", json={"phone": "02-3333-4444"}).status_code == 200
+    assert client.post(f"/queue/{rid}/confirm", json={}).json()["phone"] == "02-3333-4444"
+    assert client.post(f"/queue/{rid}/confirm", json={"phone": "없음"}).status_code == 422
+    r = client.post(f"/queue/{rid}/confirm", json={"phone": ""})
+    assert r.status_code == 200 and r.json()["phone"] is None
+
+
 def test_confirm_remove_emails_leaves_form_only(client: TestClient) -> None:
     # 실존하지 않는 이메일 삭제 → 후보 비고 감사이력에 삭제 주소 기록(폼만 남는 리드).
     import json
