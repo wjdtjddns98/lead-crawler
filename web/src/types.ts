@@ -311,6 +311,10 @@ export interface SegmentJobInfo {
   pid: number | null;
   // running 에 대한 pause/cancel 은 즉시 반영되지 않는다 — 이 플래그로 200 을 받고 수 초 내 전이.
   cancel_requested: boolean;
+  // operator | monthly_budget | cancelled_before_resume | pause.
+  // **pause 만 종료 사유가 아니다**(BE #398) — 일시중지 요청 시 running 에 먼저 심기고 paused
+  // 로 전이한 뒤에도 남는다. cancel_requested 하나로 취소·일시중지가 겸용이라 둘을 구분하는
+  // 유일한 단서이기도 하다. 재개(requeue)하면 null 로 지워진다.
   stop_reason: string | null;
   error: string | null;
   triggered_by: string | null;

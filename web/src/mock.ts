@@ -753,7 +753,14 @@ function segInfo(j: SegJob): Record<string, unknown> {
     crash_restarts: 0,
     pid: j.status === "running" ? 39064 : null,
     cancel_requested: j.pending !== null,
-    stop_reason: j.status === "cancelled" ? "operator" : null,
+    // BE #398 과 동일하게 — pause 는 요청 접수 시점(running)부터 심기고 paused 로 전이한
+    // 뒤에도 남는다(종료 사유가 아니다). 취소만 종료 시 'operator'.
+    stop_reason:
+      j.pending === "pause" || j.status === "paused"
+        ? "pause"
+        : j.status === "cancelled"
+          ? "operator"
+          : null,
     error: null,
     triggered_by: "mock-admin",
     started_at: new Date(j.createdAt).toISOString(), // 트랙 S 는 '요청 생성 시각'
