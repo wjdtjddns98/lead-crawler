@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { AlertTriangle, ExternalLink, Search, X } from "lucide-react";
 import type { ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, tabCls } from "../ui";
-import { normSiteUrl, safeHref, tri } from "../format";
+import { normPhone, normSiteUrl, safeHref, tri } from "../format";
 import { AttachmentSelect, CandidateRadios, EmailBadge } from "./StatusBadge";
 
 // 잡텍스트에서 첫 이메일을 뽑는다(끝 구두점 제거). 없으면 null. 팝업에서 줄째 복사해도
@@ -52,6 +52,7 @@ interface Props {
   note: string; // 기타 메모 표시값 — 표(QueueTable)의 notes 맵과 같은 소스.
   hasAttachment: boolean | null; // 첨부파일 유무 표시값(null=미확인) — 표와 같은 소스(#382).
   manager: string; // 담당자 표시값 — 표와 같은 소스(#382).
+  phone: string; // 대표 전화 표시값 — 표와 같은 소스(#432).
   removed: string[] | undefined; // 삭제 표시된 이메일 — 표(QueueTable)의 removals 맵과 같은 소스.
   busy: boolean;
   onTab: (tab: SiteTab) => void;
@@ -62,6 +63,7 @@ interface Props {
   onEditNote: (id: string, value: string) => void;
   onEditAttachment: (id: string, value: boolean | null) => void;
   onEditManager: (id: string, value: string) => void;
+  onEditPhone: (id: string, value: string) => void;
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
   onClose: () => void;
@@ -81,6 +83,7 @@ export function SiteExplorer({
   note,
   hasAttachment,
   manager,
+  phone,
   removed,
   busy,
   onTab,
@@ -91,6 +94,7 @@ export function SiteExplorer({
   onEditNote,
   onEditAttachment,
   onEditManager,
+  onEditPhone,
   onConfirm,
   onReject,
   onClose,
@@ -161,6 +165,14 @@ export function SiteExplorer({
   const changedNote = note.trim() !== (item.note ?? "") ? note.trim() : undefined;
   // 담당자 변경분(#382) — 메모와 같은 판정(빈 문자열=지움).
   const changedManager = manager.trim() !== (item.manager ?? "") ? manager.trim() : undefined;
+  // 전화 변경분(#432) — 담당자와 같은 판정. 단 BE 가 422 로 거부할 값(숫자 0개 등)은 보내지
+  // 않고(확정 전체가 실패하므로) 확인 오버레이가 미반영을 알린다 — 사이트 무효 URL 과 동일.
+  const normedPhone = normPhone(phone);
+  const changedPhone =
+    normedPhone !== null && normedPhone !== (item.phone ?? "") ? normedPhone : undefined;
+  // 무효 경고는 사람이 고친 값에만 — 입력 초기값은 서버 phone 이라 원본 그대로면 검수자가
+  // 손대지 않은 것이고, 그때까지 경고를 띄우면 남의 데이터를 탓하는 잡음이 된다.
+  const phoneInvalid = normedPhone === null && phone.trim() !== (item.phone ?? "");
   // 첨부 유무 변경분(#382) — 유/무를 골랐고 원본과 다를 때만. '미확인'(null)은 계약상
   // "변경 없음"과 구분되지 않아 전송 불가 — 되돌린 경우 확인 오버레이가 미반영을 알린다.
   // 원본은 ?? null 로 정규화(필드가 없는 미배포 서버 응답의 undefined 방어).
@@ -350,6 +362,11 @@ export function SiteExplorer({
                       담당자 → {changedManager || "(삭제)"}
                     </span>
                   )}
+                  {changedPhone !== undefined && (
+                    <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
+                      전화 → {changedPhone || "(삭제)"}
+                    </span>
+                  )}
                   {changedAttachment !== undefined && (
                     <span className="block mt-1 text-xs text-muted">
                       첨부파일 → {changedAttachment ? "있음" : "없음"}
@@ -366,6 +383,13 @@ export function SiteExplorer({
                   {site !== undefined && !changedHome && site.trim() !== (item.homepage ?? "") && (
                     <span className="block mt-1 text-xs text-danger-fg">
                       사이트 수정값이 유효한 변경이 아니어서 반영되지 않습니다
+                    </span>
+                  )}
+                  {/* 숫자가 하나도 없는 전화는 BE 가 422 — 확정 전체가 실패하지 않도록
+                      빼고 보내며, 뺐다는 사실을 알린다. */}
+                  {phoneInvalid && (
+                    <span className="block mt-1 text-xs text-danger-fg">
+                      전화 수정값에 숫자가 없어 반영되지 않습니다
                     </span>
                   )}
                   {/* 첨부 '미확인' 되돌리기는 서버 계약(null=변경 없음)으로 표현 불가 — 미반영 안내. */}
@@ -557,19 +581,22 @@ export function SiteExplorer({
               <span className="text-muted whitespace-nowrap">SMTP {tri(item.email_smtp)}</span>
             </div>
 
-            {/* 대표 전화 — 읽기 전용(확정 요청 계약에 전화 교정 필드가 없어 표시만 한다).
-                이메일 블록 바로 뒤에 둔다: 쓸 만한 주소가 없을 때 '다음 연락 수단이 있나'를
-                사이트 탐색 중 그 자리에서 판단하는 값이라 편집 입력들 앞이 맞다. */}
-            <div className="text-xs flex items-center gap-2 flex-wrap">
-              <span className="text-muted">전화</span>
-              {item.phone ? (
-                <span className="font-mono tabular-nums text-ink [overflow-wrap:anywhere]">
-                  {item.phone}
-                </span>
-              ) : (
-                <span className="text-muted">—</span>
-              )}
-            </div>
+            {/* 대표 전화 직접 입력/수정(#432) — 표와 같은 소스, 확정 시 함께 반영(엑셀 C
+                컬럼). BE 계약상 담당자와 같은 위치(메모 옆)에 둘 수도 있지만, 전화는 쓸 만한
+                이메일이 없을 때 '다음 연락 수단'을 사이트에서 찾아 그 자리에 적는 값이라
+                이메일 블록 바로 뒤가 맞다. 64자 초과는 BE 422 라 입력에서 막는다. */}
+            <label className="flex flex-col gap-1">
+              <span className="text-muted text-xs">전화(직접 입력/수정 — 비우면 삭제)</span>
+              <input
+                className="w-full bg-canvas border border-line text-ink font-mono tabular-nums text-sm py-1.5 px-2 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+                type="tel"
+                value={phone}
+                disabled={item.status === "confirmed"}
+                maxLength={64}
+                placeholder="02-1234-5678"
+                onChange={(e) => onEditPhone(item.id, e.target.value)}
+              />
+            </label>
 
             {/* 사이트 URL 직접 입력/수정 — 프리뷰로 '잘못된 사이트'임을 발견한 그 자리에서
                 교정한다(표 왕복 제거). Enter/blur 로 팝업이 수정 URL 로 이동해 눈으로 확인

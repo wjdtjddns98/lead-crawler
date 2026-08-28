@@ -753,7 +753,14 @@ function segInfo(j: SegJob): Record<string, unknown> {
     crash_restarts: 0,
     pid: j.status === "running" ? 39064 : null,
     cancel_requested: j.pending !== null,
-    stop_reason: j.status === "cancelled" ? "operator" : null,
+    // BE #398 과 동일하게 — pause 는 요청 접수 시점(running)부터 심기고 paused 로 전이한
+    // 뒤에도 남는다(종료 사유가 아니다). 취소만 종료 시 'operator'.
+    stop_reason:
+      j.pending === "pause" || j.status === "paused"
+        ? "pause"
+        : j.status === "cancelled"
+          ? "operator"
+          : null,
     error: null,
     triggered_by: "mock-admin",
     started_at: new Date(j.createdAt).toISOString(), // 트랙 S 는 '요청 생성 시각'
@@ -779,6 +786,7 @@ interface ConfirmBody {
   remove_emails?: string[] | null;
   has_attachment?: boolean | null; // 첨부파일 유무(#382)
   manager?: string | null; // 담당자명(#382, 최대 64자·빈 문자열=지움)
+  phone?: string | null; // 대표 전화(#432, 최대 64자·빈 문자열=지움·숫자 0개면 422)
 }
 
 function setStatus(
@@ -811,6 +819,10 @@ function setStatus(
   // 담당자(#382): null=변경 없음, 빈 문자열=지움. 64자 초과는 BE 가 422 — mock 도 동일히 막는다.
   if (body.manager !== undefined && body.manager !== null)
     it.manager = body.manager.trim() === "" ? null : body.manager.trim();
+  // 대표 전화(#432): null=변경 없음, 빈 문자열=지움, 값=사람 입력으로 교체(BE 는 크롤/등록처
+  // 연락처를 지우고 manual·1.0 1건으로 대체 — 화면에는 큐 DTO 의 phone 으로 같게 보인다).
+  if (body.phone !== undefined && body.phone !== null)
+    it.phone = body.phone.trim() === "" ? null : body.phone.trim();
   it.assignee = "mock-admin";
   it.reviewed_at = new Date().toISOString();
   claimedIds.delete(id); // 처리 완료 — 점유 종료.
@@ -1153,6 +1165,15 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     // 담당자 64자 초과 — BE(#381)와 동일하게 422(입력란 maxLength 로 정상 경로에선 안 걸린다).
     if (body.manager && body.manager.length > 64)
       return jsonRes({ detail: "담당자는 64자를 넘을 수 없습니다" }, 422);
+    // 전화 검증(#432) — BE 와 동일 순서·동일 사유로 422: 64자 초과 / NUL / 숫자 0개.
+    // 정상 경로에선 입력란 maxLength + normPhone 이 먼저 걸러 여기까지 오지 않는다.
+    if (body.phone != null) {
+      if (body.phone.length > 64)
+        return jsonRes({ detail: "전화번호는 64자를 넘을 수 없습니다" }, 422);
+      if (body.phone.includes("\0")) return jsonRes({ detail: "NUL 문자는 쓸 수 없습니다" }, 422);
+      if (body.phone.trim() && !/\d/.test(body.phone))
+        return jsonRes({ detail: "전화번호에 숫자가 없습니다" }, 422);
+    }
     const it = setStatus(confirm[1], "confirmed", body);
     return it ? jsonRes(it) : jsonRes({ detail: "검증 항목을 찾을 수 없습니다" }, 404);
   }
