@@ -108,8 +108,8 @@ export function CompanySearchSection() {
         회사 검색 {loading && <span className="text-muted">· 불러오는 중…</span>}
       </h2>
       <p className="text-muted text-[13px] mt-0 mb-3">
-        검증 큐와 무관하게 회사 DB 전체를 찾습니다 — 회사명·홈페이지·이메일/문의폼 주소·해외
-        원장 영문명 부분일치(대소문자 무시).
+        검증 큐와 무관하게 회사 DB 전체를 찾습니다 — 회사명·홈페이지·이메일/문의폼 주소·원장
+        보관 상호(국내 영문명, 일본 일문 원문) 부분일치(대소문자 무시).
       </p>
 
       <form className="flex gap-2 mb-3.5 flex-wrap items-center" onSubmit={submit}>
@@ -304,7 +304,7 @@ function CompanyRow({ c }: { c: CompanySearchItem }) {
           </div>
         )}
       </td>
-      {/* 대표 전화 — 검색어 매칭 대상은 아니고(회사명·홈페이지·이메일/폼·원장 영문명만)
+      {/* 대표 전화 — 검색어 매칭 대상은 아니고(회사명·홈페이지·이메일/폼·원장 보관 상호만)
           중복 확인 시 같은 회사인지 대조하는 보조 단서로 표시한다. */}
       <td className={`${TD} font-mono text-[13px] tabular-nums [overflow-wrap:anywhere]`}>
         {c.phone ? c.phone : <span className="text-muted">—</span>}
