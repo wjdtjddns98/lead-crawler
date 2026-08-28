@@ -65,11 +65,18 @@ const STATUS_DOT: Record<SegmentJobStatus, string> = {
 };
 
 // stop_reason → 보조 문구. 알 수 없는 값은 원문 노출(BE 확장 시 화면이 조용히 비지 않게).
+// 'pause' 는 종료가 아니라 **일시중지 신호**다(BE #398) — running 에 먼저 심기고 paused 로
+// 전이한 뒤에도 남는다. 아래 종료 사유 줄에는 노출하지 않고(TERMINAL 게이트) 여기엔 폴백으로만 둔다.
 const STOP_REASON_LABEL: Record<string, string> = {
   operator: "운영자 요청",
   monthly_budget: "월 예산 한도 도달",
   cancelled_before_resume: "재개 전 취소 확인",
+  pause: "일시중지 요청",
 };
+
+// 종료 사유를 붙일 수 있는 상태 = 되돌아오지 않는 상태만. paused·running 은 stop_reason 이
+// 남아 있어도 '종료'가 아니라서 문구가 거짓이 된다(#398 의 'pause' 가 그 경우).
+const TERMINAL: readonly SegmentJobStatus[] = ["done", "cancelled", "failed", "budget_exhausted"];
 
 // 액션 활성 조건 = BE 409 규칙 그대로. 서버가 거부할 버튼을 눌러보게 두면 409 토스트만 쌓인다.
 const canPause = (s: SegmentJobStatus): boolean => s === "running" || s === "queued";
@@ -562,6 +569,10 @@ function JobCard({
   const parsed = draft === null ? null : parsePriority(draft);
   const prog = progressOf(job);
   const stopping = job.cancel_requested && (job.status === "running" || job.status === "queued");
+  // 같은 cancel_requested 플래그로 '취소'와 '일시중지'가 둘 다 요청된다 — 구분자는 stop_reason
+  // 뿐이다(BE #398: pause 는 'pause', 취소는 null→종료 시 'operator'). 어느 쪽을 눌렀는지
+  // 안 보이면 되돌릴 수 있는 요청인지 판단이 안 된다.
+  const pausing = stopping && job.stop_reason === "pause";
 
   return (
     <div className="p-3 border border-line rounded-md bg-panel">
@@ -578,7 +589,9 @@ function JobCard({
         <span className="text-muted text-xs tabular-nums">· 요청 {fmt(job.started_at)}</span>
         <span className="text-muted text-xs">· 우선순위 {job.priority}</span>
         {job.triggered_by && <span className="text-muted text-xs">· {job.triggered_by}</span>}
-        {stopping && <span className="text-warn text-xs">· 중지 요청됨…</span>}
+        {stopping && (
+          <span className="text-warn text-xs">· {pausing ? "일시중지" : "중지"} 요청됨…</span>
+        )}
       </div>
 
       {prog.pct !== null && (
@@ -609,7 +622,7 @@ function JobCard({
       </div>
 
       {job.error && <ErrorBox>{job.error}</ErrorBox>}
-      {!job.error && job.stop_reason && (
+      {!job.error && job.stop_reason && TERMINAL.includes(job.status) && (
         <p className="text-muted text-xs my-1">
           종료 사유: {STOP_REASON_LABEL[job.stop_reason] ?? job.stop_reason}
         </p>
