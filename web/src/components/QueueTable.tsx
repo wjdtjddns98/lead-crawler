@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEven
 import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, FileText, Pencil } from "lucide-react";
 import type { ConfirmEdits, Listed, ReviewItem } from "../types";
 import { BTN, BTN_CONFIRM, BTN_REJECT, EMPTY, LINK_FOCUS, TD, TH } from "../ui";
-import { normSiteUrl, safeHref, tri } from "../format";
+import { normPhone, normSiteUrl, safeHref, tri } from "../format";
 import { AttachmentSelect, CandidateRadios, EmailBadge, StatusBadge } from "./StatusBadge";
 import { SiteExplorer, type SiteTab } from "./SiteExplorer";
 
@@ -28,8 +28,9 @@ const COL_W = [
   "", // 메일(뱃지·MX·SMTP — 단위 사이에서만 줄바꿈)
   "", // 사이트
   "whitespace-nowrap", // 문의폼 유무
-  // 전화번호는 중간에서 접히면 자릿수를 잘못 읽게 되므로 한 줄로 잠근다(상장여부와 같은 이유).
-  "whitespace-nowrap", // 전화
+  // 전화번호는 중간에서 접히면 자릿수를 잘못 읽게 되므로 한 줄로 잠근다(상장여부와 같은
+  // 이유). 교정 입력란이 들어가 국제표기(+82-31-000-0000)가 잘리지 않을 최소폭을 준다.
+  "whitespace-nowrap min-w-[140px]", // 전화
   "min-w-[180px]", // 기타 메모(엑셀 L)·담당자(엑셀 H)·첨부 유무 — 한 셀에 세로로 묶음
   "", // 상태(뱃지는 자체 nowrap — 담당자·시각이 아래로 접힘)
   "min-w-[120px]", // 액션(버튼 2개 가로 고정 — flex 줄바꿈 없음)
@@ -43,8 +44,8 @@ const HEADERS = [
   "메일",
   "사이트",
   "문의폼",
-  // 전화는 연락수단 묶음(이메일→메일 상태→사이트→문의폼) 끝에 붙인다 — 읽기 전용 표시라
-  // 편집 입력이 없어 폭 부담이 작다.
+  // 전화는 연락수단 묶음(이메일→메일 상태→사이트→문의폼) 끝에 붙인다 — 교정 입력이지만
+  // 한 줄짜리라 메모 셀처럼 여러 입력을 쌓을 필요가 없다.
   "전화",
   // 메모 셀에 담당자·첨부 유무 입력이 함께 세로로 들어간다(#382) — 컬럼 수를 늘리지 않아
   // 표가 가로 스크롤 없이 유지된다. 각 입력이 자기 라벨(placeholder/옵션)을 가진다.
@@ -135,6 +136,7 @@ interface RowProps {
   note: string; // 기타 메모 표시값(override 없으면 원본, 없으면 "").
   hasAttachment: boolean | null; // 첨부파일 유무 표시값(override 없으면 원본, null=미확인).
   manager: string; // 담당자 표시값(override 없으면 원본, 없으면 "").
+  phone: string; // 대표 전화 표시값(override 없으면 원본, 없으면 "").
   removed: string[] | undefined; // 삭제 표시된 이메일(없으면 undefined — 참조 안정성 위해 [] 대신).
   onPick: (id: string, value: string) => void;
   onToggleRemove: (id: string, value: string) => void;
@@ -144,6 +146,7 @@ interface RowProps {
   onEditNote: (id: string, value: string) => void;
   onEditAttachment: (id: string, value: boolean | null) => void;
   onEditManager: (id: string, value: string) => void;
+  onEditPhone: (id: string, value: string) => void;
   onConfirm: (id: string, selected?: string) => void;
   onReject: (id: string) => void;
   onOpen: (id: string, tab: SiteTab) => void;
@@ -163,6 +166,7 @@ const QueueRow = memo(
     note,
     hasAttachment,
     manager,
+    phone,
     removed,
     onPick,
     onToggleRemove,
@@ -172,6 +176,7 @@ const QueueRow = memo(
     onEditNote,
     onEditAttachment,
     onEditManager,
+    onEditPhone,
     onConfirm,
     onReject,
     onOpen,
@@ -306,10 +311,20 @@ const QueueRow = memo(
             />
           </div>
         </td>
-        {/* 대표 전화 — 읽기 전용. 이메일·사이트와 달리 검수자가 교정하는 값이 아니라(확정
-            요청 계약에도 없다) 표시만 한다. 자릿수를 잘못 읽지 않게 tabular-nums. */}
-        <td className={`${TD} ${COL_W[8]} font-mono text-[13px] tabular-nums`}>
-          {item.phone ? item.phone : <span className="text-muted">—</span>}
+        {/* 대표 전화 — 확정 시 함께 반영되는 교정 입력(#432). 메모·담당자와 같은 상시
+            입력이라 값이 없으면 빈 칸으로 보인다(placeholder 가 '—' 자리를 대신한다).
+            자릿수를 잘못 읽지 않게 tabular-nums, 64자 초과는 BE 422 라 입력에서 막는다. */}
+        <td className={`${TD} ${COL_W[8]}`}>
+          <input
+            className="w-full bg-canvas border border-line text-ink font-mono text-xs tabular-nums py-1 px-1.5 rounded focus:outline-none focus:border-accent disabled:opacity-50"
+            type="tel"
+            value={phone}
+            disabled={locked}
+            maxLength={64}
+            placeholder="전화 없음"
+            title="대표 전화를 직접 교정합니다 — 확정 시 엑셀 '연락처' 컬럼에 반영됩니다"
+            onChange={(e) => onEditPhone(item.id, e.target.value)}
+          />
         </td>
         {/* 메모 + 담당자 + 첨부 유무 — 세로로 묶는다(#382). 별도 컬럼을 두면 표가 13열이
             되어 좁은 화면에서 가로 스크롤이 생기므로 같은 셀에 쌓았다. */}
@@ -387,6 +402,7 @@ const QueueRow = memo(
     prev.note === next.note &&
     prev.hasAttachment === next.hasAttachment &&
     prev.manager === next.manager &&
+    prev.phone === next.phone &&
     // removed 는 행별 removals[id] 참조를 그대로 넘겨 안정적(변경 시에만 새 배열) — 삭제
     // 토글 시 참조가 바뀌어 재렌더된다.
     prev.removed === next.removed,
@@ -506,6 +522,28 @@ export function QueueTable({
       return trimmed === (it.manager ?? "") ? undefined : trimmed;
     },
     [managers],
+  );
+
+  // 행별 대표 전화 교정(#432) — 담당자와 같은 규약(원본과 다를 때만, 빈 문자열=지움).
+  const [phones, setPhones] = useState<Record<string, string>>({});
+  const onEditPhone = useCallback((id: string, value: string) => {
+    setPhones((p) => ({ ...p, [id]: value }));
+  }, []);
+  const phone = useCallback(
+    (it: ReviewItem): string => phones[it.id] ?? it.phone ?? "",
+    [phones],
+  );
+  // 확정에 실을 전화 수정값 — 원본과 다르고 BE 가 받아주는 값일 때만(그 외 undefined =
+  // 변경 없음). 숫자 0개 같은 무효 입력은 보내면 확정 전체가 422 라 여기서 떨구고, 모달이
+  // 미반영을 알린다(사이트 URL 무효 입력과 같은 처리).
+  const editedPhone = useCallback(
+    (it: ReviewItem): string | undefined => {
+      const raw = phones[it.id];
+      if (raw === undefined) return undefined;
+      const norm = normPhone(raw);
+      return norm === null || norm === (it.phone ?? "") ? undefined : norm;
+    },
+    [phones],
   );
 
   // 행별 "실존하지 않는 이메일" 삭제 표시 — 후보/연락처에서 지울 주소 목록(BE PR#314).
@@ -637,8 +675,17 @@ export function QueueTable({
       removeEmails: removeEmailsOf(it),
       hasAttachment: editedAttachment(it),
       manager: editedManager(it),
+      phone: editedPhone(it),
     }),
-    [editedSite, editedForm, editedNote, removeEmailsOf, editedAttachment, editedManager],
+    [
+      editedSite,
+      editedForm,
+      editedNote,
+      removeEmailsOf,
+      editedAttachment,
+      editedManager,
+      editedPhone,
+    ],
   );
 
   const popupConfirm = useCallback(
@@ -672,6 +719,8 @@ export function QueueTable({
   // 첨부 유무를 '미확인'으로 되돌린 경우 — 계약상 null=변경 없음이라 전송할 수 없어 안내한다.
   const modalAttachReverted =
     !!modalItem && origAttach(modalItem) !== null && attachChecked(modalItem) === null;
+  // 전화를 고쳤는데 BE 가 거부할 값(숫자 0개 등)이라 안 실리는 경우 — 조용히 버리지 않고 알린다.
+  const modalPhoneInvalid = !!modalItem && normPhone(phones[modalItem.id] ?? "") === null;
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse bg-panel border border-line rounded-lg overflow-hidden">
@@ -724,6 +773,7 @@ export function QueueTable({
               note={note(it)}
               hasAttachment={attachChecked(it)}
               manager={manager(it)}
+              phone={phone(it)}
               removed={removals[it.id]}
               onPick={onPick}
               onToggleRemove={onToggleRemove}
@@ -733,6 +783,7 @@ export function QueueTable({
               onEditNote={onEditNote}
               onEditAttachment={onEditAttachment}
               onEditManager={onEditManager}
+              onEditPhone={onEditPhone}
               onConfirm={(id) => setModal({ id, action: "confirm" }) /* 즉시 확정 대신 확인 모달 */}
               // confirmed 행 거부 = 확정 번복 — 확인 모달 경유. pending 거부는 기존대로 1클릭.
               onReject={(id) =>
@@ -790,6 +841,11 @@ export function QueueTable({
                       담당자 → {modalEdits.manager || "(삭제)"}
                     </span>
                   )}
+                  {modalEdits?.phone !== undefined && (
+                    <span className="block mt-1 font-mono text-xs text-muted [overflow-wrap:anywhere]">
+                      전화 → {modalEdits.phone || "(삭제)"}
+                    </span>
+                  )}
                   {modalEdits?.hasAttachment !== undefined && (
                     <span className="block mt-1 text-xs text-muted">
                       첨부파일 → {modalEdits.hasAttachment ? "있음" : "없음"}
@@ -810,6 +866,13 @@ export function QueueTable({
                         사이트 수정값이 유효한 변경이 아니어서 반영되지 않습니다
                       </span>
                     )}
+                  {/* 숫자가 하나도 없는 전화는 BE 가 422 — 확정 전체가 실패하지 않도록
+                      빼고 보내며, 뺐다는 사실을 알린다. */}
+                  {modalPhoneInvalid && (
+                    <span className="block mt-1 text-xs text-danger-fg">
+                      전화 수정값에 숫자가 없어 반영되지 않습니다
+                    </span>
+                  )}
                   {/* 첨부 '미확인' 되돌리기는 서버 계약(null=변경 없음)으로 표현 불가 — 미반영 안내. */}
                   {modalAttachReverted && (
                     <span className="block mt-1 text-xs text-danger-fg">
@@ -867,6 +930,7 @@ export function QueueTable({
           note={note(openItem)}
           hasAttachment={attachChecked(openItem)}
           manager={manager(openItem)}
+          phone={phone(openItem)}
           removed={removals[openItem.id]}
           busy={busyIds.has(openItem.id)}
           onTab={(tab) => setOpen({ id: openItem.id, tab })}
@@ -877,6 +941,7 @@ export function QueueTable({
           onEditNote={onEditNote}
           onEditAttachment={onEditAttachment}
           onEditManager={onEditManager}
+          onEditPhone={onEditPhone}
           onConfirm={popupConfirm}
           onReject={popupReject}
           onClose={() => setOpen(null)}

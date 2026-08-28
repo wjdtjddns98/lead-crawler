@@ -226,6 +226,8 @@ export async function fetchMyWork(status?: ReviewStatus): Promise<ReviewItem[]> 
 // selected 로 함께 보내면 BE 가 400(모순) — 호출측이 selected 에서 제외해 보낸다.
 // hasAttachment = 첨부파일 유무(BE #381, null=변경 없음). manager = 상대 회사 담당자명
 // (BE #381, null=변경 없음·빈 문자열=지움·64자 초과 422 — 입력란 maxLength 로 선방어).
+// phone = 대표 전화 교정(BE #432, null=변경 없음·빈 문자열=지움) — 크롤/등록처 값을 사람
+// 입력으로 대체한다. 숫자 0개·NUL·64자 초과는 422 라 호출측이 normPhone 으로 미리 거른다.
 export async function confirmReview(id: string, edits: ConfirmEdits = {}): Promise<ReviewItem> {
   return apiSend("POST", `/queue/${id}/confirm`, {
     selected: edits.selected ?? null,
@@ -235,6 +237,7 @@ export async function confirmReview(id: string, edits: ConfirmEdits = {}): Promi
     remove_emails: edits.removeEmails && edits.removeEmails.length ? edits.removeEmails : null,
     has_attachment: edits.hasAttachment ?? null,
     manager: edits.manager ?? null,
+    phone: edits.phone ?? null,
   });
 }
 
