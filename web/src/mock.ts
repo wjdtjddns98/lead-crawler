@@ -175,8 +175,8 @@ function mk(p: Partial<ReviewItem> & { id: string; name: string }): ReviewItem {
     note: null,
     has_attachment: null,
     manager: null,
-    // 전화는 BE 계약 확장 제안분을 선반영한다 — 실서버가 아직 안 내려주면 컬럼이 전부
-    // "—" 가 되므로, mock 에서만이라도 채워진 셀을 확인할 수 있어야 한다.
+    // 전화는 BE #429 로 큐 API 가 실제로 내려주지만, 수집률이 100% 가 아니라 빈 셀이
+    // 흔하다 — mock 은 유/무를 섞어 '있음/—' 표시와 유무 정렬을 함께 확인한다.
     phone: null,
     email_status: null,
     email_mx: null,
