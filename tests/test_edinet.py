@@ -75,6 +75,7 @@ def test_sector_taxonomy_labels_are_valid() -> None:
     assert _SECTOR_TAXO["情報・通信業"] is None
     assert _SECTOR_TAXO["サービス業"] is None
     assert _SECTOR_TAXO["銀行業"] == "은행"
+    assert _SECTOR_TAXO["鉱業"] == "광업·자원"  # 2026-08-31 신설 라벨 — applies_to 게이트 자동 확장.
 
 
 def test_ticker_strips_check_digit() -> None:
@@ -102,6 +103,7 @@ def test_applies_to_jp_only_and_mapped_industries() -> None:
     src = EdinetSource(Settings(dry_run=True))
     assert src.applies_to(_seg("전체"))
     assert src.applies_to(_seg("은행"))  # 매핑 가능 구체 업종.
+    assert src.applies_to(_seg("광업·자원"))  # 鉱業 매핑 활성화(2026-08-31).
     assert src.applies_to(Segment(country="일본", industry="전체"))  # 국가 별칭.
     assert not src.applies_to(_seg("게임"))  # 비매핑 구체 업종 — 왕복 낭비 차단.
     assert not src.applies_to(_seg(country="KR"))
