@@ -38,6 +38,7 @@ from .ai_directory import AiDirectorySource
 from .edinet import EdinetSource
 from .fsc import FscSource
 from .gleif import GleifSource
+from .jp_assoc import JpAssocSource
 from .naver_local import NaverLocalSource
 from .nps import _KR, NpsSource, SupportsNpsStore
 from .opencorporates import OpenCorporatesSource
@@ -84,6 +85,9 @@ def build_sources(
         # 일본 상장사 등록처(금융청 EDINET 코드리스트, reg:edinet 키) — 상장 전수 3,822사
         # (2026-08-25 실측). FSC 와 같은 등록처 tier(거래소 목록·GLEIF JP 보다 앞).
         EdinetSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        # 일본 금융 협회 회원명부(JSDA·IMAJ, dom: 키) — 회원사 홈페이지 URL 동봉이라 도메인
+        # 해석 없이 승격 가능. 비상장/미상 스코프 전용(상장은 EDINET). 등록처 뒤·거래소 앞.
+        JpAssocSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         PseSource(settings, rate_limiters=rate_limiters),
         SetSource(settings, rate_limiters=rate_limiters),
         SgxSource(settings, rate_limiters=rate_limiters),
