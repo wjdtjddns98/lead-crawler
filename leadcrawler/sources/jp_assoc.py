@@ -19,8 +19,10 @@
   사고 방지). 네트워크는 **프로세스당 페이지별 1콜/6h**(모듈 캐시) — JSDA 는 짧은 시간의
   반복 접속(2026-08-31 실측 ~25회/15분)에 IP 를 TCP 수준에서 차단하므로 워커별 인스턴스가
   각자 fetch 하면 안 된다.
-- 표시명: 페이지에 영문 상호가 없어 일문 그대로(EDINET 영문 우선 규칙의 예외 — 음역
-  후속 트랙과 동일 처리). 하류 resolve 가 도메인을 이미 가진 행은 건드리지 않는다.
+- 표시명: **영문 우선**(EDINET #412 규칙·PO 2026-08-26/31) — IMAJ 는 영문 회원명부(``/en/…``)를
+  같이 읽어 도메인으로 매칭해 ``name``=공식 영문 상호·``name_eng``=일문 보관(EDINET 과 동일
+  슬롯 규약). 영문명이 없는 회원(JSDA 는 영문 목록에 URL 이 없음)은 일문 그대로 — 홈페이지
+  영문 상호 추출 백필(``scripts/backfill_jp_name_eng.py``)이 후속 처리한다.
 - dry_run 은 네트워크 없이 결정적 더미(전 소스 계약).
 
 ponytail: 회원 전화·업무구분(IMAJ 표 열)·홈페이지 없는 회원(name: 키)은 안 담는다 —
@@ -30,6 +32,7 @@ ponytail: 회원 전화·업무구분(IMAJ 표 열)·홈페이지 없는 회원(
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from html.parser import HTMLParser
@@ -63,13 +66,23 @@ _PAGES: tuple[tuple[str, str], ...] = (
     ("https://www.imaj.or.jp/members/list/advice/", _SEC),
 )
 _LABELS = frozenset(label for _, label in _PAGES)
+# 일문 페이지 → 영문 회원명부(같은 회원, 같은 URL). 매칭 키=도메인. JSDA 영문 목록은 URL 이
+# 없어 대응 없음.
+_EN_PAGES: dict[str, str] = {
+    "https://www.imaj.or.jp/members/list/investment_management/":
+        "https://www.imaj.or.jp/en/about/members/investment_management/",
+    "https://www.imaj.or.jp/members/list/advice/":
+        "https://www.imaj.or.jp/en/about/members/advice/",
+}
 
 # 페이지 내 외부 링크 중 회원사가 아닌 것(협회 자체·구 협회·SNS·통계 링크) — 호스트 접미 일치.
 _SKIP_HOSTS = (
     "jsda.or.jp", "imaj.or.jp", "toushin.or.jp", "jiaa.or.jp",
     "x.com", "twitter.com", "facebook.com", "youtube.com", "instagram.com",
 )
-_LINK_SUFFIX = "(別ウィンドウで開く)"
+_LINK_SUFFIXES = ("(別ウィンドウで開く)", "(Open in new window)")  # 앵커 안 아이콘 텍스트(일/영).
+# 채택 가능한 영문 상호(닫힌 형식) — backfill_jp_name_eng 와 동일 검증. 카나·한자 섞인 값 기각.
+_LATIN_NAME = re.compile(r"^[A-Za-z0-9 .,&'()\-/+]{3,120}$")
 _CACHE_TTL_S = 6 * 3600  # 회원명부는 월 단위로 바뀐다 — 런 내 재fetch 0 이 목적.
 # 실패(차단·타임아웃·0건)도 짧게 기억한다 — 차단된 호스트를 세그먼트마다 재요청하면 차단을
 # 스스로 연장한다(리뷰 MED). 만료된 성공값이 있으면 실패 시 그것을 쓴다(stale-if-error).
@@ -77,7 +90,9 @@ _NEG_TTL_S = 15 * 60
 _cache: dict[str, tuple[float, list[tuple[str, str]]]] = {}
 _neg: dict[str, float] = {}
 # 페이지별 락 — 같은 페이지 동시 fetch 만 막고(JSDA 차단), 다른 페이지끼리는 직렬화 안 함.
-_locks: dict[str, threading.Lock] = {url: threading.Lock() for url, _ in _PAGES}
+_locks: dict[str, threading.Lock] = {
+    url: threading.Lock() for url in [u for u, _ in _PAGES] + list(_EN_PAGES.values())
+}
 _cache_lock_fallback = threading.Lock()  # _PAGES 밖 URL(테스트 주입 등) 방어용.
 
 
@@ -118,7 +133,10 @@ class _MemberLinks(HTMLParser):
             return
         if tag != "a" or self._href is None:
             return
-        name = " ".join("".join(self._text).split()).replace(_LINK_SUFFIX, "").strip()
+        name = " ".join("".join(self._text).split())
+        for suffix in _LINK_SUFFIXES:
+            name = name.replace(suffix, "")
+        name = name.strip()
         if name:
             self._all.append((name, self._href, self._in_main))
         self._href = None
@@ -275,6 +293,10 @@ class JpAssocSource:
             members = self._members(url)
             if members is None:
                 continue  # 실패 페이지: 결과 없음 + 커서 미전진(다른 페이지와 독립).
+            # 영문 회원명부(있으면) → 도메인→영문 상호. 실패는 치명 아님(일문으로 진행).
+            en_url = _EN_PAGES.get(url)
+            en_members = self._members(en_url) if en_url else None
+            en_by_dom = {d: n for n, d in en_members} if en_members else {}
             # 페이지별 커서 키 — 라벨에 페이지 번호를 붙인 파생 세그먼트(커서 전용, 저장엔
             # 원 세그먼트 사용). 페이지 간 겸업 중복은 파이프라인 도메인 동치 dedup 이 맡는다.
             page_seg = segment.model_copy(update={"region": f"page{i}"})
@@ -282,13 +304,17 @@ class JpAssocSource:
             pos = start
             for name, dom in members[start:]:
                 pos += 1
+                eng = en_by_dom.get(dom)
+                if eng is not None and not _LATIN_NAME.match(eng):
+                    eng = None  # 영문 목록에 일문이 섞인 행 — 표시명 규칙 위반이라 기각.
                 out.append(
                     build_company(
                         source=self.name,
                         segment=segment,
-                        name=name,
+                        name=eng or name,
                         domain=dom,
                         industry_code_label=label,
+                        name_eng=name if eng else None,  # 일문 원문 보관(EDINET 슬롯 규약).
                     )
                 )
                 if len(out) >= cap:

@@ -9,7 +9,7 @@ import pytest
 from leadcrawler.config import Settings
 from leadcrawler.sources import jp_assoc
 from leadcrawler.sources.base import Segment
-from leadcrawler.sources.jp_assoc import _PAGES, JpAssocSource, parse_members
+from leadcrawler.sources.jp_assoc import _EN_PAGES, _PAGES, JpAssocSource, parse_members
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +57,34 @@ def test_parse_members_jsda_scopes_to_main_and_drops_internal() -> None:
 def test_parse_members_imaj_strips_icon_text_and_skips_no_link_rows() -> None:
     got = parse_members(_IMAJ)
     assert got == [("アイザワ証券株式会社", "aizawa.co.jp"), ("株式会社IBJ", "ibjinc.com")]
+
+
+def test_parse_members_strips_english_icon_suffix() -> None:
+    html = ('<main><a href="https://www.aizawa.co.jp/"><span>Aizawa Securities Co., Ltd.</span>'
+            '<span>(Open in new window)</span></a></main>')
+    assert parse_members(html) == [("Aizawa Securities Co., Ltd.", "aizawa.co.jp")]
+
+
+def test_live_prefers_official_english_name_from_en_list() -> None:
+    """IMAJ 영문 명부와 도메인 매칭 → name=영문·name_eng=일문. 영문 목록 실패/미매칭은 일문."""
+    imaj_im = _PAGES[3][0]
+    en_im = _EN_PAGES[imaj_im]
+    en_html = ('<main><a href="https://www.aizawa.co.jp/">Aizawa Securities Co., Ltd.'
+               '(Open in new window)</a>'
+               '<a href="http://www.ibjinc.com">株式会社IBJ(Open in new window)</a></main>')
+    fetcher = _FakeFetcher({imaj_im: _IMAJ, en_im: en_html})
+    src = JpAssocSource(_live_settings(), fetcher=fetcher)
+    by_dom = {c.domain: c for c in src.discover(_seg("증권·자산운용"))}
+    assert by_dom["aizawa.co.jp"].name == "Aizawa Securities Co., Ltd."
+    assert by_dom["aizawa.co.jp"].name_eng == "アイザワ証券株式会社"
+    # 영문 목록 값이 라틴이 아니면 기각 → 일문 유지, name_eng 없음.
+    assert by_dom["ibjinc.com"].name == "株式会社IBJ" and by_dom["ibjinc.com"].name_eng is None
+
+    jp_assoc._cache.clear()
+    jp_assoc._neg.clear()
+    fetcher2 = _FakeFetcher({imaj_im: _IMAJ}, fail={en_im})  # 영문 페이지 실패 → 일문으로 진행.
+    got = JpAssocSource(_live_settings(), fetcher=fetcher2).discover(_seg("증권·자산운용"))
+    assert {c.domain: c.name for c in got}["aizawa.co.jp"] == "アイザワ証券株式会社"
 
 
 def test_parse_members_without_main_falls_back_to_whole_document() -> None:
@@ -132,10 +160,11 @@ def test_live_labels_by_page_and_process_cache() -> None:
     assert by_dom["buko.co.jp"].name == "武甲証券（株）"
     assert not by_dom["buko.co.jp"].listed_verified
     assert by_dom["buko.co.jp"].segment == "JP/전체/unknown"  # 커서용 파생 라벨이 새지 않음.
-    # 5페이지 각 1회 fetch. 같은 프로세스의 **다른 인스턴스**(병렬 워커)도 캐시 적중 → 추가 0.
-    assert len(fetcher.calls) == 5
+    # 일문 5면 + IMAJ 영문 2면 = 7 fetch. 같은 프로세스의 **다른 인스턴스**(병렬 워커)도 캐시
+    # 적중 → 추가 0.
+    assert len(fetcher.calls) == 7
     assert JpAssocSource(_live_settings(), fetcher=fetcher).discover(_seg("전체")) == got
-    assert len(fetcher.calls) == 5
+    assert len(fetcher.calls) == 7
 
 
 def test_live_specific_industry_fetches_only_matching_pages() -> None:
