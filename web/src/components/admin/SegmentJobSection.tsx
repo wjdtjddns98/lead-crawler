@@ -80,8 +80,11 @@ const TERMINAL: readonly SegmentJobStatus[] = ["done", "cancelled", "failed", "b
 
 // 액션 활성 조건 = BE 409 규칙 그대로. 서버가 거부할 버튼을 눌러보게 두면 409 토스트만 쌓인다.
 const canPause = (s: SegmentJobStatus): boolean => s === "running" || s === "queued";
+// cancelled 포함은 BE #407(PO 결정 2026-08-26) — 커서 보존 재개라 실수 취소를 되돌릴 수
+// 있다. 확인 다이얼로그는 두지 않는다(형제 재개인 failed·budget_exhausted 도 즉시 실행이고,
+// 재개는 대기열 복귀일 뿐 파괴적이지 않다).
 const canResume = (s: SegmentJobStatus): boolean =>
-  s === "paused" || s === "failed" || s === "budget_exhausted";
+  s === "paused" || s === "failed" || s === "budget_exhausted" || s === "cancelled";
 // 취소는 '이미 종료'면 409 인데 계약에 종료 집합이 명시돼 있지 않다 — 확실히 살아 있는 세
 // 상태에만 노출한다(그래도 경합으로 409 가 오면 안내 토스트로 처리).
 const canCancel = (s: SegmentJobStatus): boolean =>

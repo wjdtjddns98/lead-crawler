@@ -211,7 +211,7 @@ export function SendSection() {
         </div>
       )}
 
-      {/* 발송 결과 — 성공/실패/상한초과 카운트를 행으로 분리 */}
+      {/* 발송 결과 — 성공/실패/불명/스킵/상한초과 카운트를 행으로 분리 */}
       {result && (
         <div className="mt-4 max-w-[780px]">
           {result.dry_run ? (
@@ -228,6 +228,16 @@ export function SendSection() {
                   <span className="text-danger-fg tabular-nums">{result.failed}건</span>
                 </Row>
               )}
+              {result.uncertain > 0 && (
+                <Row label="결과 불명">
+                  <span className="text-warn tabular-nums">{result.uncertain}건</span>
+                </Row>
+              )}
+              {result.skipped > 0 && (
+                <Row label="스킵">
+                  <span className="text-muted tabular-nums">{result.skipped}건</span>
+                </Row>
+              )}
               {result.capped > 0 && (
                 <Row label="상한초과">
                   <span className="text-warn tabular-nums">{result.capped}건</span>
@@ -236,6 +246,19 @@ export function SendSection() {
               <Row label="수신">
                 <span className="text-ink tabular-nums">{result.recipients}명</span>
               </Row>
+              {/* 결과 불명은 유일하게 사람 손이 필요한 결과 — 자동 재발송에서 빠지므로
+                  카운트만 두면 후속 조치가 누락된다(BE #422 계약). */}
+              {result.uncertain > 0 && (
+                <div className="mt-1 flex items-start gap-2 border-l-2 border-warn pl-3 py-1 text-[13px] text-warn">
+                  <TriangleAlert size={13} className="mt-0.5 shrink-0" aria-hidden />
+                  <span>
+                    결과 불명 {result.uncertain}건 — 메일 서버가 응답을 끊어 전달 여부를 알 수
+                    없습니다. 이미 전달됐을 수 있어{" "}
+                    <strong className="font-semibold">자동 재발송에서 제외</strong>되니, 발신함을
+                    직접 확인해 필요하면 수동 재발송하세요.
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </div>

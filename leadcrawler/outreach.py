@@ -44,8 +44,8 @@ def _utcnow() -> datetime:
 # "전달됐을 수 있음" 상태 묶음 — 재발송 제외·예약 dup·일일 상한 계산에 공통 적용.
 # uncertain = DATA 전송 후 응답을 못 읽음(끊김/타임아웃): 수신 MTA 가 이미 큐잉했을 수 있어
 # 자동 재시도(failed 재예약)에서 뺀다 — 재발송은 운영자가 확인 후 수동으로만:
-#   조회  select email, error, sent_at from email_send_log where status='uncertain';
-#   재개  update email_send_log set status='failed' where id=<id>;  (다음 캠페인이 재예약)
+#   조회  select id, email, error, sent_at from email_send_log where status='uncertain';
+#   재개  update email_send_log set status='failed' where email='<email>' and status='uncertain';
 # ponytail: 관리 API/CLI 없음 — 건수가 쌓이면 admin 라우트로.
 _DELIVERED = ("sent", "uncertain")
 

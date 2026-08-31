@@ -210,6 +210,23 @@ def test_windows_job_object_kills_grandchild_tree(tmp_path) -> None:
     assert beat.stat().st_size == size_after_kill, "kill_tree 후에도 손자가 살아있음"
 
 
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="Windows Job Object 전용 런처")
+def test_default_launcher_forces_utf8_stdout(tmp_path, monkeypatch) -> None:
+    """실프로세스: 부모 env 에 PYTHONUTF8 이 없어도 자식은 em dash(—) 를 로그에 UTF-8 로 쓴다.
+
+    회귀: 2026-08-31 서버가 UTF-8 없이 기동 → segment-run 완료 echo 가 cp949 인코딩 실패로
+    rc=1 → 감독자가 3회 크래시로 오판해 done 잡을 failed 처리.
+    """
+    import sys
+
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+    log = tmp_path / "job.log"
+    proc = bp._default_launcher([sys.executable, "-c", "print('— done')"], log)
+    assert proc.wait() == 0
+    assert "— done" in log.read_bytes().decode("utf-8")
+
+
 def test_supervisor_exception_kills_live_child(settings, monkeypatch) -> None:
     """감독 스레드가 자식 생존 중 예외로 죽어도 자식 트리를 정리한다(고아 과금 차단)."""
     proc = _FakeProc(rc=None)  # 생존형 자식.

@@ -131,12 +131,20 @@ export interface SendPreview {
   sample: string[];
 }
 
+// 발송 결과 요약. 카운터는 서로 배타라 recipients = sent + failed + uncertain + skipped + capped
+// 가 성립한다 — 일부만 그리면 합이 안 맞아 보이므로 0 초과인 항목은 전부 표시한다.
 export interface SendResult {
   dry_run: boolean;
   recipients: number;
   attempted: number;
   sent: number;
   failed: number;
+  // 결과 불명(BE #422) — SMTP DATA 를 다 보낸 뒤 250 응답을 못 읽은 건. 전달됐을 수 있어
+  // BE 가 자동 재발송에서 **영구 제외**하고 운영자 수동 확인에 맡긴다. 화면에 안 띄우면
+  // 확인할 건이 있다는 사실 자체가 전달되지 않으므로 경고 톤으로 노출한다.
+  uncertain: number;
+  // 동시 캠페인 선점/기발송 스킵(BE #267) — 실패가 아니라 중복 방지로 건너뛴 건.
+  skipped: number;
   capped: number;
 }
 
@@ -409,7 +417,9 @@ export interface DashboardSummary {
 
 // --- 관리자 회사 DB 검색(BE PR#418) ------------------------------------
 // GET /admin/companies — 큐 상태와 **무관하게** company 전체를 회사명·홈페이지·이메일/문의폼
-// URL·발견 원장 영문명(JP 등)으로 부분일치(대소문자 무시) 조회한다. 중복 확인·수동 조회용.
+// URL·발견 원장의 보관 상호(name_eng)로 부분일치(대소문자 무시) 조회한다. 중복 확인·수동
+// 조회용. name_eng 의 표기는 소스마다 다르다(DART·NPS=국내 영문명, EDINET=일문 원문 — BE
+// #412 로 name 이 영문 상호가 되면서 자리를 맞바꿨다).
 
 // role 은 EmailRole 어휘(ir/general/hr/press/personal/unknown), status 는 이메일 검증
 // 상태(valid/risky/invalid/unknown) — **미검증이면 null**이라 큐의 email_status 와 같은 표기를 쓴다.
