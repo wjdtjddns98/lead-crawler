@@ -264,7 +264,8 @@ def test_search_has_key_compound_logic() -> None:
 def test_build_sources_registers_all_adapters() -> None:
     names = {src.name for src in build_sources(_dry_settings())}
     assert names == {
-        "edgar", "dart", "fsc", "edinet", "companies_house", "pse", "set", "sgx", "idx", "bursa",
+        "edgar", "dart", "fsc", "edinet", "jp_assoc", "companies_house", "pse", "set", "sgx", "idx",
+        "bursa",
         "hose", "hnx", "gleif", "wikidata", "opencorporates", "search", "ai_directory",
         "naver_local", "nps",
     }
