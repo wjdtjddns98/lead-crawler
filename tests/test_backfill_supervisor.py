@@ -210,6 +210,7 @@ def test_windows_job_object_kills_grandchild_tree(tmp_path) -> None:
     assert beat.stat().st_size == size_after_kill, "kill_tree 후에도 손자가 살아있음"
 
 
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="Windows Job Object 전용 런처")
 def test_default_launcher_forces_utf8_stdout(tmp_path, monkeypatch) -> None:
     """실프로세스: 부모 env 에 PYTHONUTF8 이 없어도 자식은 em dash(—) 를 로그에 UTF-8 로 쓴다.
 
