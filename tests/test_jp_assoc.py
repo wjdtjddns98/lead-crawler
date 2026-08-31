@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from leadcrawler.config import Settings
+from leadcrawler.sources import jp_assoc
 from leadcrawler.sources.base import Segment
 from leadcrawler.sources.jp_assoc import _PAGES, JpAssocSource, parse_members
+
+
+@pytest.fixture(autouse=True)
+def _clear_page_cache() -> None:
+    jp_assoc._cache.clear()
 
 
 def _seg(industry: str = "전체", country: str = "JP", listed: str = "unknown") -> Segment:
@@ -100,15 +108,14 @@ def _live_settings(**kw: Any) -> Settings:
 _ONE = '<main><a href="https://www.one.co.jp/">ワン</a></main>'
 
 
-def test_live_labels_by_page_and_dedups_across_pages() -> None:
+def test_live_labels_by_page_and_process_cache() -> None:
     kaiin, tokutei, tokubetu, imaj_im, imaj_adv = (u for u, _ in _PAGES)
     pages = {
         kaiin: _JSDA,
         tokutei: _ONE,
         tokubetu: '<main><a href="https://www.smbc.co.jp/">（株）三井住友銀行</a></main>',
-        # IMAJ 운용회원에 JSDA 회원(buko)이 겸업 등재 → 첫 페이지(증권) 라벨 1건만.
-        imaj_im: _IMAJ + '<main><a href="http://buko.co.jp/">武甲</a></main>',
-        imaj_adv: _ONE,  # tokutei 와 같은 도메인 → 첫 등장만.
+        imaj_im: _IMAJ,
+        imaj_adv: _ONE,
     }
     fetcher = _FakeFetcher(pages)
     src = JpAssocSource(_live_settings(), fetcher=fetcher)
@@ -121,10 +128,12 @@ def test_live_labels_by_page_and_dedups_across_pages() -> None:
     assert by_dom["smbc.co.jp"].industry == "은행"
     assert by_dom["aizawa.co.jp"].industry == "증권·자산운용"
     assert by_dom["buko.co.jp"].canonical_key == "dom:buko.co.jp"
+    assert by_dom["buko.co.jp"].name == "武甲証券（株）"
     assert not by_dom["buko.co.jp"].listed_verified
-    # 5페이지 각 1회 fetch, 두 번째 세그먼트는 메모 재사용(추가 fetch 0).
+    assert by_dom["buko.co.jp"].segment == "JP/전체/unknown"  # 커서용 파생 라벨이 새지 않음.
+    # 5페이지 각 1회 fetch. 같은 프로세스의 **다른 인스턴스**(병렬 워커)도 캐시 적중 → 추가 0.
     assert len(fetcher.calls) == 5
-    assert src.discover(_seg("전체")) == got
+    assert JpAssocSource(_live_settings(), fetcher=fetcher).discover(_seg("전체")) == got
     assert len(fetcher.calls) == 5
 
 
@@ -137,9 +146,9 @@ def test_live_specific_industry_fetches_only_matching_pages() -> None:
     assert fetcher.calls == [tokubetu]  # 증권 페이지 4개는 안 건드림.
 
 
-def test_live_partial_page_failure_is_atomic_and_keeps_cursor() -> None:
-    """선택 페이지 중 하나만 실패해도 빈 결과 — 부분 풀로 커서를 전진시키면 다음 런이 회원을
-    건너뛴다(로컬 슬라이스 커서는 풀 길이 기준)."""
+def test_live_page_failure_is_isolated_and_keeps_that_pages_cursor() -> None:
+    """한 페이지 실패는 그 페이지만 결과 0·커서 유지 — 다른 페이지는 정상 진행(페이지별 커서라
+    부분 풀로 커서가 밀리는 문제가 없다). JSDA 만 IP 차단돼도 IMAJ 분은 계속 나온다."""
     kaiin, tokutei = _PAGES[0][0], _PAGES[1][0]
     store: dict[tuple[str, str], int] = {}
 
@@ -150,16 +159,17 @@ def test_live_partial_page_failure_is_atomic_and_keeps_cursor() -> None:
         def advance(self, source: str, key: str, position: int) -> None:
             store[(source, key)] = position
 
-    fetcher = _FakeFetcher({kaiin: _JSDA, tokutei: _ONE}, fail={tokutei})
-    src = JpAssocSource(
-        _live_settings(discovery_max_per_source=1), fetcher=fetcher, cursor_store=_Store()
-    )
-    assert src.discover(_seg("증권·자산운용")) == []
-    assert store == {}  # 커서 미전진.
-    assert fetcher.calls.count(kaiin) == 1  # 성공 페이지는 메모(재시도 시 재fetch 0).
-    fetcher._fail.clear()
+    fetcher = _FakeFetcher({kaiin: _JSDA, tokutei: _ONE}, fail={kaiin})
+    src = JpAssocSource(_live_settings(), fetcher=fetcher, cursor_store=_Store())
     got = src.discover(_seg("증권·자산운용"))
-    assert [c.domain for c in got] == ["buko.co.jp"] and fetcher.calls.count(kaiin) == 1
+    assert "one.co.jp" in {c.domain for c in got}  # tokutei·IMAJ 더미는 정상.
+    assert ("jp_assoc", "JP/증권·자산운용/unknown/page0") not in store  # 실패 페이지 커서 미전진.
+    assert store[("jp_assoc", "JP/증권·자산운용/unknown/page1")] == 0  # 소진 → 0 리셋(기존 규약).
+    fetcher._fail.clear()  # 차단 해제 → 다음 세그먼트에서 kaiin 회복, 나머지는 캐시.
+    n_before = len(fetcher.calls)
+    got2 = src.discover(_seg("증권·자산운용"))
+    assert {"buko.co.jp", "fujitomi.co.jp"} <= {c.domain for c in got2}
+    assert fetcher.calls[n_before:] == [kaiin]
 
 
 def test_live_fetch_failure_is_not_memoized() -> None:

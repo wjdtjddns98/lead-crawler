@@ -13,8 +13,12 @@
 - 상장여부: 페이지가 알려주지 않음 → 세그먼트 스코프값 그대로(listed_verified=False).
   ``listed='listed'`` 세그먼트엔 **적용하지 않는다** — 상장 JP 는 EDINET 이 전수 커버하고,
   비상장 다수를 상장 스코프값으로 흘리면 원장 오염(스코프값 사실 고착 실사고 계열).
-- 커서: 페이지당 1 GET 으로 전 모집단이 오므로 EDINET 과 같은 **로컬 슬라이스**
-  (``cursor_offset/advance_cursor``, 키=segment.label). 네트워크는 인스턴스당 페이지별 1콜(메모).
+- 커서: 페이지당 1 GET 으로 전 모집단이 오므로 EDINET 과 같은 **로컬 슬라이스** — 단
+  **페이지별 커서**(키=segment.label#페이지번호). 한 페이지가 실패해도 다른 페이지의 결과·
+  커서는 독립이고, 실패 페이지는 커서를 전진시키지 않는다(부분 풀로 밀려 회원을 건너뛰는
+  사고 방지). 네트워크는 **프로세스당 페이지별 1콜/6h**(모듈 캐시) — JSDA 는 짧은 시간의
+  반복 접속(2026-08-31 실측 ~25회/15분)에 IP 를 TCP 수준에서 차단하므로 워커별 인스턴스가
+  각자 fetch 하면 안 된다.
 - 표시명: 페이지에 영문 상호가 없어 일문 그대로(EDINET 영문 우선 규칙의 예외 — 음역
   후속 트랙과 동일 처리). 하류 resolve 가 도메인을 이미 가진 행은 건드리지 않는다.
 - dry_run 은 네트워크 없이 결정적 더미(전 소스 계약).
@@ -26,6 +30,8 @@ ponytail: 회원 전화·업무구분(IMAJ 표 열)·홈페이지 없는 회원(
 
 from __future__ import annotations
 
+import threading
+import time
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
@@ -64,6 +70,9 @@ _SKIP_HOSTS = (
     "x.com", "twitter.com", "facebook.com", "youtube.com", "instagram.com",
 )
 _LINK_SUFFIX = "(別ウィンドウで開く)"
+_CACHE_TTL_S = 6 * 3600  # 회원명부는 월 단위로 바뀐다 — 런 내 재fetch 0 이 목적.
+_cache: dict[str, tuple[float, list[tuple[str, str]]]] = {}
+_cache_lock = threading.Lock()  # 병렬 발견 워커가 같은 페이지를 동시에 때리지 않게(JSDA 차단).
 
 
 class _MemberLinks(HTMLParser):
@@ -170,8 +179,6 @@ class JpAssocSource:
         self._fetcher = fetcher
         self._rate_limiters = rate_limiters
         self._cursor_store = cursor_store
-        # 페이지별 fetch-once 메모(실패는 메모하지 않음 — EDINET 과 같은 침묵 고착 방지).
-        self._page_memo: dict[str, list[tuple[str, str]]] = {}
 
     def applies_to(self, segment: Segment) -> bool:
         """JP 전용 + 비상장/미상 스코프 + (broad 또는 은행·증권·자산운용)."""
@@ -213,63 +220,63 @@ class JpAssocSource:
         return self._fetcher
 
     def _members(self, url: str) -> list[tuple[str, str]] | None:
-        """페이지 1개의 (상호, 도메인) — 런 내 1회 fetch·메모. 실패/0건은 None(메모 안 함)."""
-        cached = self._page_memo.get(url)
-        if cached is not None:
-            return cached
-        try:
-            html = self._client().get_text(url)
-        except Exception as exc:  # 네트워크/차단 → 이번 세그먼트만 실패(재시도 가능).
-            log.info("jp_assoc.fetch_error", url=url, err=str(exc))
-            return None
-        members = parse_members(html)
-        if not members:
-            # 200 + 포맷 변경/오류 페이지 — 고착시키지 않고 경고(침묵 0건 방지).
-            log.warning("jp_assoc.parse_empty", url=url)
-            return None
-        self._page_memo[url] = members
-        return members
+        """페이지 1개의 (상호, 도메인) — 프로세스 캐시(TTL) 우선, 실패/0건은 None(캐시 안 함).
+
+        락 안에서 fetch 해 워커별 인스턴스가 같은 페이지를 동시에 때리지 않는다(첫 워커가
+        받으면 나머지는 캐시 적중). 락 보유 시간 = 1 GET(수백 KB, ~1s).
+        """
+        with _cache_lock:
+            hit = _cache.get(url)
+            if hit is not None and time.monotonic() - hit[0] < _CACHE_TTL_S:
+                return hit[1]
+            try:
+                html = self._client().get_text(url)
+            except Exception as exc:  # 네트워크/차단 → 이 페이지만 이번 세그먼트 실패(재시도 가능).
+                log.info("jp_assoc.fetch_error", url=url, err=str(exc))
+                return None
+            members = parse_members(html)
+            if not members:
+                # 200 + 포맷 변경/오류 페이지 — 고착시키지 않고 경고(침묵 0건 방지).
+                log.warning("jp_assoc.parse_empty", url=url)
+                return None
+            _cache[url] = (time.monotonic(), members)
+            return members
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
-        """(구체 업종이면 라벨 일치 페이지만) → 페이지 순 병합 → 커서 슬라이스 → 캡."""
+        """(구체 업종이면 라벨 일치 페이지만) → 페이지별 커서 슬라이스 → 공유 캡."""
         cap = self._settings.discovery_max_per_source
         if cap <= 0:
             return []
         want: str | None = None
         if not is_broad_industry(segment.industry):
             want = resolve_industry_label(segment.industry)
-        pool: list[tuple[str, str, str]] = []  # (상호, 도메인, 라벨)
-        seen: set[str] = set()
-        for url, label in _PAGES:
+        out: list[DiscoveredCompany] = []
+        for i, (url, label) in enumerate(_PAGES):
             if want is not None and label != want:
                 continue
-            members = self._members(url)
-            if members is None:
-                # 페이지 하나라도 빠지면 풀 길이가 달라져 로컬 슬라이스 커서가 어긋난다(다음
-                # 런이 회원을 건너뜀) — 원자적 실패: 빈 결과 + 커서 미전진(Codex 설계 채택).
-                return []
-            for name, dom in members:
-                if dom in seen:
-                    continue  # 협회 겸업(증권사가 IMAJ 에도 등재) — 첫 페이지 라벨 우선.
-                seen.add(dom)
-                pool.append((name, dom, label))
-
-        start = cursor_offset(self._cursor_store, self.name, segment, len(pool))
-        out: list[DiscoveredCompany] = []
-        pos = start
-        for name, dom, label in pool[start:]:
-            pos += 1
-            out.append(
-                build_company(
-                    source=self.name,
-                    segment=segment,
-                    name=name,
-                    domain=dom,
-                    industry_code_label=label,
-                )
-            )
             if len(out) >= cap:
                 break
-        advance_cursor(self._cursor_store, self.name, segment, pos, len(pool))
-        log.info("jp_assoc.live", segment=segment.label, pool=len(pool), n=len(out), start=start)
+            members = self._members(url)
+            if members is None:
+                continue  # 실패 페이지: 결과 없음 + 커서 미전진(다른 페이지와 독립).
+            # 페이지별 커서 키 — 라벨에 페이지 번호를 붙인 파생 세그먼트(커서 전용, 저장엔
+            # 원 세그먼트 사용). 페이지 간 겸업 중복은 파이프라인 도메인 동치 dedup 이 맡는다.
+            page_seg = segment.model_copy(update={"region": f"page{i}"})
+            start = cursor_offset(self._cursor_store, self.name, page_seg, len(members))
+            pos = start
+            for name, dom in members[start:]:
+                pos += 1
+                out.append(
+                    build_company(
+                        source=self.name,
+                        segment=segment,
+                        name=name,
+                        domain=dom,
+                        industry_code_label=label,
+                    )
+                )
+                if len(out) >= cap:
+                    break
+            advance_cursor(self._cursor_store, self.name, page_seg, pos, len(members))
+        log.info("jp_assoc.live", segment=segment.label, n=len(out))
         return out
