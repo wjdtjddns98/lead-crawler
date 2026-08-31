@@ -162,6 +162,9 @@ def test_stub_classifier_keyword_and_abstain():
     # 연기금 세그먼트(2026-08-19 신설) — 공제회·연금공단도 연기금으로 귀속.
     assert is_taxonomy_label("연기금")
     assert StubClassifier().classify("한국교직원공제회", None, None).label == "연기금"
+    # 광업·자원(2026-08-31 신설) — 없으면 LLM 이 광산을 농림·수산/화학으로 오배치(표본 실증).
+    assert is_taxonomy_label("광업·자원")
+    assert StubClassifier().classify("Kore Potash plc", None, "potash mining").label == "광업·자원"
     v = StubClassifier().classify("Zzz Holdings", "z.com", None)
     assert v.label is None and v.billed is False
 
