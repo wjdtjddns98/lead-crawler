@@ -88,20 +88,27 @@ class _FakeFetcher:
         self.calls.append(url)
         if url in self._fail:
             raise TimeoutError("boom")
-        return self._pages.get(url, "<main></main>")
+        # 미지정 페이지는 회원 1건짜리 더미(0건 페이지는 원자적 실패로 취급되므로).
+        n = abs(hash(url)) % 10**6
+        return self._pages.get(url, f'<main><a href="https://d{n}.example.jp/">dummy</a></main>')
 
 
 def _live_settings(**kw: Any) -> Settings:
     return Settings(dry_run=False, resolve_domains=False, **kw)
 
 
+_ONE = '<main><a href="https://www.one.co.jp/">ワン</a></main>'
+
+
 def test_live_labels_by_page_and_dedups_across_pages() -> None:
     kaiin, tokutei, tokubetu, imaj_im, imaj_adv = (u for u, _ in _PAGES)
     pages = {
         kaiin: _JSDA,
+        tokutei: _ONE,
         tokubetu: '<main><a href="https://www.smbc.co.jp/">（株）三井住友銀行</a></main>',
         # IMAJ 운용회원에 JSDA 회원(buko)이 겸업 등재 → 첫 페이지(증권) 라벨 1건만.
         imaj_im: _IMAJ + '<main><a href="http://buko.co.jp/">武甲</a></main>',
+        imaj_adv: _ONE,  # tokutei 와 같은 도메인 → 첫 등장만.
     }
     fetcher = _FakeFetcher(pages)
     src = JpAssocSource(_live_settings(), fetcher=fetcher)
@@ -109,18 +116,16 @@ def test_live_labels_by_page_and_dedups_across_pages() -> None:
     got = src.discover(_seg("전체"))
     by_dom = {c.domain: c for c in got}
     assert set(by_dom) == {
-        "buko.co.jp", "fujitomi.co.jp", "smbc.co.jp", "aizawa.co.jp", "ibjinc.com",
+        "buko.co.jp", "fujitomi.co.jp", "one.co.jp", "smbc.co.jp", "aizawa.co.jp", "ibjinc.com",
     }
     assert by_dom["smbc.co.jp"].industry == "은행"
     assert by_dom["aizawa.co.jp"].industry == "증권·자산운용"
     assert by_dom["buko.co.jp"].canonical_key == "dom:buko.co.jp"
     assert not by_dom["buko.co.jp"].listed_verified
-    # 5페이지 각 1회 fetch. 두 번째 세그먼트: 성공 페이지 3개는 메모 재사용, 0건 페이지
-    # 2개(tokutei·advice)만 재시도(0건은 고착시키지 않는 계약).
+    # 5페이지 각 1회 fetch, 두 번째 세그먼트는 메모 재사용(추가 fetch 0).
     assert len(fetcher.calls) == 5
-    src.discover(_seg("전체"))
-    assert len(fetcher.calls) == 7
-    assert fetcher.calls.count(kaiin) == 1 and fetcher.calls.count(tokutei) == 2
+    assert src.discover(_seg("전체")) == got
+    assert len(fetcher.calls) == 5
 
 
 def test_live_specific_industry_fetches_only_matching_pages() -> None:
@@ -130,6 +135,31 @@ def test_live_specific_industry_fetches_only_matching_pages() -> None:
     got = src.discover(_seg("은행"))
     assert [c.domain for c in got] == ["smbc.co.jp"]
     assert fetcher.calls == [tokubetu]  # 증권 페이지 4개는 안 건드림.
+
+
+def test_live_partial_page_failure_is_atomic_and_keeps_cursor() -> None:
+    """선택 페이지 중 하나만 실패해도 빈 결과 — 부분 풀로 커서를 전진시키면 다음 런이 회원을
+    건너뛴다(로컬 슬라이스 커서는 풀 길이 기준)."""
+    kaiin, tokutei = _PAGES[0][0], _PAGES[1][0]
+    store: dict[tuple[str, str], int] = {}
+
+    class _Store:
+        def get(self, source: str, key: str) -> int:
+            return store.get((source, key), 0)
+
+        def advance(self, source: str, key: str, position: int) -> None:
+            store[(source, key)] = position
+
+    fetcher = _FakeFetcher({kaiin: _JSDA, tokutei: _ONE}, fail={tokutei})
+    src = JpAssocSource(
+        _live_settings(discovery_max_per_source=1), fetcher=fetcher, cursor_store=_Store()
+    )
+    assert src.discover(_seg("증권·자산운용")) == []
+    assert store == {}  # 커서 미전진.
+    assert fetcher.calls.count(kaiin) == 1  # 성공 페이지는 메모(재시도 시 재fetch 0).
+    fetcher._fail.clear()
+    got = src.discover(_seg("증권·자산운용"))
+    assert [c.domain for c in got] == ["buko.co.jp"] and fetcher.calls.count(kaiin) == 1
 
 
 def test_live_fetch_failure_is_not_memoized() -> None:

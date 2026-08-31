@@ -212,21 +212,21 @@ class JpAssocSource:
             )
         return self._fetcher
 
-    def _members(self, url: str) -> list[tuple[str, str]]:
-        """페이지 1개의 (상호, 도메인) — 런 내 1회 fetch·메모. 실패/0건은 메모하지 않는다."""
+    def _members(self, url: str) -> list[tuple[str, str]] | None:
+        """페이지 1개의 (상호, 도메인) — 런 내 1회 fetch·메모. 실패/0건은 None(메모 안 함)."""
         cached = self._page_memo.get(url)
         if cached is not None:
             return cached
         try:
             html = self._client().get_text(url)
-        except Exception as exc:  # 네트워크/차단 → 이번 세그먼트만 빈 결과(재시도 가능).
+        except Exception as exc:  # 네트워크/차단 → 이번 세그먼트만 실패(재시도 가능).
             log.info("jp_assoc.fetch_error", url=url, err=str(exc))
-            return []
+            return None
         members = parse_members(html)
         if not members:
             # 200 + 포맷 변경/오류 페이지 — 고착시키지 않고 경고(침묵 0건 방지).
             log.warning("jp_assoc.parse_empty", url=url)
-            return []
+            return None
         self._page_memo[url] = members
         return members
 
@@ -243,7 +243,12 @@ class JpAssocSource:
         for url, label in _PAGES:
             if want is not None and label != want:
                 continue
-            for name, dom in self._members(url):
+            members = self._members(url)
+            if members is None:
+                # 페이지 하나라도 빠지면 풀 길이가 달라져 로컬 슬라이스 커서가 어긋난다(다음
+                # 런이 회원을 건너뜀) — 원자적 실패: 빈 결과 + 커서 미전진(Codex 설계 채택).
+                return []
+            for name, dom in members:
                 if dom in seen:
                     continue  # 협회 겸업(증권사가 IMAJ 에도 등재) — 첫 페이지 라벨 우선.
                 seen.add(dom)
