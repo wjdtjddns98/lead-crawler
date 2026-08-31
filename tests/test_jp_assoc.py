@@ -15,6 +15,7 @@ from leadcrawler.sources.jp_assoc import _PAGES, JpAssocSource, parse_members
 @pytest.fixture(autouse=True)
 def _clear_page_cache() -> None:
     jp_assoc._cache.clear()
+    jp_assoc._neg.clear()
 
 
 def _seg(industry: str = "전체", country: str = "JP", listed: str = "unknown") -> Segment:
@@ -146,7 +147,9 @@ def test_live_specific_industry_fetches_only_matching_pages() -> None:
     assert fetcher.calls == [tokubetu]  # 증권 페이지 4개는 안 건드림.
 
 
-def test_live_page_failure_is_isolated_and_keeps_that_pages_cursor() -> None:
+def test_live_page_failure_is_isolated_and_keeps_that_pages_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """한 페이지 실패는 그 페이지만 결과 0·커서 유지 — 다른 페이지는 정상 진행(페이지별 커서라
     부분 풀로 커서가 밀리는 문제가 없다). JSDA 만 IP 차단돼도 IMAJ 분은 계속 나온다."""
     kaiin, tokutei = _PAGES[0][0], _PAGES[1][0]
@@ -166,21 +169,42 @@ def test_live_page_failure_is_isolated_and_keeps_that_pages_cursor() -> None:
     assert ("jp_assoc", "JP/증권·자산운용/unknown/page0") not in store  # 실패 페이지 커서 미전진.
     assert store[("jp_assoc", "JP/증권·자산운용/unknown/page1")] == 0  # 소진 → 0 리셋(기존 규약).
     fetcher._fail.clear()  # 차단 해제 → 다음 세그먼트에서 kaiin 회복, 나머지는 캐시.
+    monkeypatch.setattr(jp_assoc, "_NEG_TTL_S", 0)  # 부정 캐시 창 경과.
     n_before = len(fetcher.calls)
     got2 = src.discover(_seg("증권·자산운용"))
     assert {"buko.co.jp", "fujitomi.co.jp"} <= {c.domain for c in got2}
     assert fetcher.calls[n_before:] == [kaiin]
 
 
-def test_live_fetch_failure_is_not_memoized() -> None:
+def test_live_failure_is_negative_cached_then_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """실패는 _NEG_TTL_S 동안 재요청하지 않는다(차단 호스트 재타격 방지) — 창이 지나면 재시도."""
     tokubetu = _PAGES[2][0]
     fetcher = _FakeFetcher(
         {tokubetu: '<main><a href="https://www.smbc.co.jp/">SMBC</a></main>'}, fail={tokubetu}
     )
     src = JpAssocSource(_live_settings(), fetcher=fetcher)
     assert src.discover(_seg("은행")) == []
-    fetcher._fail.clear()  # 네트워크 회복 → 다음 세그먼트에서 재시도해 성공.
+    fetcher._fail.clear()
+    assert src.discover(_seg("은행")) == []  # 부정 캐시 창 안 — 재fetch 없음.
+    assert fetcher.calls.count(tokubetu) == 1
+    monkeypatch.setattr(jp_assoc, "_NEG_TTL_S", 0)  # 창 경과 시뮬레이션.
     assert [c.domain for c in src.discover(_seg("은행"))] == ["smbc.co.jp"]
+    assert fetcher.calls.count(tokubetu) == 2
+
+
+def test_live_stale_if_error_serves_expired_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokubetu = _PAGES[2][0]
+    fetcher = _FakeFetcher({tokubetu: '<main><a href="https://www.smbc.co.jp/">SMBC</a></main>'})
+    src = JpAssocSource(_live_settings(), fetcher=fetcher)
+    assert [c.domain for c in src.discover(_seg("은행"))] == ["smbc.co.jp"]
+    monkeypatch.setattr(jp_assoc, "_CACHE_TTL_S", 0)  # 성공값 만료.
+    fetcher._fail.add(tokubetu)  # 재fetch 실패 → 만료된 성공값으로 응답.
+    assert [c.domain for c in src.discover(_seg("은행"))] == ["smbc.co.jp"]
+    assert fetcher.calls.count(tokubetu) == 2
+
+
+def test_parse_members_scheme_is_case_insensitive() -> None:
+    assert parse_members('<main><a href="HTTPS://Www.Ex.co.jp/">X</a></main>') == [("X", "ex.co.jp")]
 
 
 def test_live_respects_cap_and_zero_cap() -> None:

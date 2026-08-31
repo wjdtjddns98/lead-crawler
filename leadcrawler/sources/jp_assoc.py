@@ -71,8 +71,14 @@ _SKIP_HOSTS = (
 )
 _LINK_SUFFIX = "(別ウィンドウで開く)"
 _CACHE_TTL_S = 6 * 3600  # 회원명부는 월 단위로 바뀐다 — 런 내 재fetch 0 이 목적.
+# 실패(차단·타임아웃·0건)도 짧게 기억한다 — 차단된 호스트를 세그먼트마다 재요청하면 차단을
+# 스스로 연장한다(리뷰 MED). 만료된 성공값이 있으면 실패 시 그것을 쓴다(stale-if-error).
+_NEG_TTL_S = 15 * 60
 _cache: dict[str, tuple[float, list[tuple[str, str]]]] = {}
-_cache_lock = threading.Lock()  # 병렬 발견 워커가 같은 페이지를 동시에 때리지 않게(JSDA 차단).
+_neg: dict[str, float] = {}
+# 페이지별 락 — 같은 페이지 동시 fetch 만 막고(JSDA 차단), 다른 페이지끼리는 직렬화 안 함.
+_locks: dict[str, threading.Lock] = {url: threading.Lock() for url, _ in _PAGES}
+_cache_lock_fallback = threading.Lock()  # _PAGES 밖 URL(테스트 주입 등) 방어용.
 
 
 class _MemberLinks(HTMLParser):
@@ -98,7 +104,7 @@ class _MemberLinks(HTMLParser):
         if tag != "a":
             return
         href = dict(attrs).get("href") or ""
-        if href.startswith(("http://", "https://")):
+        if href.lower().startswith(("http://", "https://")):
             self._href = href
             self._text = []
 
@@ -149,6 +155,10 @@ def parse_members(html: str) -> list[tuple[str, str]]:
     except Exception as exc:  # html.parser 는 관대하지만 방어(포맷 붕괴 → 0건).
         log.info("jp_assoc.parse_error", err=str(exc))
         return []
+    if parser._all and not parser._saw_main:
+        # <main> 이 사라진 포맷 변경 — 문서 전체 폴백은 배너·관련기관 링크가 회원사로 섞일
+        # 수 있어 조용히 넘기지 않는다(edinet.header_mismatch 계열 가시화).
+        log.warning("jp_assoc.no_main_fallback", anchors=len(parser._all))
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
     for name, href in parser.links:
@@ -220,26 +230,32 @@ class JpAssocSource:
         return self._fetcher
 
     def _members(self, url: str) -> list[tuple[str, str]] | None:
-        """페이지 1개의 (상호, 도메인) — 프로세스 캐시(TTL) 우선, 실패/0건은 None(캐시 안 함).
+        """페이지 1개의 (상호, 도메인) — 프로세스 캐시(TTL) 우선. 실패는 None.
 
-        락 안에서 fetch 해 워커별 인스턴스가 같은 페이지를 동시에 때리지 않는다(첫 워커가
-        받으면 나머지는 캐시 적중). 락 보유 시간 = 1 GET(수백 KB, ~1s).
+        페이지별 락 안에서 fetch 해 워커별 인스턴스가 같은 페이지를 동시에 때리지 않는다
+        (첫 워커가 받으면 나머지는 캐시 적중). 실패는 ``_NEG_TTL_S`` 동안 재요청하지 않고,
+        만료된 성공값이 있으면 그것을 돌려준다(명부는 월 단위 변화 — stale 이 재요청보다 안전).
         """
-        with _cache_lock:
+        now = time.monotonic()
+        with _locks.get(url) or _cache_lock_fallback:
             hit = _cache.get(url)
-            if hit is not None and time.monotonic() - hit[0] < _CACHE_TTL_S:
+            if hit is not None and now - hit[0] < _CACHE_TTL_S:
                 return hit[1]
+            if now - _neg.get(url, -_NEG_TTL_S) < _NEG_TTL_S:
+                return hit[1] if hit is not None else None  # 최근 실패 — stale 또는 None.
             try:
                 html = self._client().get_text(url)
+                members = parse_members(html)
             except Exception as exc:  # 네트워크/차단 → 이 페이지만 이번 세그먼트 실패(재시도 가능).
                 log.info("jp_assoc.fetch_error", url=url, err=str(exc))
-                return None
-            members = parse_members(html)
+                members = []
             if not members:
-                # 200 + 포맷 변경/오류 페이지 — 고착시키지 않고 경고(침묵 0건 방지).
-                log.warning("jp_assoc.parse_empty", url=url)
-                return None
-            _cache[url] = (time.monotonic(), members)
+                # 200 + 포맷 변경/오류 페이지도 실패와 같이 취급 — 경고(침묵 0건 방지)+부정 캐시.
+                log.warning("jp_assoc.page_empty", url=url)
+                _neg[url] = now
+                return hit[1] if hit is not None else None
+            _cache[url] = (now, members)
+            _neg.pop(url, None)
             return members
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
