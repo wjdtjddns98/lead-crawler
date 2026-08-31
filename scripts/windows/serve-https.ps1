@@ -22,6 +22,12 @@ $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $root
 
+# Python must emit UTF-8: child processes (segment-run/backfill) write Korean
+# messages with em dashes to log files; without this they crash with
+# UnicodeEncodeError (cp949) and get counted as job failures (2026-08-31).
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+
 # Yield CPU to interactive work: every child (uvicorn, reload workers,
 # headless chrome, vite watch) inherits this priority class.
 # Best-effort: a policy/permission failure must not block server startup.

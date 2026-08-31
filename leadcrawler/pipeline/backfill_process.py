@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -80,8 +81,12 @@ def _default_launcher(argv: list[str], log_path: Path):  # noqa: ANN202
     log_path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(log_path, "ab")  # noqa: SIM115 — 자식 수명과 함께 감(프로세스 종료 시 OS 정리).
     try:
+        # PYTHONUTF8 강제: 자식 stdout 이 파일이라 로케일(cp949) 인코딩을 쓰는데, 한국어
+        # 메시지의 em dash(—) 가 cp949 에 없어 완료 echo 에서 UnicodeEncodeError→rc=1 →
+        # 감독자가 크래시로 오판(2026-08-31 실사고 — 서버가 UTF-8 없이 기동됐을 때).
+        env = {**os.environ, "PYTHONUTF8": "1"}
         proc = subprocess.Popen(  # noqa: S603 — argv 는 코드가 조립(셸 미경유).
-            argv, cwd=str(_repo_root()), stdout=handle, stderr=subprocess.STDOUT
+            argv, cwd=str(_repo_root()), stdout=handle, stderr=subprocess.STDOUT, env=env
         )
     except Exception:
         handle.close()  # 스폰 실패 시 로그 fd 누수 방지.
