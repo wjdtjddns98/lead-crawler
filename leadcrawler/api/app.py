@@ -454,9 +454,10 @@ def create_app() -> FastAPI:
     if not get_settings().dry_run and not _backfill_resume_done:
         _backfill_resume_done = True  # create_app 다중 호출(모듈 app + factory) 중복 방지.
         try:
-            from ..pipeline.backfill_process import resume_active_jobs
+            from ..pipeline.backfill_process import resume_active_jobs, start_segment_ticker
 
             resume_active_jobs(get_settings())
+            start_segment_ticker(get_settings())  # 반복 잡 회차 시작용 큐 티커(60s 폴링).
         except Exception as exc:  # pragma: no cover — 재개 실패는 로그로만(기동 우선).
             from ..logging import get_logger
 

@@ -499,6 +499,11 @@ class BackfillJobRow(Base):
     )
     progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 트랙 S 반복(2026-09-01, 웹 크롤실행 continuous 대체): done 시 같은 필터로 다음 잡을
+    # not_before=now+repeat_every_min 으로 복제 적재. 0=1회성. 취소·실패면 반복 종료.
+    repeat_every_min: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # 대기열 실행 가능 시각(반복 복제분) — 디스패처는 이 시각 전엔 activate 하지 않는다.
+    not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class UserRow(Base):

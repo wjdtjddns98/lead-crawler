@@ -575,6 +575,7 @@ def register_admin(
         row = enqueue_segment_job(
             db, countries=",".join(ctys), industries=",".join(inds), listed=body.listed,
             regions=regs_csv, priority=body.priority, triggered_by=admin.username,
+            repeat_every_min=body.repeat_every_min,
         )
         db.commit()
         _dispatch_best_effort(settings, row.id)  # 활성 없으면 즉시 activate, 있으면 대기 유지.
