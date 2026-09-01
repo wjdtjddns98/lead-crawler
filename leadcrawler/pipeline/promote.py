@@ -39,7 +39,7 @@ from .fill import (  # PromoteRun 은 fill/resolve/promote 공용 — 여기서 
     _dc_from_row,
     _scoped,
 )
-from .run import _build_lead, _close_in_workers, _persist_lead
+from .run import _build_lead, _close_in_workers, _persist_lead, drain_completed
 
 log = get_logger("pipeline.promote")
 
@@ -227,19 +227,31 @@ def promote_batch(
 
             with sm() as ws, ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
                 try:
-                    for dc, lead in pool.map(_work, targets):
-                        wd.beat()  # 진행 보고 — 정체 판정 리셋.
+                    def _handle(res) -> None:  # noqa: ANN001
+                        nonlocal promoted, emails, failed
+                        dc, lead = res
                         if lead is None:
                             failed += 1
-                            continue
+                            return
                         if not _persist_lead(ws, dc, lead):
                             failed += 1  # 저장 실패 — 성공으로 집계하지 않는다(커서는 전진).
-                            continue
+                            return
                         # 제약②: 실존(active)만 company 로 저장된다 — 승격 여부는 그걸로 센다.
                         if lead.company.is_active:
                             promoted += 1
                             if lead.email is not None:  # 연락처는 실존 저장분에만 존재.
                                 emails += 1
+
+                    # 완료 순 소비 + 진행 신호(beat). 완료 간격이 stall_exit_s 를 넘으면 남은
+                    # 항목을 '멈춤'으로 격리(failed)하고 배치를 끝낸다 — pool.map 순서 소비가
+                    # 앞 항목 하나에 막혀 정상 진행 중 rc=86 으로 죽던 사고 방지(run.drain_completed).
+                    stuck = drain_completed(
+                        pool, _work, targets, handle=_handle, beat=wd.beat, idle_timeout=stall_exit_s,
+                        log_stuck=lambda xs: log.warning(
+                            "promote.batch.stuck", n=len(xs), domains=[x.domain for x in xs[:5]]
+                        ),
+                    )
+                    failed += len(stuck)
                 finally:
                     # Playwright 보유 컴포넌트는 만든 워커 스레드만 닫을 수 있다(메인스레드
                     # close 는 greenlet.error 로 조용히 no-op → 브라우저 누수, 2026-07-31 OOM

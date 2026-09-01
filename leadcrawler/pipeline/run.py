@@ -8,6 +8,8 @@ dry_run 에서는 모든 단계가 네트워크 없이 결정적으로 동작한
 
 from __future__ import annotations
 
+from typing import Any
+
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -92,6 +94,47 @@ def _interleave_by_country(segments: list[Segment]) -> list[int]:
                 rest.append(q)
         queues = rest
     return order
+
+
+def drain_completed(
+    pool: ThreadPoolExecutor,
+    work: Callable[[Any], Any],
+    items: list[Any],
+    *,
+    handle: Callable[[Any], None],
+    beat: Callable[[], None] | None = None,
+    idle_timeout: float | None = None,
+    log_stuck: Callable[[list[Any]], None] | None = None,
+) -> list[Any]:
+    """배치 항목을 풀에 제출하고 **완료되는 순서대로** ``handle`` 한다(``pool.map`` 의 순서 소비 대체).
+
+    ``pool.map`` 은 제출 순서대로만 결과를 내놓아, 앞 항목 하나가 느리면(연결이 무응답으로
+    사라지는 도메인·프로브 타임아웃 합산) 다른 워커가 뒤 항목을 다 끝내도 소비 루프가 멈춘 채
+    ``beat`` 가 0 → 정체 워치독이 정상 진행 중인 자식을 rc=86 으로 죽이고, 재스폰이 같은
+    배치·같은 항목에서 또 멈추는 결정적 루프가 된다(2026-09-01 EDINET 승격 잡 3회 연속 실패
+    실사고). 완료 순 소비면 진행 신호가 실제 진행을 따라간다.
+
+    ``idle_timeout`` 동안 **아무 항목도 완료되지 않으면** 남은 항목을 '멈춤'으로 격리해 반환한다
+    (호출자가 failed 로 집계·커서 전진) — 자식을 죽이지 않고 배치를 끝내려는 것. 멈춘 워커
+    스레드는 자기 프로브 타임아웃까지 살아 있다가 끝난다(풀 종료 대기는 그만큼 길어질 수 있음).
+    None 이면 무한 대기(dry/테스트).
+    """
+    futs = {pool.submit(work, it): it for it in items}
+    pending = set(futs)
+    while pending:
+        done, pending = wait(pending, timeout=idle_timeout, return_when=FIRST_COMPLETED)
+        if not done:
+            stuck = [futs[f] for f in pending]
+            for f in pending:
+                f.cancel()  # 아직 시작 안 한 것은 취소, 실행 중인 것은 알아서 끝나게 둔다.
+            if log_stuck is not None:
+                log_stuck(stuck)
+            return stuck
+        for f in done:
+            if beat is not None:
+                beat()
+            handle(f.result())
+    return []
 
 
 def _close_in_workers(pool: ThreadPoolExecutor, close_own: Callable[[], None]) -> None:

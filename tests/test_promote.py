@@ -181,7 +181,7 @@ def test_promote_batch_isolates_single_company_failure(tmp_path, monkeypatch) ->
     assert promoted == 2
     assert failed == 1
     # 성공 2건은 실제로 persist 경로를 탔고(스텁 no-op 이 아님), 실패 1건은 타지 않았다.
-    assert persisted == ["dom:kr:ok1.co.kr", "dom:kr:ok2.co.kr"]
+    assert sorted(persisted) == ["dom:kr:ok1.co.kr", "dom:kr:ok2.co.kr"]  # 완료 순 소비 — 순서 비보장.
 
     # 대상 0 건이면 (0, after, 0, 0, 0) — 커서는 입력값 그대로.
     rows2, last_key2, *_ = pmod.promote_batch(
