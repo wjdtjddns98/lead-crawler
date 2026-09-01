@@ -55,7 +55,8 @@ leadcrawler/
   sources/      발견 어댑터 — 등록처·거래소·공공데이터·검색·AI 디렉터리 + 도메인 해석
   enrich/       연락처 추출 체인 (정적 BFS → 헤드리스 → OCR → 이메일 API → Vision)
   verify/       사이트 실존성 · 이메일 유효성(MX/SMTP/도달성) 검증
-  pipeline/     run_pipeline 오케스트레이션 + 웹 크롤 잡(연속 라운드·워치독·후속 채움)
+  pipeline/     run_pipeline 오케스트레이션 + 후속 채움 (웹 크롤 잡·연속 라운드·워치독은
+                2026-09-01 제거 — 세그먼트 작업 큐로 일원화)
   scheduler/    일일 정기 크롤 + Notion 리포팅 (APScheduler)
   storage/      DB 저장소 — 발견 원장·검수 큐·크롤 잡·커서·감사 로그 + 엑셀 export
   dedup_resolve/ 근접 중복 탐지·병합 (렉시컬 + LLM 판정)
