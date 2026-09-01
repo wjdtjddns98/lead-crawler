@@ -47,13 +47,22 @@ _MAX_TEXT_SCAN = 200_000
 
 # 스팸봇 회피 난독화 복원: 'info (at) acme (dot) com' → 'info@acme.com'. 괄호류로 감싼
 # at/dot 만 치환한다 — 맨몸 ' at ' 치환은 일반 문장 오탐 위험(정밀도 우선).
-_OBFUSCATED_AT = re.compile(r"\s*[(\[{]\s*(?:at|골뱅이)\s*[)\]}]\s*", re.IGNORECASE)
-_OBFUSCATED_DOT = re.compile(r"\s*[(\[{]\s*(?:dot|닷|점)\s*[)\]}]\s*", re.IGNORECASE)
+# 선행 ``\s*`` 금지 — 공백 런 길이 L 에 O(L²)(ReDoS). 2026-09-01 실사고: ryoden.co.jp 본문 텍스트에
+# 185,863자 공백 런 → 승격 워커가 GIL 을 쥔 채 수 분 정지 → 배치 정체 → rc=86 루프. 공백 런은
+# ``_collapse_ws`` 로 먼저 1칸으로 접고(선형), 패턴은 ``\s?`` 만 허용한다.
+_WS_RUN = re.compile(r"\s+")
+_OBFUSCATED_AT = re.compile(r"\s?[(\[{]\s?(?:at|골뱅이)\s?[)\]}]\s?", re.IGNORECASE)
+_OBFUSCATED_DOT = re.compile(r"\s?[(\[{]\s?(?:dot|닷|점)\s?[)\]}]\s?", re.IGNORECASE)
+
+
+def _collapse_ws(text: str) -> str:
+    """공백 런을 1칸으로 접는다 — 이후 정규식이 공백 위에서 제곱 비용을 내지 않게(선형 전처리)."""
+    return _WS_RUN.sub(" ", text)
 
 
 def _deobfuscate(text: str) -> str:
-    """난독화 표기((at)/(dot)·전각 ＠)를 표준 표기로 되돌린다."""
-    text = text.replace("＠", "@")
+    """난독화 표기((at)/(dot)·전각 ＠)를 표준 표기로 되돌린다. 입력 공백 런은 1칸으로 접힌다."""
+    text = _collapse_ws(text.replace("＠", "@"))
     text = _OBFUSCATED_AT.sub("@", text)
     return _OBFUSCATED_DOT.sub(".", text)
 
