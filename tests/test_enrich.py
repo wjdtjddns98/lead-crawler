@@ -888,3 +888,18 @@ def test_dead_home_not_refetched_by_later_stages() -> None:
     assert out == []
     assert fetcher.calls == 2  # _live 의 naked+www 각 1회뿐 — 이후 단계 재fetch 0.
     assert ocr.calls == [] and vision.calls == []
+
+
+def test_deobfuscate_is_linear_on_huge_whitespace_runs() -> None:
+    """ReDoS 회귀(2026-09-01 ryoden.co.jp, 공백 런 185,863자 → 워커 GIL 정지·배치 rc=86 루프)."""
+    import time
+
+    from leadcrawler.enrich.extract import _deobfuscate
+
+    text = "info (at) acme (dot) com" + " " * 200_000 + "\n" * 50_000 + "x"
+    t = time.monotonic()
+    out = _deobfuscate(text)
+    assert time.monotonic() - t < 1.0
+    assert out.startswith("info@acme.com")
+    # 접힌 공백은 이메일 매칭에 영향 없음 — 표준 표기 복원은 그대로.
+    assert _deobfuscate("sales [ at ] foo { dot } jp") == "sales@foo.jp"
