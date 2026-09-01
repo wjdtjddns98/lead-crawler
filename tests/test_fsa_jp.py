@@ -122,6 +122,8 @@ class _FakeFetcher:
         self.calls.append(url)
         self.gbiz_headers.append(kw.get("headers") or {})
         corp = url.rsplit("/", 1)[-1]
+        if corp in self._fail:
+            raise TimeoutError("gbiz down")
         if corp in self._gbiz:
             return json.dumps({"hojin-infos": [self._gbiz[corp]]})
         return json.dumps({"hojin-infos": []})
@@ -167,6 +169,37 @@ def test_live_with_token_attaches_domain_and_english_name() -> None:
     n = len(fetcher.calls)
     src.discover(_seg("은행"))
     assert [u for u in fetcher.calls[n:] if "gbiz" in u] == []
+
+
+def test_live_gbiz_failure_is_negative_cached_and_non_latin_name_rejected() -> None:
+    ginkou = _LISTS[0][0]
+    fetcher = _FakeFetcher({ginkou: _GINKOU}, gbiz={"6010001008845": {"company_url": "", "name_en": "みずほ"}})
+    got = FsaJpSource(_live(gbizinfo_api_token="tok"), fetcher=fetcher).discover(_seg("은행"))
+    assert got[0].name == "株式会社みずほ銀行" and got[0].name_eng is None  # 비라틴 name_en 기각.
+
+    fsa_jp._gbiz_cache.clear()
+    fetcher2 = _FakeFetcher({ginkou: _GINKOU}, fail={"6010001008845"})
+    src = FsaJpSource(_live(gbizinfo_api_token="tok"), fetcher=fetcher2)
+    got = src.discover(_seg("은행"))
+    assert got[0].domain is None and got[0].name == "株式会社みずほ銀行"  # 실패 → 도메인 없이 진행.
+    n = len([u for u in fetcher2.calls if "gbiz" in u])
+    src.discover(_seg("은행"))
+    assert len([u for u in fetcher2.calls if "gbiz" in u]) == n  # 실패 1h 부정 캐시 — 재호출 없음.
+
+
+def test_live_gbiz_consecutive_failures_trip_breaker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gBizINFO 전면 장애: 연속 실패 3회째부터 같은 discover() 안 나머지 행은 조회를 건너뛴다."""
+    kinyu = _LISTS[2][0]
+    rows = [["금융상품거래업자등록일람"],
+            ["所管", "登録番号", "登録年月日", "金融商品取引業者名", "法人番号", "郵便番号", "本店等所在地",
+             "代表等電話番号", "業務の種別", None, None, None],
+            [None] * 8 + ["第一種", "第二種", "投資助言", "投資運用業"]]
+    corps = [f"{1000000000000 + i:013d}" for i in range(10)]
+    rows += [[None, "n", "d", f"会社{i}", c, "1", "住所", "03", "○", "", "", ""] for i, c in enumerate(corps)]
+    fetcher = _FakeFetcher({kinyu: _xlsx({"日本語": rows})}, fail=set(corps))
+    got = FsaJpSource(_live(gbizinfo_api_token="tok"), fetcher=fetcher).discover(_seg("증권·자산운용"))
+    assert len(got) == 10  # 행은 전부 열거(도메인만 없음).
+    assert len([u for u in fetcher.calls if "gbiz" in u]) == 3  # 3회 실패 후 차단.
 
 
 def test_live_specific_industry_fetches_only_matching_lists() -> None:

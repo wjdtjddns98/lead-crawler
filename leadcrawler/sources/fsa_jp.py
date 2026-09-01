@@ -16,7 +16,9 @@
   도메인, ``name_en`` → 표시명, 일문은 name_eng 보관 — EDINET #412 규약). 토큰이 없으면 도메인
   없이 열거(EDINET 과 같이 resolve_domains 경로에 맡김) — 인스턴스당 1회 경고.
 - 커서: 파일별 로컬 슬라이스(``jp_assoc`` 과 동일 — 키=segment.label#list{i}), 파일 실패는
-  그 파일만 결과 0·커서 유지. 프로세스 캐시(Excel 24h·gBizINFO 24h, 실패 1h) + 파일별 락.
+  그 파일만 결과 0·커서 유지. 프로세스 캐시: 일람 Excel 24h(실패는 캐시 안 함·stale-if-error,
+  파일별 락) / gBizINFO 24h(실패 1h, 락으로 스탬피드 방지). gBizINFO 가 통째로 죽으면 같은
+  discover() 안에서 연속 실패 3회째부터 나머지 행은 조회를 건너뛴다(행마다 타임아웃 대기 방지).
 - 상장여부: 일람은 상장을 안 알려줌 → 스코프값 그대로(listed_verified=False), ``listed='listed'``
   세그먼트엔 미적용.
 - dry_run 은 네트워크 없이 결정적 더미(전 소스 계약).
@@ -77,6 +79,8 @@ _GBIZ_TTL_S = 24 * 3600
 _NEG_TTL_S = 3600
 _xlsx_cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
 _gbiz_cache: dict[str, tuple[float, dict[str, str] | None]] = {}
+_gbiz_lock = threading.Lock()  # check/write 구간만 — 병렬 워커의 같은 법인번호 중복 호출 방지.
+_GBIZ_TRIP = 3  # 한 discover() 안 연속 실패 허용치 — 넘으면 이번 호출은 gBizINFO 를 포기.
 _locks: dict[str, threading.Lock] = {url: threading.Lock() for url, _, _ in _LISTS}
 _lock_fallback = threading.Lock()
 
@@ -103,8 +107,9 @@ def parse_list(blob: bytes, *, skip_sheet: str | None = None, sec_flags: bool = 
         if skip_sheet and skip_sheet in (ws.title or ""):
             continue
         rows = [r for r in ws.iter_rows(values_only=True) if any(c is not None for c in r)]
+        # 헤더 = 앞 10행 중 '法人番号' **정확 일치** 셀이 있는 첫 행(주석 행의 부분일치 오탐 방지).
         hi = next(
-            (i for i, r in enumerate(rows) if any(_COL_CORP in _cell(c) for c in r)), None
+            (i for i, r in enumerate(rows[:10]) if any(_cell(c) == _COL_CORP for c in r)), None
         )
         if hi is None:
             continue
@@ -231,16 +236,21 @@ class FsaJpSource:
             _xlsx_cache[url] = (now, rows)
             return rows
 
-    def _gbiz(self, corp_no: str) -> dict[str, str] | None:
-        """gBizINFO 법인 기본정보(company_url·name_en). 토큰 없음/실패 → None. 프로세스 캐시."""
+    def _gbiz(self, corp_no: str) -> tuple[dict[str, str] | None, bool]:
+        """gBizINFO 법인 기본정보(company_url·name_en) → (정보, 호출 실패 여부). 프로세스 캐시.
+
+        실패 여부는 호출부의 연속 실패 차단기용 — 캐시 적중(부정 캐시 포함)은 실패로 안 센다.
+        """
         token = self._settings.gbizinfo_api_token
         if not token:
-            return None
+            return None, False
         now = time.monotonic()
-        hit = _gbiz_cache.get(corp_no)
-        if hit is not None and now - hit[0] < (_GBIZ_TTL_S if hit[1] is not None else _NEG_TTL_S):
-            return hit[1]
+        with _gbiz_lock:
+            hit = _gbiz_cache.get(corp_no)
+            if hit is not None and now - hit[0] < (_GBIZ_TTL_S if hit[1] is not None else _NEG_TTL_S):
+                return hit[1], False
         info: dict[str, str] | None = None
+        failed = False
         try:
             text = self._client().get_text(
                 _GBIZ_URL.format(corp_no=corp_no),
@@ -255,8 +265,10 @@ class FsaJpSource:
                 }
         except Exception as exc:  # 429/5xx/JSON 오류 — 이 행만 도메인 없이 진행(1h 후 재시도).
             log.info("fsa_jp.gbiz_error", corp_no=corp_no, err=str(exc))
-        _gbiz_cache[corp_no] = (now, info)
-        return info
+            failed = True
+        with _gbiz_lock:
+            _gbiz_cache[corp_no] = (now, info)
+        return info, failed
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         cap = self._settings.discovery_max_per_source
@@ -269,6 +281,7 @@ class FsaJpSource:
         if not is_broad_industry(segment.industry):
             want = resolve_industry_label(segment.industry)
         out: list[DiscoveredCompany] = []
+        gbiz_fail_streak = 0  # 연속 실패 차단기(리뷰 HIGH) — 이번 호출 안에서만 유효.
         for i, (url, label, skip_sheet) in enumerate(_LISTS):
             if want is not None and label != want:
                 continue
@@ -282,7 +295,13 @@ class FsaJpSource:
             pos = start
             for rec in rows[start:]:
                 pos += 1
-                info = self._gbiz(rec["corp_no"]) or {}
+                info: dict[str, str] = {}
+                if gbiz_fail_streak < _GBIZ_TRIP:
+                    got, failed = self._gbiz(rec["corp_no"])
+                    info = got or {}
+                    gbiz_fail_streak = gbiz_fail_streak + 1 if failed else 0
+                    if gbiz_fail_streak >= _GBIZ_TRIP:
+                        log.warning("fsa_jp.gbiz_tripped", segment=segment.label, streak=gbiz_fail_streak)
                 eng = info.get("name_en") or ""
                 if eng and not _LATIN_NAME.match(eng):
                     eng = ""
