@@ -46,13 +46,16 @@ log = get_logger("pipeline.promote")
 # canonical_key 커서로 전진한다. "대상에서 빠지는가"에 기대면 안 된다 — 죽은 사이트는
 # 제약②로 company 가 안 생겨 co.id is null 을 계속 만족하므로, 같은 배치가 영원히 재선택
 # 된다. discovered_company 의 PK 는 canonical_key 다(id 컬럼 없음 — 2026-07-31 실사고).
+# dedup 이 흡수한 행(duplicate_of 기록)은 제외 — 생존자와 도메인이 다른 흡수행이 별도 회사로
+# 재승격되던 사각(2026-09-01 FINE 운용사 병합 후 발견).
 _TARGET_SQL = """
     select d.canonical_key, d.name, d.country, d.industry, d.listed, d.domain,
            d.registry, d.registry_id, d.source, d.segment, d.reg_no, d.region,
            d.ticker, d.phone, d.ir_url, d.name_eng, d.address
     from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
-    where co.id is null and coalesce(d.domain, '') <> '' and d.canonical_key > :after
+    where co.id is null and coalesce(d.domain, '') <> '' and d.duplicate_of is null
+      and d.canonical_key > :after
     {scope}
     order by d.canonical_key
     limit :limit
@@ -61,7 +64,7 @@ _COUNT_SQL = """
     select count(*)
     from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
-    where co.id is null and coalesce(d.domain, '') <> '' {scope}
+    where co.id is null and coalesce(d.domain, '') <> '' and d.duplicate_of is null {scope}
     """
 
 

@@ -166,6 +166,11 @@ def test_count_resolve_targets_exclude_filters(tmp_path) -> None:
                 canonical_key=key, name=key, country="KR", industry=industry,
                 listed=listed, source="nps", domain=None,  # 도메인 없음 = resolve 대상.
             ))
+        # dedup 흡수행(duplicate_of)은 도메인이 없어도 해석 대상이 아니다(2026-09-01).
+        session.add(DiscoveredCompanyRow(
+            canonical_key="nm:kr:마", name="마", country="KR", industry="화학·석유화학",
+            listed="unlisted", source="nps", domain=None, duplicate_of="nm:kr:가",
+        ))
         session.commit()
 
     assert count_resolve_targets(sm, ["KR"]) == 4

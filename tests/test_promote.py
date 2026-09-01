@@ -45,6 +45,13 @@ def test_target_and_count_sql_run_against_real_schema(tmp_path) -> None:
             canonical_key="dom:kr:already.co.kr", name="승격사", country="KR",
             industry="화학·석유화학", source="nps", domain="already.co.kr",
         ))
+        # ④ 비대상: 도메인 있고 company 없지만 dedup 에 흡수됨(duplicate_of) —
+        #    생존자와 도메인이 달라도 별도 회사로 재승격하면 안 된다(2026-09-01 사각).
+        session.add(DiscoveredCompanyRow(
+            canonical_key="dom:kr:absorbed.co.kr", name="흡수사", country="KR",
+            industry="화학·석유화학", source="nps", domain="absorbed.co.kr",
+            duplicate_of="dom:kr:already.co.kr",
+        ))
         session.commit()  # FK 순서 — 발견행 먼저.
         session.add(CompanyRow(
             id=company_id_for("dom:kr:already.co.kr"), canonical_key="dom:kr:already.co.kr",
