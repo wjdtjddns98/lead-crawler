@@ -2,6 +2,10 @@
 
 export type ReviewStatus = "pending" | "confirmed" | "rejected";
 
+// 엑셀 추출 대상 상태(#462) — GET /export?status=. pending 은 BE 가 422 로 거절하므로
+// ReviewStatus 를 그대로 쓰지 않고 추출 가능한 두 값만 별도로 좁힌다.
+export type ExportStatus = Extract<ReviewStatus, "confirmed" | "rejected">;
+
 export type Role = "admin" | "worker";
 
 export interface CandidateInfo {

@@ -11,6 +11,7 @@ import type {
   CountryOption,
   CrawlTarget,
   DashboardSummary,
+  ExportStatus,
   IndustryOption,
   Listed,
   LoginResponse,
@@ -468,29 +469,33 @@ export async function updateSegmentJobPriority(
   return apiSend("PATCH", `/admin/segment-jobs/${id}`, { priority });
 }
 
-// 확정분 엑셀 다운로드. 인증 헤더가 필요해 평범한 링크 대신 fetch→blob 으로 받아 저장한다.
-// country/industry(쉼표구분)로 국가·업종별 선택 추출(빈값=전체).
-// dateFrom/dateTo(YYYY-MM-DD)=확정 처리일(KST, 포함) 필터, 빈값=전체(#308).
-export async function exportConfirmed(
+// 확정분·거부분 엑셀 다운로드. 인증 헤더가 필요해 평범한 링크 대신 fetch→blob 으로 받아 저장한다.
+// status=confirmed|rejected(#462) — 생략 시 BE 기본이 confirmed 지만 여기선 항상 명시해 보낸다
+// (저장 파일명과 요청이 같은 값에서 갈라지도록). country/industry(쉼표구분)로 국가·업종별
+// 선택 추출(빈값=전체). dateFrom/dateTo(YYYY-MM-DD)=처리일(reviewed_at, KST 포함) 필터,
+// 빈값=전체(#308). 권한 범위(admin=전체, worker=본인 처리분)는 두 상태 모두 BE 가 판단한다.
+export async function exportLeads(
+  status: ExportStatus = "confirmed",
   country = "",
   industry = "",
   dateFrom = "",
   dateTo = "",
 ): Promise<void> {
   const q = new URLSearchParams();
+  q.set("status", status);
   if (country) q.set("country", country);
   if (industry) q.set("industry", industry);
   if (dateFrom) q.set("date_from", dateFrom);
   if (dateTo) q.set("date_to", dateTo);
-  const qs = q.toString();
-  const res = await fetch(`${BASE}/export${qs ? `?${qs}` : ""}`, { headers: authHeaders() });
+  const res = await fetch(`${BASE}/export?${q.toString()}`, { headers: authHeaders() });
   handle401(res);
   if (!res.ok) throw new Error(`엑셀 내보내기 실패: ${res.status}`);
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "leads_confirmed.xlsx";
+  // BE 의 Content-Disposition 파일명과 동일 규칙 — 헤더는 CORS 노출 대상이 아니라 파싱 대신 재구성.
+  a.download = `leads_${status}.xlsx`;
   document.body.appendChild(a);
   a.click();
   a.remove();
