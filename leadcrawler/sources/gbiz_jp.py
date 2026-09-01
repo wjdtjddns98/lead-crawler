@@ -219,7 +219,13 @@ class GbizJpSource:
         if not is_broad_industry(segment.industry):
             want = resolve_industry_label(segment.industry)
         get_bytes = self._client().get_bytes
-        skip = edinet_listed_corp_numbers(get_bytes) | fsa_corp_numbers(get_bytes)
+        listed = edinet_listed_corp_numbers(get_bytes)
+        if not listed:
+            # 제외 목록 없이 돌면 상장사가 비상장 스코프의 reg:gbiz 키로 새어 EDINET 행과 이중이 된다
+            # (스코프값 오염 실사고 계열) — fail-closed(Codex 설계 채택). 다음 런에 재시도.
+            log.warning("gbiz_jp.edinet_exclusion_unavailable", segment=segment.label)
+            return []
+        skip = listed | fsa_corp_numbers(get_bytes)  # 금융청 분은 best-effort(겹쳐도 도메인 dedup 백스톱).
         out: list[DiscoveredCompany] = []
         scanned = 0
         fail_streak = 0

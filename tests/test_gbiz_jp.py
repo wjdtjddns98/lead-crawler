@@ -16,11 +16,14 @@ from leadcrawler.sources.taxonomy import INDUSTRY_TAXONOMY
 
 
 @pytest.fixture(autouse=True)
-def _clear() -> None:
+def _clear(monkeypatch: pytest.MonkeyPatch) -> None:
     gbiz_jp._list_cache.clear()
     gbiz_jp._detail_cache.clear()
     fsa_jp._xlsx_cache.clear()
     fsa_jp._edinet_cache = None
+    # 기본: EDINET 제외 목록은 "있음"(더미 1건), 금융청 제외는 없음 — 개별 테스트가 덮어쓴다.
+    monkeypatch.setattr(gbiz_jp, "edinet_listed_corp_numbers", lambda gb: frozenset({"9999999999999"}))
+    monkeypatch.setattr(gbiz_jp, "fsa_corp_numbers", lambda gb: frozenset())
 
 
 def _seg(industry: str = "전체", listed: str = "unknown", country: str = "JP") -> Segment:
@@ -187,6 +190,16 @@ def test_live_detail_failures_trip_breaker_and_keep_cursor() -> None:
     assert got == []
     assert len([u for u in fake.calls if "/v1/hojin/" in u]) == 3  # 3회 실패 후 차단.
     assert store.d[("gbiz_jp", "JP/물류·운송/unknown/13-300-max")] == 2  # 실패한 3번째 행은 다음 런이 다시 본다.
+
+
+def test_live_fails_closed_without_edinet_exclusion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """EDINET 상장 제외 목록을 못 받으면 아무것도 emit 하지 않는다(상장사 누출 방지)."""
+    monkeypatch.setattr(gbiz_jp, "edinet_listed_corp_numbers", lambda gb: frozenset())
+    fake = _Fake(search={"13-300-max": [_row("1000000000001", "山田建設株式会社")]},
+                 detail={"1000000000001": {"company_url": "https://yamada.co.jp"}})
+    store = _Store()
+    assert GbizJpSource(_live(), fetcher=fake, cursor_store=store).discover(_seg("전체")) == []
+    assert store.d == {} and not any("/v1/hojin/" in u for u in fake.calls)
 
 
 def test_live_search_failure_returns_nothing_and_keeps_cursor() -> None:
