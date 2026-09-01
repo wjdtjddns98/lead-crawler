@@ -185,36 +185,8 @@ export interface CrawlTarget {
   updated_at: string | null;
 }
 
-export type CrawlJobStatus =
-  | "idle"
-  | "running"
-  | "done"
-  | "failed"
-  | "cancelled";
-
-export interface CrawlJob {
-  id: string | null;
-  status: CrawlJobStatus;
-  countries: string;
-  industries: string;
-  listed: Listed;
-  persist: boolean;
-  segments_total: number;
-  segments_done: number;
-  discovered: number;
-  enriched: number;
-  saved: number;
-  // 연속(continuous) 모드 — 취소까지 라운드 반복(#132). 카운터는 현재 라운드 기준,
-  // rounds_done 은 완료된 라운드 수.
-  mode: "once" | "continuous";
-  rounds_done: number;
-  error: string | null;
-  cancel_requested: boolean;
-  triggered_by: string | null;
-  started_at: string | null;
-  updated_at: string | null;
-  finished_at: string | null;
-}
+// 크롤 작업(CrawlJob/CrawlJobStatus) 타입은 2026-09-01 제거됐다(#448, BE #450) — 웹 즉시크롤이
+// 사라지고 세그먼트 작업(SegmentJobInfo)으로 일원화. CrawlTarget 은 일일 스케줄러가 계속 쓴다.
 
 // --- 백필 제어(#352) ----------------------------------------------------
 // 지속형 consumer 라 '완료(done)'가 없다 — 대상을 다 소진해도 대기 상태로 남는다.
