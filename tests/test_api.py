@@ -113,6 +113,8 @@ def test_confirm_then_export(client: TestClient) -> None:
     assert ex.status_code == 200
     assert "spreadsheetml" in ex.headers["content-type"]
     assert len(ex.content) > 0
+    # status 생략 = confirmed — 파일명 하위호환(FE 가 이 이름으로 저장).
+    assert "leads_confirmed.xlsx" in ex.headers["content-disposition"]
 
 
 def test_export_filter_by_country_industry(client: TestClient) -> None:
@@ -175,6 +177,28 @@ def test_export_filter_by_date(client: TestClient) -> None:
     assert client.get("/export?date_from=20260721").status_code == 422
     assert client.get("/export?date_from=0001-01-01").status_code == 422
     assert client.get("/export?date_from=2026-07-22&date_to=2026-07-21").status_code == 422
+
+
+def test_export_rejected(client: TestClient) -> None:
+    import io
+
+    from openpyxl import load_workbook
+
+    def data_rows(resp) -> int:
+        return load_workbook(io.BytesIO(resp.content)).active.max_row - 1  # 헤더 제외.
+
+    rid = client.get("/queue").json()["items"][0]["id"]
+    # 거부 + 이메일 전량 삭제(실존 안 함) — 이메일 없는 회사도 크래시 없이 내려와야 한다.
+    client.post(f"/queue/{rid}/reject", json={"remove_emails": ["ir@acme.com"]})
+    # 기본(confirmed)엔 안 잡히고 status=rejected 로만 내려온다 — 파일명도 상태별.
+    assert data_rows(client.get("/export")) == 0
+    rej = client.get("/export?status=rejected")
+    assert rej.status_code == 200
+    assert data_rows(rej) == 1
+    assert "leads_rejected.xlsx" in rej.headers["content-disposition"]
+    # pending·미지원 값은 422.
+    assert client.get("/export?status=pending").status_code == 422
+    assert client.get("/export?status=bogus").status_code == 422
 
 
 def test_send_preview_and_dry_run(client: TestClient) -> None:
@@ -777,6 +801,33 @@ def test_export_worker_own_scope_admin_full(worker_client: TestClient) -> None:
 
     # 발송은 권한 완화 범위 밖 — worker 여전히 403.
     assert worker_client.get("/send/preview").status_code == 403
+
+
+def test_export_rejected_worker_own_scope_admin_full(worker_client: TestClient) -> None:
+    """거부분 export(status=rejected)도 확정분과 같은 권한 경계 — worker=자기 거부분만, admin=전체."""
+    import io
+
+    from openpyxl import load_workbook
+
+    def data_rows(resp) -> int:
+        assert resp.status_code == 200
+        return load_workbook(io.BytesIO(resp.content)).active.max_row - 1  # 헤더 제외.
+
+    admin = TestClient(worker_client.app)
+    r = admin.post("/auth/login", json={"username": _ADMIN, "password": _PW})
+    admin.headers.update({"Authorization": f"Bearer {r.json()['token']}"})
+    items = admin.get("/queue").json()["items"]  # 시드 3건.
+    assert admin.post(f"/queue/{items[0]['id']}/confirm").status_code == 200
+    assert admin.post(f"/queue/{items[1]['id']}/reject").status_code == 200
+    # worker 가 잔여 1건을 점유해 거부 → 자기 rejected export 엔 그 1건만, admin 은 2건.
+    claimed = worker_client.post("/queue/claim").json()
+    assert len(claimed) == 1
+    assert worker_client.post(f"/queue/{claimed[0]['id']}/reject").status_code == 200
+    assert data_rows(worker_client.get("/export?status=rejected")) == 1
+    assert data_rows(admin.get("/export?status=rejected")) == 2
+    # 상태 분리 — 거부건은 confirmed export 에 섞이지 않는다.
+    assert data_rows(worker_client.get("/export")) == 0
+    assert data_rows(admin.get("/export")) == 1
 
 
 def test_claim_with_country_filter_body(worker_client: TestClient) -> None:

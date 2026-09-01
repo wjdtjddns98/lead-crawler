@@ -352,13 +352,20 @@ def create_app() -> FastAPI:
     def export(
         country: str = Query(default="", description="쉼표구분 국가(ISO2) 필터, 빈값=전체"),
         industry: str = Query(default="", description="쉼표구분 업종 필터, 빈값=전체"),
-        date_from: str = Query(default="", description="확정 처리일 시작(YYYY-MM-DD, KST)"),
-        date_to: str = Query(default="", description="확정 처리일 끝·포함(YYYY-MM-DD, KST)"),
+        date_from: str = Query(default="", description="확정/거부 처리일 시작(YYYY-MM-DD, KST)"),
+        date_to: str = Query(default="", description="확정/거부 처리일 끝·포함(YYYY-MM-DD, KST)"),
+        status: ReviewStatus = Query(
+            default=ReviewStatus.CONFIRMED,
+            description="confirmed(기본)=확정분, rejected=거부분. pending 은 422",
+        ),
         db: Session = Depends(get_db),
         user: UserRow = Depends(require_user),
     ) -> FileResponse:
-        """확정(confirmed) 리드를 고정 12컬럼 엑셀로 내려받는다.
+        """확정(confirmed) — 또는 ``status=rejected`` 로 거부 — 리드를 고정 12컬럼 엑셀로 내려받는다.
 
+        ``status`` 기본값은 confirmed(하위호환). rejected 는 거부 처리 이력을 같은 서식·같은
+        권한 범위·같은 필터(국가·업종·처리일)로 내려받는다(파일명 ``leads_rejected.xlsx``).
+        pending 은 처리 이력이 아니므로 422.
         권한 범위(PO 결정 2026-07-14): 관리자=전체 확정분, 일반 사용자(worker)=자기가
         처리한 확정분만(assignee_id 귀속 — ``/queue/mine?status=confirmed`` 와 동일 기준).
         ``country``/``industry`` 로 국가·업종별 선택 추출(빈값=전체). 국가는 별칭까지
@@ -366,10 +373,12 @@ def create_app() -> FastAPI:
         ``date_from``/``date_to`` 는 확정 처리 시각(``reviewed_at``) 기준 KST 하루 경계
         필터(포함 범위) — 컬럼 도입 전 구데이터(reviewed_at NULL)는 날짜 필터 시 제외된다.
         """
+        if status is ReviewStatus.PENDING:
+            raise HTTPException(status_code=422, detail="status 는 confirmed 또는 rejected")
         stmt = (
             select(ReviewQueueRow.company_id)
             .join(CompanyRow, ReviewQueueRow.company_id == CompanyRow.id)
-            .where(ReviewQueueRow.status == CONFIRMED)
+            .where(ReviewQueueRow.status == status.value)
         )
         if user.role != ROLE_ADMIN:
             stmt = stmt.where(ReviewQueueRow.assignee_id == user.id)
@@ -396,7 +405,7 @@ def create_app() -> FastAPI:
         return FileResponse(
             tmp,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename="leads_confirmed.xlsx",
+            filename=f"leads_{status.value}.xlsx",
             background=BackgroundTask(os.unlink, tmp),
         )
 
