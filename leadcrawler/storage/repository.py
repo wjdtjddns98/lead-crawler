@@ -186,9 +186,13 @@ def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompan
         # 되는 경로 — 없으면 touch 만 되어 영구 미보강(Codex 리뷰 HIGH).
         if dc.domain and not (row.domain or "").strip():
             row.domain = dc.domain
-        for field in ("name_eng", "phone", "address"):
-            if getattr(dc, field) and not getattr(row, field):
-                setattr(row, field, _clip(getattr(dc, field), 64 if field == "phone" else 255))
+        # 클립은 신규 삽입 경로와 동일(name_eng 512 기본·phone 64·address 는 Text 라 미클립).
+        if dc.name_eng and not row.name_eng:
+            row.name_eng = _clip(dc.name_eng)
+        if dc.phone and not row.phone:
+            row.phone = _clip(dc.phone, 64)
+        if dc.address and not row.address:
+            row.address = dc.address
         # 표시명 영문 우선(#412): 원장이 아직 일문(=재발견분의 name_eng 원문)이면 영문으로 교체.
         if dc.name_eng and row.name == dc.name_eng and dc.name != dc.name_eng:
             row.name = _clip(dc.name)

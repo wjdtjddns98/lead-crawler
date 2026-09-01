@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 from typing import Any
 
 import openpyxl
@@ -204,6 +205,17 @@ def test_live_gbiz_failure_is_negative_cached_and_non_latin_name_rejected() -> N
     n = len([u for u in fetcher2.calls if "gbiz" in u])
     src.discover(_seg("은행"))
     assert len([u for u in fetcher2.calls if "gbiz" in u]) == n  # 실패 1h 부정 캐시 — 재호출 없음.
+
+
+def test_gbiz_late_failure_does_not_overwrite_cached_success() -> None:
+    """동시 호출 경합: 성공이 캐시된 뒤 도착한 실패 응답은 캐시를 덮지 않고 성공값을 돌려준다."""
+    fetcher = _FakeFetcher({}, fail={"6010001008845"})
+    src = FsaJpSource(_live(gbizinfo_api_token="tok"), fetcher=fetcher)
+    good = {"company_url": "https://www.mizuhobank.co.jp/", "name_en": "Mizuho Bank, Ltd."}
+    fsa_jp._gbiz_cache["6010001008845"] = (time.monotonic() - fsa_jp._GBIZ_TTL_S - 1, good)  # 만료된 성공.
+    info, failed = src._gbiz("6010001008845")  # 만료 → 재조회 → 실패.
+    assert failed and info == good
+    assert fsa_jp._gbiz_cache["6010001008845"][1] == good  # 실패가 성공을 덮지 않음.
 
 
 def test_live_gbiz_consecutive_failures_trip_breaker(monkeypatch: pytest.MonkeyPatch) -> None:

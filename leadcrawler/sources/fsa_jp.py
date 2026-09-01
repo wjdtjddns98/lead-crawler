@@ -320,12 +320,14 @@ class FsaJpSource:
             want = resolve_industry_label(segment.industry)
         out: list[DiscoveredCompany] = []
         gbiz_fail_streak = 0  # 연속 실패 차단기(리뷰 HIGH) — 이번 호출 안에서만 유효.
-        listed = self._edinet_listed()
         selected = [
             (i, url, label, skip)
             for i, (url, label, skip) in enumerate(_LISTS)
             if want is None or label == want
         ]
+        if not selected:
+            return []
+        listed = self._edinet_listed()
         for cycle in (0, 1):  # 1회차: 저장 커서부터. 전부 소진·0건이면 0 으로 되감아 2회차 1번만.
             exhausted_all = True
             for i, url, label, skip_sheet in selected:
