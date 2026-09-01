@@ -71,7 +71,7 @@ running ─crash×3|spawn 실패→ failed  running ─월예산→ budget_exhau
 ## 9. 잔여 수동 작업(범위 밖)
 `nps-import`(월간), `nps-map-industries`, `dart-cache-fill`, `run-global --regions all`(지역 팬아웃 발견 전용 — 세그먼트 요청의 regions 로도 가능).
 
-## 8. 반복 옵션 (2026-09-01 — 웹 크롤실행 `continuous` 대체)
+## 10. 반복 옵션 (2026-09-01 — 웹 크롤실행 `continuous` 대체)
 - 요청에 `repeat_every_min`(0=1회성, 상한 7일). >0 이면 잡이 **done** 으로 끝날 때 같은 필터·우선순위로 다음
   회차를 `not_before = now + 간격` 으로 **복제 적재**한다(`enqueue_repeat_of`). 취소·실패·예산소진이면 반복 종료
   (재개하면 그 잡만 이어감). 같은 필터·반복값의 queued/running 이 이미 있으면 복제하지 않는다(이중 방지).

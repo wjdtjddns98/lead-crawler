@@ -456,8 +456,9 @@ def create_app() -> FastAPI:
         try:
             from ..pipeline.backfill_process import resume_active_jobs, start_segment_ticker
 
-            resume_active_jobs(get_settings())
+            # 티커를 먼저 — resume 가 예외로 죽어도 반복 회차 시작이 막히지 않게(Codex 리뷰 MED).
             start_segment_ticker(get_settings())  # 반복 잡 회차 시작용 큐 티커(60s 폴링).
+            resume_active_jobs(get_settings())
         except Exception as exc:  # pragma: no cover — 재개 실패는 로그로만(기동 우선).
             from ..logging import get_logger
 

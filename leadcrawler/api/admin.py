@@ -612,9 +612,9 @@ def register_admin(
         page = ordered[offset : offset + limit]
         # ponytail: 전량 적재 후 파이썬 정렬 — 트랙 S 이력은 작다(설계 §1). 대기열 순번은
         # 이미 정렬된 queued 에서 1회 계산(행마다 queue_position 재조회 = N+1, 리뷰 MED).
-        from ..storage.backfill_job import backfill_job_dict
+        from ..storage.backfill_job import backfill_job_dict, is_ready
 
-        qpos = {r.id: i + 1 for i, r in enumerate(queued)}
+        qpos = {r.id: i + 1 for i, r in enumerate(r for r in queued if is_ready(r))}  # 예약행 제외.
         items = [SegmentJobInfo(**backfill_job_dict(r), queue_position=qpos.get(r.id)) for r in page]
         return SegmentJobList(items=items, total=len(ordered))
 

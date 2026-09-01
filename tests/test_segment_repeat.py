@@ -111,7 +111,12 @@ def test_done_repeat_job_enqueues_next_round_with_not_before(settings) -> None:
             if row.status == DONE:
                 break
         time.sleep(0.05)
-    time.sleep(0.3)  # 감독 스레드가 _enqueue_repeat 까지 마치도록.
+    deadline = time.monotonic() + 10  # DONE+복제는 한 트랜잭션 — 두 번째 행이 보일 때까지 폴링.
+    while time.monotonic() < deadline:
+        with session_scope(settings) as s:
+            if s.query(type(row)).filter_by(track="S").count() >= 2:
+                break
+        time.sleep(0.05)
     with session_scope(settings) as s:
         rows = list(s.query(type(row)).filter_by(track="S").order_by("started_at"))
         assert [r.status for r in rows] == [DONE, QUEUED]
@@ -119,6 +124,49 @@ def test_done_repeat_job_enqueues_next_round_with_not_before(settings) -> None:
         assert nxt.repeat_every_min == 15 and nxt.not_before is not None
         # not_before 가 미래라 finally 의 dispatch 는 건너뛰었다(queued 유지, 활성 없음).
         assert nxt.active_track is None
+
+
+class _DoneThenCancelProc(_DoneProc):
+    """자식이 stage=done 을 보고한 직후(종료 전에) 취소 요청이 들어온 경계 상황."""
+
+    def __init__(self, settings: Settings, job_id: str) -> None:
+        super().__init__(settings, job_id)
+        with session_scope(settings) as s:
+            get_backfill_job(s, job_id).cancel_requested = True
+
+
+def test_cancel_arriving_at_child_exit_wins_and_no_repeat_is_enqueued(settings) -> None:
+    from leadcrawler.storage.backfill_job import CANCELLED
+
+    with session_scope(settings) as s:
+        job_id = _enq(s, repeat_every_min=15).id
+    assert bp.dispatch_next_segment_job(
+        settings, launcher=lambda argv, lp: _DoneThenCancelProc(settings, argv[argv.index("--job-id") + 1])
+    ) == job_id
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with session_scope(settings) as s:
+            if get_backfill_job(s, job_id).status == CANCELLED:
+                break
+        time.sleep(0.05)
+    time.sleep(0.3)
+    with session_scope(settings) as s:
+        rows = list(s.query(type(get_backfill_job(s, job_id))).filter_by(track="S"))
+        assert [r.status for r in rows] == [CANCELLED]  # DONE 도, 다음 회차도 없음.
+
+
+def test_not_before_serializes_with_utc_offset_and_future_has_no_queue_position(settings) -> None:
+    from leadcrawler.storage.backfill_job import backfill_job_dict, queue_position
+
+    with session_scope(settings) as s:
+        ready = _enq(s, priority=1)
+        future = _enq(s, priority=0, not_before=datetime.now(timezone.utc) + timedelta(hours=2))
+        s.flush()
+        s.expire_all()  # SQLite 왕복 후 naive datetime 으로 재적재.
+        d = backfill_job_dict(get_backfill_job(s, future.id))
+        assert d["not_before"].endswith("+00:00")
+        assert queue_position(s, future.id) is None  # 예약행은 순번 없음.
+        assert queue_position(s, ready.id) == 1  # 우선순위 0인 예약행이 순번을 안 차지함.
 
 
 def test_ticker_tick_dispatches_when_not_before_reached(settings) -> None:

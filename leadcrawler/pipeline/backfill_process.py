@@ -243,9 +243,13 @@ def _supervise(settings: Settings, job: dict, *, launcher, start_generation: int
                     with sm() as s:
                         row_now = get_backfill_job(s, job_id)
                     if row_now is not None and row_now.stage == "done":
-                        _finish(sm, job_id, DONE)
-                        _enqueue_repeat(sm, job_id)  # 반복 잡이면 다음 회차 적재(finally 의 dispatch 는
-                        return  # not_before 미래라 건너뛰고, 큐 티커가 시각에 맞춰 시작한다).
+                        if _cancel_requested(sm, job_id):
+                            # 자식 종료 직전에 온 취소/pause — DONE 으로 닫고 다음 회차까지 만들면
+                            # 사용자의 중단 요청이 무시된다(Codex 리뷰 HIGH). 취소 분기로.
+                            _finish_cancel(sm, track, job_id)
+                            return
+                        _finish_done(sm, job_id)  # DONE + (반복이면) 다음 회차 적재를 한 트랜잭션으로.
+                        return  # finally 의 dispatch 는 not_before 미래라 건너뛰고 큐 티커가 시작한다.
                 crash = 0
                 generation += 1
                 with sm() as s:
@@ -312,20 +316,20 @@ def _finish(sm, job_id: str, status: str, *, stop_reason=None, error=None) -> No
         s.commit()
 
 
-def _enqueue_repeat(sm, job_id: str) -> str | None:  # noqa: ANN001
-    """done 반복 잡의 다음 회차 적재 — 실패해도 감독 종료를 막지 않는다(로그만)."""
+def _finish_done(sm, job_id: str) -> str | None:  # noqa: ANN001
+    """트랙 S 완료 마감 — DONE 기록과 반복 다음 회차 적재를 **한 트랜잭션**으로(둘 사이 크래시로
+    반복 체인이 끊기지 않게 — Codex 리뷰 MED). 반복이 아니면 DONE 만. 다음 회차 id 반환."""
     from ..storage.backfill_job import enqueue_repeat_of
 
-    try:
-        with sm() as s:
-            row = enqueue_repeat_of(s, job_id)
-            s.commit()
-            if row is not None:
-                log.info("segment.repeat.enqueued", job=job_id, next=row.id,
-                         not_before=row.not_before.isoformat() if row.not_before else None)
-                return row.id
-    except Exception as exc:  # pragma: no cover — 적재 실패는 가시화만(반복 체인 중단).
-        log.warning("segment.repeat.enqueue_error", job=job_id, err=str(exc))
+    with sm() as s:
+        finish_backfill_job(s, job_id, DONE)
+        s.flush()
+        nxt = enqueue_repeat_of(s, job_id)
+        s.commit()
+        if nxt is not None:
+            log.info("segment.repeat.enqueued", job=job_id, next=nxt.id,
+                     not_before=nxt.not_before.isoformat() if nxt.not_before else None)
+            return nxt.id
     return None
 
 

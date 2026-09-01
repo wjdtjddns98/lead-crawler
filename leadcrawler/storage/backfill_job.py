@@ -68,6 +68,25 @@ def _new_id() -> str:
     return "bf_" + uuid4().hex[:12]
 
 
+def _iso_utc(dt: datetime | None) -> str | None:
+    """tz 없는 값(SQLite 는 naive 로 돌려줌)은 UTC 로 간주해 항상 offset 포함 ISO 로."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def is_ready(row: BackfillJobRow, now: datetime | None = None) -> bool:
+    """대기 행이 지금 실행 가능한가(not_before 없음 또는 도래). naive 값은 UTC 로 본다."""
+    nb = getattr(row, "not_before", None)
+    if nb is None:
+        return True
+    if nb.tzinfo is None:
+        nb = nb.replace(tzinfo=timezone.utc)
+    return nb <= (now or datetime.now(timezone.utc))
+
+
 def backfill_job_dict(row: BackfillJobRow) -> dict[str, object]:
     """작업 행을 DTO 평탄 dict 로(시각은 ISO8601). API 응답·supervisor 스냅샷 공용."""
     return {
@@ -106,7 +125,7 @@ def backfill_job_dict(row: BackfillJobRow) -> dict[str, object]:
         "triggered_by": row.triggered_by,
         "started_at": row.started_at.isoformat() if row.started_at else None,
         "repeat_every_min": int(getattr(row, "repeat_every_min", 0) or 0),
-        "not_before": row.not_before.isoformat() if getattr(row, "not_before", None) else None,
+        "not_before": _iso_utc(getattr(row, "not_before", None)),
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         "progress_at": row.progress_at.isoformat() if row.progress_at else None,
         "finished_at": row.finished_at.isoformat() if row.finished_at else None,
@@ -619,10 +638,18 @@ def set_segment_priority(session: Session, job_id: str, priority: int) -> Backfi
 
 
 def queue_position(session: Session, job_id: str) -> int | None:
-    """대기열 내 순번(1부터) — queued 가 아니면 None."""
+    """대기열 내 순번(1부터) — queued 가 아니거나 not_before 미래(예약 대기)면 None.
+
+    예약 행이 순번을 차지하면 실제 다음 실행 잡이 2번으로 보인다(Codex 리뷰 LOW).
+    """
+    now = datetime.now(timezone.utc)
     ordered_ids = session.scalars(
         select(BackfillJobRow.id)
-        .where(BackfillJobRow.track == TRACK_S, BackfillJobRow.status == QUEUED)
+        .where(
+            BackfillJobRow.track == TRACK_S,
+            BackfillJobRow.status == QUEUED,
+            or_(BackfillJobRow.not_before.is_(None), BackfillJobRow.not_before <= now),
+        )
         .order_by(BackfillJobRow.priority, BackfillJobRow.started_at, BackfillJobRow.id)
     ).all()
     try:
