@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     # FSC(금융위 금융회사기본정보, 15043232) 전용 인증키 — 활용신청 계정이 nps-sync 키와
     # 달라 분리(2026-08-25 실측: 두 키가 서로의 데이터셋에서 403/401). 비면 위 키로 폴백.
     fsc_service_key: str = Field(default="")
+    # gBizINFO(경제산업성 법인 API, 무료 토큰 — https://info.gbiz.go.jp/hojin/api_registration/form)
+    # — 금융청 일람 소스(fsa_jp)가 법인번호로 공식 웹사이트·영문 상호를 붙일 때 사용. 비면 도메인 없이 열거.
+    gbizinfo_api_token: str = Field(default="")
 
     # 도메인 해석(opt-in) — 발견 소스가 도메인을 못 준 기업(GLEIF 등)을 회사명+국가로
     # 검색해 공식 도메인을 채운다. Google CSE 키 필요(무료 100/일), dry_run no-op.

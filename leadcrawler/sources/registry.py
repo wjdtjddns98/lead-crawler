@@ -36,6 +36,7 @@ from .exchanges import (
 )
 from .ai_directory import AiDirectorySource
 from .edinet import EdinetSource
+from .fsa_jp import FsaJpSource
 from .fsc import FscSource
 from .gleif import GleifSource
 from .jp_assoc import JpAssocSource
@@ -85,6 +86,9 @@ def build_sources(
         # 일본 상장사 등록처(금융청 EDINET 코드리스트, reg:edinet 키) — 상장 전수 3,822사
         # (2026-08-25 실측). FSC 와 같은 등록처 tier(거래소 목록·GLEIF JP 보다 앞).
         EdinetSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        # 일본 금융청 등록·면허 일람(은행·신금·금융상품거래업자, reg:fsa_jp=법인번호) — 비상장/미상
+        # 스코프 전용. gBizINFO 토큰이 있으면 도메인·영문명 동봉. 등록처 tier(협회 명부 앞).
+        FsaJpSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         # 일본 금융 협회 회원명부(JSDA·IMAJ, dom: 키) — 회원사 홈페이지 URL 동봉이라 도메인
         # 해석 없이 승격 가능. 비상장/미상 스코프 전용(상장은 EDINET). 등록처 뒤·거래소 앞.
         JpAssocSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
