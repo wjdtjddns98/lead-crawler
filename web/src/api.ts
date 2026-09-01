@@ -9,7 +9,6 @@ import type {
   CompanySearchResponse,
   ConfirmEdits,
   CountryOption,
-  CrawlJob,
   CrawlTarget,
   DashboardSummary,
   IndustryOption,
@@ -369,36 +368,8 @@ export async function saveCrawlTarget(t: {
   return apiSend("PUT", "/admin/crawl-target", t);
 }
 
-// --- 직접 크롤(웹에서 즉시 실행 + 진행현황 폴링 + 중지) ----------------
-
-// 폼 입력값으로 즉시 크롤을 시작한다(백그라운드). 이미 진행 중이면 409.
-// continuous=true 면 취소(중지)까지 라운드를 반복하는 연속 크롤(#132).
-// regions(쉼표구분, #139)는 KR 세그먼트를 지역별 검색으로 팬아웃 — 빈값=팬아웃 없음(기본).
-export async function startCrawl(t: {
-  countries: string;
-  industries: string;
-  listed: Listed;
-  persist: boolean;
-  continuous: boolean;
-  regions: string;
-}): Promise<CrawlJob> {
-  return apiSend("POST", "/admin/crawl", t);
-}
-
-// 최근 크롤 작업 현황(없으면 status="idle"). 진행 중에는 주기 폴링으로 호출한다.
-export async function fetchCrawlStatus(): Promise<CrawlJob> {
-  return apiGet("/admin/crawl");
-}
-
-// 최근 크롤 이력(최신순). BE 계약 제안분 — 미배포 서버에선 404 이므로 호출측에서 조용히 숨긴다.
-export async function fetchCrawlHistory(limit = 10): Promise<CrawlJob[]> {
-  return apiGet(`/admin/crawl/history?limit=${limit}`);
-}
-
-// 진행 중 크롤에 취소를 요청한다(협조적 중단). 진행 중이 없으면 404.
-export async function cancelCrawl(): Promise<CrawlJob> {
-  return apiSend("POST", "/admin/crawl/cancel");
-}
+// 직접 크롤(POST/GET /admin/crawl, /history, /cancel)은 2026-09-01 제거됐다(#448, BE #450) —
+// 즉시 발견/추출은 세그먼트 작업 API(/admin/segment-jobs)로 일원화.
 
 // --- 백필 제어(#352, admin 전용) ---------------------------------------
 
