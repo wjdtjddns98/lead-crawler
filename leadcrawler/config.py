@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     # FSC(금융위 금융회사기본정보, 15043232) 전용 인증키 — 활용신청 계정이 nps-sync 키와
     # 달라 분리(2026-08-25 실측: 두 키가 서로의 데이터셋에서 403/401). 비면 위 키로 폴백.
     fsc_service_key: str = Field(default="")
+    # gBizINFO(경제산업성 법인 API, 무료 토큰 — https://info.gbiz.go.jp/hojin/various_registration/form)
+    # — 금융청 일람 소스(fsa_jp)가 법인번호로 공식 웹사이트·영문 상호를 붙일 때 사용. 비면 도메인 없이 열거.
+    gbizinfo_api_token: str = Field(default="")
+    # 세그먼트 큐 티커 주기(초) — 반복 복제분(not_before)을 시각에 맞춰 시작한다(웹 서버 내 스레드).
+    segment_ticker_interval_sec: int = Field(default=60, ge=5)
 
     # 도메인 해석(opt-in) — 발견 소스가 도메인을 못 준 기업(GLEIF 등)을 회사명+국가로
     # 검색해 공식 도메인을 채운다. Google CSE 키 필요(무료 100/일), dry_run no-op.
@@ -98,20 +103,10 @@ class Settings(BaseSettings):
     review_claim_batch: int = Field(default=30, ge=1)
     review_claim_cap: int = Field(default=100, ge=1)
 
-    # 웹 직접 크롤 — 한 번에 도는 세그먼트(국가×업종×상장) 상한. 빈 국가=지원 전체국이라
-    # 다업종 선택 시 세그먼트가 폭증할 수 있어, 우발적 대량 크롤(예산·시간 낭비)을 막는 캡.
+    # 세그먼트(국가×업종×상장) 상한 — 우발적 대량 작업(예산·시간 낭비)을 막는 캡.
+    # 세그먼트 작업 큐(/admin/segment-jobs)·스케줄러가 사용(직접 크롤 웹 트리거는
+    # 2026-09-01 제거됨).
     crawl_max_segments: int = Field(default=500, ge=1)
-    # 연속(continuous) 크롤 — 라운드 사이 휴지(초). 휴지 중에도 취소 폴링이 돌아 즉시 멈춘다.
-    crawl_loop_pause_sec: int = Field(default=60, ge=0)
-    # 크롤 워치독 — running 잡인데 그 잡을 도는 실행 스레드(crawl-<id>)가 프로세스에 없으면
-    # 스레드 소멸로 보고 죽은 잡을 failed 로 정리하고 continuous 면 재기동한다(24/7 self-heal).
-    # 스레드가 except 로 못 잡는 경로(BaseException·OS 강제소멸)로 죽어 status='running' 박제되던
-    # 실사고(2026-07-08) 방어. **DB 하트비트가 아니라 인프로세스 스레드 생존으로 판정** — 병렬
-    # 발견 단계(무-emit 윈도)가 길어도 살아있는 크롤을 오탐 reap 하지 않는다. dry_run 은 no-op.
-    crawl_watchdog_enabled: bool = True
-    crawl_watchdog_interval_sec: int = Field(default=60, ge=1)
-    # create_crawl_job 과 thread.start() 사이 마이크로갭 오탐 방지 — 연속 N 회 스레드 부재여야 reap.
-    crawl_watchdog_grace_misses: int = Field(default=2, ge=1)
 
     # 이메일 보강/검증
     hunter_api_key: str = Field(default="")

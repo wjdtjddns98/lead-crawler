@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..logging import get_logger
-from ..pipeline.background import CrawlBusy, CrawlTooLarge, trigger_crawl_job
 from ..schema import CrawlTargetRow, UserRow
 from ..security import (
     ROLE_ADMIN,
@@ -32,13 +31,6 @@ from ..sources.taxonomy import UNCLASSIFIED, is_taxonomy_label
 from ..storage.audit import daily_review_stats, recent_audit, user_stats
 from ..storage.company_search import search_companies
 from ..storage.review import admin_reclaim
-from ..storage.crawl_job import (
-    active_crawl_job,
-    crawl_job_dict,
-    latest_crawl_job,
-    recent_crawl_jobs,
-    request_cancel,
-)
 from ..storage.crawl_target import get_crawl_target, set_crawl_target
 from .schemas import (
     AuditEntry,
@@ -49,8 +41,6 @@ from .schemas import (
     CompanySearchItem,
     CompanySearchResponse,
     CountryOption,
-    CrawlJobInfo,
-    CrawlJobRequest,
     CrawlTargetInfo,
     CrawlTargetRequest,
     CreateUserRequest,
@@ -319,69 +309,7 @@ def register_admin(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _target_info(row)
 
-    @app.post("/admin/crawl", response_model=CrawlJobInfo, status_code=202)
-    def start_crawl(
-        body: CrawlJobRequest,
-        admin: UserRow = Depends(require_admin),
-    ) -> CrawlJobInfo:
-        """폼 입력값으로 즉시 크롤을 돌린다(관리자, 백그라운드 실행).
-
-        타깃 저장과 무관하게 이 요청값으로 바로 실행한다. ``continuous=true`` 면 취소
-        전까지 라운드를 반복하는 연속 크롤(24/7 베이스). 진행현황은 GET /admin/crawl 로
-        폴링한다. 이미 진행 중이면 409, 세그먼트 상한 초과면 422.
-        """
-        try:
-            info = trigger_crawl_job(
-                get_settings(),
-                countries=body.countries,
-                industries=body.industries,
-                listed=body.listed,
-                persist=body.persist,
-                triggered_by=admin.username,
-                target_count=body.target_count,
-                continuous=body.continuous,
-                regions=body.regions,
-                discovery_only=body.discovery_only,
-            )
-        except CrawlBusy as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except CrawlTooLarge as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return CrawlJobInfo(**info)
-
-    @app.get("/admin/crawl", response_model=CrawlJobInfo)
-    def crawl_status(
-        db: Session = Depends(get_db),
-        _admin: UserRow = Depends(require_admin),
-    ) -> CrawlJobInfo:
-        """가장 최근 크롤 작업의 상태·진행 카운터(없으면 idle)."""
-        row = latest_crawl_job(db)
-        if row is None:
-            return CrawlJobInfo()  # 작업 이력 없음 → idle.
-        return CrawlJobInfo(**crawl_job_dict(row))
-
-    @app.get("/admin/crawl/history", response_model=list[CrawlJobInfo])
-    def crawl_history(
-        limit: int = Query(default=20, ge=1, le=100),
-        db: Session = Depends(get_db),
-        _admin: UserRow = Depends(require_admin),
-    ) -> list[CrawlJobInfo]:
-        """최근 크롤 작업 이력(최신순, 최대 limit 건)."""
-        return [CrawlJobInfo(**crawl_job_dict(row)) for row in recent_crawl_jobs(db, limit)]
-
-    @app.post("/admin/crawl/cancel", response_model=CrawlJobInfo)
-    def cancel_crawl(
-        db: Session = Depends(get_db),
-        _admin: UserRow = Depends(require_admin),
-    ) -> CrawlJobInfo:
-        """진행 중 크롤에 취소를 요청한다(실행 스레드가 다음 기업 전 협조적 중단). 없으면 404."""
-        row = active_crawl_job(db)
-        if row is None:
-            raise HTTPException(status_code=404, detail="진행 중인 크롤이 없습니다")
-        request_cancel(db, row.id)
-        # 실행 스레드가 그 사이 종료했을 수 있으니 재조회해 정확한 현재 상태를 돌려준다.
-        db.refresh(row)
-        return CrawlJobInfo(**crawl_job_dict(row))
+    # 크롤실행(즉시 크롤) 기능은 2026-09-01 제거됨 — 세그먼트 작업 큐(/admin/segment-jobs)로 일원화.
 
     # ------------------------------------------------------------------
     # 백필 제어(#352) — 딸깍 원칙: 조건 하나로 C(도메인해석)·A(이메일) 자동 병행.
@@ -647,6 +575,7 @@ def register_admin(
         row = enqueue_segment_job(
             db, countries=",".join(ctys), industries=",".join(inds), listed=body.listed,
             regions=regs_csv, priority=body.priority, triggered_by=admin.username,
+            repeat_every_min=body.repeat_every_min,
         )
         db.commit()
         _dispatch_best_effort(settings, row.id)  # 활성 없으면 즉시 activate, 있으면 대기 유지.
@@ -683,9 +612,9 @@ def register_admin(
         page = ordered[offset : offset + limit]
         # ponytail: 전량 적재 후 파이썬 정렬 — 트랙 S 이력은 작다(설계 §1). 대기열 순번은
         # 이미 정렬된 queued 에서 1회 계산(행마다 queue_position 재조회 = N+1, 리뷰 MED).
-        from ..storage.backfill_job import backfill_job_dict
+        from ..storage.backfill_job import backfill_job_dict, is_ready
 
-        qpos = {r.id: i + 1 for i, r in enumerate(queued)}
+        qpos = {r.id: i + 1 for i, r in enumerate(r for r in queued if is_ready(r))}  # 예약행 제외.
         items = [SegmentJobInfo(**backfill_job_dict(r), queue_position=qpos.get(r.id)) for r in page]
         return SegmentJobList(items=items, total=len(ordered))
 

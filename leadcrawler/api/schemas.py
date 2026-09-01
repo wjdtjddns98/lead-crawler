@@ -375,67 +375,7 @@ class CrawlTargetRequest(BaseModel):
         return v.strip() if isinstance(v, str) else v
 
 
-class CrawlJobRequest(BaseModel):
-    """직접 크롤 실행 요청(관리자 전용) — 폼 즉석 입력값으로 즉시 크롤.
-
-    크롤 타깃 저장과 무관하게, 이 요청의 국가/업종/상장/적재로 바로 크롤을 돈다.
-    업종은 최소 1개(빈 업종은 전 집계원 대상이라 과도한 발견 방지).
-    """
-
-    countries: str = ""
-    industries: str = Field(min_length=1, max_length=512)
-    listed: Literal["unknown", "listed", "unlisted"] = "unknown"
-    persist: bool = True
-    # 확보 목표 실존 회사 수 — 라운드 안에서 도달 시 조기 종료. 0=세그먼트 전부 깊게 소진.
-    target_count: int = Field(default=0, ge=0)
-    # True 면 취소 전까지 1회전(라운드)을 반복하는 연속 크롤(24/7 베이스). False=단발.
-    continuous: bool = False
-    # KR 지역별 검색 팬아웃 — 'all'=17개 시/도 전부, 또는 쉼표구분('서울,경기').
-    # KR 세그먼트에만 적용(다른 국가는 무시), 빈값(기본)=팬아웃 없음.
-    regions: str = Field(default="", max_length=512)
-    # 발견 모드 — True 면 비싼 이메일 escalation(헤드리스·OCR·이메일API·Vision)을 끄고
-    # static 만으로 빠르게 발견·site_alive·큐적재만 한다(불필요 렌더 호출 절감). 무이메일
-    # 회사는 별도 채우기 패스(backfill_reenrich)가 나중에 헤드리스/OCR 로 이메일을 채운다.
-    discovery_only: bool = False
-
-    @field_validator("industries", mode="before")
-    @classmethod
-    def _strip_industries(cls, v: object) -> object:
-        return v.strip() if isinstance(v, str) else v
-
-
-class CrawlJobInfo(BaseModel):
-    """크롤 작업 현황 — 상태·진행 카운터(웹 폴링 표시용).
-
-    ``status``: idle(작업 없음) | running | done | failed | cancelled. 카운터는
-    discovered(중복제외 발견)·enriched(보강완료)·saved(실존 확인분)·segments_done/total.
-    ``mode``: once(단발) | continuous(연속 — 취소까지 반복, 카운터는 현재 라운드 기준이고
-    ``rounds_done`` 이 완료 라운드 수).
-    """
-
-    id: str | None = None
-    status: str = "idle"
-    countries: str = ""
-    industries: str = ""
-    listed: str = "unknown"
-    persist: bool = True
-    # 실행옵션 스냅샷 — pydantic 은 미선언 키를 조용히 버리므로(extra=ignore) 명시 필수.
-    target_count: int = 0
-    regions: str = ""
-    discovery_only: bool = False
-    segments_total: int = 0
-    segments_done: int = 0
-    discovered: int = 0
-    enriched: int = 0
-    saved: int = 0
-    mode: str = "once"
-    rounds_done: int = 0
-    error: str | None = None
-    cancel_requested: bool = False
-    triggered_by: str | None = None
-    started_at: str | None = None
-    updated_at: str | None = None
-    finished_at: str | None = None
+# 크롤실행(즉시 크롤) 요청/현황 스키마는 2026-09-01 제거됨 — 세그먼트 작업 큐로 일원화.
 
 
 class DedupCandidateItem(BaseModel):
@@ -571,6 +511,9 @@ class SegmentJobCreateRequest(BaseModel):
     regions: str = Field(default="", max_length=512)
     # 낮을수록 먼저. 범위 제한 — PG int4 오버플로(500)·음수 새치기 방지(리뷰 MED).
     priority: int = Field(default=100, ge=0, le=1000)
+    # 반복 간격(분). 0=1회성. done 뒤 같은 필터로 다음 회차가 이 간격 후 자동 적재된다
+    # (웹 크롤실행 continuous 대체, 2026-09-01). 상한 7일. 취소·실패면 반복 종료.
+    repeat_every_min: int = Field(default=0, ge=0, le=10080)
 
     @field_validator("countries", "industries", mode="before")
     @classmethod
@@ -591,6 +534,8 @@ class SegmentJobInfo(BackfillJobInfo):
     failed_items: int = 0
     promote_cursor: str | None = None
     queue_position: int | None = None  # queued 일 때만(그 외 None).
+    repeat_every_min: int = 0  # 0=1회성. >0 이면 done 뒤 같은 필터로 다음 회차 자동 적재.
+    not_before: str | None = None  # 반복 복제분의 실행 가능 시각(ISO) — 그 전엔 대기.
 
 
 class SegmentJobList(BaseModel):

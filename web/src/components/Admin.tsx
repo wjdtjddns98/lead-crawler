@@ -11,7 +11,7 @@ import { tabCls } from "../ui";
 type AdminGroup = "운영" | "관리";
 
 // 관리자 페이지 셸 — 운영(크롤·추출·발송) / 관리(회사 검색·계정) 두 군 서브탭.
-// ponytail: 7섹션 항상 렌더 트리에 유지 — Crawl·Backfill·SegmentJob 섹션의 mount-effect(진행중
+// ponytail: 7섹션 항상 렌더 트리에 유지 — Backfill·SegmentJob 섹션의 mount-effect(진행중
 //           작업 복원)·3초 폴링이 마운트에 묶여 있어, 언마운트 시 새로고침 복원이 깨진다.
 //           비활성 패널은 hidden 속성(display:none)으로만 숨긴다.
 export function Admin() {
@@ -51,8 +51,8 @@ export function Admin() {
         hidden={group !== "운영"}
         className="flex flex-col gap-7"
       >
-        {/* 데이터 흐름 순서 — 크롤(신규 발견) → 백필(기존 보강) → 세그먼트 작업(발견+승격
-            일괄 위임) → 추출 → 발송 */}
+        {/* 데이터 흐름 순서 — 일일 크롤 타깃(스케줄러 범위 설정) → 백필(기존 보강) →
+            세그먼트 작업(발견+승격 일괄 위임 · 즉시 실행 진입점) → 추출 → 발송 */}
         <CrawlTargetSection />
         <BackfillSection />
         <SegmentJobSection />

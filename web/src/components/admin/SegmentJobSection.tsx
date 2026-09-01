@@ -101,8 +101,44 @@ const REGION_MODE: Record<RegionMode, { seg: string; hint: string }> = {
   pick: { seg: "직접 선택", hint: "고른 시/도만 발견" },
 };
 
+// 반복 간격 프리셋(#452) — 분 단위, BE 상한 10080(7일)과 같은 어휘. 웹 크롤실행의
+// continuous(중지까지 무한 반복)를 대체하는 자리라 '반복 안 함'이 기본이다.
+const REPEAT_PRESETS: { min: number; label: string }[] = [
+  { min: 0, label: "반복 안 함" },
+  { min: 60, label: "1시간" },
+  { min: 360, label: "6시간" },
+  { min: 1440, label: "24시간" },
+  { min: 10080, label: "7일" },
+];
+
 // 천단위 구분 — 대상이 수만 단위라 구분자 없으면 자릿수를 못 읽는다.
 const n = (v: number): string => v.toLocaleString();
+
+// 반복 간격(분) → 사람 단위. 프리셋 밖의 값(BE 는 0~10080 아무 값이나 받는다)도 읽히게 한다.
+// 1440 은 '1일'이 아니라 **24시간** — 프리셋 라벨이 그렇고, 고른 값과 뱃지가 달라 보이면
+// 다른 잡으로 읽힌다. 일 단위는 그보다 긴 값에만 쓴다.
+function fmtRepeat(min: number): string {
+  if (min < 60) return `${min}분`;
+  if (min > 1440 && min % 1440 === 0) return `${min / 1440}일`;
+  if (min % 60 === 0) return `${min / 60}시간`;
+  return `${Math.floor(min / 60)}시간 ${min % 60}분`;
+}
+
+// 예약 회차 = 아직 실행 시각이 안 된 대기행. BE 가 이런 행을 순번에서 빼므로(queue_position
+// null) 화면에서도 '대기열 N번째'가 아니라 시작 예정 시각으로 갈라 표기한다.
+function reservedAt(j: SegmentJobInfo): Date | null {
+  if (j.status !== "queued" || !j.not_before) return null;
+  const d = new Date(j.not_before);
+  return !Number.isNaN(d.getTime()) && d.getTime() > Date.now() ? d : null;
+}
+
+// 시작 예정 시각 — 오늘이면 시:분만(대부분 몇 시간 내), 날짜가 넘어가면 전체 표기
+// (7일 프리셋이 있어 실제로 넘어간다).
+function fmtStartAt(d: Date): string {
+  return d.toDateString() === new Date().toDateString()
+    ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleString();
+}
 
 // 0~1000 정수만 통과(BE 검증과 동일). 입력 중 빈값·비정수는 null → 제출 잠금.
 function parsePriority(s: string): number | null {
@@ -131,11 +167,15 @@ function promoteProgress(j: SegmentJobInfo): { text: string; pct: number | null 
 // 진행 표시 — status 를 먼저 보고, running 일 때만 stage 로 갈라진다.
 // pct=null 이면 진행바를 그리지 않는다(discover 는 총량을 모르는 구간이라 진행률이 없다).
 function progressOf(j: SegmentJobInfo): { text: string; pct: number | null } {
-  if (j.status === "queued")
+  if (j.status === "queued") {
+    const at = reservedAt(j);
+    // 상태 칩이 이미 '대기'라 문구를 '대기 — …'로 열지 않는다(같은 줄에서 두 번 읽힌다).
+    if (at !== null) return { text: `${fmtStartAt(at)} 시작 예정`, pct: null };
     return {
       text: j.queue_position !== null ? `대기열 ${j.queue_position}번째` : "대기 중",
       pct: null,
     };
+  }
   if (j.status === "running") {
     if (j.stage === "discover") return { text: `발견 중 · ${n(j.discovered)}건`, pct: null };
     if (j.stage === "promote") return promoteProgress(j);
@@ -157,6 +197,8 @@ export function SegmentJobSection() {
   const [regions, setRegions] = useState("");
   // 0~1000 정수(기본 100). 입력 중 빈값을 허용해야 해서 문자열로 들고 제출 시 파싱한다.
   const [priority, setPriority] = useState("100");
+  // 반복 간격(분, #452) — 프리셋 값만 다루므로 숫자로 들고 있는다(0=반복 안 함).
+  const [repeat, setRepeat] = useState(0);
   const [preview, setPreview] = useState<SegmentJobPreview | null>(null);
   const [pvLoading, setPvLoading] = useState(false);
   const [pvErr, setPvErr] = useState<string | null>(null);
@@ -208,14 +250,22 @@ export function SegmentJobSection() {
     void refresh();
   }, [refresh]);
 
-  // 대기·진행 중인 작업이 있을 때만 3초 폴링(크롤·백필과 같은 주기). 목록은 저장 카운터만
+  // 대기·진행 중인 작업이 있을 때만 3초 폴링(백필과 같은 주기). 목록은 저장 카운터만
   // 읽는 값싼 조회라 폴링이 허용된다 — 비싼 건 preview 쪽(아래)이다.
-  const active = (jobs ?? []).some((j) => j.status === "running" || j.status === "queued");
+  // 단 **예약 회차(#452)는 3초로 보지 않는다** — 최대 7일 뒤 실행이라 관리자 패널이 열려
+  // 있는 내내(항상 마운트, Admin.tsx) 3초 폴링이 끝나지 않는다. 예약만 남았으면 BE 큐
+  // 티커와 같은 60초로 늦춰 시각 도래를 따라가기만 한다.
+  const list = jobs ?? [];
+  const live = list.some(
+    (j) => j.status === "running" || (j.status === "queued" && reservedAt(j) === null),
+  );
+  const reservedOnly = !live && list.some((j) => reservedAt(j) !== null);
   useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => void refresh(), 3000);
+    const ms = live ? 3000 : reservedOnly ? 60_000 : 0;
+    if (ms === 0) return;
+    const timer = setInterval(() => void refresh(), ms);
     return () => clearInterval(timer);
-  }, [active, refresh]);
+  }, [live, reservedOnly, refresh]);
 
   // 규모 미리보기 — 원장 COUNT 라 **주기 폴링 금지**. 조건이 다 찼을 때 디바운스 1회만 돈다
   // (픽커 토글마다 나가는 걸 막으려 백필의 400ms 보다 길게 둔다).
@@ -270,12 +320,14 @@ export function SegmentJobSection() {
         listed,
         regions: regionsPayload,
         priority: prio,
+        repeat_every_min: repeat,
       });
       // 즉시 실행인지 대기인지는 그 순간 다른 S 잡 유무로 갈린다 — 결과를 그대로 알린다.
+      const rep = repeat > 0 ? ` · ${fmtRepeat(repeat)}마다 반복` : "";
       toast.success(
         job.status === "running"
-          ? "작업을 시작했습니다"
-          : `대기열에 등록했습니다${job.queue_position !== null ? ` · ${job.queue_position}번째` : ""}`,
+          ? `작업을 시작했습니다${rep}`
+          : `대기열에 등록했습니다${job.queue_position !== null ? ` · ${job.queue_position}번째` : ""}${rep}`,
       );
       await refresh();
     } catch (e2) {
@@ -324,10 +376,20 @@ export function SegmentJobSection() {
         }
         onCancel={() => setCancelId(null)}
       >
-        <p className="m-0 text-muted text-sm">
-          이미 적재된 분은 보존됩니다
-          {cancelTarget?.status === "running" && " · 진행 중이라 실제 중지까지 수 초 걸립니다"}
-        </p>
+        {/* 다이얼로그 본문은 gap-4 로 벌어지므로 안내 두 줄은 한 블록으로 묶는다. */}
+        <div className="flex flex-col gap-1">
+          <p className="m-0 text-muted text-sm">
+            이미 적재된 분은 보존됩니다
+            {cancelTarget?.status === "running" && " · 진행 중이라 실제 중지까지 수 초 걸립니다"}
+          </p>
+          {/* 취소는 반복도 끊는다(BE: 취소·실패면 다음 회차를 적재하지 않는다) — 되돌리려면
+              다시 요청해야 하므로 누르기 전에 알린다. */}
+          {(cancelTarget?.repeat_every_min ?? 0) > 0 && (
+            <p className="m-0 text-warn text-sm">
+              반복도 함께 중지됩니다 — 다음 회차가 적재되지 않습니다
+            </p>
+          )}
+        </div>
       </ConfirmDialog>
 
       <form className={CRAWL_TARGET} onSubmit={(e) => void submit(e)}>
@@ -422,6 +484,29 @@ export function SegmentJobSection() {
               <span className="text-danger-fg text-xs">0~1000 사이 정수를 입력하세요</span>
             )}
           </label>
+          {/* 반복(#452) — 웹 크롤실행의 '연속 실행' 자리를 대신한다. 지역 지정 방식과 같은
+              세그먼트 버튼 어휘. 쿼터를 계속 쓰는 opt-in 이라 기본은 '반복 안 함'. */}
+          <div className={FIELD}>
+            <span>반복</span>
+            <span className="inline-flex flex-wrap gap-1" role="group" aria-label="반복 간격">
+              {REPEAT_PRESETS.map((p) => (
+                <button
+                  key={p.min}
+                  type="button"
+                  className={segCls(repeat === p.min)}
+                  aria-pressed={repeat === p.min}
+                  onClick={() => setRepeat(p.min)}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </span>
+            <span className="text-muted text-xs">
+              {repeat === 0
+                ? "1회만 실행합니다"
+                : `완료 후 ${fmtRepeat(repeat)} 뒤 같은 조건으로 다시 실행 · 중지하려면 해당 회차를 취소하세요`}
+            </span>
+          </div>
           <button
             className={`${BTN_CONFIRM} mt-0.5 self-start`}
             type="submit"
@@ -588,6 +673,13 @@ function JobCard({
           {STATUS_LABEL[job.status]}
         </span>
         <span className="text-ink text-sm [overflow-wrap:anywhere]">{targetOf(job)}</span>
+        {/* 반복 뱃지(#452) — 이 잡만 끝나는지 다음 회차가 또 오는지는 조건 요약만 봐서는
+            알 수 없다. 헤더의 다른 보조 정보(muted · 나열)와 달리 강조해 스캔되게 둔다. */}
+        {job.repeat_every_min > 0 && (
+          <span className="text-xs text-ink border border-accent bg-accent/15 rounded-md px-1.5 py-px">
+            반복 {fmtRepeat(job.repeat_every_min)}
+          </span>
+        )}
         {/* 트랙 S 의 started_at 은 실행 시작이 아니라 **요청 생성 시각**이다. */}
         <span className="text-muted text-xs tabular-nums">· 요청 {fmt(job.started_at)}</span>
         <span className="text-muted text-xs">· 우선순위 {job.priority}</span>
