@@ -185,36 +185,8 @@ export interface CrawlTarget {
   updated_at: string | null;
 }
 
-export type CrawlJobStatus =
-  | "idle"
-  | "running"
-  | "done"
-  | "failed"
-  | "cancelled";
-
-export interface CrawlJob {
-  id: string | null;
-  status: CrawlJobStatus;
-  countries: string;
-  industries: string;
-  listed: Listed;
-  persist: boolean;
-  segments_total: number;
-  segments_done: number;
-  discovered: number;
-  enriched: number;
-  saved: number;
-  // 연속(continuous) 모드 — 취소까지 라운드 반복(#132). 카운터는 현재 라운드 기준,
-  // rounds_done 은 완료된 라운드 수.
-  mode: "once" | "continuous";
-  rounds_done: number;
-  error: string | null;
-  cancel_requested: boolean;
-  triggered_by: string | null;
-  started_at: string | null;
-  updated_at: string | null;
-  finished_at: string | null;
-}
+// 크롤 작업(CrawlJob/CrawlJobStatus) 타입은 2026-09-01 제거됐다(#448, BE #450) — 웹 즉시크롤이
+// 사라지고 세그먼트 작업(SegmentJobInfo)으로 일원화. CrawlTarget 은 일일 스케줄러가 계속 쓴다.
 
 // --- 백필 제어(#352) ----------------------------------------------------
 // 지속형 consumer 라 '완료(done)'가 없다 — 대상을 다 소진해도 대기 상태로 남는다.
@@ -317,7 +289,15 @@ export interface SegmentJobInfo {
   failed_items: number;
   batches_done: number;
   promote_cursor: string | null;
-  queue_position: number | null; // queued 일 때만 값, 그 외 null
+  // queued 일 때만 값, 그 외 null. **예약 회차(not_before 미래)도 null** — BE 가 순번
+  // 계산에서 예약행을 빼기 때문(is_ready 필터). 즉 순번과 예약 시각은 동시에 뜨지 않는다.
+  queue_position: number | null;
+  // 반복 간격(분, #452) — 0=1회성. >0 이면 done 으로 끝날 때 같은 필터·우선순위로 다음
+  // 회차가 자동 적재된다(취소·실패·예산소진이면 반복 종료). 상한 10080(7일).
+  repeat_every_min: number;
+  // 반복 복제분의 실행 가능 시각(ISO, offset 포함 — BE 가 naive 값도 UTC 로 붙여 보낸다).
+  // 미래면 queued 로 대기하며 BE 큐 티커(60초)가 시각 도래분을 집어 간다. 1회성은 null.
+  not_before: string | null;
   generation: number;
   recycles: number;
   crash_restarts: number;
@@ -366,6 +346,8 @@ export interface SegmentJobRequest {
   listed: Listed;
   regions: string;
   priority: number;
+  // 반복 간격(분, #452) — 0=1회성(기본), 0~10080. 범위를 벗어나면 BE 422.
+  repeat_every_min: number;
 }
 
 // --- 보유 데이터 대시보드(#378) ----------------------------------------

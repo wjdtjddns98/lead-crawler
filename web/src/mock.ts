@@ -414,102 +414,10 @@ const DEFAULT_CRAWL_TARGET: CrawlTargetState = {
 };
 let crawlTarget: CrawlTargetState = { ...DEFAULT_CRAWL_TARGET };
 
-// 크롤 작업 — POST /admin/crawl 로 시작해 시간 경과로 진행하는 시뮬레이션. 타이머 없이
-// GET 폴링 시점에 경과시간으로 세그먼트 진행을 계산한다(BE CrawlJobInfo 계약과 동일 필드).
-const CRAWL_SEGMENTS_TOTAL = 12;
-const CRAWL_SEC_PER_SEGMENT = 2; // 총 ~24초 완주 — 진행바·중지 버튼을 눈으로 확인할 시간.
-const CRAWL_CANCEL_DELAY_MS = 2000; // 협조적 취소 흉내 — 요청 후 다음 세그먼트 경계에서 확정.
-type CrawlJobState = {
-  id: string;
-  countries: string;
-  industries: string;
-  listed: string;
-  persist: boolean;
-  continuous: boolean; // true 면 중지(취소)까지 라운드 반복(#132) — 자동 완료 없음.
-  startedAt: number; // epoch ms
-  cancelRequestedAt: number | null;
-  finalStatus: "done" | "cancelled";
-  finishedAt: number | null;
-};
-let crawlJob: CrawlJobState | null = null;
+// 크롤 작업(POST/GET /admin/crawl, /history, /cancel) 시뮬레이션은 2026-09-01 제거됐다
+// (#448, BE #450) — 웹 즉시크롤이 사라지고 세그먼트 작업 목이 그 자리를 대신한다.
 
-// 응답 JSON 모양 — route 분기가 status 만 보므로 나머지는 느슨하게 둔다(jsonRes 는 unknown).
-type CrawlJobJson = { status: string } & Record<string, unknown>;
-
-const IDLE_CRAWL_JOB: CrawlJobJson = {
-  id: null,
-  status: "idle",
-  countries: "",
-  industries: "",
-  listed: "unknown",
-  persist: false,
-  segments_total: 0,
-  segments_done: 0,
-  discovered: 0,
-  enriched: 0,
-  saved: 0,
-  mode: "once",
-  rounds_done: 0,
-  error: null,
-  cancel_requested: false,
-  triggered_by: null,
-  started_at: null,
-  updated_at: null,
-  finished_at: null,
-};
-
-// 현재 크롤 작업 스냅샷 — 호출 시점 기준으로 진행/종료를 확정해 CrawlJob JSON 을 만든다.
-function crawlJobInfo(): CrawlJobJson {
-  if (!crawlJob) return IDLE_CRAWL_JOB;
-  const j = crawlJob;
-  const now = Date.now();
-  const roundMs = CRAWL_SEGMENTS_TOTAL * CRAWL_SEC_PER_SEGMENT * 1000;
-  if (j.finishedAt === null) {
-    if (j.cancelRequestedAt !== null && now - j.cancelRequestedAt >= CRAWL_CANCEL_DELAY_MS) {
-      j.finalStatus = "cancelled";
-      j.finishedAt = now;
-    } else if (!j.continuous && now - j.startedAt >= roundMs) {
-      // 단발(once)만 자동 완료 — 연속은 중지 전까지 라운드를 계속 돈다.
-      j.finalStatus = "done";
-      j.finishedAt = j.startedAt + roundMs;
-    }
-  }
-  const endMs = j.finishedAt ?? now;
-  const elapsed = endMs - j.startedAt;
-  // 연속: 카운터는 현재 라운드 기준(BE 계약과 동일) — 라운드 경계로 나머지 연산.
-  const done = j.continuous
-    ? Math.floor((elapsed % roundMs) / (CRAWL_SEC_PER_SEGMENT * 1000))
-    : Math.min(Math.floor(elapsed / (CRAWL_SEC_PER_SEGMENT * 1000)), CRAWL_SEGMENTS_TOTAL);
-  const rounds = j.continuous
-    ? Math.floor(elapsed / roundMs)
-    : j.finishedAt !== null && j.finalStatus === "done"
-      ? 1
-      : 0;
-  return {
-    id: j.id,
-    status: j.finishedAt !== null ? j.finalStatus : "running",
-    countries: j.countries,
-    industries: j.industries,
-    listed: j.listed,
-    persist: j.persist,
-    segments_total: CRAWL_SEGMENTS_TOTAL,
-    segments_done: done,
-    // 그럴싸한 비율의 가짜 카운터 — 발견 > 처리 > 저장(실존만) 순으로 좁아진다.
-    discovered: done * 17,
-    enriched: done * 11,
-    saved: done * 6,
-    mode: j.continuous ? "continuous" : "once",
-    rounds_done: rounds,
-    error: null,
-    cancel_requested: j.cancelRequestedAt !== null,
-    triggered_by: "mock-admin",
-    started_at: new Date(j.startedAt).toISOString(),
-    updated_at: new Date(endMs).toISOString(),
-    finished_at: j.finishedAt !== null ? new Date(j.finishedAt).toISOString() : null,
-  };
-}
-
-// 백필 작업(#352) — 크롤과 같은 무타이머 방식(폴링 시점 경과시간으로 진행 계산)이되,
+// 백필 작업(#352) — 무타이머 방식(폴링 시점 경과시간으로 진행 계산)이되,
 // 지속형 consumer 라 '완료(done)'가 없다. 대상을 소진해도 계속 돌며(신규 유입분 처리)
 // 종료는 중지·예산소진뿐. 데모 시간에 맞춰 처리속도는 실 BE 보다 크게 잡았다.
 const BF_RATE = { C: 420, A: 300 }; // 초당 처리(모의) — 초기 대상 소진까지 ~30초.
@@ -653,6 +561,11 @@ interface SegJob {
   pending: null | "pause" | "cancel"; // running 에 접수된 요청(수 초 뒤 실제 전이)
   pendingAt: number;
   finishedAt: number | null;
+  // 반복(#452, BE #453) — 0=1회성. done 이면 같은 조건으로 다음 회차를 notBefore 를 두고
+  // 적재한다. 간격은 **실제 값 그대로** 둔다(목에서 압축하면 '시작 예정' 표기가 왜곡된다) —
+  // 다음 회차 실행까지 기다리는 대신 예약 뱃지·대기 문구를 확인하는 용도.
+  repeatEveryMin: number;
+  notBefore: number | null; // epoch ms — 이 시각 전엔 디스패처가 건너뛴다(대기 유지)
 }
 
 const segJobs: SegJob[] = [];
@@ -680,6 +593,7 @@ function segTick(): void {
       j.finishedAt = now;
       j.progressMs = SEG_DISCOVER_MS + SEG_PROMOTE_MS;
       j.startedAt = null;
+      segEnqueueRepeat(j, now); // 반복이면 다음 회차 적재(취소·일시중지 경로엔 없다)
     }
   }
   // 디스패처 — 실행 중이 없으면 우선순위(낮을수록 먼저)·요청시각 순으로 1건만 올린다.
@@ -692,10 +606,40 @@ function segTick(): void {
   }
 }
 
+// 대기열 — **예약 회차(notBefore 미래)는 제외**한다(BE next_queued_segment_job·queue_position
+// 과 동일: 예약행이 순번을 차지하면 실제 다음 실행 잡이 2번으로 보인다).
 const segQueued = (): SegJob[] =>
   segJobs
-    .filter((j) => j.status === "queued")
+    .filter((j) => j.status === "queued" && (j.notBefore === null || j.notBefore <= Date.now()))
     .sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt);
+
+// 반복 회차 적재(BE enqueue_repeat_of) — done 인 반복 잡의 다음 회차를 같은 조건으로 넣는다.
+// 같은 조건·간격의 대기/실행 건이 이미 있으면 넣지 않는다(재진입 이중 복제 방지).
+function segEnqueueRepeat(src: SegJob, now: number): void {
+  if (!src.repeatEveryMin) return;
+  const dup = segJobs.some(
+    (j) =>
+      (j.status === "queued" || j.status === "running") &&
+      j.countries === src.countries &&
+      j.industries === src.industries &&
+      j.listed === src.listed &&
+      j.regions === src.regions &&
+      j.repeatEveryMin === src.repeatEveryMin,
+  );
+  if (dup) return;
+  segJobs.push({
+    ...src,
+    id: `bf_mock${(++segSeq).toString().padStart(4, "0")}`,
+    createdAt: now,
+    startedAt: null,
+    progressMs: 0,
+    status: "queued",
+    pending: null,
+    pendingAt: 0,
+    finishedAt: null,
+    notBefore: now + src.repeatEveryMin * 60_000,
+  });
+}
 
 // 진행 카운터 — discover 구간엔 initial_target 이 0(아직 모름), promote 구간부터 확정된다.
 function segCounters(j: SegJob): {
@@ -747,7 +691,10 @@ function segInfo(j: SegJob): Record<string, unknown> {
     failed_items: 0,
     batches_done: Math.floor(c.processed / 100),
     promote_cursor: c.processed > 0 ? `mock-cursor-${c.processed}` : null,
-    queue_position: j.status === "queued" ? queue.indexOf(j) + 1 : null,
+    // 예약 회차는 queue 에서 빠져 indexOf=-1 → null(BE 와 동일하게 순번을 주지 않는다).
+    queue_position: j.status === "queued" && queue.includes(j) ? queue.indexOf(j) + 1 : null,
+    repeat_every_min: j.repeatEveryMin,
+    not_before: j.notBefore === null ? null : new Date(j.notBefore).toISOString(),
     generation: 0,
     recycles: 0,
     crash_restarts: 0,
@@ -1268,39 +1215,6 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     };
     return jsonRes(crawlTarget);
   }
-  if (path === "/admin/crawl" && method === "GET") return jsonRes(crawlJobInfo());
-  if (path === "/admin/crawl" && method === "POST") {
-    if (crawlJobInfo().status === "running")
-      return jsonRes({ detail: "이미 진행 중인 크롤이 있습니다" }, 409);
-    let body: Partial<CrawlTargetState> & { continuous?: boolean } = {};
-    try {
-      body = JSON.parse(String(init?.body ?? "{}"));
-    } catch {
-      // 본문 없음/비JSON.
-    }
-    if (!body.industries?.trim()) return jsonRes({ detail: "업종은 최소 1개 필요합니다" }, 422);
-    crawlJob = {
-      id: `mock-crawl-${Date.now()}`,
-      countries: body.countries ?? "",
-      industries: body.industries.trim(),
-      listed: body.listed ?? "unknown",
-      persist: body.persist ?? true,
-      continuous: body.continuous ?? false,
-      startedAt: Date.now(),
-      cancelRequestedAt: null,
-      finalStatus: "done",
-      finishedAt: null,
-    };
-    return jsonRes(crawlJobInfo(), 202);
-  }
-  // 최근 크롤 이력 — mock 은 마지막 작업 1건만 유지하므로 그걸 목록으로 노출(없으면 빈 목록).
-  if (path === "/admin/crawl/history") return jsonRes(crawlJob ? [crawlJobInfo()] : []);
-  if (path === "/admin/crawl/cancel" && method === "POST") {
-    if (crawlJobInfo().status !== "running")
-      return jsonRes({ detail: "진행 중인 크롤이 없습니다" }, 404);
-    if (crawlJob && crawlJob.cancelRequestedAt === null) crawlJob.cancelRequestedAt = Date.now();
-    return jsonRes(crawlJobInfo());
-  }
   // --- 백필 제어(#352) ---------------------------------------------------
   if (path === "/admin/backfill/overview") {
     const countries = csvSet(u.searchParams.get("countries"));
@@ -1400,7 +1314,14 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     });
   }
   if (path === "/admin/segment-jobs" && method === "POST") {
-    let body: { countries?: string; industries?: string; listed?: Listed; regions?: string; priority?: number } = {};
+    let body: {
+      countries?: string;
+      industries?: string;
+      listed?: Listed;
+      regions?: string;
+      priority?: number;
+      repeat_every_min?: number;
+    } = {};
     try {
       body = JSON.parse(String(init?.body ?? "{}"));
     } catch {
@@ -1410,6 +1331,10 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
       return jsonRes({ detail: "국가·업종은 각각 1개 이상 지정해야 합니다" }, 422);
     if (body.regions && !csvSet(body.countries).has("kr"))
       return jsonRes({ detail: "지역은 국가에 KR 이 포함될 때만 지정할 수 있습니다" }, 422);
+    // BE SegmentJobCreateRequest 는 0~10080(7일) 정수 — 벗어나면 422.
+    const repeat = body.repeat_every_min ?? 0;
+    if (!Number.isInteger(repeat) || repeat < 0 || repeat > 10080)
+      return jsonRes({ detail: "반복 간격은 0~10080분 사이 정수여야 합니다" }, 422);
     segTick();
     const job: SegJob = {
       id: `bf_mock${(++segSeq).toString().padStart(4, "0")}`,
@@ -1425,6 +1350,8 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
       pending: null,
       pendingAt: 0,
       finishedAt: null,
+      repeatEveryMin: repeat,
+      notBefore: null, // 첫 회차는 즉시 대상 — 예약은 반복 복제분에만 붙는다
     };
     segJobs.push(job);
     segTick(); // 실행 중이 없으면 이 자리에서 바로 running 으로 올라간다
