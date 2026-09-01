@@ -561,6 +561,11 @@ interface SegJob {
   pending: null | "pause" | "cancel"; // running 에 접수된 요청(수 초 뒤 실제 전이)
   pendingAt: number;
   finishedAt: number | null;
+  // 반복(#452, BE #453) — 0=1회성. done 이면 같은 조건으로 다음 회차를 notBefore 를 두고
+  // 적재한다. 간격은 **실제 값 그대로** 둔다(목에서 압축하면 '시작 예정' 표기가 왜곡된다) —
+  // 다음 회차 실행까지 기다리는 대신 예약 뱃지·대기 문구를 확인하는 용도.
+  repeatEveryMin: number;
+  notBefore: number | null; // epoch ms — 이 시각 전엔 디스패처가 건너뛴다(대기 유지)
 }
 
 const segJobs: SegJob[] = [];
@@ -588,6 +593,7 @@ function segTick(): void {
       j.finishedAt = now;
       j.progressMs = SEG_DISCOVER_MS + SEG_PROMOTE_MS;
       j.startedAt = null;
+      segEnqueueRepeat(j, now); // 반복이면 다음 회차 적재(취소·일시중지 경로엔 없다)
     }
   }
   // 디스패처 — 실행 중이 없으면 우선순위(낮을수록 먼저)·요청시각 순으로 1건만 올린다.
@@ -600,10 +606,40 @@ function segTick(): void {
   }
 }
 
+// 대기열 — **예약 회차(notBefore 미래)는 제외**한다(BE next_queued_segment_job·queue_position
+// 과 동일: 예약행이 순번을 차지하면 실제 다음 실행 잡이 2번으로 보인다).
 const segQueued = (): SegJob[] =>
   segJobs
-    .filter((j) => j.status === "queued")
+    .filter((j) => j.status === "queued" && (j.notBefore === null || j.notBefore <= Date.now()))
     .sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt);
+
+// 반복 회차 적재(BE enqueue_repeat_of) — done 인 반복 잡의 다음 회차를 같은 조건으로 넣는다.
+// 같은 조건·간격의 대기/실행 건이 이미 있으면 넣지 않는다(재진입 이중 복제 방지).
+function segEnqueueRepeat(src: SegJob, now: number): void {
+  if (!src.repeatEveryMin) return;
+  const dup = segJobs.some(
+    (j) =>
+      (j.status === "queued" || j.status === "running") &&
+      j.countries === src.countries &&
+      j.industries === src.industries &&
+      j.listed === src.listed &&
+      j.regions === src.regions &&
+      j.repeatEveryMin === src.repeatEveryMin,
+  );
+  if (dup) return;
+  segJobs.push({
+    ...src,
+    id: `bf_mock${(++segSeq).toString().padStart(4, "0")}`,
+    createdAt: now,
+    startedAt: null,
+    progressMs: 0,
+    status: "queued",
+    pending: null,
+    pendingAt: 0,
+    finishedAt: null,
+    notBefore: now + src.repeatEveryMin * 60_000,
+  });
+}
 
 // 진행 카운터 — discover 구간엔 initial_target 이 0(아직 모름), promote 구간부터 확정된다.
 function segCounters(j: SegJob): {
@@ -655,7 +691,10 @@ function segInfo(j: SegJob): Record<string, unknown> {
     failed_items: 0,
     batches_done: Math.floor(c.processed / 100),
     promote_cursor: c.processed > 0 ? `mock-cursor-${c.processed}` : null,
-    queue_position: j.status === "queued" ? queue.indexOf(j) + 1 : null,
+    // 예약 회차는 queue 에서 빠져 indexOf=-1 → null(BE 와 동일하게 순번을 주지 않는다).
+    queue_position: j.status === "queued" && queue.includes(j) ? queue.indexOf(j) + 1 : null,
+    repeat_every_min: j.repeatEveryMin,
+    not_before: j.notBefore === null ? null : new Date(j.notBefore).toISOString(),
     generation: 0,
     recycles: 0,
     crash_restarts: 0,
@@ -1275,7 +1314,14 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
     });
   }
   if (path === "/admin/segment-jobs" && method === "POST") {
-    let body: { countries?: string; industries?: string; listed?: Listed; regions?: string; priority?: number } = {};
+    let body: {
+      countries?: string;
+      industries?: string;
+      listed?: Listed;
+      regions?: string;
+      priority?: number;
+      repeat_every_min?: number;
+    } = {};
     try {
       body = JSON.parse(String(init?.body ?? "{}"));
     } catch {
@@ -1285,6 +1331,10 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
       return jsonRes({ detail: "국가·업종은 각각 1개 이상 지정해야 합니다" }, 422);
     if (body.regions && !csvSet(body.countries).has("kr"))
       return jsonRes({ detail: "지역은 국가에 KR 이 포함될 때만 지정할 수 있습니다" }, 422);
+    // BE SegmentJobCreateRequest 는 0~10080(7일) 정수 — 벗어나면 422.
+    const repeat = body.repeat_every_min ?? 0;
+    if (!Number.isInteger(repeat) || repeat < 0 || repeat > 10080)
+      return jsonRes({ detail: "반복 간격은 0~10080분 사이 정수여야 합니다" }, 422);
     segTick();
     const job: SegJob = {
       id: `bf_mock${(++segSeq).toString().padStart(4, "0")}`,
@@ -1300,6 +1350,8 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
       pending: null,
       pendingAt: 0,
       finishedAt: null,
+      repeatEveryMin: repeat,
+      notBefore: null, // 첫 회차는 즉시 대상 — 예약은 반복 복제분에만 붙는다
     };
     segJobs.push(job);
     segTick(); // 실행 중이 없으면 이 자리에서 바로 running 으로 올라간다
