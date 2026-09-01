@@ -37,7 +37,7 @@ from ..storage.repository import backfill_domain, load_seen_domains
 from ..verify.email_validator import EmailValidator
 from ..verify.existence import ExistenceVerifier
 from ..verify.registry_active import build_registry_checker
-from .run import _build_lead, _close_in_workers, _persist_lead
+from .run import _build_lead, _close_in_workers, _persist_lead, drain_completed, stuck_idle_for
 
 log = get_logger("pipeline.fill")
 
@@ -437,8 +437,9 @@ def fill_batch(
     processed = emails = 0
     with _StallWatchdog("fill", stall_exit_s) as wd, sm() as ws:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            for dc, lead in pool.map(_work, targets):
-                wd.beat()
+            def _handle_fill(res) -> None:  # noqa: ANN001
+                nonlocal processed, emails
+                dc, lead = res
                 processed += 1
                 if lead is not None:
                     # 커밋 성공만 집계 — 저장 실패를 이메일 확보로 세던 부풀림 차단.
@@ -449,6 +450,15 @@ def fill_batch(
                         and lead.email is not None
                     ):
                         emails += 1
+
+            # 완료 순 소비(run.drain_completed) — 앞 항목 하나가 느려도 진행 신호가 이어진다.
+            stuck = drain_completed(
+                pool, _work, targets, handle=_handle_fill, beat=wd.beat, idle_timeout=stuck_idle_for(stall_exit_s),
+                log_stuck=lambda xs: log.warning(
+                    "fill.batch.stuck", n=len(xs), domains=[x.domain for x in xs[:5]]
+                ),
+            )
+            processed += len(stuck)
             # Playwright 보유 컴포넌트는 만든 워커 스레드만 닫을 수 있다(메인스레드 close 는
             # greenlet.error 로 조용히 no-op → 배치마다 브라우저 누수 = 2026-07-31 OOM 뿌리).
             # close 행도 감시 범위 안(watchdog 은 이 블록 전체를 덮는다).
@@ -605,8 +615,13 @@ def resolve_batch(
             # 해석 실패(miss)는 별도 스탬프가 필요 없다 — 배치 시작 시 _stamp_attempt 가
             # 대상 전체를 이미 뒤로 보냈다(구 missed 일괄 update 는 정체 종료 시 통째로
             # 유실돼 같은 창을 재과금 재시도하던 결함 — 리뷰 MED).
-            for dc, found, lead in pool.map(_work, targets):
-                wd.beat()
+            results: list[tuple] = []
+            stuck = drain_completed(
+                pool, _work, targets, handle=results.append, beat=wd.beat, idle_timeout=stuck_idle_for(stall_exit_s),
+                log_stuck=lambda xs: log.warning("resolve.batch.stuck", n=len(xs)),
+            )
+            processed += len(stuck)
+            for dc, found, lead in results:
                 processed += 1
                 if not found:
                     continue
