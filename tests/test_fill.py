@@ -174,6 +174,12 @@ def test_count_resolve_targets_exclude_filters(tmp_path) -> None:
         session.commit()
 
     assert count_resolve_targets(sm, ["KR"]) == 4
+    # 대상 SQL 도 같은 가드를 가진다(카운트만 막고 선택은 새는 회귀 방지).
+    from leadcrawler.pipeline.fill import _RESOLVE_TARGET_SQL, _scoped
+    stmt, params = _scoped(_RESOLVE_TARGET_SQL, ["KR"])
+    with sm() as session:
+        picked = {r.canonical_key for r in session.execute(stmt, {**params, "limit": 10})}
+    assert picked == {"nm:kr:가", "nm:kr:나", "nm:kr:다", "nm:kr:라"}
     assert count_resolve_targets(sm, ["KR"], exclude_industries=["식품·음료"]) == 3
     assert count_resolve_targets(sm, ["KR"], exclude_listed=True) == 3
     assert count_resolve_targets(

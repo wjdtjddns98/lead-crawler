@@ -128,6 +128,18 @@ def test_load_domain_guards_seed_taken_and_overshared(tmp_path) -> None:
             canonical_key="dom:kr:solo.co.kr", name="단독사", country="KR",
             industry="화학·석유화학", source="nps", domain="solo.co.kr",
         ))
+        # 생존자 1 + dedup 흡수 alias 2 가 같은 도메인 — 같은 회사이므로 과공유가 아니다.
+        session.add(DiscoveredCompanyRow(
+            canonical_key="dom:kr:alias.co.kr", name="본사", country="KR",
+            industry="화학·석유화학", source="nps", domain="alias.co.kr",
+        ))
+        session.commit()
+        for i in range(2):
+            session.add(DiscoveredCompanyRow(
+                canonical_key=f"name:kr:본사별칭{i}", name=f"본사별칭{i}", country="KR",
+                industry="화학·석유화학", source="nps", domain="alias.co.kr",
+                duplicate_of="dom:kr:alias.co.kr",
+            ))
         session.commit()
         session.add(CompanyRow(
             id=company_id_for("dom:kr:solo.co.kr"), canonical_key="dom:kr:solo.co.kr",

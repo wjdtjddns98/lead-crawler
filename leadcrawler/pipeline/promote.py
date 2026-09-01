@@ -85,10 +85,15 @@ def _load_domain_guards(session) -> tuple[set[str], set[str]]:  # noqa: ANN001 (
     }
     # 원장 domain 은 소스에 따라 raw URL 표기가 섞일 수 있어(save_discovered 는 정규화
     # 안 함) SQL group by 대신 정규화 후 집계한다 — 표기 분산으로 캡을 우회하지 못하게
-    # (교차리뷰 MED).
+    # (교차리뷰 MED). dedup 흡수행(duplicate_of)은 생존자와 같은 회사라 세지 않는다 —
+    # 세면 alias 3개 이상인 정상 회사가 디렉터리로 오판돼 영구 스킵된다(2026-09-01 라이브
+    # 실증: hanwhafund.co.kr·timefolio.co.kr).
     counts: Counter[str] = Counter()
     for (dom,) in session.execute(
-        text("select domain from discovered_company where coalesce(domain,'') <> ''")
+        text(
+            "select domain from discovered_company"
+            " where coalesce(domain,'') <> '' and duplicate_of is null"
+        )
     ):
         nd = normalize_domain(dom)
         if nd is not None:
