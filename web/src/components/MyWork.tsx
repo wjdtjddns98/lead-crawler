@@ -273,8 +273,11 @@ export function MyWork() {
         </>
       )}
 
-      {/* 내 확정분 다운로드(#273) — 관리자 전용이던 엑셀 내보내기를 worker 에게 개방(본인 확정분만). */}
-      {tab === "confirmed" && <ExportSection title="내 확정분 다운로드" />}
+      {/* 내 처리분 다운로드(#273) — 관리자 전용이던 엑셀 내보내기를 worker 에게 개방(본인 처리분만).
+          탭이 곧 추출 대상이라 mode 로 고정한다(확정/거부 토글 숨김, #462). */}
+      {tab !== "pending" && (
+        <ExportSection title={`내 ${tab === "confirmed" ? "확정" : "거부"}분 다운로드`} mode={tab} />
+      )}
 
       <div className="flex items-center gap-4 mb-4 flex-wrap">
         <p className="text-muted my-2 tabular-nums">
