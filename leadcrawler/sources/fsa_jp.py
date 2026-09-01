@@ -65,7 +65,7 @@ _LISTS: tuple[tuple[str, str, str | None], ...] = (
     (_BASE + "kinyushohin.xlsx", _SEC, None),
 )
 _LABELS = frozenset(label for _, label, _ in _LISTS)
-_GBIZ_URL = "https://info.gbiz.go.jp/hojin/v1/hojin/{corp_no}"
+_GBIZ_URL = "https://api.info.gbiz.go.jp/hojin/v1/hojin/{corp_no}"  # 공식 API 호스트(2026-09-01 확인)
 
 _COL_CORP = "法人番号"
 _NAME_COLS = ("金融商品取引業者名", "銀行名", "名称")
