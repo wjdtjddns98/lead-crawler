@@ -444,12 +444,7 @@ def create_app() -> FastAPI:
 
         app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")
 
-    # 24/7 크롤 워치독 — 하트비트 정지한 좀비 잡을 정리·재기동한다(비활성·dry_run 은 no-op).
-    # ⚠️ 단일 uvicorn worker 전제: 크롤 가드·스레드 생존 판정이 프로세스 로컬이라 workers 2+
-    # 로 띄우면 다른 worker 의 워치독이 정상 크롤을 오판 reap 한다(AGENTS.md 운영 제약).
-    from ..pipeline.background import start_watchdog
-
-    start_watchdog(get_settings())
+    # 크롤실행(즉시 크롤) 워치독은 2026-09-01 제거됨 — 세그먼트 작업 큐로 일원화.
 
     # 서버 재시작 시 백필 자동 재개(#352) — running 잔존 잡을 세대+1 로 재스폰한다
     # (취소 플래그 우선 재확인은 resume 내부 계약). dry_run 게이트는 start_watchdog 과
