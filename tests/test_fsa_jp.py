@@ -19,6 +19,22 @@ from leadcrawler.sources.fsa_jp import _LISTS, FsaJpSource, parse_list
 def _clear_cache() -> None:
     fsa_jp._xlsx_cache.clear()
     fsa_jp._gbiz_cache.clear()
+    fsa_jp._edinet_cache = None
+
+
+_EDINET_URL = fsa_jp._CODELIST_URL
+
+
+def _edinet_zip(rows: list[str]) -> bytes:
+    import zipfile
+
+    header = ("ＥＤＩＮＥＴコード,提出者種別,上場区分,連結の有無,資本金,決算日,提出者名,"
+              "提出者名（英字）,提出者名（ヨミ）,所在地,提出者業種,証券コード,提出者法人番号")
+    body = "メタ行,ダウンロード実行日,2026年08月25日現在\n" + header + "\n" + "\n".join(rows)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("EdinetcodeDlInfo.csv", body.encode("cp932"))
+    return buf.getvalue()
 
 
 def _seg(industry: str = "전체", listed: str = "unknown", country: str = "JP") -> Segment:
@@ -118,6 +134,9 @@ class _FakeFetcher:
             raise TimeoutError("boom")
         return self._blobs.get(url, b"")
 
+    def xlsx_calls(self) -> list[str]:
+        return [u for u in self.calls if u.endswith(".xlsx")]
+
     def get_text(self, url: str, **kw: Any) -> str:
         self.calls.append(url)
         self.gbiz_headers.append(kw.get("headers") or {})
@@ -206,7 +225,7 @@ def test_live_specific_industry_fetches_only_matching_lists() -> None:
     kinyu = _LISTS[2][0]
     fetcher = _FakeFetcher({kinyu: _KINYU})
     got = FsaJpSource(_live(), fetcher=fetcher).discover(_seg("증권·자산운용"))
-    assert len(got) == 2 and fetcher.calls == [kinyu]
+    assert len(got) == 2 and fetcher.xlsx_calls() == [kinyu]  # (+EDINET 코드리스트 1회)
 
 
 def test_live_list_failure_is_isolated_and_keeps_cursor() -> None:
@@ -228,7 +247,56 @@ def test_live_list_failure_is_isolated_and_keeps_cursor() -> None:
     got = src.discover(_seg("은행"))
     assert [c.reg_no for c in got] == ["9010405000001"]  # 은행 파일 실패, 신금은 정상.
     assert ("fsa_jp", "JP/은행/unknown/list0") not in store  # 실패 파일 커서 미전진.
-    assert store[("fsa_jp", "JP/은행/unknown/list1")] == 0  # 소진 → 0 리셋.
+    assert store[("fsa_jp", "JP/은행/unknown/list1")] == 1  # 소진 → 끝에 머문다(0 리셋 아님).
+
+
+class _Store:
+    def __init__(self) -> None:
+        self.d: dict[tuple[str, str], int] = {}
+
+    def get(self, source: str, key: str) -> int:
+        return self.d.get((source, key), 0)
+
+    def advance(self, source: str, key: str, position: int) -> None:
+        self.d[(source, key)] = position
+
+
+def _shinkin(n: int) -> bytes:
+    rows = [["業態", "所管", "都道府県", "名称", "法人番号", "郵便番号", "本店等所在地", "代表等電話番号"]]
+    rows += [["信用金庫", "関東", "東京都", f"信金{i}", f"{9000000000000 + i:013d}", "1", "住所", "03"]
+             for i in range(n)]
+    return _xlsx({"信用金庫": rows})
+
+
+def test_live_exhausted_list_holds_at_end_until_all_exhausted_then_rewinds() -> None:
+    """앞 파일(은행)이 소진돼도 매 런 cap 을 재소비하지 않는다 — 뒤 파일(신금)이 전진한다."""
+    ginkou, shinkin, _ = (u for u, _, _ in _LISTS)
+    fetcher = _FakeFetcher({ginkou: _GINKOU, shinkin: _shinkin(5)})
+    store = _Store()
+    src = FsaJpSource(_live(discovery_max_per_source=3), fetcher=fetcher, cursor_store=store)
+    r1 = [c.reg_no for c in src.discover(_seg("은행"))]
+    assert r1 == ["6010001008845", "9000000000000", "9000000000001"]  # 은행 1 + 신금 2.
+    r2 = [c.reg_no for c in src.discover(_seg("은행"))]
+    assert r2 == ["9000000000002", "9000000000003", "9000000000004"]  # 은행 재소비 없이 신금 이어감.
+    assert store.d[("fsa_jp", "JP/은행/unknown/list0")] == 1  # 끝에 머문다.
+    r3 = [c.reg_no for c in src.discover(_seg("은행"))]
+    assert r3 == ["6010001008845", "9000000000000", "9000000000001"]  # 전부 소진 → 되감아 재시작.
+
+
+def test_live_excludes_edinet_listed_corporate_numbers() -> None:
+    ginkou = _LISTS[0][0]
+    zip_bytes = _edinet_zip([
+        "E00001,内国法人・組合,上場,有,100,3月31日,株式会社みずほ銀行,Mizuho Bank,ミズホ,東京都,銀行業,13760,6010001008845",
+    ])
+    fetcher = _FakeFetcher({ginkou: _GINKOU, _EDINET_URL: zip_bytes})
+    src = FsaJpSource(_live(), fetcher=fetcher)
+    assert src.discover(_seg("은행")) == []  # 상장사 → reg:edinet 으로 이미 원장에 있음.
+    src.discover(_seg("은행"))
+    assert fetcher.calls.count(_EDINET_URL) == 1  # 코드리스트는 프로세스 캐시.
+    # 코드리스트 미확보(빈 응답) → 제외 없이 진행.
+    fsa_jp._edinet_cache = None
+    fetcher2 = _FakeFetcher({ginkou: _GINKOU})
+    assert [c.reg_no for c in FsaJpSource(_live(), fetcher=fetcher2).discover(_seg("은행"))] == ["6010001008845"]
 
 
 def test_live_cap_zero_and_cap_one() -> None:

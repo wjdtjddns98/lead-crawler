@@ -179,6 +179,19 @@ def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompan
             # 근거가 다른 listed/market 조합(예: unlisted+KOSPI)이 생기지 않게.
             if dc.market and not row.market:
                 row.market = _clip(dc.market, 32)
+    if row is not None:
+        # 같은 등록처 키의 재발견이 **비어 있던** 식별 보조정보를 가져오면 채운다(null 전용 —
+        # 기존 값은 절대 안 덮음, backfill_domain 과 같은 규약). 최초 발견 때 도메인·영문명을
+        # 못 받은 행(gBizINFO 토큰 부재·일시 실패·EDINET 영문 공란)이 다음 런에서 자가치유
+        # 되는 경로 — 없으면 touch 만 되어 영구 미보강(Codex 리뷰 HIGH).
+        if dc.domain and not (row.domain or "").strip():
+            row.domain = dc.domain
+        for field in ("name_eng", "phone", "address"):
+            if getattr(dc, field) and not getattr(row, field):
+                setattr(row, field, _clip(getattr(dc, field), 64 if field == "phone" else 255))
+        # 표시명 영문 우선(#412): 원장이 아직 일문(=재발견분의 name_eng 원문)이면 영문으로 교체.
+        if dc.name_eng and row.name == dc.name_eng and dc.name != dc.name_eng:
+            row.name = _clip(dc.name)
     if row is None:
         row = DiscoveredCompanyRow(
             canonical_key=dc.canonical_key,
