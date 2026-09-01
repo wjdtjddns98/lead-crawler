@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     # gBizINFO(경제산업성 법인 API, 무료 토큰 — https://info.gbiz.go.jp/hojin/api_registration/form)
     # — 금융청 일람 소스(fsa_jp)가 법인번호로 공식 웹사이트·영문 상호를 붙일 때 사용. 비면 도메인 없이 열거.
     gbizinfo_api_token: str = Field(default="")
+    # 세그먼트 큐 티커 주기(초) — 반복 복제분(not_before)을 시각에 맞춰 시작한다(웹 서버 내 스레드).
+    segment_ticker_interval_sec: int = Field(default=60, ge=5)
 
     # 도메인 해석(opt-in) — 발견 소스가 도메인을 못 준 기업(GLEIF 등)을 회사명+국가로
     # 검색해 공식 도메인을 채운다. Google CSE 키 필요(무료 100/일), dry_run no-op.

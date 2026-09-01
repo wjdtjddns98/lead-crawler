@@ -9,10 +9,10 @@ crawl_job 과 같은 관례를 따른다: 모든 함수는 호출자 세션 안�
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -68,6 +68,25 @@ def _new_id() -> str:
     return "bf_" + uuid4().hex[:12]
 
 
+def _iso_utc(dt: datetime | None) -> str | None:
+    """tz 없는 값(SQLite 는 naive 로 돌려줌)은 UTC 로 간주해 항상 offset 포함 ISO 로."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def is_ready(row: BackfillJobRow, now: datetime | None = None) -> bool:
+    """대기 행이 지금 실행 가능한가(not_before 없음 또는 도래). naive 값은 UTC 로 본다."""
+    nb = getattr(row, "not_before", None)
+    if nb is None:
+        return True
+    if nb.tzinfo is None:
+        nb = nb.replace(tzinfo=timezone.utc)
+    return nb <= (now or datetime.now(timezone.utc))
+
+
 def backfill_job_dict(row: BackfillJobRow) -> dict[str, object]:
     """작업 행을 DTO 평탄 dict 로(시각은 ISO8601). API 응답·supervisor 스냅샷 공용."""
     return {
@@ -105,6 +124,8 @@ def backfill_job_dict(row: BackfillJobRow) -> dict[str, object]:
         "error": row.error,
         "triggered_by": row.triggered_by,
         "started_at": row.started_at.isoformat() if row.started_at else None,
+        "repeat_every_min": int(getattr(row, "repeat_every_min", 0) or 0),
+        "not_before": _iso_utc(getattr(row, "not_before", None)),
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         "progress_at": row.progress_at.isoformat() if row.progress_at else None,
         "finished_at": row.finished_at.isoformat() if row.finished_at else None,
@@ -363,12 +384,17 @@ def enqueue_segment_job(
     workers: int = 3,
     max_batches: int = 20,
     triggered_by: str | None = None,
+    repeat_every_min: int = 0,
+    not_before: datetime | None = None,
 ) -> BackfillJobRow:
     """세그먼트 승격 요청을 대기열에 적재한다(status=queued, active_track=NULL).
 
     active_track 이 비어 있어 유니크 제약과 무관 — 여러 건 동시 대기 가능. 실행은
     ``activate_segment_job`` 이 원자 전이로 트랙 S 활성 슬롯을 점유한다.
+    ``repeat_every_min>0`` 이면 done 뒤 같은 필터로 다음 잡이 ``not_before`` 를 두고 복제된다.
     """
+    if repeat_every_min < 0:
+        raise ValueError("repeat_every_min 은 0 이상이어야 한다")
     if max_batches < 1:
         # create_backfill_job 과 동일 — 세대 리셋 없는 무한 자식은 2026-08-03 메모리 폭주 재현.
         raise ValueError("max_batches 는 1 이상이어야 한다(프로세스 리셋 필수)")
@@ -389,10 +415,43 @@ def enqueue_segment_job(
         workers=workers,
         max_batches=max_batches,
         triggered_by=triggered_by,
+        repeat_every_min=repeat_every_min,
+        not_before=not_before,
     )
     session.add(row)
     session.flush()
     return row
+
+
+def enqueue_repeat_of(session: Session, job_id: str) -> BackfillJobRow | None:
+    """done 으로 끝난 반복 잡의 다음 회차를 같은 필터로 적재한다(not_before=now+간격).
+
+    반복이 아니거나(0)·done 이 아니거나·이미 다음 회차가 대기/실행 중(같은 필터·반복값의
+    queued/running 존재)이면 None — 감독 스레드 재진입·재기동 재개로 이중 복제되지 않게.
+    """
+    src = session.get(BackfillJobRow, job_id)
+    if src is None or src.track != TRACK_S or src.status != DONE or not src.repeat_every_min:
+        return None
+    dup = session.scalars(
+        select(BackfillJobRow).where(
+            BackfillJobRow.track == TRACK_S,
+            BackfillJobRow.status.in_((QUEUED, RUNNING)),
+            BackfillJobRow.countries == src.countries,
+            BackfillJobRow.industries == src.industries,
+            BackfillJobRow.listed == src.listed,
+            BackfillJobRow.regions == src.regions,
+            BackfillJobRow.repeat_every_min == src.repeat_every_min,
+        ).limit(1)
+    ).first()
+    if dup is not None:
+        return None
+    return enqueue_segment_job(
+        session, countries=src.countries, industries=src.industries, listed=src.listed,
+        regions=src.regions, priority=src.priority, batch=src.batch, workers=src.workers,
+        max_batches=src.max_batches, triggered_by=src.triggered_by,
+        repeat_every_min=src.repeat_every_min,
+        not_before=datetime.now(timezone.utc) + timedelta(minutes=src.repeat_every_min),
+    )
 
 
 def activate_segment_job(session: Session, job_id: str) -> BackfillJobRow | None:
@@ -432,10 +491,18 @@ def activate_segment_job(session: Session, job_id: str) -> BackfillJobRow | None
 
 
 def next_queued_segment_job(session: Session) -> BackfillJobRow | None:
-    """대기열 맨 앞 작업(우선순위 낮은 순 → 생성순 → id) — 디스패처가 activate 대상 선정."""
+    """대기열 맨 앞 작업(우선순위 낮은 순 → 생성순 → id) — 디스패처가 activate 대상 선정.
+
+    ``not_before`` 가 미래인 반복 복제분은 건너뛴다(시각이 되면 큐 티커가 집어 간다).
+    """
+    now = datetime.now(timezone.utc)
     return session.scalars(
         select(BackfillJobRow)
-        .where(BackfillJobRow.track == TRACK_S, BackfillJobRow.status == QUEUED)
+        .where(
+            BackfillJobRow.track == TRACK_S,
+            BackfillJobRow.status == QUEUED,
+            or_(BackfillJobRow.not_before.is_(None), BackfillJobRow.not_before <= now),
+        )
         .order_by(BackfillJobRow.priority, BackfillJobRow.started_at, BackfillJobRow.id)
         .limit(1)
     ).first()
@@ -571,10 +638,18 @@ def set_segment_priority(session: Session, job_id: str, priority: int) -> Backfi
 
 
 def queue_position(session: Session, job_id: str) -> int | None:
-    """대기열 내 순번(1부터) — queued 가 아니면 None."""
+    """대기열 내 순번(1부터) — queued 가 아니거나 not_before 미래(예약 대기)면 None.
+
+    예약 행이 순번을 차지하면 실제 다음 실행 잡이 2번으로 보인다(Codex 리뷰 LOW).
+    """
+    now = datetime.now(timezone.utc)
     ordered_ids = session.scalars(
         select(BackfillJobRow.id)
-        .where(BackfillJobRow.track == TRACK_S, BackfillJobRow.status == QUEUED)
+        .where(
+            BackfillJobRow.track == TRACK_S,
+            BackfillJobRow.status == QUEUED,
+            or_(BackfillJobRow.not_before.is_(None), BackfillJobRow.not_before <= now),
+        )
         .order_by(BackfillJobRow.priority, BackfillJobRow.started_at, BackfillJobRow.id)
     ).all()
     try:
