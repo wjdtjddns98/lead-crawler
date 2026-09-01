@@ -766,7 +766,7 @@ wheels = [
 
 [[package]]
 name = "lead-crawler"
-version = "1.24.0"
+version = "1.24.1"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
