@@ -487,7 +487,7 @@ _RESOLVE_TARGET_SQL = """
            d.ticker, d.phone, d.ir_url, d.name_eng, d.address
     from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
-    where coalesce(d.domain, '') = '' and co.id is null
+    where coalesce(d.domain, '') = '' and co.id is null and d.duplicate_of is null
       {scope}
     order by d.last_crawled_at asc, d.canonical_key
     limit :limit
@@ -495,7 +495,7 @@ _RESOLVE_TARGET_SQL = """
 _RESOLVE_COUNT_SQL = """
     select count(*) from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
-    where coalesce(d.domain, '') = '' and co.id is null
+    where coalesce(d.domain, '') = '' and co.id is null and d.duplicate_of is null
       {scope}
     """
 
