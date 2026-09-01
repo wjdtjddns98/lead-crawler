@@ -511,6 +511,9 @@ class SegmentJobCreateRequest(BaseModel):
     regions: str = Field(default="", max_length=512)
     # 낮을수록 먼저. 범위 제한 — PG int4 오버플로(500)·음수 새치기 방지(리뷰 MED).
     priority: int = Field(default=100, ge=0, le=1000)
+    # 반복 간격(분). 0=1회성. done 뒤 같은 필터로 다음 회차가 이 간격 후 자동 적재된다
+    # (웹 크롤실행 continuous 대체, 2026-09-01). 상한 7일. 취소·실패면 반복 종료.
+    repeat_every_min: int = Field(default=0, ge=0, le=10080)
 
     @field_validator("countries", "industries", mode="before")
     @classmethod
@@ -531,6 +534,8 @@ class SegmentJobInfo(BackfillJobInfo):
     failed_items: int = 0
     promote_cursor: str | None = None
     queue_position: int | None = None  # queued 일 때만(그 외 None).
+    repeat_every_min: int = 0  # 0=1회성. >0 이면 done 뒤 같은 필터로 다음 회차 자동 적재.
+    not_before: str | None = None  # 반복 복제분의 실행 가능 시각(ISO) — 그 전엔 대기.
 
 
 class SegmentJobList(BaseModel):

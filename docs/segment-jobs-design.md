@@ -70,3 +70,14 @@ running ─crash×3|spawn 실패→ failed  running ─월예산→ budget_exhau
 
 ## 9. 잔여 수동 작업(범위 밖)
 `nps-import`(월간), `nps-map-industries`, `dart-cache-fill`, `run-global --regions all`(지역 팬아웃 발견 전용 — 세그먼트 요청의 regions 로도 가능).
+
+## 10. 반복 옵션 (2026-09-01 — 웹 크롤실행 `continuous` 대체)
+- 요청에 `repeat_every_min`(0=1회성, 상한 7일). >0 이면 잡이 **done** 으로 끝날 때 같은 필터·우선순위로 다음
+  회차를 `not_before = now + 간격` 으로 **복제 적재**한다(`enqueue_repeat_of`). 취소·실패·예산소진이면 반복 종료
+  (재개하면 그 잡만 이어감). 같은 필터·반복값의 queued/running 이 이미 있으면 복제하지 않는다(이중 방지).
+- 디스패처(`next_queued_segment_job`)는 `not_before` 미래인 행을 건너뛰고, 서버 안 **큐 티커**(`start_segment_ticker`,
+  `segment_ticker_interval_sec`=60s 데몬 스레드, dry_run no-op)가 주기적으로 `dispatch_next_segment_job` 을 불러 시각이
+  된 회차를 시작한다. 재기동 시 티커가 다시 뜨므로 대기 중 회차는 자동 재개(행이 DB 에 있음).
+- 컬럼: `backfill_job.repeat_every_min INT NOT NULL DEFAULT 0`, `not_before TIMESTAMPTZ NULL`(alembic `b3e7c9d2f4a1`).
+  API: `SegmentJobCreateRequest.repeat_every_min`, `SegmentJobInfo.repeat_every_min/not_before`.
+- 반복은 **물량을 만들지 않는다** — 등록처 월 갱신분·검색 신규분을 주워오는 장치. 물량은 소스 확장이 결정한다.

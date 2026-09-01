@@ -243,8 +243,13 @@ def _supervise(settings: Settings, job: dict, *, launcher, start_generation: int
                     with sm() as s:
                         row_now = get_backfill_job(s, job_id)
                     if row_now is not None and row_now.stage == "done":
-                        _finish(sm, job_id, DONE)
-                        return
+                        if _cancel_requested(sm, job_id):
+                            # 자식 종료 직전에 온 취소/pause — DONE 으로 닫고 다음 회차까지 만들면
+                            # 사용자의 중단 요청이 무시된다(Codex 리뷰 HIGH). 취소 분기로.
+                            _finish_cancel(sm, track, job_id)
+                            return
+                        _finish_done(sm, job_id)  # DONE + (반복이면) 다음 회차 적재를 한 트랜잭션으로.
+                        return  # finally 의 dispatch 는 not_before 미래라 건너뛰고 큐 티커가 시작한다.
                 crash = 0
                 generation += 1
                 with sm() as s:
@@ -309,6 +314,56 @@ def _finish(sm, job_id: str, status: str, *, stop_reason=None, error=None) -> No
     with sm() as s:
         finish_backfill_job(s, job_id, status, stop_reason=stop_reason, error=error)
         s.commit()
+
+
+def _finish_done(sm, job_id: str) -> str | None:  # noqa: ANN001
+    """트랙 S 완료 마감 — DONE 기록과 반복 다음 회차 적재를 **한 트랜잭션**으로(둘 사이 크래시로
+    반복 체인이 끊기지 않게 — Codex 리뷰 MED). 반복이 아니면 DONE 만. 다음 회차 id 반환."""
+    from ..storage.backfill_job import enqueue_repeat_of
+
+    with sm() as s:
+        finish_backfill_job(s, job_id, DONE)
+        s.flush()
+        nxt = enqueue_repeat_of(s, job_id)
+        s.commit()
+        if nxt is not None:
+            log.info("segment.repeat.enqueued", job=job_id, next=nxt.id,
+                     not_before=nxt.not_before.isoformat() if nxt.not_before else None)
+            return nxt.id
+    return None
+
+
+_ticker_started = False
+
+
+def segment_ticker_tick(settings: Settings, *, launcher=None) -> str | None:  # noqa: ANN001
+    """큐 티커 1틱 — 실행 가능 시각이 된 대기 잡을 디스패치한다(활성 S 있으면 no-op)."""
+    try:
+        return dispatch_next_segment_job(settings, launcher=launcher)
+    except Exception as exc:  # 틱 예외는 삼킨다 — 스레드가 죽으면 반복이 영구 정지.
+        log.warning("segment.ticker.error", err=str(exc))
+        return None
+
+
+def start_segment_ticker(settings: Settings) -> bool:
+    """서버 기동 시 큐 티커 데몬 스레드 시작(프로세스당 1회, dry_run 은 no-op).
+
+    반복 복제분(not_before 미래)은 이벤트(잡 종료·생성)로는 시작되지 않으므로 주기 폴링이
+    필요하다. 재기동 후에도 티커가 다시 뜨므로 대기 중이던 회차는 자동 재개된다.
+    ponytail: APScheduler 대신 sleep 루프 — 잡 1종·간격 1개.
+    """
+    global _ticker_started
+    if settings.dry_run or _ticker_started:
+        return False
+    _ticker_started = True
+
+    def _loop() -> None:
+        while True:
+            time.sleep(max(5, int(settings.segment_ticker_interval_sec)))
+            segment_ticker_tick(settings)
+
+    threading.Thread(target=_loop, name="segment-ticker", daemon=True).start()
+    return True
 
 
 def _finish_cancel(sm, track: str, job_id: str) -> None:  # noqa: ANN001
