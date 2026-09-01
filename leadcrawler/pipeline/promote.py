@@ -39,7 +39,7 @@ from .fill import (  # PromoteRun 은 fill/resolve/promote 공용 — 여기서 
     _dc_from_row,
     _scoped,
 )
-from .run import _build_lead, _close_in_workers, _persist_lead, drain_completed
+from .run import _build_lead, _close_in_workers, _persist_lead, drain_completed, stuck_idle_for
 
 log = get_logger("pipeline.promote")
 
@@ -246,7 +246,7 @@ def promote_batch(
                     # 항목을 '멈춤'으로 격리(failed)하고 배치를 끝낸다 — pool.map 순서 소비가
                     # 앞 항목 하나에 막혀 정상 진행 중 rc=86 으로 죽던 사고 방지(run.drain_completed).
                     stuck = drain_completed(
-                        pool, _work, targets, handle=_handle, beat=wd.beat, idle_timeout=stall_exit_s,
+                        pool, _work, targets, handle=_handle, beat=wd.beat, idle_timeout=stuck_idle_for(stall_exit_s),
                         log_stuck=lambda xs: log.warning(
                             "promote.batch.stuck", n=len(xs), domains=[x.domain for x in xs[:5]]
                         ),

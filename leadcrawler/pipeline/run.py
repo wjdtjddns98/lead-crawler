@@ -119,6 +119,7 @@ def drain_completed(
     스레드는 자기 프로브 타임아웃까지 살아 있다가 끝난다(풀 종료 대기는 그만큼 길어질 수 있음).
     None 이면 무한 대기(dry/테스트).
     """
+    idle_timeout = idle_timeout if idle_timeout and idle_timeout > 0 else None  # 0/음수=무한(워치독 규약).
     futs = {pool.submit(work, it): it for it in items}
     pending = set(futs)
     while pending:
@@ -135,6 +136,12 @@ def drain_completed(
                 beat()
             handle(f.result())
     return []
+
+
+def stuck_idle_for(stall_exit_s: float | None) -> float | None:
+    """drain_completed 의 idle_timeout — 정체 워치독(stall_exit_s)보다 **먼저**(0.8배) 발동해
+    '멈춤 격리 → 완료분 커밋 → 커서 전진' 경로가 rc=86 kill 과의 경합에서 이기게 한다(리뷰 LOW)."""
+    return stall_exit_s * 0.8 if stall_exit_s and stall_exit_s > 0 else None
 
 
 def _close_in_workers(pool: ThreadPoolExecutor, close_own: Callable[[], None]) -> None:

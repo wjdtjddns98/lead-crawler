@@ -37,7 +37,7 @@ from ..storage.repository import backfill_domain, load_seen_domains
 from ..verify.email_validator import EmailValidator
 from ..verify.existence import ExistenceVerifier
 from ..verify.registry_active import build_registry_checker
-from .run import _build_lead, _close_in_workers, _persist_lead, drain_completed
+from .run import _build_lead, _close_in_workers, _persist_lead, drain_completed, stuck_idle_for
 
 log = get_logger("pipeline.fill")
 
@@ -453,7 +453,7 @@ def fill_batch(
 
             # 완료 순 소비(run.drain_completed) — 앞 항목 하나가 느려도 진행 신호가 이어진다.
             stuck = drain_completed(
-                pool, _work, targets, handle=_handle_fill, beat=wd.beat, idle_timeout=stall_exit_s,
+                pool, _work, targets, handle=_handle_fill, beat=wd.beat, idle_timeout=stuck_idle_for(stall_exit_s),
                 log_stuck=lambda xs: log.warning(
                     "fill.batch.stuck", n=len(xs), domains=[x.domain for x in xs[:5]]
                 ),
@@ -617,7 +617,7 @@ def resolve_batch(
             # 유실돼 같은 창을 재과금 재시도하던 결함 — 리뷰 MED).
             results: list[tuple] = []
             stuck = drain_completed(
-                pool, _work, targets, handle=results.append, beat=wd.beat, idle_timeout=stall_exit_s,
+                pool, _work, targets, handle=results.append, beat=wd.beat, idle_timeout=stuck_idle_for(stall_exit_s),
                 log_stuck=lambda xs: log.warning("resolve.batch.stuck", n=len(xs)),
             )
             processed += len(stuck)

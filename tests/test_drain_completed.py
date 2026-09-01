@@ -62,3 +62,13 @@ def test_idle_timeout_isolates_stuck_items_and_counts_them() -> None:
 def test_no_items_returns_empty() -> None:
     with ThreadPoolExecutor(max_workers=1) as pool:
         assert drain_completed(pool, lambda x: x, [], handle=lambda r: None) == []
+
+
+def test_zero_or_negative_idle_timeout_means_no_timeout_and_helper_scales() -> None:
+    from leadcrawler.pipeline.run import stuck_idle_for
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        assert drain_completed(pool, lambda x: x, ["a"], handle=lambda r: None, idle_timeout=0) == []
+        assert drain_completed(pool, lambda x: x, ["a"], handle=lambda r: None, idle_timeout=-1) == []
+    assert stuck_idle_for(None) is None and stuck_idle_for(0) is None
+    assert stuck_idle_for(900) == 720.0  # 워치독(900s)보다 먼저.
