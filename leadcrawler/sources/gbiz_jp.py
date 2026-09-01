@@ -253,11 +253,14 @@ class GbizJpSource:
                         continue  # 상호가 다른 업종을 말함 — 상세 콜 없이 건너뜀.
                     scanned += 1
                     info, failed = self._detail(rec["corp_no"])
-                    fail_streak = fail_streak + 1 if failed else 0
-                    if fail_streak >= _GBIZ_TRIP:
-                        log.warning("gbiz_jp.detail_tripped", segment=segment.label)
-                        pos -= 1  # 이 행은 처리 못 함 — 다음 런이 다시 본다.
-                        break
+                    if failed:
+                        fail_streak += 1
+                        if fail_streak >= _GBIZ_TRIP:
+                            log.warning("gbiz_jp.detail_tripped", segment=segment.label)
+                            pos -= fail_streak  # 스트릭 전체를 되돌린다 — 실패행은 다음 런이 다시 본다(리뷰 HIGH).
+                            break
+                        continue  # 이 행은 실패 — 커서는 아직 전진(트립 시 위에서 함께 되돌림).
+                    fail_streak = 0
                     if not info:
                         continue
                     if label is None:

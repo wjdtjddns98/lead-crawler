@@ -14,13 +14,14 @@ ponytail: 정밀도 우선의 짧은 사전이다 — 오라벨 실사고(2026-0
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 # (라벨, 키워드들) — 라벨은 taxonomy.INDUSTRY_TAXONOMY 의 값이어야 한다(테스트가 고정).
 _RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("증권·자산운용", ("証券", "投資顧問", "投資信託", "アセットマネジメント", "投資運用", "投信", "キャピタル", "ファンド")),
     ("은행", ("銀行", "信用金庫", "信用組合", "労働金庫")),
-    ("보험", ("保険", "生命", "損保", "共済")),
+    ("보험", ("保険", "生命保険", "損保", "共済")),
     ("핀테크·결제", ("決済", "ペイメント", "クレジット", "リース", "ファイナンス", "ローン", "電子マネー")),
     ("제약·바이오", ("製薬", "薬品", "ファーマ", "バイオ", "医薬", "創薬")),
     ("의료기기", ("医療機器", "歯科材料", "医療用具")),
@@ -50,10 +51,10 @@ _RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
                           "エンタテインメント", "エンターテインメント")),
     ("광고·마케팅", ("広告", "マーケティング", "プロモーション", "アドバタイジング")),
     ("정보보안", ("セキュリティ", "サイバー")),
-    ("AI·데이터", ("人工知能", "データサイエンス", "データ分析", "ＡＩ", "AI")),
-    ("이커머스·플랫폼", ("通販", "ＥＣ", "オンラインショップ", "ネットショップ", "プラットフォーム")),
+    ("AI·데이터", ("人工知能", "データサイエンス", "データ分析")),
+    ("이커머스·플랫폼", ("通販", "オンラインショップ", "ネットショップ", "プラットフォーム")),
     ("IT·소프트웨어", ("ソフト", "システム", "情報", "コンピュータ", "テクノロジー", "テック", "ソリューション",
-                     "ネットワーク", "デジタル", "ＩＴ", "IT", "クラウド", "アプリ", "Ｗｅｂ", "ウェブ", "ＳＥ", "開発受託")),
+                     "ネットワーク", "デジタル", "クラウド", "アプリ", "ウェブ", "開発受託")),
     ("통신·네트워크", ("通信", "テレコム", "ケーブル")),
     ("신재생에너지", ("太陽光", "再生可能", "風力", "バイオマス")),
     ("에너지·전력", ("電力", "エネルギー", "ガス", "発電", "石炭", "燃料")),
@@ -67,25 +68,35 @@ _RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("기타 제조", ("工業", "製造", "製品", "加工", "産業")),
 )
 
-_HOLDING_MARK = ("ホールディングス", "グループ本社", "持株")
+# 2글자 라틴 토큰은 단어 경계로만(공백 제거 문자열에서 'DIGITAL'·'UNIT' 안의 IT 같은 우연 매치 방지 — 리뷰 MED).
+_LATIN_TOKEN_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("AI·데이터", ("AI",)),
+    ("이커머스·플랫폼", ("EC",)),
+    ("IT·소프트웨어", ("IT", "WEB", "DX")),
+)
+_LATIN_TOKEN = {
+    label: re.compile(r"(?<![A-Za-z0-9])(?:" + "|".join(map(re.escape, toks)) + r")(?![A-Za-z0-9])", re.I)
+    for label, toks in _LATIN_TOKEN_RULES
+}
 
 
-def _norm(text: str) -> str:
-    """전각 영숫자→반각, 공백 제거 — 'ＩＴ'·'ＡＩ' 같은 전각 표기와 반각 키워드를 함께 잡기 위해."""
-    return "".join(unicodedata.normalize("NFKC", text or "").split())
+def _nfkc(text: str) -> str:
+    """전각 영숫자→반각(ＩＴ→IT), 공백은 1칸으로 축약(라틴 단어 경계 보존)."""
+    return " ".join(unicodedata.normalize("NFKC", text or "").split())
 
 
 def classify_jp(name: str, summary: str | None = None) -> str | None:
-    """상호(우선) → 사업요약(보조) 순으로 첫 매치 라벨. 없으면 None.
-
-    지주회사 표기(ホールディングス 등)는 상호에서 업태를 못 읽는 경우가 많아 요약으로 넘어간다.
-    """
+    """상호(우선) → 사업요약(보조) 순으로 첫 매치 라벨. 없으면 None."""
     for text in (name, summary or ""):
-        t = _norm(text)
+        t = _nfkc(text)
         if not t:
             continue
+        packed = t.replace(" ", "")  # 일본어 키워드는 공백 무시 매치(相 談 役 같은 분철 표기).
         for label, keys in _RULES:
-            if any(k in t or _norm(k) in t for k in keys):
+            if any(k in packed for k in keys):
+                return label
+        for label, rx in _LATIN_TOKEN.items():
+            if rx.search(t):
                 return label
     return None
 

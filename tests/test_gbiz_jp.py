@@ -44,7 +44,11 @@ def test_rule_labels_are_taxonomy_labels() -> None:
         ("ヤマト運輸株式会社", None, "물류·운송"),
         ("武田薬品工業株式会社", None, "제약·바이오"),  # 薬品 이 工業 보다 앞 규칙.
         ("三菱地所株式会社", None, "부동산·개발"),
-        ("株式会社ＩＴソリューションズ", None, "IT·소프트웨어"),  # 전각 ＩＴ 정규화.
+        ("株式会社ＩＴソリューションズ", None, "IT·소프트웨어"),  # 'ソリューション' 규칙.
+        ("株式会社 ＩＴ ジャパン", None, "IT·소프트웨어"),  # 전각 ＩＴ → 단어 경계 토큰.
+        ("DIGITAL UNIT株式会社", None, None),  # 'IT' 가 단어 안에 — 매치 금지.
+        ("第一生命保険株式会社", None, "보험"),
+        ("株式会社生命科学研究所", None, "전문서비스"),  # '生命' 단독은 보험 아님(研究所 규칙).
         ("株式会社ウエスト", None, None),  # 브랜드형 상호 — 못 정함.
         ("株式会社ウエスト", "鋼材卸売業", "철강·금속"),  # 요약이 보조 신호.
         ("株式会社ランドハウジング", "総合不動産業", "부동산·개발"),
@@ -189,7 +193,7 @@ def test_live_detail_failures_trip_breaker_and_keep_cursor() -> None:
     got = GbizJpSource(_live(), fetcher=fake, cursor_store=store).discover(_seg("물류·운송"))
     assert got == []
     assert len([u for u in fake.calls if "/v1/hojin/" in u]) == 3  # 3회 실패 후 차단.
-    assert store.d[("gbiz_jp", "JP/물류·운송/unknown/13-300-max")] == 2  # 실패한 3번째 행은 다음 런이 다시 본다.
+    assert ("gbiz_jp", "JP/물류·운송/unknown/13-300-max") not in store.d  # 실패 3행 전부 되돌림(커서 미전진).
 
 
 def test_live_fails_closed_without_edinet_exclusion(monkeypatch: pytest.MonkeyPatch) -> None:
