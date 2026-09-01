@@ -431,6 +431,7 @@ export async function fetchSegmentJobPreview(f: {
 
 // 작업 요청 — 실행 중인 S 잡이 없으면 즉시 running, 있으면 queued(+queue_position).
 // 조건 위반(빈 국가·업종, KR 없는데 지역 지정, 세그먼트 상한 초과 등)은 422 + 한국어 detail.
+// repeat_every_min>0 이면 done 뒤 다음 회차가 자동 적재된다(#452 — 크롤실행 continuous 대체).
 export async function createSegmentJob(f: SegmentJobRequest): Promise<SegmentJobInfo> {
   return apiSend("POST", "/admin/segment-jobs", f);
 }
