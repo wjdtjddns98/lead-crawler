@@ -162,6 +162,67 @@ def _domain_of(url: str | None) -> str | None:
     return host if host and "." in host else None
 
 
+def edinet_listed_corp_numbers(get_bytes) -> frozenset[str]:  # noqa: ANN001
+    """EDINET 코드리스트의 상장 내국법인 법인번호 집합(프로세스 24h 캐시). 실패 시 빈 집합(제외 없음).
+
+    ``get_bytes(url) -> bytes`` 를 받는다(소스별 Fetcher 주입). fsa_jp·gbiz_jp 가 공유 —
+    두 소스 모두 EDINET 상장사와의 교차키 중복을 여기서 자른다.
+    """
+    global _edinet_cache
+    now = time.monotonic()
+    with _edinet_lock:
+        if _edinet_cache is not None and now - _edinet_cache[0] < _XLSX_TTL_S:
+            return _edinet_cache[1]
+        try:
+            rows = _parse_codelist(get_bytes(_CODELIST_URL))
+        except Exception as exc:
+            log.info("fsa_jp.edinet_fetch_error", err=str(exc))
+            return _edinet_cache[1] if _edinet_cache is not None else frozenset()
+        listed = frozenset(
+            r.get(_COL_CORP_NO, "").strip() for r in rows
+            if r.get(_COL_LISTED, "").strip() == _LISTED_MARK and r.get(_COL_CORP_NO, "").strip()
+        )
+        if listed:
+            _edinet_cache = (now, listed)
+        else:
+            log.warning("fsa_jp.edinet_empty")
+        return listed
+
+
+def fsa_list_rows(get_bytes, url: str, skip_sheet: str | None, sec_flags: bool) -> list[dict[str, str]] | None:  # noqa: ANN001
+    """일람 1개의 행 — 프로세스 캐시(24h) 우선. 실패/0건은 None(캐시 안 함, stale-if-error)."""
+    now = time.monotonic()
+    with _locks.get(url) or _lock_fallback:
+        hit = _xlsx_cache.get(url)
+        if hit is not None and now - hit[0] < _XLSX_TTL_S:
+            return hit[1]
+        try:
+            blob = get_bytes(url)
+        except Exception as exc:
+            log.info("fsa_jp.fetch_error", url=url, err=str(exc))
+            return hit[1] if hit is not None else None
+        rows = parse_list(blob, skip_sheet=skip_sheet, sec_flags=sec_flags)
+        if not rows:
+            log.warning("fsa_jp.parse_empty", url=url)
+            return hit[1] if hit is not None else None
+        _xlsx_cache[url] = (now, rows)
+        return rows
+
+
+def fsa_corp_numbers(get_bytes) -> frozenset[str]:  # noqa: ANN001
+    """금융청 일람 3종의 법인번호 집합(gbiz_jp 가 금융사를 fsa_jp 에 맡기고 건너뛰는 용도).
+
+    한 파일이라도 못 받으면 그 파일 분은 빠진다(그 회사는 gbiz 로도 들어올 수 있음 — 도메인 동치
+    dedup 이 백스톱).
+    """
+    out: set[str] = set()
+    for url, label, skip in _LISTS:
+        rows = fsa_list_rows(get_bytes, url, skip, sec_flags=(label == _SEC))
+        for r in rows or ():
+            out.add(r["corp_no"])
+    return frozenset(out)
+
+
 class FsaJpSource:
     """금융청 등록·면허 일람 기반 일본 금융사 발견 소스(등록처 tier — EDINET 뒤·협회 명부 앞)."""
 
@@ -224,23 +285,7 @@ class FsaJpSource:
         return self._fetcher
 
     def _rows(self, url: str, skip_sheet: str | None, sec_flags: bool) -> list[dict[str, str]] | None:
-        """일람 1개의 행 — 프로세스 캐시(24h) 우선. 실패/0건은 None(캐시 안 함)."""
-        now = time.monotonic()
-        with _locks.get(url) or _lock_fallback:
-            hit = _xlsx_cache.get(url)
-            if hit is not None and now - hit[0] < _XLSX_TTL_S:
-                return hit[1]
-            try:
-                blob = self._client().get_bytes(url)
-            except Exception as exc:
-                log.info("fsa_jp.fetch_error", url=url, err=str(exc))
-                return hit[1] if hit is not None else None  # stale-if-error.
-            rows = parse_list(blob, skip_sheet=skip_sheet, sec_flags=sec_flags)
-            if not rows:
-                log.warning("fsa_jp.parse_empty", url=url)
-                return hit[1] if hit is not None else None
-            _xlsx_cache[url] = (now, rows)
-            return rows
+        return fsa_list_rows(self._client().get_bytes, url, skip_sheet, sec_flags)
 
     def _gbiz(self, corp_no: str) -> tuple[dict[str, str] | None, bool]:
         """gBizINFO 법인 기본정보(company_url·name_en) → (정보, 호출 실패 여부). 프로세스 캐시.
@@ -280,26 +325,7 @@ class FsaJpSource:
         return info, failed
 
     def _edinet_listed(self) -> frozenset[str]:
-        """EDINET 코드리스트의 상장 내국법인 법인번호 집합(24h 캐시). 실패 시 빈 집합(제외 없음)."""
-        global _edinet_cache
-        now = time.monotonic()
-        with _edinet_lock:
-            if _edinet_cache is not None and now - _edinet_cache[0] < _XLSX_TTL_S:
-                return _edinet_cache[1]
-            try:
-                rows = _parse_codelist(self._client().get_bytes(_CODELIST_URL))
-            except Exception as exc:
-                log.info("fsa_jp.edinet_fetch_error", err=str(exc))
-                return _edinet_cache[1] if _edinet_cache is not None else frozenset()
-            listed = frozenset(
-                r.get(_COL_CORP_NO, "").strip() for r in rows
-                if r.get(_COL_LISTED, "").strip() == _LISTED_MARK and r.get(_COL_CORP_NO, "").strip()
-            )
-            if listed:
-                _edinet_cache = (now, listed)
-            else:
-                log.warning("fsa_jp.edinet_empty")
-            return listed
+        return edinet_listed_corp_numbers(self._client().get_bytes)
 
     def _cursor(self, list_seg: Segment) -> int:
         """저장된 커서(없으면 0). base.cursor_offset 과 달리 끝(=total) 도 그대로 돌려준다."""
