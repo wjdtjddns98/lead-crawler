@@ -405,7 +405,8 @@ export interface DashboardSummary {
 // GET /admin/companies — 큐 상태와 **무관하게** company 전체를 회사명·홈페이지·이메일/문의폼
 // URL·발견 원장의 보관 상호(name_eng)로 부분일치(대소문자 무시) 조회한다. 중복 확인·수동
 // 조회용. name_eng 의 표기는 소스마다 다르다(DART·NPS=국내 영문명, EDINET=일문 원문 — BE
-// #412 로 name 이 영문 상호가 되면서 자리를 맞바꿨다).
+// #412 로 name 이 영문 상호가 되면서 자리를 맞바꿨다). jp_assoc(BE #443)도 #445 이후 IMAJ 는
+// 같은 슬롯을 쓰지만, JSDA·IMAJ 미매칭분은 표시명이 일문이고 name_eng 가 없다.
 
 // role 은 EmailRole 어휘(ir/general/hr/press/personal/unknown), status 는 이메일 검증
 // 상태(valid/risky/invalid/unknown) — **미검증이면 null**이라 큐의 email_status 와 같은 표기를 쓴다.

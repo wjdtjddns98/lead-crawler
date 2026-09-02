@@ -844,6 +844,9 @@ function dashboardSummaryJson(): DashboardSummary {
 // 표기는 소스마다 다르다: DART·NPS 는 국내 기업의 영문명, EDINET 은 일본 기업의 일문 원문
 // (BE #412 로 표시명 name 이 영문 상호가 되면서 자리를 맞바꿨다). 두 방향을 다 깔아 둬야
 // 안내 문구("국내 영문명, 일본 일문 원문")를 목에서 그대로 확인할 수 있다.
+// 셋째 경우 — 표시명이 일문이고 name_eng 가 아예 없다(jp_assoc 중 JSDA·IMAJ 미매칭분. IMAJ
+// 매칭분은 BE #445 로 EDINET 과 같은 슬롯이 됐다) — 은 목에 없다. 그 행은 name 매칭만 타므로
+// 목으로 재현할 게 없어서다(라이브에서만 관찰된다).
 const MOCK_NAME_ENG: Record<string, string> = {
   "cs-jp1": "ビーホールディングス",
   "cs-kr1": "Hanbit Precision Co., Ltd.",
