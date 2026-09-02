@@ -296,6 +296,11 @@ export async function fetchReviewDaily(date?: string): Promise<ReviewDailyStats>
 // 몫(total 동봉). name_eng 는 표기가 소스마다 다르다 — DART·NPS 는 국내 기업의 **영문명**,
 // EDINET 은 BE #412 이후 일본 기업의 **일문 원문**(표시명 name 이 영문 상호로 바뀌면서 자리를
 // 맞바꿨다). 그래서 "영문명"이라고 안내하면 일문 검색이 되는 사실이 가려진다.
+// 일본이라고 표시명이 늘 영문인 건 아니다 — 협회 회원명부 소스(BE #443 jp_assoc) 중 IMAJ 는
+// #445 로 영문 회원명부를 도메인 매칭해 EDINET 과 같은 슬롯(name=영문 상호·name_eng=일문)이
+// 됐지만, 영문 목록에 회원 URL 이 없는 JSDA(+IMAJ 미매칭 소수)는 **표시명 자체가 일문**이고
+// name_eng 도 없다. 그 행만은 영문 질의로 못 잡는다 — 데이터에 영문 표기가 부재라 FE 보정
+// 불가(홈페이지에서 영문 상호를 캐는 BE 백필이 후속).
 // ponytail: 선두 와일드카드 ILIKE 라 인덱스를 안 타고 라이브에서 200~330ms — **타이핑마다
 // 호출 금지**(호출부는 Enter·검색 버튼 등 명시적 제출에서만 부른다).
 // reviewStatus(BE #424, additive): 생략하면 기존과 동일하게 큐 상태 무관 전체 검색.
