@@ -406,7 +406,12 @@ export interface DashboardSummary {
 // URL·발견 원장의 보관 상호(name_eng)로 부분일치(대소문자 무시) 조회한다. 중복 확인·수동
 // 조회용. name_eng 의 표기는 소스마다 다르다(DART·NPS=국내 영문명, EDINET=일문 원문 — BE
 // #412 로 name 이 영문 상호가 되면서 자리를 맞바꿨다). jp_assoc(BE #443)도 #445 이후 IMAJ 는
-// 같은 슬롯을 쓰지만, JSDA·IMAJ 미매칭분은 표시명이 일문이고 name_eng 가 없다.
+// 같은 슬롯을 쓰지만, JSDA·IMAJ 미매칭분은 표시명이 일문이고 name_eng 가 없다. 뒤이은 일본
+// 소스도 그렇다 — fsa_jp(BE #449)는 gBizINFO 로 영문이 붙어 EDINET 슬롯이 되나 호스트 교정
+// (BE #456) 전 유입분은 일문뿐이고, 전수 소스 gbiz_jp(BE #458)는 gBizINFO name_en 보유율이
+// 2.5% 라 절대다수가 영구히 일문·name_eng 없음이다(대신 도메인은 항상 있어 홈페이지로 잡힌다).
+// 일본 기업은 일문이 두 슬롯 중 하나엔 있지만 영문은 없을 수 있다 — 영문 질의를 기본으로
+// 안내하지 않는다.
 
 // role 은 EmailRole 어휘(ir/general/hr/press/personal/unknown), status 는 이메일 검증
 // 상태(valid/risky/invalid/unknown) — **미검증이면 null**이라 큐의 email_status 와 같은 표기를 쓴다.
