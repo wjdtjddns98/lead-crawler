@@ -73,7 +73,7 @@ const MOCK_INDUSTRIES: { value: string; label: string; aliases: string[] }[] = [
   { value: "에너지·전력", label: "에너지·전력", aliases: ["energy"] },
 ];
 
-// 구분 택소노미 42종 — leadcrawler/sources/taxonomy.py INDUSTRY_TAXONOMY 전량(순서 동일).
+// 구분 택소노미 43종 — leadcrawler/sources/taxonomy.py INDUSTRY_TAXONOMY 전량(순서 동일).
 // 큐 행 industry 저장 어휘이자 /queue/filters 구분 옵션(#115)의 출처.
 const MOCK_TAXONOMY: string[] = [
   // 제조
@@ -90,7 +90,8 @@ const MOCK_TAXONOMY: string[] = [
   // 유통·소비
   "이커머스·플랫폼", "유통·도소매", "물류·운송", "여행·숙박·항공", "외식·프랜차이즈",
   // 에너지·인프라
-  "에너지·전력", "신재생에너지", "환경·폐기물",
+  // '광업·자원'은 BE #447 로 신설(광산 기업이 농림·수산/화학으로 오배치되던 것 교정).
+  "에너지·전력", "신재생에너지", "환경·폐기물", "광업·자원",
   // 서비스·기타
   "의료·헬스케어", "교육", "전문서비스", "농림·수산", "공공·비영리",
 ];
@@ -1054,7 +1055,7 @@ function route(url: string, method: string, init?: RequestInit): Response | unde
   // 보유 데이터 대시보드 스냅샷(#378) — 진입 1회 조회라 mock 도 매 호출 즉석 집계.
   if (path === "/dashboard/summary" && method === "GET") return jsonRes(dashboardSummaryJson());
 
-  // 검증 큐 필터 옵션 — 국가(countries.py) 전량 + 구분 택소노미 42+미분류(#115, BE 와 동일).
+  // 검증 큐 필터 옵션 — 국가(countries.py) 전량 + 구분 택소노미 43+미분류(#115, BE 와 동일).
   if (path === "/queue/filters" && method === "GET") {
     return jsonRes({
       countries: MOCK_COUNTRIES,
