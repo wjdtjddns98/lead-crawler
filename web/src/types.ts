@@ -408,8 +408,10 @@ export interface DashboardSummary {
 // #412 로 name 이 영문 상호가 되면서 자리를 맞바꿨다). jp_assoc(BE #443)도 #445 이후 IMAJ 는
 // 같은 슬롯을 쓰지만, JSDA·IMAJ 미매칭분은 표시명이 일문이고 name_eng 가 없다. fsa_jp
 // (BE #449)는 gBizINFO 영문명(name_en) 확보 여부로 **행마다** 갈린다 — 붙으면 EDINET 슬롯,
-// 못 붙으면 후자(토큰 미설정이 기본값이라 그때는 전량 후자). 일본 기업은 일문이 두 슬롯 중
-// 하나엔 있지만 영문은 없을 수 있다.
+// 못 붙으면 후자(토큰 미설정이 기본값이라 그때는 전량 후자). 전수 소스 gbiz_jp(BE #458)도
+// 같은 슬롯이지만 gBizINFO name_en 보유율이 2.5% 라 절대다수가 후자이고, 이쪽은 데이터에
+// 영문이 없어서라 안 풀린다(대신 도메인은 항상 있어 홈페이지로 잡힌다). 일본 기업은 일문이
+// 두 슬롯 중 하나엔 있지만 영문은 없을 수 있다.
 
 // role 은 EmailRole 어휘(ir/general/hr/press/personal/unknown), status 는 이메일 검증
 // 상태(valid/risky/invalid/unknown) — **미검증이면 null**이라 큐의 email_status 와 같은 표기를 쓴다.
