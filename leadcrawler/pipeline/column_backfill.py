@@ -147,8 +147,8 @@ def backfill_dart_markets(
 
 
 def _replace_display_name(session, row: DiscoveredCompanyRow, eng: str) -> None:
-    """원장 표시명을 영문으로 교체(원어는 name_eng 보관)하고, 승격된 company 도 같은 원어명이면
-    함께 교체한다(수동 수정명은 원어와 달라 보존) — save_discovered #412 분기와 같은 규칙."""
+    """원장 표시명을 영문으로 교체(원어는 name_eng 보관)하고, 승격된 company 도 아직 같은
+    원어명이면 함께 교체한다(다른 값이면 건드리지 않음) — save_discovered #412 분기와 같은 규칙."""
     old = row.name
     row.name_eng = row.name_eng or old
     row.name = eng

@@ -17,6 +17,7 @@ PO 지시(2026-09-04): 앞으로 들어오는 회사는 KR 을 제외하고 전�
 
 from __future__ import annotations
 
+import html as _html
 import re
 import threading
 from typing import Any, Protocol
@@ -31,8 +32,7 @@ log = get_logger("enrich.name_eng")
 PROVIDER = "name_llm"
 # 머리(title·og)+꼬리(푸터 copyright) — 영문 상호는 대개 이 둘에 있다(2026-08-31 실측 전환 51%).
 _HEAD, _TAIL = 1200, 1800
-# 회사명이 아니라 사이트 잡토큰/도메인을 뱉은 경우 기각.
-_BARE_DOMAIN = re.compile(r"^[\w.-]+\.(?:jp|com|net|org|co\.jp|or\.jp)$", re.I)
+# 회사명이 아니라 사이트 잡토큰을 뱉은 경우 기각(도메인·URL 은 latin_name_or_none 이 기각).
 _JUNK = frozenset({"HOME", "TOP", "IR", "ABSTAIN", "N/A", "NONE", "NULL", "COMPANY", "ENGLISH"})
 
 _PROMPT = """너는 기업의 **공식 영문 상호**를 웹사이트 텍스트에서 찾아내는 추출기다.
@@ -68,11 +68,21 @@ def accept_english_name(raw: str, domain: str | None) -> str | None:
     name = raw.strip().strip('"').strip()
     if not name or name.upper() in _JUNK or "ABSTAIN" in name.upper():
         return None
-    if "://" in name or _BARE_DOMAIN.match(name):
-        return None
     if domain and name.lower() == domain.lower():
         return None
     return latin_name_or_none(name)
+
+
+def _alnum(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def appears_in_page(eng: str, html: str) -> bool:
+    """추출된 영문 상호가 **페이지 본문에 실제 등장**하는지(영숫자만 비교 — 구두점·공백 표기차
+    허용). 환각·프롬프트 인젝션으로 만들어진 이름을 차단하는 결정적 게이트(Codex 리뷰 MED)."""
+    no_scripts = re.sub(r"(?is)<(script|style)[^>]*>.*?</>", " ", html)
+    text = _html.unescape(re.sub(r"(?s)<[^>]+>", " ", no_scripts))
+    return _alnum(eng) in _alnum(text)
 
 
 class SupportsNameEng(Protocol):
@@ -148,6 +158,9 @@ class ClaudeNameEng:
                 self._ledger.record(PROVIDER)
             out = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
             eng = accept_english_name(out, domain)
+            if eng and not appears_in_page(eng, html):
+                log.info("name_eng.not_in_page", name=name, eng=eng)
+                eng = None
             log.info("name_eng.verdict", model=self.model, name=name, eng=eng)
             return eng
         except Exception as exc:  # 키오류·API오류·파싱 → abstain(원어 유지).

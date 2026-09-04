@@ -42,7 +42,10 @@ def test_needs_english_name_excludes_kr_and_latin() -> None:
 def test_english_display_rules() -> None:
     assert english_display(JP, EN, "JP") == (EN, JP)
     assert english_display(JP, None, "JP") == (JP, None)
-    assert english_display(JP, "hokugin.co.jp", "JP") == ("hokugin.co.jp", JP)  # 형식은 통과(도메인 기각은 LLM 경로)
+    assert english_display(JP, "hokugin.co.jp", "JP") == (JP, None)  # 도메인은 상호가 아님(GLEIF 자유입력 방어).
+    assert english_display(JP, "https://x.co.jp/en", "JP") == (JP, None)
+    assert needs_english_name(JP, "Korea, Republic of") is False  # 미해석 국가 = fail-closed.
+    assert needs_english_name(JP, "") is False
     assert english_display("삼성전자", "Samsung Electronics", "KR") == ("삼성전자", None)
     assert english_display("Sony Corp", "Sony", "JP") == ("Sony Corp", None)
     assert latin_name_or_none("X") is None and latin_name_or_none("株式会社") is None
@@ -132,10 +135,15 @@ def test_claude_name_eng_extracts_records_and_abstains(monkeypatch) -> None:
     ledger = _Ledger()
     x = ne.ClaudeNameEng(model="m", api_key="k", ledger=ledger, max_calls=2)
     monkeypatch.setattr(ne, "anthropic_client", lambda **kw: _fake_client(EN))
-    assert x.extract(JP, "hokugin.co.jp", "<html>THE HOKURIKU BANK, LTD.</html>") == EN
+    assert x.extract(JP, "hokugin.co.jp", "<html>The Hokuriku Bank,Ltd. &amp; co</html>") == EN
     assert ledger.recorded == ["name_llm"]
+    # 페이지에 없는 이름(환각·인젝션)은 과금됐어도 기각.
+    assert x.extract(JP, "hokugin.co.jp", "<html>welcome</html>") is None
+    assert ledger.recorded == ["name_llm", "name_llm"]
     assert x.extract(JP, "hokugin.co.jp", None) is None  # 홈페이지 게이트 — 호출·과금 0.
-    assert ledger.recorded == ["name_llm"]
+    assert ledger.recorded == ["name_llm", "name_llm"]
+    assert ne.appears_in_page("ABC Holdings, Inc.", "<p>ABC HOLDINGS INC</p>")
+    assert not ne.appears_in_page("ABC Holdings, Inc.", "<p>XYZ</p>")
     y = ne.ClaudeNameEng(model="m", api_key="k", ledger=_Ledger(), max_calls=1)
     monkeypatch.setattr(ne, "anthropic_client", lambda **kw: _fake_client("ABSTAIN"))
     assert y.extract(JP, "d", "<p>x</p>") is None

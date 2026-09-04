@@ -196,7 +196,7 @@ def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompan
         # 표시명 영문 우선(#412): 원장이 아직 일문(=재발견분의 name_eng 원문)이면 영문으로 교체.
         if dc.name_eng and row.name == dc.name_eng and dc.name != dc.name_eng:
             row.name = _clip(dc.name)
-            # 이미 승격된 회사도 같은 원어명이면 함께 교체(수동 수정명은 원어와 달라 보존).
+            # 이미 승격된 회사도 아직 같은 원어명이면 함께 교체(다른 값이면 건드리지 않음).
             session.execute(
                 update(CompanyRow)
                 .where(CompanyRow.canonical_key == dc.canonical_key, CompanyRow.name == dc.name_eng)
