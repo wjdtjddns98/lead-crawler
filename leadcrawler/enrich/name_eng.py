@@ -160,8 +160,9 @@ def build_name_eng(
 ) -> SupportsNameEng:
     """설정에 맞는 추출기 — dry_run/키없음/``industry_llm_classify`` off/force_stub 면 스텁.
 
-    켜짐 조건·모델·런당캡은 업종 분류기(:func:`industry_classify.build_classifier`)와
-    같은 설정을 공유한다(같은 Haiku 벌크 호출·같은 예산). ponytail: 별도 플래그는 필요해지면.
+    켜짐 조건·모델·런당캡 **값**은 업종 분류기(:func:`industry_classify.build_classifier`)와
+    같은 설정을 쓴다(같은 Haiku 벌크 호출·같은 월예산). 카운터는 인스턴스별이라 런당 유료 호출은
+    최대 분류+추출 2×캡 — 월예산 가드(cost_ledger)가 최종 상한. ponytail: 별도 플래그는 필요해지면.
     """
     auth_token = settings.anthropic_auth_token
     api_key = settings.anthropic_api_key

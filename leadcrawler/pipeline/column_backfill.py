@@ -7,10 +7,11 @@ cli.py 에 살던 비즈니스 로직을 옮긴 것(2026-08-26 구조 감사 #1)
 from __future__ import annotations
 
 import httpx
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 
 from ..schema import CompanyRow, DiscoveredCompanyRow
 from ..sources.base import english_display, needs_english_name
+from ..sources.countries import country_match_set
 from ..sources.dart import _LISTED_CLS, _MARKET_CLS
 from ..sources.gleif import _API_URL as _GLEIF_URL
 from ..sources.gleif import english_other_name
@@ -155,25 +156,37 @@ def _replace_display_name(session, row: DiscoveredCompanyRow, eng: str) -> None:
         update(CompanyRow)
         .where(CompanyRow.canonical_key == row.canonical_key, CompanyRow.name == old)
         .values(name=eng)
+        .execution_options(synchronize_session=False)  # 스테일 평가 오염 방지(backfill_job 선례).
     )
 
 
-def _english_targets(session, *, registry: str | None = None, limit: int = 0):
+def _english_targets(
+    session, *, registry: str | None = None, with_domain: bool = False, limit: int = 0
+) -> list[DiscoveredCompanyRow]:
     """영문 교체 대상 원장 행 — 원어 표시명·KR 제외(승격된 회사 우선). 원어 판정은 파이썬
-    (PG/SQLite 공통·정규식 방언 회피). ``registry`` 로 등록처(예: lei) 한정."""
+    (PG/SQLite 공통·정규식 방언 회피)이라 SQL 은 KR·중복흡수·등록처·도메인만 먼저 거르고,
+    스트리밍(yield_per)으로 훑다가 ``limit`` 에 닿으면 멈춘다(소량 시험이 전량 로드하지 않게)."""
     stmt = (
         select(DiscoveredCompanyRow)
         .outerjoin(CompanyRow, CompanyRow.canonical_key == DiscoveredCompanyRow.canonical_key)
-        .where(DiscoveredCompanyRow.duplicate_of.is_(None))
+        .where(
+            DiscoveredCompanyRow.duplicate_of.is_(None),
+            func.lower(DiscoveredCompanyRow.country).notin_(sorted(country_match_set(["KR"]))),
+        )
         .order_by(CompanyRow.id.is_(None), DiscoveredCompanyRow.canonical_key)
+        .execution_options(yield_per=500)
     )
     if registry:
         stmt = stmt.where(DiscoveredCompanyRow.registry == registry)
-    out = [
-        r for r in session.execute(stmt).scalars()
-        if needs_english_name(r.name, r.country or "")
-    ]
-    return out[:limit] if limit else out
+    if with_domain:
+        stmt = stmt.where(func.coalesce(DiscoveredCompanyRow.domain, "") != "")
+    out: list[DiscoveredCompanyRow] = []
+    for r in session.execute(stmt).scalars():
+        if needs_english_name(r.name, r.country or ""):
+            out.append(r)
+            if limit and len(out) >= limit:
+                break
+    return out
 
 
 def backfill_name_eng(
@@ -187,9 +200,7 @@ def backfill_name_eng(
     ponytail: abstain 행을 표시할 컬럼이 없어 재실행 시 같은 행에 다시 과금된다(행당 최대
     3콜·5원) — 이 CLI 는 수동·--limit 운영이라 허용. 반복 운영이 되면 name_eng_checked_at.
     """
-    rows = [r for r in _english_targets(session, limit=0) if (r.domain or "").strip()]
-    if limit:
-        rows = rows[:limit]
+    rows = _english_targets(session, with_domain=True, limit=limit)
     updated = 0
     for i, row in enumerate(rows, start=1):
         home = fetch_html(f"https://{row.domain}")

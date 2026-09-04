@@ -350,7 +350,7 @@ class PromoteRun:
     cost_ledger: CostLedger
     registry_checker: object | None
     classifier: object | None
-    name_eng: object | None = None  # 영문 표시명 추출기 — 분류기와 같은 런당 캡 공유 사유.
+    name_eng: object | None = None  # 영문 표시명 추출기 — 분류기와 같은 사유로 런 범위 공유(카운터는 별도).
 
     @classmethod
     def open(cls, settings: Settings) -> PromoteRun:

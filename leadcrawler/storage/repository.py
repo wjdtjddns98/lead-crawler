@@ -201,6 +201,7 @@ def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompan
                 update(CompanyRow)
                 .where(CompanyRow.canonical_key == dc.canonical_key, CompanyRow.name == dc.name_eng)
                 .values(name=_clip(dc.name))
+                .execution_options(synchronize_session=False)  # 스테일 평가 오염 방지(backfill_job 선례).
             )
     if row is None:
         row = DiscoveredCompanyRow(
