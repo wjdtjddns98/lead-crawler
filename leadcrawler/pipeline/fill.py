@@ -27,6 +27,7 @@ from ..cost_ledger import CostLedger
 from ..dedup import normalize_domain
 from ..enrich.enricher import Enricher
 from ..enrich.industry_classify import build_classifier
+from ..enrich.name_eng import build_name_eng
 from ..logging import get_logger
 from ..sources.base import DiscoveredCompany
 from ..sources.countries import country_match_set
@@ -349,6 +350,7 @@ class PromoteRun:
     cost_ledger: CostLedger
     registry_checker: object | None
     classifier: object | None
+    name_eng: object | None = None  # 영문 표시명 추출기 — 분류기와 같은 사유로 런 범위 공유(카운터는 별도).
 
     @classmethod
     def open(cls, settings: Settings) -> PromoteRun:
@@ -360,6 +362,7 @@ class PromoteRun:
             cost_ledger=ledger,
             registry_checker=build_registry_checker(settings, rate_limiters=limiters),
             classifier=build_classifier(settings, ledger=ledger),  # 스텝리스 공유 안전.
+            name_eng=build_name_eng(settings, ledger=ledger),
         )
 
     def close(self) -> None:
@@ -428,7 +431,8 @@ def fill_batch(
         enr, exi, val = _components()
         try:
             return dc, _build_lead(
-                dc, enricher=enr, existence=exi, email_validator=val, classifier=classifier
+                dc, enricher=enr, existence=exi, email_validator=val, classifier=classifier,
+                name_eng=run.name_eng,
             )
         except Exception as exc:  # 1건 실패가 배치를 안 죽이게(제약② 격리).
             log.info("fill.enrich.error", key=dc.canonical_key, err=str(exc))
@@ -487,7 +491,7 @@ _RESOLVE_TARGET_SQL = """
            d.ticker, d.phone, d.ir_url, d.name_eng, d.address
     from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
-    where coalesce(d.domain, '') = '' and co.id is null
+    where coalesce(d.domain, '') = '' and co.id is null and d.duplicate_of is null
       {scope}
     order by d.last_crawled_at asc, d.canonical_key
     limit :limit
@@ -495,7 +499,7 @@ _RESOLVE_TARGET_SQL = """
 _RESOLVE_COUNT_SQL = """
     select count(*) from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
-    where coalesce(d.domain, '') = '' and co.id is null
+    where coalesce(d.domain, '') = '' and co.id is null and d.duplicate_of is null
       {scope}
     """
 
@@ -597,7 +601,8 @@ def resolve_batch(
         dc2 = dc.model_copy(update={"domain": found})
         try:
             return dc2, found, _build_lead(
-                dc2, enricher=enr, existence=exi, email_validator=val, classifier=classifier
+                dc2, enricher=enr, existence=exi, email_validator=val, classifier=classifier,
+                name_eng=run.name_eng,
             )
         except Exception as exc:
             # enrich/existence 예외 — found=None 으로 반환해 도메인을 **기록하지 않는다**.

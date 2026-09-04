@@ -1447,6 +1447,78 @@ def backfill_industry(
     )
 
 
+@app.command("backfill-name-eng")
+def backfill_name_eng_cmd(
+    limit: int = typer.Option(0, help="처리 상한(0=전체, 단계별 적용) — 소량 시험용"),
+    skip_homepage: bool = typer.Option(
+        False, "--skip-homepage", help="무과금 GLEIF 재조회만 하고 홈페이지 LLM 추출은 건너뜀"
+    ),
+) -> None:
+    """원어(일문 등) 표시명으로 남은 기존 회사(KR 제외)를 영문 표시명으로 소급 교체한다(멱등).
+
+    ① GLEIF 행은 LEI 일괄 재조회로 등록자 제출 영문 법인명을 받는다(무과금).
+    ② 도메인 있는 행은 홈페이지(+/en/·/english/)에 실제 적힌 영문 상호를 LLM 으로 추출한다 —
+    파이프라인 유입 시점(_build_lead)과 같은 추출기·같은 규칙(번역·음역 금지, abstain=원어
+    유지). dry_run/키없음이면 ②는 스텁(무과금·무변경)이고 ①은 네트워크 0 계약에 따라 건너뛴다.
+    """
+    import httpx
+
+    from .cost_ledger import CostLedger
+    from .enrich.name_eng import build_name_eng
+    from .pipeline.column_backfill import (
+        backfill_gleif_names,
+        backfill_name_eng,
+        fetch_industry_html,
+    )
+    from .storage.db import get_sessionmaker
+
+    configure_logging()
+    settings = get_settings()
+    ledger = CostLedger(settings, persist=not settings.dry_run)
+    extractor = build_name_eng(settings, ledger=ledger)
+    client = httpx.Client(
+        timeout=10, follow_redirects=True, headers={"User-Agent": settings.discovery_user_agent}
+    )
+    session = get_sessionmaker(settings)()
+    try:
+        if settings.dry_run:
+            typer.echo("DRY-RUN — GLEIF 재조회 건너뜀(네트워크 0 계약)")
+            g_seen = g_upd = 0
+        else:
+            g_seen, g_upd = backfill_gleif_names(
+                session, fetch_json=lambda url, params: client.get(url, params=params).json(),
+                limit=limit,
+            )
+            session.commit()
+        typer.echo(f"GLEIF 영문명 소급: 검토 {g_seen}건 → 전환 {g_upd}건")
+        if skip_homepage:
+            return
+        from .enrich.headless import PlaywrightRenderer
+
+        renderer = PlaywrightRenderer(timeout=settings.headless_timeout)
+
+        def fetch_html(url: str) -> str | None:
+            if extractor.model == "stub":  # dry_run/키없음 — 네트워크 0 계약(§2) 유지.
+                return None
+            return fetch_industry_html(url, get=client.get, render=renderer.render)
+
+        try:
+            h_seen, h_upd = backfill_name_eng(
+                session, extractor, fetch_html=fetch_html, limit=limit
+            )
+            session.commit()
+        finally:
+            renderer.close()
+        mode = "스텁(무과금)" if extractor.model == "stub" else f"LLM({extractor.model})"
+        typer.echo(
+            f"홈페이지 영문명 소급[{mode}]: 검토 {h_seen}건 → 전환 {h_upd}건 "
+            f"(나머지는 근거 없음 — 원어 유지)"
+        )
+    finally:
+        session.close()
+        client.close()
+
+
 @app.command("backfill-market")
 def backfill_market(
     limit: int = typer.Option(0, help="처리 상한(0=전체) — 소량 시험용"),

@@ -46,13 +46,16 @@ log = get_logger("pipeline.promote")
 # canonical_key 커서로 전진한다. "대상에서 빠지는가"에 기대면 안 된다 — 죽은 사이트는
 # 제약②로 company 가 안 생겨 co.id is null 을 계속 만족하므로, 같은 배치가 영원히 재선택
 # 된다. discovered_company 의 PK 는 canonical_key 다(id 컬럼 없음 — 2026-07-31 실사고).
+# dedup 이 흡수한 행(duplicate_of 기록)은 제외 — 생존자와 도메인이 다른 흡수행이 별도 회사로
+# 재승격되던 사각(2026-09-01 FINE 운용사 병합 후 발견).
 _TARGET_SQL = """
     select d.canonical_key, d.name, d.country, d.industry, d.listed, d.domain,
            d.registry, d.registry_id, d.source, d.segment, d.reg_no, d.region,
            d.ticker, d.phone, d.ir_url, d.name_eng, d.address
     from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
-    where co.id is null and coalesce(d.domain, '') <> '' and d.canonical_key > :after
+    where co.id is null and coalesce(d.domain, '') <> '' and d.duplicate_of is null
+      and d.canonical_key > :after
     {scope}
     order by d.canonical_key
     limit :limit
@@ -61,7 +64,7 @@ _COUNT_SQL = """
     select count(*)
     from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
-    where co.id is null and coalesce(d.domain, '') <> '' {scope}
+    where co.id is null and coalesce(d.domain, '') <> '' and d.duplicate_of is null {scope}
     """
 
 
@@ -82,10 +85,15 @@ def _load_domain_guards(session) -> tuple[set[str], set[str]]:  # noqa: ANN001 (
     }
     # 원장 domain 은 소스에 따라 raw URL 표기가 섞일 수 있어(save_discovered 는 정규화
     # 안 함) SQL group by 대신 정규화 후 집계한다 — 표기 분산으로 캡을 우회하지 못하게
-    # (교차리뷰 MED).
+    # (교차리뷰 MED). dedup 흡수행(duplicate_of)은 생존자와 같은 회사라 세지 않는다 —
+    # 세면 alias 3개 이상인 정상 회사가 디렉터리로 오판돼 영구 스킵된다(2026-09-01 라이브
+    # 실증: hanwhafund.co.kr·timefolio.co.kr).
     counts: Counter[str] = Counter()
     for (dom,) in session.execute(
-        text("select domain from discovered_company where coalesce(domain,'') <> ''")
+        text(
+            "select domain from discovered_company"
+            " where coalesce(domain,'') <> '' and duplicate_of is null"
+        )
     ):
         nd = normalize_domain(dom)
         if nd is not None:
@@ -200,7 +208,8 @@ def promote_batch(
         enr, exi, val = _components()
         try:
             return dc, _build_lead(
-                dc, enricher=enr, existence=exi, email_validator=val, classifier=classifier
+                dc, enricher=enr, existence=exi, email_validator=val, classifier=classifier,
+                name_eng=run.name_eng,
             )
         except Exception as exc:  # 1건 실패가 배치를 안 죽이게(제약② 격리).
             log.info("promote.enrich.error", key=dc.canonical_key, err=str(exc))

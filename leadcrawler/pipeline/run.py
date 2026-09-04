@@ -23,6 +23,7 @@ from ..cost_ledger import CostLedger
 from ..emailrules import accepted_emails, cap_emails
 from ..enrich.enricher import Enricher
 from ..enrich.industry_classify import SupportsClassifier, build_classifier
+from ..enrich.name_eng import SupportsNameEng, build_name_eng
 from ..logging import get_logger
 from ..models import (
     Company,
@@ -36,7 +37,7 @@ from ..models import (
 from ..dedup import normalize_domain
 from ..dedup_resolve.inline import find_inline_duplicate
 from ..dedup_resolve.inline_lexical import InlineLexicalMatcher
-from ..sources.base import DiscoveredCompany, Segment
+from ..sources.base import DiscoveredCompany, Segment, needs_english_name
 from ..sources.domain_resolver import DomainResolver
 from ..sources.taxonomy import AMBIGUOUS_LABELS
 from ..sources.http import HostRateLimiters
@@ -191,8 +192,13 @@ def _build_lead(
     existence: ExistenceVerifier,
     email_validator: EmailValidator,
     classifier: SupportsClassifier,
+    name_eng: SupportsNameEng | None = None,
 ) -> CompanyLead:
     """기업 1건: 연락처 보강 + 실존 검증 + 이메일 검증 → CompanyLead.
+
+    ``name_eng`` 가 있으면 원어 표시명(KR 제외)을 홈페이지 근거 영문 상호로 바꾼다 — ``dc`` 를
+    **제자리 갱신**(name=영문·name_eng=원어)해 호출부의 ``_persist_lead`` → ``save_discovered``
+    (#412 교체 규칙)·``save_lead`` 가 원장·company 양쪽에 같은 이름을 싣게 한다.
 
     seen·progress·leads·파이프라인 DB 세션에는 접근하지 않는다(그건 메인 스레드 전담).
     단, 라이브에서 enrich/validate 는 주입된 **cost_ledger 를 공유**해 record 하고(persist
@@ -238,6 +244,22 @@ def _build_lead(
                 industry = verdict.label
         except Exception as exc:
             log.info("pipeline.classify.error", key=dc.canonical_key, err=str(exc))
+    # 표시명 영문 우선(KR 제외, PO 2026-09-04): 소스가 영문명을 못 준 원어 표시명은 홈페이지
+    # 본문에 실제 적힌 영문 상호로만 교체(추측 금지·abstain=원어 유지). 게이트는 업종 분류와
+    # 동일(is_active·홈페이지 본문) — 같은 본문을 재사용하므로 추가 fetch 0.
+    if (
+        name_eng is not None
+        and ex.is_active
+        and enricher.last_home_html
+        and needs_english_name(dc.name, dc.country)
+    ):
+        try:
+            eng = name_eng.extract(dc.name, dc.domain, enricher.last_home_html)
+        except Exception as exc:  # 방어 — 추출기는 abstain 계약이지만 리드 유실은 막는다.
+            log.info("pipeline.name_eng.error", key=dc.canonical_key, err=str(exc))
+            eng = None
+        if eng:
+            dc.name, dc.name_eng = eng, dc.name_eng or dc.name
     company = Company(
         canonical_key=dc.canonical_key,
         name=dc.name,
@@ -377,6 +399,7 @@ def run_pipeline(
     # 산업 분류기 — 상태없는(호출당 독립 client) 공유 인스턴스라 워커 간 공유 안전(내부 락으로
     # 런당 호출 카운터만 보호). dry_run/플래그off/키없음이면 무네트워크 결정적 스텁으로 폴백.
     classifier = build_classifier(settings, ledger=cost_ledger)
+    name_eng = build_name_eng(settings, ledger=cost_ledger)  # 분류기와 같은 공유·캡 규약.
     # 도메인 해석(opt-in·라이브) — 발견이 도메인을 못 준 기업(GLEIF 등)을 회사명으로 보강.
     # 없으면 enrich 가 즉시 빈손이라 사이트·이메일을 못 얻는다(핵심 커버리지 갭 해소).
     resolver = (
@@ -407,6 +430,7 @@ def run_pipeline(
                 existence=existence,
                 email_validator=email_validator,
                 classifier=classifier,
+                name_eng=name_eng,
             )
             enrich_durations.append(time.monotonic() - t0)
             return lead
@@ -428,7 +452,8 @@ def run_pipeline(
         enr, exi, val = w
         t0 = time.monotonic()
         lead = _build_lead(
-            dc, enricher=enr, existence=exi, email_validator=val, classifier=classifier
+            dc, enricher=enr, existence=exi, email_validator=val, classifier=classifier,
+            name_eng=name_eng,
         )
         enrich_durations.append(time.monotonic() - t0)
         return lead
