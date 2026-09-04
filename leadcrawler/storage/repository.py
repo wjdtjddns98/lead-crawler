@@ -23,7 +23,7 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -196,6 +196,13 @@ def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompan
         # 표시명 영문 우선(#412): 원장이 아직 일문(=재발견분의 name_eng 원문)이면 영문으로 교체.
         if dc.name_eng and row.name == dc.name_eng and dc.name != dc.name_eng:
             row.name = _clip(dc.name)
+            # 이미 승격된 회사도 아직 같은 원어명이면 함께 교체(다른 값이면 건드리지 않음).
+            session.execute(
+                update(CompanyRow)
+                .where(CompanyRow.canonical_key == dc.canonical_key, CompanyRow.name == dc.name_eng)
+                .values(name=_clip(dc.name))
+                .execution_options(synchronize_session=False)  # 스테일 평가 오염 방지(backfill_job 선례).
+            )
     if row is None:
         row = DiscoveredCompanyRow(
             canonical_key=dc.canonical_key,

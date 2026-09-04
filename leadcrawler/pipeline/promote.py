@@ -208,7 +208,8 @@ def promote_batch(
         enr, exi, val = _components()
         try:
             return dc, _build_lead(
-                dc, enricher=enr, existence=exi, email_validator=val, classifier=classifier
+                dc, enricher=enr, existence=exi, email_validator=val, classifier=classifier,
+                name_eng=run.name_eng,
             )
         except Exception as exc:  # 1건 실패가 배치를 안 죽이게(제약② 격리).
             log.info("promote.enrich.error", key=dc.canonical_key, err=str(exc))
