@@ -6,6 +6,7 @@ dry_run 에서는 :class:`DummySource` 가 네트워크 없이 결정적 후보�
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from functools import partial
@@ -16,6 +17,7 @@ from pydantic import BaseModel, Field
 from ..dedup import canonical_key
 from ..logging import get_logger
 from ..region import region_from_address
+from .countries import resolve_country
 from .industry import resolve_industry_label
 
 log = get_logger("sources.cursor")
@@ -169,6 +171,44 @@ def opt_str(value: object) -> str | None:
         stripped = value.strip()
         return stripped or None
     return None
+
+
+# 원어(비라틴 문자) 표시명 판정 — 가나·CJK·한글·태국·키릴 문자가 하나라도 있으면 '원어'.
+_NON_LATIN = re.compile(r"[぀-ヿ㐀-鿿가-힯฀-๿Ѐ-ӿ]")
+# 영문 표시명으로 받아들이는 닫힌 형식 — 라틴 문자·숫자·상호에 흔한 구두점만(도메인·URL 은
+# 호출부에서 별도 기각). 알파벳 3연속이 없으면 상호로 안 본다.
+_LATIN_NAME = re.compile(r"^[A-Za-z0-9 .,&'()\-/+]{3,120}$")
+
+
+def is_non_latin_name(name: str | None) -> bool:
+    """표시명이 원어(비라틴 문자 포함)인지 — 영문 우선 규약의 적용 대상 판정."""
+    return bool(name) and _NON_LATIN.search(name) is not None
+
+
+def latin_name_or_none(value: str | None) -> str | None:
+    """영문 표시명 후보를 닫힌 형식으로 검증해 돌려준다(부적합=None)."""
+    e = (value or "").strip().strip('"').strip()
+    if not e or not _LATIN_NAME.match(e) or not re.search(r"[A-Za-z]{3}", e):
+        return None
+    return e
+
+
+def needs_english_name(name: str | None, country: str) -> bool:
+    """영문 표시명 교체 대상인지 — 원어 표시명이고 **KR 이 아닌** 회사(PO 2026-09-04:
+    한국은 한국어 유지, 그 외 전부 영문)."""
+    c = resolve_country(country)
+    return is_non_latin_name(name) and not (c is not None and c.iso2 == "KR")
+
+
+def english_display(local: str, eng: str | None, country: str) -> tuple[str, str | None]:
+    """표시명 영문 우선(#412 규약, KR 제외): 원어 상호에 소스가 준 영문명이 있으면
+    ``(name=영문, name_eng=원어)``, 아니면 ``(원어, None)``. 이미 라틴 표시명이면 그대로."""
+    if not needs_english_name(local, country):
+        return local, None
+    e = latin_name_or_none(eng)
+    if e is None:
+        return local, None
+    return e, local
 
 
 def join_address(*parts: object) -> str | None:

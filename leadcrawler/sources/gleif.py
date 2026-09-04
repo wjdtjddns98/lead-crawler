@@ -28,6 +28,7 @@ from .base import (
     Segment,
     SupportsCursorStore,
     build_company,
+    english_display,
     join_address,
     opt_str,
 )
@@ -179,6 +180,9 @@ class GleifSource:
         lei = rec.get("id") or attrs.get("lei")
         if not name or not lei:
             return None
+        # 표시명 영문 우선(KR 제외): 원어 legalName(ja 등)에 등록자가 낸 영문 법인명
+        # (otherNames language=en)이 있으면 그걸 name 으로, 원어는 name_eng 보관(#412 규약).
+        name, name_eng = english_display(str(name), english_other_name(entity), segment.country)
         # 풍부필드 — LEI 레코드가 이미 주는 값(추가 호출 0): 법정주소·현지 등록번호.
         la = entity.get("legalAddress")
         address = region = None
@@ -193,11 +197,26 @@ class GleifSource:
         return build_company(
             source=self.name,
             segment=segment,
-            name=str(name),
+            name=name,
             domain=None,  # LEI 레코드엔 웹사이트 없음 → enrich 단계에서 보강.
             registry="lei",
             registry_id=str(lei),
             address=address,
             region=region,
             reg_no=opt_str(entity.get("registeredAs")),
+            name_eng=name_eng,
         )
+
+
+def english_other_name(entity: dict) -> str | None:
+    """LEI 레코드 entity 의 등록자 제출 영문 법인명(``otherNames`` language=en,
+    ALTERNATIVE_LANGUAGE_LEGAL_NAME) — 없으면 None. 2026-09-04 JP ACTIVE 표본 600 중 556 보유.
+    ponytail: transliteratedOtherNames(로마자 음역)는 영문 상호가 아니라 채택하지 않는다."""
+    for o in entity.get("otherNames") or []:
+        if (
+            isinstance(o, dict)
+            and o.get("language") == "en"
+            and o.get("type") == "ALTERNATIVE_LANGUAGE_LEGAL_NAME"
+        ):
+            return opt_str(o.get("name"))
+    return None

@@ -7,10 +7,13 @@ cli.py 에 살던 비즈니스 로직을 옮긴 것(2026-08-26 구조 감사 #1)
 from __future__ import annotations
 
 import httpx
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 
 from ..schema import CompanyRow, DiscoveredCompanyRow
+from ..sources.base import english_display, needs_english_name
 from ..sources.dart import _LISTED_CLS, _MARKET_CLS
+from ..sources.gleif import _API_URL as _GLEIF_URL
+from ..sources.gleif import english_other_name
 from ..sources.taxonomy import AMBIGUOUS_LABELS
 
 
@@ -139,4 +142,100 @@ def backfill_dart_markets(
             updated += 1
         if commit_every and i % commit_every == 0:
             session.commit()  # 중단돼도 여기까지의 기입(=API 콜 소비분)은 살린다.
+    return len(rows), updated
+
+
+def _replace_display_name(session, row: DiscoveredCompanyRow, eng: str) -> None:
+    """원장 표시명을 영문으로 교체(원어는 name_eng 보관)하고, 승격된 company 도 같은 원어명이면
+    함께 교체한다(수동 수정명은 원어와 달라 보존) — save_discovered #412 분기와 같은 규칙."""
+    old = row.name
+    row.name_eng = row.name_eng or old
+    row.name = eng
+    session.execute(
+        update(CompanyRow)
+        .where(CompanyRow.canonical_key == row.canonical_key, CompanyRow.name == old)
+        .values(name=eng)
+    )
+
+
+def _english_targets(session, *, registry: str | None = None, limit: int = 0):
+    """영문 교체 대상 원장 행 — 원어 표시명·KR 제외(승격된 회사 우선). 원어 판정은 파이썬
+    (PG/SQLite 공통·정규식 방언 회피). ``registry`` 로 등록처(예: lei) 한정."""
+    stmt = (
+        select(DiscoveredCompanyRow)
+        .outerjoin(CompanyRow, CompanyRow.canonical_key == DiscoveredCompanyRow.canonical_key)
+        .where(DiscoveredCompanyRow.duplicate_of.is_(None))
+        .order_by(CompanyRow.id.is_(None), DiscoveredCompanyRow.canonical_key)
+    )
+    if registry:
+        stmt = stmt.where(DiscoveredCompanyRow.registry == registry)
+    out = [
+        r for r in session.execute(stmt).scalars()
+        if needs_english_name(r.name, r.country or "")
+    ]
+    return out[:limit] if limit else out
+
+
+def backfill_name_eng(
+    session, extractor, *, fetch_html, limit: int = 0, commit_every: int = 25
+) -> tuple[int, int]:
+    """원어 표시명(KR 제외)·도메인 보유 원장 행을 **홈페이지에 적힌** 영문 상호로 소급 교체 —
+    (검토, 전환) 반환. 파이프라인 유입 시점(run._build_lead)과 같은 추출기·같은 규칙(abstain=
+    원어 유지)이라 반복 실행해도 값은 안전하다.
+
+    홈페이지가 abstain 이면 일본 사이트 관행인 ``/en/``·``/english/`` 를 한 번씩 더 본다.
+    ponytail: abstain 행을 표시할 컬럼이 없어 재실행 시 같은 행에 다시 과금된다(행당 최대
+    3콜·5원) — 이 CLI 는 수동·--limit 운영이라 허용. 반복 운영이 되면 name_eng_checked_at.
+    """
+    rows = [r for r in _english_targets(session, limit=0) if (r.domain or "").strip()]
+    if limit:
+        rows = rows[:limit]
+    updated = 0
+    for i, row in enumerate(rows, start=1):
+        home = fetch_html(f"https://{row.domain}")
+        if not home:
+            continue  # 홈페이지 게이트(업종 백필과 동일) — 본문 없이 이름만으론 추측이라 스킵.
+        eng = extractor.extract(row.name, row.domain, home)
+        for path in ("/en/", "/english/"):
+            if eng:
+                break
+            en_html = fetch_html(f"https://{row.domain}{path}")
+            eng = extractor.extract(row.name, row.domain, en_html) if en_html else None
+        if eng:
+            _replace_display_name(session, row, eng)
+            updated += 1
+        if commit_every and i % commit_every == 0:
+            session.commit()  # 중단돼도 여기까지의 전환(=지출)은 살린다.
+    return len(rows), updated
+
+
+def backfill_gleif_names(
+    session, *, fetch_json, limit: int = 0, batch: int = 100, commit_every: int = 5
+) -> tuple[int, int]:
+    """GLEIF(registry=lei) 원어 표시명 행을 LEI 일괄 조회(``filter[lei]=a,b,…``, 무과금)로
+    재조회해 등록자 제출 영문 법인명(otherNames en)으로 교체 — (검토, 전환) 반환.
+
+    소스 수정(gleif.english_other_name) 이전에 적재된 행의 소급 경로. 도메인이 없어 홈페이지
+    추출이 불가한 행(JP 3,983 등)은 이 경로만 유효하다. ``fetch_json(url, params)`` 주입.
+    """
+    rows = _english_targets(session, registry="lei", limit=limit)
+    by_lei = {r.registry_id: r for r in rows if r.registry_id}
+    leis = list(by_lei)
+    updated = 0
+    for n, start in enumerate(range(0, len(leis), batch), start=1):
+        chunk = leis[start:start + batch]
+        payload = fetch_json(
+            _GLEIF_URL, {"filter[lei]": ",".join(chunk), "page[size]": len(chunk)}
+        )
+        for rec in (payload.get("data") if isinstance(payload, dict) else None) or []:
+            row = by_lei.get(str(rec.get("id") or ""))
+            entity = (rec.get("attributes") or {}).get("entity") if isinstance(rec, dict) else None
+            if row is None or not isinstance(entity, dict):
+                continue
+            name, _ = english_display(row.name, english_other_name(entity), row.country or "")
+            if name != row.name:
+                _replace_display_name(session, row, name)
+                updated += 1
+        if commit_every and n % commit_every == 0:
+            session.commit()
     return len(rows), updated
