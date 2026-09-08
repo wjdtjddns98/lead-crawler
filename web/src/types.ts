@@ -404,8 +404,11 @@ export interface DashboardSummary {
 // --- 관리자 회사 DB 검색(BE PR#418) ------------------------------------
 // GET /admin/companies — 큐 상태와 **무관하게** company 전체를 회사명·홈페이지·이메일/문의폼
 // URL·발견 원장의 보관 상호(name_eng)로 부분일치(대소문자 무시) 조회한다. 중복 확인·수동
-// 조회용. name_eng 의 표기는 소스마다 다르다(DART·NPS=국내 영문명, EDINET=일문 원문 — BE
-// #412 로 name 이 영문 상호가 되면서 자리를 맞바꿨다). jp_assoc(BE #443)도 #445 이후 IMAJ 는
+// 조회용. name_eng 의 표기는 **국가**로 갈린다(BE #478): KR 은 name=국문·name_eng=영문명
+// (DART·NPS), 그 외 전 국가는 name=영문 상호·name_eng=원어 원문(GLEIF 영문 법인명·홈페이지
+// 영문 상호 추출. 근거 없으면 name 원어 유지·name_eng 없음. 기존 행은 BE CLI 소급 전까지
+// 원어 표시명이라 당분간 혼재). 일본 소스가 그 규약의 선례다 — EDINET=일문 원문(BE #412 로
+// name 이 영문 상호가 되면서 자리를 맞바꿨다). jp_assoc(BE #443)도 #445 이후 IMAJ 는
 // 같은 슬롯을 쓰지만, JSDA·IMAJ 미매칭분은 표시명이 일문이고 name_eng 가 없다. fsa_jp
 // (BE #449)는 gBizINFO 영문명(name_en) 확보 여부로 **행마다** 갈린다 — 붙으면 EDINET 슬롯,
 // 못 붙으면 후자(토큰 미설정이 기본값이라 그때는 전량 후자). 전수 소스 gbiz_jp(BE #458)도

@@ -109,7 +109,7 @@ export function CompanySearchSection() {
       </h2>
       <p className="text-muted text-[13px] mt-0 mb-3">
         검증 큐와 무관하게 회사 DB 전체를 찾습니다 — 회사명·홈페이지·이메일/문의폼 주소·원장
-        보관 상호(국내 영문명, 일본 일문 원문) 부분일치(대소문자 무시).
+        보관 상호(국내는 영문명, 그 외 국가는 원어 원문) 부분일치(대소문자 무시).
       </p>
 
       <form className="flex gap-2 mb-3.5 flex-wrap items-center" onSubmit={submit}>
