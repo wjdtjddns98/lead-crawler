@@ -103,7 +103,14 @@ class CompaniesHouseSource:
         self._cursor_store = cursor_store
 
     def applies_to(self, segment: Segment) -> bool:
-        """영국 세그먼트에 적용된다."""
+        """영국 + 비상장/미상 스코프 세그먼트에 적용된다.
+
+        등록처는 상장 여부를 주지 않으므로(listed_verified=False) ``listed='listed'`` 세그먼트엔
+        적용하지 않는다 — 2026-09-09 실사고: 상장 잡이 신설 법인 1만여 건을 상장으로 도장
+        (fsa_jp·jp_assoc·gbiz_jp 와 같은 게이트).
+        """
+        if segment.listed == "listed":
+            return False
         return is_country(segment, _GB)
 
     def discover(self, segment: Segment) -> list[DiscoveredCompany]:

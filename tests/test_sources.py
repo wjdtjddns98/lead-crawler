@@ -218,6 +218,10 @@ def test_companies_house_applies_to_gb_only() -> None:
     us = Segment(country="US", industry="건설")
     assert CompaniesHouseSource(s).applies_to(gb)
     assert not CompaniesHouseSource(s).applies_to(us)
+    # 등록처는 상장 여부를 모른다 — 상장 스코프엔 미적용(신설법인 상장 도장 실사고, 2026-09-09).
+    assert not CompaniesHouseSource(s).applies_to(
+        Segment(country=gb.country, industry=gb.industry, listed="listed")
+    )
 
 
 def test_new_placeholder_sources_dry_run_registry_keyed() -> None:
@@ -315,6 +319,8 @@ def test_new_exchanges_dry_run_registry_keyed_and_listed() -> None:
     assert idn and all(c.canonical_key.startswith("reg:idx:") for c in idn)
     assert my and all(c.canonical_key.startswith("reg:bursa:") for c in my)
     assert all(c.listed == "listed" for c in sg + idn + my)
+    # 상장목록 원천 = 검증값(라이브와 대칭). 미검증이면 저장 시 unknown 으로 강등된다.
+    assert all(c.listed_verified for c in sg + idn + my)
     # 결정적이어야 한다(제약 ① 안정성).
     assert [c.canonical_key for c in sg] == [
         c.canonical_key for c in SgxSource(s).discover(Segment(country="SG", industry="금융"))
