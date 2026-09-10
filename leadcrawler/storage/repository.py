@@ -204,12 +204,16 @@ def save_discovered(session: Session, dc: DiscoveredCompany) -> DiscoveredCompan
                 .execution_options(synchronize_session=False)  # 스테일 평가 오염 방지(backfill_job 선례).
             )
     if row is None:
+        # 미검증 'listed'(크롤 스코프 통과값)는 사실로 저장하지 않는다 — 상장 필터 잡이 그대로
+        # 승격 대상으로 삼기 때문(2026-09-09 Companies House 신설법인 1만여 건 오라벨 실사고).
+        # ponytail: 'unlisted' 스코프값은 NPS 조인 미스 정책(미검증 unlisted)과 같은 칸이라 유지.
+        listed = dc.listed if dc.listed_verified or dc.listed != "listed" else "unknown"
         row = DiscoveredCompanyRow(
             canonical_key=dc.canonical_key,
             name=_clip(dc.name),
             country=dc.country,
             industry=dc.industry,
-            listed=dc.listed,
+            listed=listed,
             registry=dc.registry,
             registry_id=dc.registry_id,
             domain=dc.domain,
