@@ -112,8 +112,10 @@ def test_load_seen_domains_returns_normalized(session: Session) -> None:
 
 
 def test_save_discovered_sets_listed_and_last_crawled_at(session: Session) -> None:
+    # 검증된 listed 만 사실로 저장된다(미검증 스코프값은 아래 *_scope_becomes_unknown).
     dc = DiscoveredCompany(
-        canonical_key="dom:x.com", name="A", domain="x.com", source="dart", listed="listed"
+        canonical_key="dom:x.com", name="A", domain="x.com", source="dart", listed="listed",
+        listed_verified=True,
     )
     save_discovered(session, dc)
     session.commit()
@@ -121,6 +123,28 @@ def test_save_discovered_sets_listed_and_last_crawled_at(session: Session) -> No
     assert row is not None
     assert row.listed == "listed"
     assert row.last_crawled_at is not None
+
+
+def test_save_discovered_unverified_listed_scope_becomes_unknown(session: Session) -> None:
+    """미검증 'listed'(스코프 통과값)는 사실로 저장하지 않고 unknown 으로 — 검증값·unlisted 는 그대로."""
+    for key, listed, verified, want in (
+        ("reg:companies_house:1", "listed", False, "unknown"),
+        ("reg:edinet:1", "listed", True, "listed"),
+        ("reg:companies_house:2", "unlisted", False, "unlisted"),
+    ):
+        save_discovered(
+            session,
+            DiscoveredCompany(
+                canonical_key=key, name="A", source="x", listed=listed, listed_verified=verified
+            ),
+        )
+    session.commit()
+    for key, _l, _v, want in (
+        ("reg:companies_house:1", None, None, "unknown"),
+        ("reg:edinet:1", None, None, "listed"),
+        ("reg:companies_house:2", None, None, "unlisted"),
+    ):
+        assert session.get(DiscoveredCompanyRow, key).listed == want, key
 
 
 def test_dead_company_is_ledger_only(session: Session) -> None:

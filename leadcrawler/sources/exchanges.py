@@ -113,6 +113,7 @@ class ExchangeSource:
                 registry=self.registry,
                 registry_id=f"{self.name.upper()}{i:04d}",
                 market=self.name.upper(),
+                listed_verified=True,  # 라이브 경로와 대칭 — 미검증 listed 는 저장 시 unknown 이 된다.
             )
             for i in range(self._count)
         ]
