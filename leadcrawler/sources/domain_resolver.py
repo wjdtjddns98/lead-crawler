@@ -36,6 +36,7 @@ from .countries import resolve_country
 from .http import HostRateLimiters, SupportsFetch
 from .search import _BLOCKLIST, _DEFAULT_LOCALE, _LOCALE
 from .search_provider import SearchProvider, build_naver_provider, build_search_provider
+from .yahoo_finance import YahooProfile
 
 log = get_logger("sources.domain_resolver")
 
@@ -87,6 +88,7 @@ class DomainResolver:
         self._provider: SearchProvider | None = None
         self._naver: SearchProvider | None = None
         self._naver_built = False  # None 이 유효값(키 없음)이라 별도 built 플래그로 캐시.
+        self._yahoo: YahooProfile | None = None  # ⓪ 티커 경로(무료) — 지연 생성·인스턴스 공유.
         self._used = 0  # 런당 해석 호출 수(quota·과금 캡 추적).
         self._capped_logged = False
         # LLM 중재(도메인 후보 → 공식 1건 선택) 런당 캡. 검색 캡(_used)과 별도로 센다 —
@@ -115,6 +117,23 @@ class DomainResolver:
             )
             self._naver_built = True
         return self._naver
+
+    def _get_yahoo(self) -> YahooProfile:
+        with self._lock:
+            if self._yahoo is None:
+                self._yahoo = YahooProfile(timeout=self._settings.http_timeout)
+            return self._yahoo
+
+    def close(self) -> None:
+        """보유 HTTP 클라이언트 해제 — fill.py 배치 정리 루프(duck-typed close)가 집어 간다.
+
+        `resolve --loop` 는 배치마다 DomainResolver 를 새로 만들므로(2026-08-03 --loop 누수
+        계열) Yahoo 클라이언트(연결풀·쿠키)를 여기서 닫지 않으면 배치마다 샌다.
+        """
+        with self._lock:
+            yahoo, self._yahoo = self._yahoo, None
+        if yahoo is not None:
+            yahoo.close()
 
     def _reserve(self) -> bool:
         """캡 미만이면 이번 호출을 원자적으로 선점(``_used`` 증가) — 동시 호출 안전."""
@@ -149,6 +168,17 @@ class DomainResolver:
             return None
         country = resolve_country(dc.country)
         is_kr = bool(country and country.iso2 == "KR")
+        # ⓪ 티커 → Yahoo Finance 프로필(무료·정확 매칭, 2026-09-11 실측 JP 28/30) — 검색
+        # 공급자·캡·과금과 무관하게 먼저 시도. 결과는 검색 후보와 같은 노이즈 게이트를 통과.
+        if dc.ticker and s.resolve_yahoo_ticker:
+            hit = self._get_yahoo().website(
+                dc.ticker, country.iso2 if country else dc.country, dc.market
+            )
+            # 게이트는 전 경로 공통분(블록리스트·정부/협회 도메인)만 — 한글 title 경로 전용
+            # `_is_noise_root` 는 americanexpress/newscorp 류 실기업을 막으므로 쓰지 않는다.
+            if hit and hit not in _BLOCKLIST and not _is_noise_domain(hit):
+                log.info("resolve.hit", name=dc.name, domain=hit, via="yahoo")
+                return hit
         primary = self._get_provider()
         # KR 기업은 네이버(무료 25,000쿼리/일)로 1차 라우팅해 유료 SERP 크레딧을 아낀다.
         if is_kr:
