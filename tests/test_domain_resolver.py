@@ -45,6 +45,60 @@ def _items(*links: str) -> dict:
     return {"items": [{"link": link} for link in links]}
 
 
+class _StubYahoo:
+    def __init__(self, site: str | None) -> None:
+        self.site, self.calls = site, 0
+
+    def website(self, ticker, country, market=None):  # noqa: ANN001
+        self.calls += 1
+        return self.site
+
+
+def test_ticker_yahoo_path_precedes_search() -> None:
+    """⓪ 티커 경로: Yahoo 가 맞히면 검색(CSE) 호출 0·캡 미소모, 못 맞히면 종전 검색으로."""
+    f = FakeFetcher(_items("https://www.acme.com/"))
+    r = DomainResolver(_settings(), fetcher=f)
+    dc = DiscoveredCompany(canonical_key="reg:edinet:1", name="Acme", country="JP", ticker="1234")
+    r._yahoo = _StubYahoo("acme.co.jp")
+    assert r.resolve(dc) == "acme.co.jp" and f.calls == 0 and r._used == 0
+    r._yahoo = _StubYahoo(None)
+    assert r.resolve(dc) == "acme.com" and f.calls == 1
+    # 블록리스트(IR/시세 플랫폼)·정부/협회 도메인은 티커 경로에서도 거른다. 한글 경로 전용
+    # 노이즈 어휘 필터는 적용하지 않는다(americanexpress 류 실기업 보호).
+    for bad in ("tradingview.com", "example.go.kr"):
+        f2 = FakeFetcher(_items())
+        r2 = DomainResolver(_settings(), fetcher=f2)
+        r2._yahoo = _StubYahoo(bad)
+        assert r2.resolve(dc) is None and f2.calls == 1, bad
+    f3 = FakeFetcher(_items())
+    r3 = DomainResolver(_settings(), fetcher=f3)
+    r3._yahoo = _StubYahoo("americanexpress.com")
+    assert r3.resolve(dc) == "americanexpress.com" and f3.calls == 0
+
+
+def test_close_releases_yahoo_client() -> None:
+    class _Closable(_StubYahoo):
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    r = DomainResolver(_settings(), fetcher=FakeFetcher())
+    stub = _Closable("x.com")
+    r._yahoo = stub
+    r.close()
+    assert stub.closed and r._yahoo is None
+
+
+def test_ticker_yahoo_path_disabled_by_flag() -> None:
+    f = FakeFetcher(_items("https://www.acme.com/"))
+    r = DomainResolver(_settings(resolve_yahoo_ticker=False), fetcher=f)
+    stub = _StubYahoo("acme.co.jp")
+    r._yahoo = stub
+    dc = DiscoveredCompany(canonical_key="reg:edinet:1", name="Acme", country="JP", ticker="1234")
+    assert r.resolve(dc) == "acme.com" and stub.calls == 0
+
+
 def test_dry_run_noop() -> None:
     f = FakeFetcher(_items("https://skhynix.com"))
     r = DomainResolver(_settings(dry_run=True), fetcher=f)

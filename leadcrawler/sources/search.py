@@ -91,6 +91,8 @@ _BLOCKLIST = frozenset({
     "bloomberg.com", "reuters.com", "yahoo.com", "yelp.com", "trustpilot.com",
     "biopharmguy.com", "bionity.com", "medium.com", "github.com", "apollo.io",
     "threads.net", "tiktok.com", "pinterest.com", "amazon.com",
+    # IR 호스팅 플랫폼 — Yahoo 프로필 website 가 이걸 가리키는 상장사가 있다(2026-09-11 실측 q4web).
+    "q4web.com", "q4inc.com", "irdirect.net", "gcs-web.com",
     # KR 노이즈 실측 확장(2026-07-13 — 도메인 해석이 뉴스·구인·전화번호부·디렉터리를
     # 기업 홈페이지로 채택한 라이브 사고 20/60건): 전부 기업 직도메인 불가 부류.
     "114.co.kr", "bizwiki.co.kr", "biztop.co.kr", "komachine.com", "thinkzon.com",
