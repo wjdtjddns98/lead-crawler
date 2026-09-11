@@ -64,6 +64,13 @@ class Settings(BaseSettings):
     naver_client_secret_3: str = Field(default="")
     # 검색 공급자 선택: auto(serper 키>cse 키) | serper | cse | none.
     search_provider: str = Field(default="auto")
+    # 무료 글로벌 1차 검색 = DuckDuckGo HTML(curl_cffi TLS 위장, 2026-09-11 실측 US 12/12).
+    # auto/ddg 일 때만 참여(serper/cse 강제 시 종전대로). 비KR 도메인해석·발견 검색이 먼저 타고,
+    # miss 면 resolve_serper_fallback 에 따라 유료(Serper/CSE)로. 챌린지 연속이면 런 단위 래치.
+    search_free_ddg: bool = Field(default=True)
+    ddg_min_interval: float = Field(default=1.0, ge=0.0)  # DDG 호출 간격(초).
+    # 챌린지(202) 뒤 쿨다운 기본값(초) — 실측 세션당 ~8건 버스트 후 IP 쿨다운 ≈30s(연속 시 ×n).
+    ddg_cooldown_s: float = Field(default=30.0, ge=0.0)
 
     # 공공데이터포털(data.go.kr) 인증키 — 국민연금 사업장 API 동기화(nps-sync)용.
     # 활용신청(자동승인) 후 발급되는 serviceKey. 무료, dev 10,000콜/일.
@@ -85,6 +92,7 @@ class Settings(BaseSettings):
     # 저장 수율 레버(도메인 해석 강화) — 무도메인·한글명 기업(NPS 등)의 도메인 해석률을
     # 올려 실존 저장으로 잇는다. 셋 다 opt-in·캡·예산가드(제약② 정밀도 유지).
     # ① KR 이 무료 네이버에서 miss 하면 유료 Serper(글로벌)로 재시도(recall 보강).
+    #    (2026-09-11 확장: 비KR 도 무료 DDG 1차 miss 면 같은 플래그로 유료 글로벌 폴백.)
     resolve_serper_fallback: bool = Field(default=False)
     # ⓪ 티커 보유 상장사는 검색 전에 Yahoo Finance 프로필(무료·정확 매칭)에서 공식 웹사이트를
     # 먼저 얻는다(2026-09-11 실측 JP 28/30). 검색 캡·과금 소모 없음. 비공식 API 라 429/연속

@@ -137,6 +137,10 @@ def close_sources(sources: list[DiscoverySource]) -> None:
         close = getattr(fetcher, "close", None)
         if callable(close):
             close()
+        # 소스 자체 close 도 호출(SearchSource 의 무료 DDG curl 세션 등 — 2026-09-11).
+        own = getattr(src, "close", None)
+        if callable(own):
+            own()
 
 
 def discover_segment(
