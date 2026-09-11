@@ -54,6 +54,88 @@ def _serper(organic: list[dict]) -> dict:
     return {"organic": organic}
 
 
+# --- DDG(무료 1차) ---------------------------------------------------------
+
+_DDG_HTML = """
+<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.acme.com%2F&amp;rut=abc">Acme <b>Corp</b> — Official</a>
+<a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.acme.com%2F">snippet</a>
+<a rel="nofollow" class="result__a" href="https://www.acme.com/">Acme Corp — Official</a>
+<a rel="nofollow" class="result__a" href="https://duckduckgo.com/y.js?ad_provider=x">Ad</a>
+<a rel="nofollow" class="result__a" href="https://example.org/about">Example</a>
+"""
+
+
+def test_ddg_parses_dedupes_and_single_page() -> None:
+    from leadcrawler.sources.search_provider import DdgProvider
+
+    calls: list[dict] = []
+
+    def fetch(url: str, params: dict) -> tuple[int, str]:
+        calls.append(params)
+        return 200, _DDG_HTML
+
+    p = DdgProvider(_settings(ddg_min_interval=0.0, ddg_cooldown_s=0.0), fetch_fn=fetch)
+    page = p.fetch_page("acme", gl="gb", lr="lang_en", start=1)
+    assert [it["link"] for it in page] == ["https://www.acme.com/", "https://example.org/about"]
+    assert page[0]["title"] == "Acme Corp — Official"  # 태그 제거·엔티티 정화.
+    assert calls[0]["q"] == "acme" and calls[0]["kl"] == "uk-en"
+    assert p.fetch_page("acme", gl="", lr="", start=11) == [] and len(calls) == 1  # 단일 페이지.
+
+
+def test_ddg_challenge_latches_after_three() -> None:
+    from leadcrawler.sources.search_provider import DdgProvider
+
+    n = {"calls": 0}
+
+    def fetch(url: str, params: dict) -> tuple[int, str]:
+        n["calls"] += 1
+        return 202, "<p>Unfortunately, bots use DuckDuckGo too.</p>"
+
+    p = DdgProvider(_settings(ddg_min_interval=0.0, ddg_cooldown_s=0.0), fetch_fn=fetch)
+    for _ in range(5):
+        assert p.fetch_page("x", gl="us", lr="", start=1) == []
+    assert p._latched and n["calls"] == 3  # 3회째(재시도 포함) 래치 → 이후 호출은 네트워크 0.
+    assert p._imp_idx == 3 and p._session is None  # 챌린지마다 세션 폐기·지문 로테이션.
+
+
+def test_ddg_challenge_then_retry_succeeds_after_cooldown() -> None:
+    from leadcrawler.sources.search_provider import DdgProvider
+
+    seq = iter([(202, "bots use DuckDuckGo"), (200, _DDG_HTML)])
+
+    def fetch(url: str, params: dict) -> tuple[int, str]:
+        return next(seq)
+
+    p = DdgProvider(_settings(ddg_min_interval=0.0, ddg_cooldown_s=0.0), fetch_fn=fetch)
+    page = p.fetch_page("acme", gl="us", lr="", start=1)
+    assert [it["link"] for it in page][0] == "https://www.acme.com/"  # 쿨다운 후 같은 쿼리 재시도 성공.
+    assert p._challenges == 0 and not p._latched and p._imp_idx == 1
+
+
+def test_ddg_region_table() -> None:
+    from leadcrawler.sources.search import _LOCALE
+    from leadcrawler.sources.search_provider import _ddg_region
+
+    assert _ddg_region("jp", "lang_ja") == "jp-jp"  # gl/lr 유도였다면 jp-ja(오류).
+    assert _ddg_region("cn", "lang_zh-CN") == "cn-zh"
+    assert _ddg_region("gb", "lang_en") == "uk-en"
+    assert _ddg_region("zz", "") == "" and _ddg_region("", "") == ""
+    for gl, lr, _kw in _LOCALE.values():  # 표에 있는 값은 전부 "cc-lang" 2토큰.
+        kl = _ddg_region(gl, lr)
+        assert kl == "" or len(kl.split("-")) == 2, (gl, kl)
+
+
+def test_free_factory_gating() -> None:
+    import pytest
+
+    from leadcrawler.sources.search_provider import DdgProvider, build_free_provider
+
+    pytest.importorskip("curl_cffi")
+    assert build_free_provider(_settings(search_free_ddg=False)) is None
+    assert build_free_provider(_settings(search_free_ddg=True, search_provider="serper")) is None
+    assert isinstance(build_free_provider(_settings(search_free_ddg=True)), DdgProvider)
+
+
 # --- 팩토리 선택 규칙 -----------------------------------------------------
 
 def test_factory_prefers_serper_in_auto() -> None:

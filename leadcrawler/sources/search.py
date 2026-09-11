@@ -20,7 +20,12 @@ from .base import DiscoveredCompany, Segment, build_company
 from .countries import resolve_country
 from .http import HostRateLimiters, SupportsFetch
 from .industry import industry_search_terms
-from .search_provider import SearchProvider, build_naver_provider, build_search_provider
+from .search_provider import (
+    SearchProvider,
+    build_free_provider,
+    build_naver_provider,
+    build_search_provider,
+)
 
 log = get_logger("sources.search")
 
@@ -154,6 +159,8 @@ class SearchSource:
         self._provider: SearchProvider | None = None
         self._naver: SearchProvider | None = None
         self._naver_built = False  # None 이 '무키'라 '미생성'과 구분하는 플래그.
+        self._ddg: SearchProvider | None = None  # 비KR 무료 1차(DDG, 2026-09-11).
+        self._ddg_built = False
 
     def applies_to(self, segment: Segment) -> bool:  # noqa: ARG002 — 전 세그먼트 적용
         """검색 발견은 모든 세그먼트에 적용된다."""
@@ -183,15 +190,26 @@ class SearchSource:
         """세그먼트에 맞는 검색 공급자 — KR 은 네이버(무료 25k/일·KR 네이티브) 우선.
 
         글로벌 SERP(Serper/CSE)는 KR 중소기업 커버리지가 약하고 Serper 는 유료(크레딧
-        소진 위험)라, KR 발견은 네이버 웹검색으로 라우팅한다. 네이버 무키거나 비-KR 이면
-        글로벌 공급자로 폴백(회귀 0 — 기존 국가는 그대로).
+        소진 위험)라, KR 발견은 네이버 웹검색으로 라우팅한다(무키면 유료 글로벌). 비-KR 은
+        무료 DDG(2026-09-11) → 없으면 유료 글로벌.
         """
         country = resolve_country(segment.country)
         if country and country.iso2 == "KR":
-            naver = self._naver_provider()
-            if naver is not None:
-                return naver
-        return self._get_provider()
+            # KR 은 네이버, 무키면 유료 글로벌(DomainResolver 와 동일 — DDG 는 KR 미담당).
+            return self._naver_provider() or self._get_provider()
+        # 비KR 은 무료 DDG(단일 페이지 ≈10건) 우선 — 유료 100건/페이지가 필요하면
+        # search_provider=serper 로 강제(그때 build_free_provider 가 None).
+        if not self._ddg_built:
+            self._ddg = build_free_provider(self._settings)
+            self._ddg_built = True
+        return self._ddg or self._get_provider()
+
+    def close(self) -> None:
+        """무료 DDG 의 curl 세션 해제 — registry.close_sources 가 호출."""
+        ddg, self._ddg = self._ddg, None
+        close = getattr(ddg, "close", None)
+        if callable(close):
+            close()
 
     def discover(
         self, segment: Segment, *, seen: set[str] | None = None
