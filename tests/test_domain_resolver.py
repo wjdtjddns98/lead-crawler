@@ -90,6 +90,27 @@ def test_close_releases_yahoo_client() -> None:
     assert stub.closed and r._yahoo is None
 
 
+def test_exchange_registry_id_used_as_ticker() -> None:
+    """거래소 소스는 심볼을 registry_id 에만 넣는다 — ticker 없이도 Yahoo 경로를 탄다."""
+    class _Recording(_StubYahoo):
+        def website(self, ticker, country, market=None):  # noqa: ANN001
+            self.seen = (ticker, country)
+            return super().website(ticker, country, market)
+
+    f = FakeFetcher(_items())
+    r = DomainResolver(_settings(), fetcher=f)
+    stub = _Recording("dbs.com")
+    r._yahoo = stub
+    dc = DiscoveredCompany(canonical_key="reg:sgx:D05", name="DBS", country="SG", registry="sgx", registry_id="D05")
+    assert r.resolve(dc) == "dbs.com" and stub.seen == ("D05", "SG") and f.calls == 0
+    # 등록처(비거래소) registry_id 는 티커가 아니다 — 폴백 안 함.
+    stub2 = _Recording("x.com")
+    r._yahoo = stub2
+    dc2 = DiscoveredCompany(canonical_key="reg:companies_house:1", name="Acme", country="GB", registry="companies_house", registry_id="01234567")
+    r.resolve(dc2)
+    assert not hasattr(stub2, "seen")
+
+
 def test_ticker_yahoo_path_disabled_by_flag() -> None:
     f = FakeFetcher(_items("https://www.acme.com/"))
     r = DomainResolver(_settings(resolve_yahoo_ticker=False), fetcher=f)
