@@ -40,6 +40,9 @@ from .yahoo_finance import YahooProfile
 
 log = get_logger("sources.domain_resolver")
 
+# exchanges.py 소스의 registry 값 — registry_id 가 곧 거래소 심볼(Yahoo 티커 경로에 재사용).
+_EXCHANGE_REGISTRIES = frozenset({"pse", "set", "sgx", "idx", "bursa", "hose", "hnx"})
+
 # 펀드·신탁·유동화 SPC 등 '웹사이트가 있을 수 없는' 비영업 엔티티 판정(고정밀 패턴만).
 # GLEIF/EDGAR 딥페이지는 LEI 의무 등록된 펀드가 대량으로 나온다(라이브 2026-07-02:
 # 한화/키움 투자신탁·TDF·미국 ETF 연발) — 건당 검색 쿼터(네이버 25k/일·Serper 크레딧)를
@@ -170,9 +173,11 @@ class DomainResolver:
         is_kr = bool(country and country.iso2 == "KR")
         # ⓪ 티커 → Yahoo Finance 프로필(무료·정확 매칭, 2026-09-11 실측 JP 28/30) — 검색
         # 공급자·캡·과금과 무관하게 먼저 시도. 결과는 검색 후보와 같은 노이즈 게이트를 통과.
-        if dc.ticker and s.resolve_yahoo_ticker:
+        # 거래소 소스(exchanges.py)는 상장 심볼을 registry_id 에만 넣는다 — 그대로 티커로 쓴다.
+        ticker = dc.ticker or (dc.registry_id if dc.registry in _EXCHANGE_REGISTRIES else None)
+        if ticker and s.resolve_yahoo_ticker:
             hit = self._get_yahoo().website(
-                dc.ticker, country.iso2 if country else dc.country, dc.market
+                ticker, country.iso2 if country else dc.country, dc.market
             )
             # 게이트는 전 경로 공통분(블록리스트·정부/협회 도메인)만 — 한글 title 경로 전용
             # `_is_noise_root` 는 americanexpress/newscorp 류 실기업을 막으므로 쓰지 않는다.

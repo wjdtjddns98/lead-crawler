@@ -14,6 +14,7 @@ def test_symbol_mapping() -> None:
     assert yahoo_symbol("035420", "KR", "KOSDAQ") == "035420.KQ"
     assert yahoo_symbol("KR7005930003", "KR", "KOSPI") == "005930.KS"  # fsc ISIN
     assert yahoo_symbol("BRK.A", "US") == "BRK-A"
+    assert yahoo_symbol("VNM", "VN") == "VNM.VN"
     assert yahoo_symbol("600519", "CN") == "600519.SS"
     assert yahoo_symbol("000001", "CN") == "000001.SZ"
     assert yahoo_symbol("5", "HK") == "0005.HK"
