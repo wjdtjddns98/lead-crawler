@@ -417,6 +417,48 @@ def test_serper_fallback_on_kr_naver_miss() -> None:
     assert f.get_calls == 1 and f.post_calls == 1  # 네이버 miss → Serper 1회.
 
 
+class _StubDdg:
+    name, page_size, max_start = "ddg", 10, 1
+
+    def __init__(self, links: list[str]) -> None:
+        self.links, self.calls = links, 0
+
+    def fetch_page(self, query, *, gl, lr, start):  # noqa: ANN001
+        self.calls += 1
+        return [{"link": link, "title": "t"} for link in self.links]
+
+
+def test_non_kr_ddg_first_then_paid_fallback() -> None:
+    """비KR: 무료 DDG 1차 → 게이트 통과 시 유료 미호출, miss 면 resolve_serper_fallback 로 유료."""
+    class _Paid:
+        def __init__(self) -> None:
+            self.post_calls = 0
+
+        def get_json(self, url, *, params=None, headers=None):
+            return {"items": []}
+
+        def post_json(self, url, *, json=None, headers=None):
+            self.post_calls += 1
+            return {"organic": [{"link": "https://acme.com/", "title": "Acme"}]}
+
+    dc = DiscoveredCompany(canonical_key="reg:sec:1", name="Acme Corp", country="US")
+    # ① DDG 적중 → 유료 0회.
+    f = _Paid()
+    r = DomainResolver(_settings(serper_api_key="sk", resolve_serper_fallback=True), fetcher=f)
+    r._ddg, r._ddg_built = _StubDdg(["https://www.acme.com/"]), True
+    assert r.resolve(dc) == "acme.com" and f.post_calls == 0
+    # ② DDG miss(게이트 불통과) → 유료 폴백 1회.
+    f = _Paid()
+    r = DomainResolver(_settings(serper_api_key="sk", resolve_serper_fallback=True), fetcher=f)
+    r._ddg, r._ddg_built = _StubDdg(["https://unrelated.org/"]), True
+    assert r.resolve(dc) == "acme.com" and f.post_calls == 1
+    # ③ 폴백 플래그 off → miss 그대로(과금 0).
+    f = _Paid()
+    r = DomainResolver(_settings(serper_api_key="sk"), fetcher=f)
+    r._ddg, r._ddg_built = _StubDdg(["https://unrelated.org/"]), True
+    assert r.resolve(dc) is None and f.post_calls == 0
+
+
 def test_serper_fallback_off_by_default() -> None:
     """폴백 플래그가 꺼져 있으면 네이버 miss 는 그대로 miss(과금 안 함)."""
     class _KrFetcher:

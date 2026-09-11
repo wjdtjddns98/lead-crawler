@@ -72,3 +72,35 @@ def test_live_queries_get_region_prefix(monkeypatch: pytest.MonkeyPatch) -> None
     captured.clear()
     src.discover(Segment(country="KR", industry="바이오"))
     assert captured and not any(q.startswith("서울 ") for q in captured)
+
+
+def test_non_kr_discovery_prefers_free_ddg() -> None:
+    """비KR 발견 검색은 무료 DDG(있으면) → 없으면 유료 글로벌. KR 은 네이버 우선(불변)."""
+    from leadcrawler.sources.search import SearchSource
+
+    src = SearchSource(Settings(dry_run=False, google_cse_key="k", google_cse_cx="cx"))
+    stub = object()
+    src._ddg, src._ddg_built = stub, True  # type: ignore[assignment]
+    assert src._provider_for(Segment(country="US", industry="x")) is stub
+    src._ddg, src._ddg_built = None, True
+    assert src._provider_for(Segment(country="US", industry="x")).name == "cse"
+    # KR 무키(네이버 없음)는 DDG 가 아니라 유료 글로벌로(DomainResolver 와 동일).
+    src._ddg, src._ddg_built = stub, True
+    assert src._provider_for(Segment(country="KR", industry="x")).name == "cse"
+
+
+def test_close_sources_closes_search_ddg_session() -> None:
+    from leadcrawler.sources.registry import close_sources
+    from leadcrawler.sources.search import SearchSource
+
+    class _Ddg:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    src = SearchSource(Settings(dry_run=False))
+    d = _Ddg()
+    src._ddg, src._ddg_built = d, True  # type: ignore[assignment]
+    close_sources([src])
+    assert d.closed and src._ddg is None

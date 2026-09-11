@@ -18,7 +18,10 @@ from __future__ import annotations
 import html
 import re
 import threading
+import time
+from collections.abc import Callable
 from typing import Protocol
+from urllib.parse import unquote
 
 from ..config import Settings
 from ..cost_ledger import SupportsCostLedger
@@ -285,6 +288,166 @@ def build_naver_provider(
     if not creds:
         return None
     return NaverProvider(settings, creds=creds, fetcher=fetcher, rate_limiters=rate_limiters)
+
+
+_DDG_URL = "https://html.duckduckgo.com/html/"
+_DDG_RESULT_RE = re.compile(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S)
+_DDG_CHALLENGE_MARK = "bots use DuckDuckGo"
+_DDG_LATCH_AFTER = 3  # 연속 챌린지(세션 교체 후에도) 이 횟수면 인스턴스 래치(Serper 소진 latch 관례).
+_DDG_IMPERSONATE = ("safari", "chrome131", "safari_ios")  # 세션 교체 때 순환(firefox 는 실측 202).
+
+
+# DDG ``kl`` 지역코드 — CSE gl/lr 에서 유도하면 JP(jp-ja)·CN/TW(cn-zh-cn) 처럼 틀린 값이 나와
+# (리뷰 MED) 명시 표로 둔다. 없는 국가는 빈 값(전 지역 검색).
+_DDG_KL = {
+    "us": "us-en", "gb": "uk-en", "jp": "jp-jp", "kr": "kr-kr", "cn": "cn-zh", "tw": "tw-tzh",
+    "hk": "hk-tzh", "de": "de-de", "fr": "fr-fr", "au": "au-en", "ca": "ca-en", "sg": "sg-en",
+    "in": "in-en", "it": "it-it", "es": "es-es", "nl": "nl-nl", "ch": "ch-de", "se": "se-sv",
+    "no": "no-no", "dk": "dk-da", "fi": "fi-fi", "br": "br-pt", "mx": "mx-es", "tr": "tr-tr",
+    "nz": "nz-en", "id": "id-id", "my": "my-en", "th": "th-th", "ph": "ph-en", "vn": "vn-vi",
+    "pl": "pl-pl", "be": "be-nl", "at": "at-de", "ie": "ie-en", "pt": "pt-pt", "gr": "gr-el",
+    "il": "il-he",
+}
+
+
+def _ddg_region(gl: str, lr: str) -> str:  # noqa: ARG001 — lr 은 표에 흡수(시그니처 유지).
+    """CSE 식 gl → DDG ``kl``(예: us-en·jp-jp·uk-en). 표에 없으면 빈 값(전 지역)."""
+    return _DDG_KL.get((gl or "").strip().lower(), "")
+
+
+def parse_ddg_html(text: str) -> list[dict]:
+    """DDG HTML 결과(``class="result__a"`` 앵커) → ``{"link","title"}`` 목록(광고·중복 제거).
+
+    href 는 직접 URL 또는 ``//duckduckgo.com/l/?uddg=<인코딩 URL>`` 리다이렉트 둘 다 온다.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for href, inner in _DDG_RESULT_RE.findall(text):
+        link = html.unescape(href)
+        m = re.search(r"[?&]uddg=([^&]+)", link)
+        if m:
+            link = unquote(m.group(1))
+        if not link.startswith("http") or "duckduckgo.com" in link or link in seen:
+            continue  # 광고(y.js)·내부 링크·제목/스니펫 중복 앵커.
+        seen.add(link)
+        out.append({"link": link, "title": clean_search_text(inner)})
+    return out
+
+
+class DdgProvider(_BaseProvider):
+    """DuckDuckGo HTML 검색(무료·무키) — curl_cffi 로 Safari TLS 지문을 위장해 호출한다.
+
+    배경(2026-09-11 실측): 일반 httpx 로는 결과 0 이지만 TLS 위장이면 정상 결과. US 상장사
+    표본 15 → 답 12·정답 12/12(Yahoo 대조), 100회 연속 1 q/s 에서 챌린지 1회(일시적). 유료
+    Serper 전에 타는 글로벌 1차 공급자(``build_free_provider``). 단일 페이지(≈10건)라
+    발견 recall 은 Serper(100건)보다 낮다 — 발견 대량 수확이 필요하면 ``search_provider=serper``.
+    비공식 경로: 202/챌린지 페이지가 연속 ``_DDG_LATCH_AFTER`` 회면 인스턴스 래치(이후 즉시 빈
+    페이지 → 호출부는 유료 폴백으로). 과금 없음 → cost_ledger 미적재.
+    ponytail: curl_cffi Session 은 스레드 안전 보장이 없어 요청 자체를 락으로 직렬화한다 —
+    어차피 ≈1 q/s 페이싱이라 병렬 이득이 없다. 한도는 IP 공용인데 페이싱·래치는 인스턴스
+    단위라 ``discovery_workers>1``(워커별 sources)이면 N배로 때린다 — 기본 1 유지, 올리면
+    쿨다운이 더 자주 걸릴 뿐 안전(챌린지 → 쿨다운·래치). 프로세스 공유 리미터는 필요해지면.
+    """
+
+    name = "ddg"
+    page_size = 10
+    max_start = 1  # 단일 페이지 — start>1 은 빈 페이지(호출부 루프 종료).
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        fetch_fn: Callable[[str, dict], tuple[int, str]] | None = None,
+        **kw: object,
+    ) -> None:
+        super().__init__(settings, **kw)  # type: ignore[arg-type]
+        self._fetch_fn = fetch_fn  # 테스트 주입: (url, params) -> (status, text).
+        self._session = None
+        self._imp_idx = 0
+        self._lock = threading.Lock()
+        self._last = 0.0
+        self._challenges = 0
+        self._latched = False
+
+    def _get(self, url: str, params: dict) -> tuple[int, str]:
+        if self._fetch_fn is not None:
+            return self._fetch_fn(url, params)
+        if self._session is None:
+            from curl_cffi import requests as cffi_requests  # bypass extra 의존성.
+
+            imp = _DDG_IMPERSONATE[self._imp_idx % len(_DDG_IMPERSONATE)]
+            self._session = cffi_requests.Session(impersonate=imp)
+        r = self._session.get(url, params=params, timeout=self._settings.http_timeout)
+        return r.status_code, r.text
+
+    def _rotate_session(self) -> None:
+        """챌린지는 세션(쿠키) 단위다(2026-09-11 실측: 같은 IP 라도 새 세션이면 즉시 200) —
+        세션을 버리고 다음 TLS 지문으로 새로 연다."""
+        self.close()
+        self._imp_idx += 1
+
+    def fetch_page(self, query: str, *, gl: str, lr: str, start: int) -> list[dict]:
+        if start > 1 or self._latched:
+            return []
+        params: dict = {"q": query}
+        kl = _ddg_region(gl, lr)
+        if kl:
+            params["kl"] = kl
+        with self._lock:
+            # 실측(2026-09-11): 세션당 ~8건 버스트 후 202 챌린지, IP 쿨다운 ≈30s(10s 부족).
+            # 챌린지 → 세션 교체 + 쿨다운(30s×연속횟수) 후 같은 쿼리 1회 재시도. 쿨다운 sleep 은
+            # 락 안(전 워커 대기) — DDG 한도는 IP 공용이라 같이 쉬는 게 맞다. 연속 3회면 래치.
+            for _attempt in range(2):
+                now = time.monotonic()
+                slot = max(now, self._last + self._settings.ddg_min_interval)
+                self._last = slot
+                if slot > now:
+                    time.sleep(slot - now)
+                try:
+                    status, text = self._get(_DDG_URL, params)
+                except Exception as exc:
+                    log.info("search.ddg.error", err=str(exc)[:120])
+                    return []
+                if status == 200 and _DDG_CHALLENGE_MARK not in text:
+                    self._challenges = 0
+                    page = parse_ddg_html(text)
+                    if not page:  # 진짜 0건과 마크업 변경(파서 실패)을 로그로 구분 가능하게.
+                        log.info("search.ddg.empty", query=query[:60], length=len(text))
+                    return page
+                self._challenges += 1
+                log.info("search.ddg.challenge", status=status, n=self._challenges)
+                self._rotate_session()
+                if self._challenges >= _DDG_LATCH_AFTER:
+                    self._latched = True
+                    log.warning("search.ddg.latched")
+                    return []
+                cooldown = self._settings.ddg_cooldown_s * self._challenges
+                if cooldown > 0:
+                    log.info("search.ddg.cooldown", seconds=cooldown)
+                    time.sleep(cooldown)
+            return []
+
+    def close(self) -> None:
+        s, self._session = self._session, None
+        if s is not None:
+            try:
+                s.close()
+            except Exception:  # noqa: BLE001 — 정리 실패는 무시.
+                pass
+
+
+def build_free_provider(settings: Settings) -> SearchProvider | None:
+    """무료 글로벌 1차 공급자(DDG). ``search_free_ddg`` 꺼짐·강제 공급자(serper/cse/none)·
+    curl_cffi 미설치면 None(호출부는 유료 공급자로)."""
+    choice = (settings.search_provider or "auto").strip().lower()
+    if not settings.search_free_ddg or choice not in ("auto", "ddg"):
+        return None
+    try:
+        import curl_cffi  # noqa: F401
+    except ImportError:
+        log.info("search.ddg.unavailable", reason="curl_cffi 미설치(bypass extra)")
+        return None
+    return DdgProvider(settings)
 
 
 def build_search_provider(

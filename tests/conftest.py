@@ -49,6 +49,8 @@ def _isolate_database(
 def _force_dry_run(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """모든 테스트에서 dry_run 을 강제하고 설정 캐시를 비운다."""
     monkeypatch.setenv("LEADCRAWLER_DRY_RUN", "true")
+    # 무료 DDG 검색(curl_cffi)은 httpx 차단을 안 거친다 — 테스트 기본 off(켜려면 settings 로 명시).
+    monkeypatch.setenv("LEADCRAWLER_SEARCH_FREE_DDG", "false")
     monkeypatch.delenv("LEADCRAWLER_NOTION_TOKEN", raising=False)
     get_settings.cache_clear()
     yield

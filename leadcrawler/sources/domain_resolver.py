@@ -35,7 +35,12 @@ from .base import DiscoveredCompany
 from .countries import resolve_country
 from .http import HostRateLimiters, SupportsFetch
 from .search import _BLOCKLIST, _DEFAULT_LOCALE, _LOCALE
-from .search_provider import SearchProvider, build_naver_provider, build_search_provider
+from .search_provider import (
+    SearchProvider,
+    build_free_provider,
+    build_naver_provider,
+    build_search_provider,
+)
 from .yahoo_finance import YahooProfile
 
 log = get_logger("sources.domain_resolver")
@@ -92,6 +97,8 @@ class DomainResolver:
         self._naver: SearchProvider | None = None
         self._naver_built = False  # None 이 유효값(키 없음)이라 별도 built 플래그로 캐시.
         self._yahoo: YahooProfile | None = None  # ⓪ 티커 경로(무료) — 지연 생성·인스턴스 공유.
+        self._ddg: SearchProvider | None = None  # 비KR 무료 1차(DDG). None 이 유효값 → built 플래그.
+        self._ddg_built = False
         self._used = 0  # 런당 해석 호출 수(quota·과금 캡 추적).
         self._capped_logged = False
         # LLM 중재(도메인 후보 → 공식 1건 선택) 런당 캡. 검색 캡(_used)과 별도로 센다 —
@@ -121,6 +128,13 @@ class DomainResolver:
             self._naver_built = True
         return self._naver
 
+    def _get_ddg(self) -> SearchProvider | None:
+        with self._lock:  # 워커 공유 인스턴스 — 이중 생성 시 패자의 curl 세션이 새지 않게.
+            if not self._ddg_built:
+                self._ddg = build_free_provider(self._settings)
+                self._ddg_built = True
+            return self._ddg
+
     def _get_yahoo(self) -> YahooProfile:
         with self._lock:
             if self._yahoo is None:
@@ -135,8 +149,12 @@ class DomainResolver:
         """
         with self._lock:
             yahoo, self._yahoo = self._yahoo, None
+            ddg, self._ddg = self._ddg, None
         if yahoo is not None:
             yahoo.close()
+        close = getattr(ddg, "close", None)
+        if callable(close):
+            close()
 
     def _reserve(self) -> bool:
         """캡 미만이면 이번 호출을 원자적으로 선점(``_used`` 증가) — 동시 호출 안전."""
@@ -184,10 +202,10 @@ class DomainResolver:
             if hit and hit not in _BLOCKLIST and not _is_noise_domain(hit):
                 log.info("resolve.hit", name=dc.name, domain=hit, via="yahoo")
                 return hit
-        primary = self._get_provider()
-        # KR 기업은 네이버(무료 25,000쿼리/일)로 1차 라우팅해 유료 SERP 크레딧을 아낀다.
-        if is_kr:
-            primary = self._get_naver() or primary
+        paid = self._get_provider()
+        # 무료 1차: KR=네이버(25,000쿼리/일), 그 외=DDG(TLS 위장, 2026-09-11). 없으면 유료 글로벌.
+        free = self._get_naver() if is_kr else self._get_ddg()
+        primary = free or paid
         if primary is None:  # 무키(공급자 없음) → no-op.
             return None
         if not self._reserve():
@@ -220,9 +238,10 @@ class DomainResolver:
         cands = _candidates_from(primary.fetch_page(query, gl=gl, lr=lr, start=1))
         best = self._pick(dc, cands, slug=slug, korean_core=korean_core, tld=tld, is_kr=is_kr)
 
-        # ② Serper 폴백 — KR 네이버 miss 시 유료 글로벌로 재시도(예산가드는 Serper 내부).
-        if best is None and is_kr and s.resolve_serper_fallback:
-            fallback = self._get_provider()  # 글로벌(serper/cse) — KR 도 country 무시하고 서비스.
+        # ② 유료 폴백 — 무료 1차(KR 네이버·비KR DDG) miss 시 유료 글로벌로 재시도(예산가드는
+        # Serper 내부). 1차가 이미 유료(무료 공급자 없음)면 재시도 없음.
+        if best is None and s.resolve_serper_fallback:
+            fallback = paid  # 글로벌(serper/cse) — KR 도 country 무시하고 서비스.
             if fallback is not None and fallback is not primary:
                 more = _candidates_from(fallback.fetch_page(query, gl=gl, lr=lr, start=1))
                 if more:
