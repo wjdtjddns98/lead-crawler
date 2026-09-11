@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     # 올려 실존 저장으로 잇는다. 셋 다 opt-in·캡·예산가드(제약② 정밀도 유지).
     # ① KR 이 무료 네이버에서 miss 하면 유료 Serper(글로벌)로 재시도(recall 보강).
     resolve_serper_fallback: bool = Field(default=False)
+    # ⓪ 티커 보유 상장사는 검색 전에 Yahoo Finance 프로필(무료·정확 매칭)에서 공식 웹사이트를
+    # 먼저 얻는다(2026-09-11 실측 JP 28/30). 검색 캡·과금 소모 없음. 비공식 API 라 429/연속
+    # 오류면 런(인스턴스) 단위 래치. 끄면 종전대로 검색만.
+    resolve_yahoo_ticker: bool = Field(default=True)
     # ② 후보 도메인들을 Claude 로 중재해 공식 도메인 1건을 고르거나 기권(-1). 짧은 한글명
     # 같은 애매한 케이스에서 substring 오탐을 막으면서도 수율을 올리는 정밀도 게이트.
     # **Claude Agent SDK(구독 인증)** 로 호출한다 — 별도 ANTHROPIC_API_KEY 불필요, 머신에
