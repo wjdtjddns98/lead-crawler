@@ -337,9 +337,15 @@ _ticker_started = False
 
 
 def segment_ticker_tick(settings: Settings, *, launcher=None) -> str | None:  # noqa: ANN001
-    """큐 티커 1틱 — 실행 가능 시각이 된 대기 잡을 디스패치한다(활성 S 있으면 no-op)."""
+    """큐 티커 1틱 — 고아 running 잡 재개 + 실행 가능 시각이 된 대기 잡 디스패치.
+
+    ``resume_active_jobs`` 를 매 틱 호출한다: 감독 스레드가 살아 있는 잡은 ``_running`` 가드로
+    건너뛰고, **감독이 없는 running 잔존**(기동 시 DB 미준비로 resume 이 실패한 경우 —
+    2026-09-14 재부팅 후 Docker 가 서버보다 4분 늦게 떠 S 큐 32h 정지)만 재스폰한다.
+    재개가 없으면 말미 dispatch 만 작동해 기존 틱과 동치. 반환은 이번 틱에 새로 시작한 잡 id.
+    """
     try:
-        return dispatch_next_segment_job(settings, launcher=launcher)
+        return resume_active_jobs(settings, launcher=launcher)[1]
     except Exception as exc:  # 틱 예외는 삼킨다 — 스레드가 죽으면 반복이 영구 정지.
         log.warning("segment.ticker.error", err=str(exc))
         return None
@@ -449,18 +455,27 @@ def _spawn_supervisor(settings: Settings, job: dict, *, launcher, start_generati
         )
         t.start()
     except Exception as exc:
-        sm = get_sessionmaker(settings)
-        _finish(sm, str(job["id"]), FAILED, error=f"감독 스레드 기동 실패: {exc}")
-        with _guard:
-            _running[track] = False
+        try:
+            sm = get_sessionmaker(settings)
+            _finish(sm, str(job["id"]), FAILED, error=f"감독 스레드 기동 실패: {exc}")
+        finally:  # _finish 가 DB 단절로 던져도 가드는 원복(리뷰 MED — 박제 방지).
+            with _guard:
+                _running[track] = False
         raise
 
 
-def resume_active_jobs(settings: Settings, *, launcher=None) -> int:  # noqa: ANN001
-    """서버 기동 시 running 잔존 작업 재개 — 취소 플래그 우선 재확인(취소사고 방어).
+def resume_active_jobs(settings: Settings, *, launcher=None) -> tuple[int, str | None]:  # noqa: ANN001
+    """running 잔존 작업 재개 — 서버 기동 시 + 티커 매 틱(``segment_ticker_tick``).
 
     이전 서버의 자식 트리는 Job Object 로 이미 소멸했으므로, 세대를 올려 새로 스폰한다.
-    취소가 걸려 있던 작업은 재기동하지 않고 cancelled 로 닫는다. 재개 건수 반환.
+    취소가 걸려 있던 작업은 재기동하지 않고 cancelled 로 닫는다. 이 프로세스에 감독 스레드가
+    살아 있는 트랙(``_running``)은 어떤 처리도 하지 않는다 — 티커에서 반복 호출되므로 취소
+    중인 잡을 감독과 이중으로 닫지 않게 가드를 취소 분기보다 먼저 본다.
+    반환 ``(재개 건수, 말미 dispatch 가 시작한 잡 id)``.
+
+    ponytail: "감독 없음 = 고아" 판정은 프로세스 로컬 가드뿐이라 **같은 DB 를 보는 non-dry_run
+    서버는 1프로세스 전제**다(둘이면 서로의 정상 잡을 세대 핑퐁으로 탈취). 필요해지면 재스폰 전
+    트랙 잠금 비차단 시도로 격상.
     """
     from ..schema import BackfillJobRow
     from sqlalchemy import select
@@ -475,33 +490,52 @@ def resume_active_jobs(settings: Settings, *, launcher=None) -> int:  # noqa: AN
     for job in jobs:
         job_id = str(job["id"])
         track = str(job["track"])
-        if job["cancel_requested"]:
-            # 트랙 S pause 요청(stop_reason='pause') 중 재시작이면 paused 로 복구 — CANCELLED 로
-            # 닫으면 requeue 대상이 아니라 커서째 영구 종료된다(리뷰 HIGH). 그 외는 기존대로.
-            if track == "S":
-                _finish_cancel(sm, track, job_id)
-            else:
-                _finish(sm, job_id, CANCELLED, stop_reason="cancelled_before_resume")
-            continue
         with _guard:
             if _running.get(track):
-                continue  # 같은 프로세스에 이미 감독 스레드 존재(이례) — 중복 스폰 금지.
+                continue  # 이 프로세스에 감독 스레드 존재(정상 가동 중) — 손대지 않는다.
             _running[track] = True
-        # 세대 bump 는 가드 통과 **후** — 중복 호출이 이미 도는 자식의 보고를 펜싱으로
-        # 유실시키지 않게(2026-08-18 Codex 리뷰 MED-8).
-        next_gen = int(job["generation"]) + 1  # 이전 서버 세대와 구분(구세대 보고 펜싱).
-        with sm() as s:
-            update_backfill_job(s, job_id, generation=next_gen)
-            s.commit()
-        _spawn_supervisor(settings, job, launcher=launcher, start_generation=next_gen)
+        spawned = False
+        try:
+            # 스냅샷 TOCTOU 방어(리뷰 MED): 감독이 방금 닫고 가드를 푼 잡을 되살리지 않게
+            # 가드 통과 후 행을 재확인한다(cancel_requested 도 최신값으로).
+            with sm() as s:
+                fresh = get_backfill_job(s, job_id)
+                if fresh is None or fresh.status in TERMINAL or fresh.active_track is None:
+                    continue
+                job = backfill_job_dict(fresh)
+            if job["cancel_requested"]:
+                # 트랙 S pause 요청(stop_reason='pause') 중 재시작이면 paused 로 복구 — CANCELLED
+                # 로 닫으면 requeue 대상이 아니라 커서째 영구 종료된다(리뷰 HIGH). 그 외는 기존대로.
+                if track == "S":
+                    _finish_cancel(sm, track, job_id)
+                else:
+                    _finish(sm, job_id, CANCELLED, stop_reason="cancelled_before_resume")
+                continue
+            # 세대 bump 는 가드 통과 **후** — 중복 호출이 이미 도는 자식의 보고를 펜싱으로
+            # 유실시키지 않게(2026-08-18 Codex 리뷰 MED-8).
+            next_gen = int(job["generation"]) + 1  # 이전 서버 세대와 구분(구세대 보고 펜싱).
+            with sm() as s:
+                update_backfill_job(s, job_id, generation=next_gen)
+                s.commit()
+            _spawn_supervisor(settings, job, launcher=launcher, start_generation=next_gen)
+            spawned = True  # 이후 가드는 감독 스레드 소유(_supervise finally 가 해제).
+        except Exception as exc:
+            # 잡 하나의 DB 예외가 다음 잡·말미 dispatch 를 삼키지 않게(리뷰 HIGH).
+            log.warning("backfill.resume.error", track=track, job=job_id, err=str(exc))
+            continue
+        finally:
+            if not spawned:  # 스킵·취소·예외 경로 — 가드가 True 로 박제되면 티커가 영원히 skip.
+                with _guard:
+                    _running[track] = False
         resumed += 1
         log.info("backfill.resume", track=track, job=job_id, gen=next_gen)
     # 트랙 S: running 재개가 없었던 경우(대기열만 남음)도 서버 재시작 후 자동 재개(설계 §3).
+    dispatched: str | None = None
     try:
-        dispatch_next_segment_job(settings, launcher=launcher)
-    except Exception:  # A/C 재개 결과(resumed·로그)를 S 디스패치 실패가 삼키지 않게.
-        log.info("backfill.dispatch.error", track="S")
-    return resumed
+        dispatched = dispatch_next_segment_job(settings, launcher=launcher)
+    except Exception as exc:  # A/C 재개 결과(resumed·로그)를 S 디스패치 실패가 삼키지 않게.
+        log.warning("backfill.dispatch.error", track="S", err=str(exc))
+    return resumed, dispatched
 
 
 def backfill_status(settings: Settings, track: str) -> dict[str, object] | None:

@@ -211,7 +211,7 @@ def test_resume_respawns_running_segment_job(settings) -> None:
             s.commit()
         return _FakeProc(rc=0)
 
-    resumed = bp.resume_active_jobs(settings, launcher=launcher)
+    resumed, _ = bp.resume_active_jobs(settings, launcher=launcher)
     assert resumed == 1
     _wait_status(settings, jid, "cancelled")
     assert spawn_gens[0] == "1"  # 세대 bump(0→1, 구세대 보고 펜싱).
@@ -231,7 +231,7 @@ def test_resume_dispatches_queued_only_segment_job(settings) -> None:
             s.commit()
         return _FakeProc(rc=0)
 
-    resumed = bp.resume_active_jobs(settings, launcher=launcher)
+    resumed, _ = bp.resume_active_jobs(settings, launcher=launcher)
     assert resumed == 0  # running 재개 대상 없음 — dispatch 만 작동.
     _wait_status(settings, jid, "cancelled")
 
@@ -310,7 +310,7 @@ def test_resume_after_pause_request_recovers_to_paused(settings) -> None:
     info = bp.request_pause_segment_job(settings, jid)
     assert info["cancel_requested"] is True and info["stop_reason"] == "pause"
 
-    resumed = bp.resume_active_jobs(settings, launcher=lambda a, lp: pytest.fail("스폰 금지"))
+    resumed, _ = bp.resume_active_jobs(settings, launcher=lambda a, lp: pytest.fail("스폰 금지"))
     assert resumed == 0
     with sm() as s:
         row = get_backfill_job(s, jid)
@@ -351,3 +351,78 @@ def test_dispatch_skips_invalidated_candidate(settings) -> None:
         request_cancel(s, j2_id)
         s.commit()
     _wait_status(settings, j2_id, "cancelled")
+
+
+def test_ticker_tick_respawns_orphan_running_segment_job(settings) -> None:
+    """티커 틱이 감독 없는 running 잔존(기동 시 DB 미준비로 resume 실패)을 세대 bump 재스폰한다."""
+    sm = get_sessionmaker(settings)
+    with sm() as s:
+        j = enqueue_segment_job(s, countries="KR", industries="제조")
+        s.commit()
+        jid = j.id
+    with sm() as s:
+        activate_segment_job(s, jid)  # 이전 서버가 남긴 running 잔존 — 이 프로세스엔 감독 없음.
+        s.commit()
+
+    spawn_gens: list[str] = []
+
+    def launcher(argv, log_path):  # noqa: ANN001
+        spawn_gens.append(argv[argv.index("--job-generation") + 1])
+        with sm() as s:
+            request_cancel(s, jid)
+            s.commit()
+        return _FakeProc(rc=0)
+
+    assert bp.segment_ticker_tick(settings, launcher=launcher) is None  # 재개는 dispatch 가 아님.
+    _wait_status(settings, jid, "cancelled")
+    assert spawn_gens == ["1"]
+
+
+def test_ticker_tick_leaves_supervised_job_alone(settings) -> None:
+    """감독 스레드가 살아 있는(_running) 잡은 취소 플래그가 있어도 티커가 닫지 않는다(이중 마감 금지)."""
+    sm = get_sessionmaker(settings)
+    with sm() as s:
+        j = enqueue_segment_job(s, countries="KR", industries="제조")
+        s.commit()
+        jid = j.id
+    with sm() as s:
+        activate_segment_job(s, jid)
+        request_cancel(s, jid)  # 감독이 처리 중인 취소.
+        s.commit()
+    bp._running["S"] = True  # 이 프로세스에 감독 존재 시뮬레이션.
+    assert bp.segment_ticker_tick(settings, launcher=lambda a, lp: pytest.fail("스폰 금지")) is None
+    with sm() as s:
+        assert get_backfill_job(s, jid).status == RUNNING  # 감독 몫 — 티커는 손대지 않음.
+
+
+def test_ticker_tick_releases_guard_when_resume_db_fails(settings, monkeypatch) -> None:
+    """재개 도중 DB 예외(리뷰 HIGH) — 가드가 True 로 박제되지 않아 다음 틱이 재스폰한다."""
+    sm = get_sessionmaker(settings)
+    with sm() as s:
+        j = enqueue_segment_job(s, countries="KR", industries="제조")
+        s.commit()
+        jid = j.id
+    with sm() as s:
+        activate_segment_job(s, jid)
+        s.commit()
+
+    def boom(*a, **k):  # noqa: ANN001, ANN002, ANN003
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(bp, "update_backfill_job", boom)
+    assert bp.segment_ticker_tick(settings, launcher=lambda a, lp: pytest.fail("스폰 금지")) is None
+    assert bp._running["S"] is False  # 예외 경로에서 가드 원복.
+    monkeypatch.undo()
+
+    spawn_gens: list[str] = []
+
+    def launcher(argv, log_path):  # noqa: ANN001
+        spawn_gens.append(argv[argv.index("--job-generation") + 1])
+        with sm() as s:
+            request_cancel(s, jid)
+            s.commit()
+        return _FakeProc(rc=0)
+
+    bp.segment_ticker_tick(settings, launcher=launcher)
+    _wait_status(settings, jid, "cancelled")
+    assert spawn_gens == ["1"]

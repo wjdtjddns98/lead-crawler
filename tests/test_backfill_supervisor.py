@@ -161,7 +161,7 @@ def test_resume_bumps_generation_and_respects_cancel(settings) -> None:
             s.commit()
         return _FakeProc(rc=0)
 
-    resumed = bp.resume_active_jobs(settings, launcher=launcher)
+    resumed, _ = bp.resume_active_jobs(settings, launcher=launcher)
     assert resumed == 1  # A 만 재개(C 는 취소 마감).
     assert _wait_terminal(settings, a_id) == "cancelled"
     with sm() as s:
