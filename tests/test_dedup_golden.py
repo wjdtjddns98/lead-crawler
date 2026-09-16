@@ -239,10 +239,14 @@ def _merge_pair(session: Session, fixed: datetime) -> None:
     session.flush()
 
 
-def test_apply_golden_repoints_company_when_survivor_unpromoted(session: Session) -> None:
-    """생존자 쪽 company 가 없으면 흡수행 company 의 키만 생존자로 이관(본체·큐 보존)."""
-    from leadcrawler.schema import CompanyRow
-    from leadcrawler.storage.review import ReviewQueueRow
+def test_apply_golden_rekeys_company_when_survivor_unpromoted(session: Session) -> None:
+    """생존자 쪽 company 가 없으면 생존키의 결정적 id 로 본체를 다시 만들고 연락처·큐를 옮긴다.
+
+    키만 바꾸면 이후 save_lead(company_id_for(생존키)) INSERT 가 unique 충돌(Codex HIGH).
+    """
+    from leadcrawler.schema import CompanyRow, ContactRow
+    from leadcrawler.storage.repository import company_id_for
+    from leadcrawler.storage.review import ReviewQueueRow, review_id_for
 
     session.add_all([
         DiscoveredCompanyRow(canonical_key="reg:dart:1", name="에이스 주식회사", country="KR",
@@ -250,13 +254,21 @@ def test_apply_golden_repoints_company_when_survivor_unpromoted(session: Session
         DiscoveredCompanyRow(canonical_key="dom:acme.com", name="에이스", country="KR", domain="acme.com"),
     ])
     session.flush()
-    _promote(session, "dom:acme.com", "c_dom", emails=["ir@acme.com"])
+    _promote(session, "dom:acme.com", "c_dom", emails=["ir@acme.com"], homepage="https://acme.com")
+    arq = session.get(ReviewQueueRow, review_id_for("c_dom", "email"))
+    arq.status, arq.note = "rejected", "폐업"
+    session.flush()
     _merge_pair(session, datetime(2026, 9, 16, tzinfo=timezone.utc))
 
-    co = session.get(CompanyRow, "c_dom")
-    assert co is not None and co.canonical_key == "reg:dart:1"
+    new_id = company_id_for("reg:dart:1")
+    co = session.get(CompanyRow, new_id)
+    assert co is not None and co.canonical_key == "reg:dart:1" and co.homepage == "https://acme.com"
+    assert session.get(CompanyRow, "c_dom") is None
     assert session.query(CompanyRow).count() == 1
-    assert session.query(ReviewQueueRow).filter_by(company_id="c_dom").count() == 1
+    assert [c.value for c in session.query(ContactRow).filter_by(company_id=new_id)] == ["ir@acme.com"]
+    rq = session.get(ReviewQueueRow, review_id_for(new_id, "email"))
+    assert rq.status == "rejected" and rq.note == "폐업"  # 생존자 큐가 없었으니 판정 통째로 승계
+    assert session.query(ReviewQueueRow).count() == 1
 
 
 def test_apply_golden_merges_promoted_companies_and_inherits_confirmed(session: Session) -> None:
@@ -334,10 +346,8 @@ def test_apply_golden_does_not_revive_rejected_candidates(session: Session) -> N
     _merge_pair(session, datetime(2026, 9, 16, tzinfo=timezone.utc))
     srq = session.get(ReviewQueueRow, review_id_for("c_reg", "email"))
     assert srq.status == "pending" and candidate_values_of(srq) == ["ir@acme.com"]
-    # 연락처는 대소문자 무시 합집합(IR@ 는 ir@ 와 같은 값).
-    assert sorted(c.value for c in session.query(ContactRow).filter_by(company_id="c_reg")) == [
-        "bad@acme.com", "ir@acme.com",
-    ]
+    # 거부된 이메일은 연락처로도 복제하지 않는다(재큐잉이 되살리므로). IR@ 는 ir@ 와 같은 값.
+    assert [c.value for c in session.query(ContactRow).filter_by(company_id="c_reg")] == ["ir@acme.com"]
 
 
 def test_apply_golden_rechain_merges_legacy_child_company(session: Session) -> None:
@@ -364,3 +374,49 @@ def test_apply_golden_rechain_merges_legacy_child_company(session: Session) -> N
     assert {c.value for c in session.query(ContactRow).filter_by(company_id="c_reg")} == {
         "ir@acme.com", "contact@acme.com",
     }
+
+
+def test_apply_golden_rerun_merges_company_when_ledger_already_linked(session: Session) -> None:
+    """원장만 링크된 상태(구버전 머지·중간 실패)에서 재실행하면 company 본체 병합을 수행한다."""
+    from leadcrawler.schema import CompanyRow
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="reg:dart:1", name="에이스", country="KR",
+                             registry="dart", registry_id="1", domain="acme.com"),
+        DiscoveredCompanyRow(canonical_key="dom:acme.com", name="에이스", country="KR",
+                             domain="acme.com", duplicate_of="reg:dart:1", merged_by="auto"),
+    ])
+    session.flush()
+    _promote(session, "reg:dart:1", "c_reg", emails=["ir@acme.com"])
+    _promote(session, "dom:acme.com", "c_dom", emails=["contact@acme.com"])
+    members = load_cluster_members(session, ["reg:dart:1", "dom:acme.com"])
+    goldens = resolve_all(members, [("reg:dart:1", "dom:acme.com")])
+    assert apply_golden(session, goldens[0], now=lambda: datetime(2026, 9, 16, tzinfo=timezone.utc)) == 0
+    session.flush()
+    assert session.get(CompanyRow, "c_dom") is None
+    assert session.query(CompanyRow).count() == 1
+
+
+def test_apply_golden_same_contact_takes_stronger_evidence(session: Session) -> None:
+    """같은 이메일이 양쪽에 있으면 role/confidence·검증결과는 더 강한 쪽(흡수측이라도)으로."""
+    from leadcrawler.schema import ContactRow, EmailValidationRow
+    from leadcrawler.storage.repository import contact_id_for
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="reg:dart:1", name="에이스", country="KR",
+                             registry="dart", registry_id="1", domain="acme.com"),
+        DiscoveredCompanyRow(canonical_key="dom:acme.com", name="에이스", country="KR", domain="acme.com"),
+    ])
+    session.flush()
+    _promote(session, "reg:dart:1", "c_reg", emails=["ir@acme.com"])
+    _promote(session, "dom:acme.com", "c_dom", emails=["ir@acme.com"])
+    weak = session.get(ContactRow, contact_id_for("c_reg", "email", "ir@acme.com"))
+    weak.role, weak.confidence = "contact", 0.1
+    session.get(EmailValidationRow, weak.id).status = "unknown"
+    strong = session.get(ContactRow, contact_id_for("c_dom", "email", "ir@acme.com"))
+    strong.role, strong.confidence = "ir", 0.9
+    session.flush()
+    _merge_pair(session, datetime(2026, 9, 16, tzinfo=timezone.utc))
+    kept = session.get(ContactRow, weak.id)
+    assert (kept.role, kept.confidence) == ("ir", 0.9)
+    assert session.get(EmailValidationRow, kept.id).status == "valid"

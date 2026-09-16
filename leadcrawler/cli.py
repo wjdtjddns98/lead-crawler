@@ -1232,7 +1232,10 @@ def dedup_merge(
                 if i % 200 == 0:
                     session.commit()
             session.commit()
-            typer.echo(f"머지 적용 완료: {applied:,}건 흡수(duplicate_of 기록·가역). ")
+            typer.echo(
+                f"머지 적용 완료: {applied:,}건 흡수(원장 duplicate_of 는 가역 — company 본체 병합·"
+                "흡수 company 삭제는 비가역, 적용 전 pg_dump 백업 권장)."
+            )
     finally:
         session.close()
 
