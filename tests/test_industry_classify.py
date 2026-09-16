@@ -464,3 +464,30 @@ def test_claude_classifier_reuses_sdk_client(monkeypatch):
     for _ in range(3):
         assert c.classify("X Games", "x.com", "<p>games</p>").label == "게임"
     assert len(inits) == 1
+
+
+def test_build_lead_passes_rendered_html_only_when_headless_extracted():
+    """렌더 본문은 헤드리스가 연락처를 뽑았을 때만 존재검사에 넘긴다(WAF 챌린지 본문 오탐 게이트)."""
+    from leadcrawler.models import ExtractMethod
+    from leadcrawler.pipeline.run import _build_lead
+
+    seen: dict = {}
+
+    class _Rec(_FakeExistence):
+        def verify(self, domain, **k):
+            seen.update(k)
+            return super().verify(domain, **k)
+
+    kw = dict(existence=_Rec(), email_validator=_FakeValidator(),
+              classifier=_RecordingClassifier("게임"))
+    enr = _FakeEnricher()
+    enr.last_home_rendered_html = "<html><body><p>실제 렌더 본문</p></body></html>"
+    enr.enrich = lambda dc: [Contact(type=ContactType.EMAIL, value="ir@x.com",
+                                     extract_method=ExtractMethod.HEADLESS)]
+    _build_lead(_dc("게임"), enricher=enr, **kw)
+    assert seen["rendered_html"] == enr.last_home_rendered_html
+
+    seen.clear()
+    enr.enrich = lambda dc: [Contact(type=ContactType.PHONE, value="02-1111-2222")]  # 정적만.
+    _build_lead(_dc("게임"), enricher=enr, **kw)
+    assert seen["rendered_html"] is None

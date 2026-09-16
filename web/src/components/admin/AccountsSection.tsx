@@ -19,10 +19,12 @@ import { SECTION_H2, fmt } from "./shared";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 // 감사 로그 액션 한글 라벨 — reclaim 은 관리자 점유 회수(PRD-queue-claim-permanent §4.6).
+// domain_reset 은 BE domain-conflicts(#499)가 오배정 도메인을 비우고 큐로 되돌린 시스템 행.
 const ACTION_LABEL: Record<string, string> = {
   confirmed: "확정",
   rejected: "거부",
   reclaim: "회수",
+  domain_reset: "도메인 초기화",
 };
 
 // 확인 다이얼로그 대기 중인 액션 타입

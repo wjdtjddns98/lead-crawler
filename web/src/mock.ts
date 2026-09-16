@@ -385,13 +385,14 @@ let claimedIds = new Set<string>();
 
 // 최근 검증 이력 — 확정/거부(setStatus)마다 최신순으로 쌓인다.
 // 시드 25건: 담당자·액션을 섞어 관리자 화면의 필터·페이지네이션 동작을 mock 에서 확인할 수 있게.
+// 7건마다 1건은 BE domain-conflicts 시스템 행(domain_reset, 담당자 system:domain-conflicts).
 const MOCK_AUDIT_ACTORS = ["mock-admin", "worker1", "worker2"];
 const audit: AuditEntry[] = db.slice(0, 25).map((it, i) => ({
   id: `audit-seed-${i}`,
   review_id: it.id,
-  actor_username: MOCK_AUDIT_ACTORS[i % MOCK_AUDIT_ACTORS.length],
-  action: i % 3 === 0 ? "rejected" : "confirmed",
-  selected: i % 3 === 0 ? null : it.candidates[0]?.value ?? null,
+  actor_username: i % 7 === 6 ? "system:domain-conflicts" : MOCK_AUDIT_ACTORS[i % MOCK_AUDIT_ACTORS.length],
+  action: i % 7 === 6 ? "domain_reset" : i % 3 === 0 ? "rejected" : "confirmed",
+  selected: i % 7 === 6 || i % 3 === 0 ? null : it.candidates[0]?.value ?? null,
   company_name: it.name,
   at: new Date(Date.now() - (i + 1) * 3600_000).toISOString(),
 }));
