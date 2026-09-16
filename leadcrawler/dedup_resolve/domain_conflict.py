@@ -81,6 +81,10 @@ class ConflictPlan(BaseModel):
     groups: int
     by_action: dict[str, int]
     rows: list[ConflictRow]
+    titles_fetched: int = 0  # --fetch-titles 로 실제 title 을 얻은 host 수(0 이면 title 근거 없음)
+
+
+_CJK_RE = re.compile(r"[가-힣぀-ヿ一-鿿]")
 
 
 def _compare_key(name: str) -> str:
@@ -115,7 +119,10 @@ def load_conflict_groups(session: Session) -> dict[tuple[str, str], list[dict]]:
 
 
 def audited_hosts(session: Session, company_ids: Iterable[str]) -> dict[str, set[str]]:
-    """회사별로 사람이 워크벤치에서 확정·수정한 홈페이지 root 집합(review_audit.homepage_after)."""
+    """회사별로 사람이 워크벤치에서 **가장 최근에** 고친 홈페이지 root(review_audit.homepage_after).
+
+    append-only 이력이라 과거 값(A→B 로 재수정한 A)이 근거로 남지 않게 최신 1건만 쓴다.
+    """
     ids = list(company_ids)
     out: dict[str, set[str]] = defaultdict(set)
     if not ids:
@@ -124,8 +131,13 @@ def audited_hosts(session: Session, company_ids: Iterable[str]) -> dict[str, set
         select(ReviewQueueRow.company_id, ReviewAuditRow.homepage_after)
         .join(ReviewAuditRow, ReviewAuditRow.review_id == ReviewQueueRow.id)
         .where(ReviewQueueRow.company_id.in_(ids), ReviewAuditRow.homepage_after.is_not(None))
+        .order_by(ReviewAuditRow.at.desc())
     )
+    seen: set[str] = set()
     for cid, after in session.execute(stmt):
+        if cid in seen:
+            continue
+        seen.add(cid)
         root = normalize_domain(after)
         if root:
             out[cid].add(root)
@@ -135,6 +147,7 @@ def audited_hosts(session: Session, company_ids: Iterable[str]) -> dict[str, set
 def fetch_titles(hosts: Iterable[str], get_text: Callable[[str], str]) -> dict[str, str]:
     """host 당 1회 홈페이지 ``<title>`` 을 가져온다(실패는 조용히 건너뜀 — 근거 없음으로 처리)."""
     titles: dict[str, str] = {}
+    failed = 0
     for host in hosts:
         for url in (f"https://{host}", f"http://{host}"):
             try:
@@ -144,7 +157,23 @@ def fetch_titles(hosts: Iterable[str], get_text: Callable[[str], str]) -> dict[s
             if m:
                 titles[host] = re.sub(r"\s+", " ", m.group(1)).strip()
                 break
+        else:
+            failed += 1
+    log.info("domain_conflict.titles", fetched=len(titles), failed=failed)
     return titles
+
+
+def _title_supports(name: str, title: str) -> bool:
+    """회사명이 title 에 **토큰 경계로** 들어 있는지 — 단일 토큰 완전일치 또는 다중 토큰 연속 부분열."""
+    toks = compare_tokens(name)
+    core = "".join(toks)
+    if len(core) < _TITLE_MIN:
+        return False
+    ttoks = tokenize_name(title)
+    if core in ttoks:
+        return True
+    n = len(toks)
+    return n >= 2 and any(ttoks[i:i + n] == toks for i in range(len(ttoks) - n + 1))
 
 
 def _evidence(row: dict, audited: dict[str, set[str]], titles: dict[str, str]) -> list[str]:
@@ -155,18 +184,17 @@ def _evidence(row: dict, audited: dict[str, set[str]], titles: dict[str, str]) -
         ev.append("dom_key")
     if host in audited.get(row["company_id"], ()):
         ev.append("audited_homepage")
-    # name 의 영문 병기('(주)에이럭스(ALUX Co)')도 슬러그가 되게 name_eng 뒤에 name 도 본다 —
-    # _name_matches 의 경계·길이 하한이 우연한 라틴 조각 오탐을 막는다.
-    for nm in (row.get("name_eng"), row["name"]):
+    # 라틴 근거는 권위 있는 name_eng 또는 **전부 라틴인 주명칭**만 — 한글명 안의 괄호 병기
+    # ('동일상사 (APPLE)')는 근거로 쓰지 않는다(Codex HIGH: 실제 소유주 역전 재현).
+    name = row["name"]
+    for nm in (row.get("name_eng"), name if not _CJK_RE.search(name) else None):
         slug = _name_slug(nm or "")
         if slug and _name_matches(slug, host):
             ev.append("latin_name")
             break
     title = titles.get(host)
-    if title:
-        core = _compare_key(row["name"])
-        if len(core) >= _TITLE_MIN and core in tokenize_name(title):
-            ev.append("title")
+    if title and _title_supports(name, title):
+        ev.append("title")
     return ev
 
 
@@ -197,8 +225,10 @@ def classify_group(
         mine_key = "".join(mine)
         if any(_name_score(mine, ot) >= NAME_STRONG for ot in owner_tokens):
             c.action = SAME_ENTITY  # 같은 회사 — dedup-report/merge 몫
-        elif any(len(k) >= _TITLE_MIN and mine_key.startswith(k) for k in owner_keys):
-            c.action = RELATED  # 지점·자회사 표기 — 모기업 도메인 공유는 손대지 않음
+        elif any(len(k) >= _TITLE_MIN and k in mine_key for k in owner_keys):
+            # 소유주 이름을 품음(접두·중간 모두: 알테오젠바이오로직스·성남한국전력지점) — 지점·자회사
+            # 표기는 손대지 않는다. 독립 법인을 과보호할 수 있으나 삭제 안 하는 방향의 오차(안전).
+            c.action = RELATED
         elif c.canonical_key.startswith("reg:") or c.reg_no:
             c.action = REVIEW  # 법인 확정 행 — 소유주가 뒤집힌 경우가 있어 사람 판정
         else:
@@ -253,7 +283,7 @@ def build_plan(
     groups = load_conflict_groups(session)
     all_ids = [r["company_id"] for rows in groups.values() for r in rows]
     audited = audited_hosts(session, all_ids)
-    titles = fetch_titles({h for _, h in groups}, get_text) if get_text is not None else {}
+    titles = fetch_titles(sorted({h for _, h in groups}), get_text) if get_text is not None else {}
     rows_out: list[ConflictRow] = []
     for rows in groups.values():
         raw_by_id = {r["company_id"]: r for r in rows}
@@ -266,7 +296,7 @@ def build_plan(
         by_action[c.action] += 1
     return ConflictPlan(
         generated_at=(now or (lambda: datetime.now(timezone.utc)))(),
-        groups=len(groups), by_action=dict(by_action), rows=rows_out,
+        groups=len(groups), by_action=dict(by_action), rows=rows_out, titles_fetched=len(titles),
     )
 
 
@@ -280,9 +310,16 @@ def apply_row(session: Session, row: ConflictRow, *, now: datetime) -> str:
 
     if row.action != AUTO_WRONG:
         return "skipped"
-    co = session.get(CompanyRow, row.company_id)
+    co = session.get(CompanyRow, row.company_id, with_for_update=True)  # PG 행 잠금(SQLite 무시)
     if co is None or normalize_domain(co.homepage) != row.host:
         return "stale"  # 이미 바뀜(사람 수정·재해석) — 덮어쓰지 않는다.
+    q = row.before.get("queue")
+    rq0 = session.get(ReviewQueueRow, q["id"], with_for_update=True) if q else None
+    if rq0 is not None and (
+        rq0.status != q["status"] or rq0.assignee != q["assignee"]
+        or (rq0.reviewed_at.isoformat() if rq0.reviewed_at else None) != q["reviewed_at"]
+    ):
+        return "stale"  # 계획 이후 사람이 큐를 다시 판정 — 그 판단을 덮지 않는다.
     dc = session.get(DiscoveredCompanyRow, row.canonical_key)
     if dc is not None and normalize_domain(dc.domain) == row.host:
         dc.domain = None

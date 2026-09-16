@@ -442,3 +442,32 @@ def test_resolve_targets_include_promoted_rows_with_blank_homepage(tmp_path) -> 
         ])
         session.commit()
     assert fill_mod.count_resolve_targets(sm) == 1
+
+
+def test_resolve_merges_promoted_blank_row_into_same_entity_owner(tmp_path, monkeypatch) -> None:
+    """홈페이지가 비워진 승격 회사가 같은 회사(이름 强일치)의 도메인으로 재해석되면 본체까지 병합된다."""
+    _patch(monkeypatch)
+    s = Settings(database_url=f"sqlite:///{tmp_path}/rb11.db", dry_run=False, resolve_domains=True)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    with sm() as session:
+        session.add_all([
+            DiscoveredCompanyRow(canonical_key="reg:dart:7", name="살아있는상사", country="KR",
+                                 industry="화학·석유화학", source="dart", domain="살아있는상사.example.com"),
+            DiscoveredCompanyRow(canonical_key="name:kr:살아있는상사", name="(주)살아있는상사", country="KR",
+                                 industry="화학·석유화학", source="nps"),
+        ])
+        session.flush()
+        session.add_all([
+            CompanyRow(id="c_owner", canonical_key="reg:dart:7", name="살아있는상사", country="KR",
+                       homepage="https://살아있는상사.example.com"),
+            CompanyRow(id="c_blank", canonical_key="name:kr:살아있는상사", name="(주)살아있는상사",
+                       country="KR", homepage=None),
+        ])
+        session.commit()
+    processed, resolved, promoted = fill_mod.resolve_batch(s, sm, limit=50, workers=2)
+    assert (processed, resolved, promoted) == (1, 1, 0)
+    with sm() as session:
+        assert session.get(DiscoveredCompanyRow, "name:kr:살아있는상사").duplicate_of == "reg:dart:7"
+        assert session.get(CompanyRow, "c_blank") is None  # 본체 병합
+        assert session.query(CompanyRow).count() == 1

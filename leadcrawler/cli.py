@@ -1274,9 +1274,17 @@ def domain_conflicts(
         if apply or rollback:
             if not plan:
                 raise typer.BadParameter("--apply/--rollback 에는 --plan 이 필요합니다")
+            import json as _json
+
             data = ConflictPlan.model_validate_json(Path(plan).read_text(encoding="utf-8"))
             targets = [r for r in data.rows if r.action == AUTO_WRONG]
+            # 실제 적용된 행 id 를 계획 옆에 남겨 되돌리기는 그 행만 건드린다(stale 로 건너뛴 행 제외).
+            applied_path = Path(plan).with_suffix(".applied.json")
+            if rollback and applied_path.exists():
+                ids = set(_json.loads(applied_path.read_text(encoding="utf-8")))
+                targets = [r for r in targets if r.company_id in ids]
             stats: dict[str, int] = {}
+            applied_ids: list[str] = []
             stamp = datetime.now(timezone.utc)
             for i, r in enumerate(targets, 1):
                 try:
@@ -1286,9 +1294,13 @@ def domain_conflicts(
                     log.warning("domain_conflict.row_failed", company=r.company_id, err=str(exc))
                     res = "failed"
                 stats[res] = stats.get(res, 0) + 1
+                if res == "applied":
+                    applied_ids.append(r.company_id)
                 if i % 100 == 0:
                     session.commit()
             session.commit()
+            if not rollback:
+                applied_path.write_text(_json.dumps(applied_ids), encoding="utf-8")
             typer.echo(f"{'되돌리기' if rollback else '적용'} 완료: " + ", ".join(f"{k} {v:,}" for k, v in sorted(stats.items())))
             return
         get_text = None
@@ -1307,7 +1319,9 @@ def domain_conflicts(
                 fetcher.close()
         Path(out).parent.mkdir(parents=True, exist_ok=True)
         Path(out).write_text(result.model_dump_json(indent=2), encoding="utf-8")
-        typer.echo(f"도메인 충돌 계획 저장: {out} / 그룹 {result.groups:,}")
+        typer.echo(
+            f"도메인 충돌 계획 저장: {out} / 그룹 {result.groups:,} / title 수집 {result.titles_fetched:,}"
+        )
         for k, v in sorted(result.by_action.items()):
             typer.echo(f"  - {k}: {v:,}행")
         for r in [x for x in result.rows if x.action == AUTO_WRONG][:15]:

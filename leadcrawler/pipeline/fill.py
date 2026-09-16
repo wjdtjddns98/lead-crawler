@@ -25,6 +25,7 @@ from sqlalchemy.orm import sessionmaker
 from ..config import Settings
 from ..cost_ledger import CostLedger
 from ..dedup import normalize_domain
+from ..dedup_resolve.golden import _merge_company_rows
 from ..dedup_resolve.inline import find_inline_duplicate
 from ..enrich.enricher import Enricher
 from ..enrich.industry_classify import build_classifier
@@ -35,7 +36,8 @@ from ..sources.countries import country_match_set
 from ..sources.taxonomy import UNCLASSIFIED
 from ..sources.domain_resolver import DomainResolver
 from ..sources.http import HostRateLimiters
-from ..storage.repository import backfill_domain, load_seen_domains
+from ..schema import CompanyRow
+from ..storage.repository import backfill_domain, company_id_for, load_seen_domains
 from ..verify.email_validator import EmailValidator
 from ..verify.existence import ExistenceVerifier
 from ..verify.registry_active import build_registry_checker
@@ -685,6 +687,9 @@ def resolve_batch(
                     # 링크. 도메인만 커밋되고 링크가 빠지면 이 행은 대상 SQL(domain='')에서 영구
                     # 이탈해 재시도가 없다.
                     _link_inline_dup(ws, dc.canonical_key, survivor)
+                    # 이미 승격된 행(오배정 교정으로 홈페이지가 비워진 회사)이면 company 본체도
+                    # 생존자로 합친다 — 링크만 하면 홈페이지 없는 company 가 큐에 영구 잔존(Codex MED).
+                    _merge_company_rows(ws, survivor, dc.canonical_key)
                 ws.commit()  # 도메인 기록은 항상 남긴다(승격 실패해도 재시도 방지).
                 if collided:
                     log.info("resolve.backfill.dedup_skip", key=dc.canonical_key, domain=rdom)
@@ -692,8 +697,10 @@ def resolve_batch(
                 if rdom is not None:
                     seen_domains.add(rdom)
                 if lead is not None:
-                    # 커밋 성공만 승격으로 집계(저장 실패는 promoted 미증가).
-                    if _persist_lead(ws, dc, lead) and lead.company.is_active:
+                    # 커밋 성공만 승격으로 집계(저장 실패는 promoted 미증가). 이미 승격된 회사의
+                    # 재해석(홈페이지 공백 복귀)은 신규 승격이 아니라 세지 않는다.
+                    was_promoted = ws.get(CompanyRow, company_id_for(dc.canonical_key)) is not None
+                    if _persist_lead(ws, dc, lead) and lead.company.is_active and not was_promoted:
                         promoted += 1
             # fill_batch 와 동일 — Playwright 보유 컴포넌트는 워커 스레드 자신이 닫는다.
             _close_in_workers(pool, lambda: _close_own(tl))
