@@ -51,9 +51,9 @@ CONFIRMED_TIERS: frozenset[str] = frozenset({"reg_no", "auto"})
 # 붙여쓴 "주식회사X" 는 tokenize_name 이 못 벗기고(65 그룹), NPS 일용 사업장 표기
 # "회사/일용/…공사명" 은 긴 공사명이 유사도를 깎아(200 행) auto 티어를 놓쳤다.
 _ATTACHED_LEGAL = re.compile(r"(주식회사|유한회사|유한책임회사|합자회사|합명회사|재단법인|사단법인)")
-# 구분자(/ - ( （) 뒤에 오는 '일용' 이후 전부 절단 — '일용산업' 처럼 이름 자체인 경우는 구분자가
-# 없어 보존된다.
-_NPS_SITE_CUT = re.compile(r"\s*[/\-(（]\s*[(（]?\s*일용.*$")
+# NPS 표기 모양 그대로만 절단: 구분자(/ - ( （) + '일용' + 닫는 구분자() ） / -) 이후 전부.
+# '일용산업'(구분자 없음)·'동양(일용잡화)유통'('일용' 뒤가 닫는 구분자가 아님)은 보존된다(리뷰 HIGH).
+_NPS_SITE_CUT = re.compile(r"\s*[/\-(（]\s*[(（]?\s*일용\s*[)）/\-].*$")
 
 
 def compare_tokens(name: str) -> list[str]:

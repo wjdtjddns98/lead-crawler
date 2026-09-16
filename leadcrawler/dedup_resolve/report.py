@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..cost_ledger import SupportsCostLedger
+from ..dedup import normalize_domain
 from ..schema import CompanyRow, DiscoveredCompanyRow
 from .llm_judge import JudgedPair, SupportsJudge, judge_candidates
 from .near_dup import (
@@ -79,10 +80,25 @@ def load_company_records(
         stmt = stmt.where(DiscoveredCompanyRow.duplicate_of.is_(None))
     return [
         CompanyRecord(
-            key=key, name=name, country=country or "", domain=homepage or domain, reg_no=reg_no
+            key=key, name=name, country=country or "",
+            domain=homepage if _usable_homepage(homepage) else domain, reg_no=reg_no,
         )
         for key, name, country, domain, reg_no, homepage in session.execute(stmt).all()
     ]
+
+
+# 포털·블로그 root — 서로 다른 회사의 블로그/스토어 홈페이지가 같은 root(naver.com 등)로 접혀
+# 도메인 동치 오탐이 되므로 비교 도메인으로 쓰지 않는다(원장 domain 으로 폴백).
+# ponytail: 관측된 KR 포털 위주 정적 집합 — 더 나오면 dedup._MULTI_TENANT_SUFFIXES 와 통합.
+_PORTAL_ROOTS = frozenset({
+    "naver.com", "daum.net", "kakao.com", "google.com", "facebook.com", "instagram.com",
+    "tistory.com", "blogspot.com", "wordpress.com", "youtube.com", "linkedin.com",
+})
+
+
+def _usable_homepage(homepage: str | None) -> bool:
+    root = normalize_domain(homepage)
+    return root is not None and root not in _PORTAL_ROOTS
 
 
 def build_report(

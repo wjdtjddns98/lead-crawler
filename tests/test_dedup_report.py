@@ -130,3 +130,23 @@ def test_report_uses_company_homepage_over_ledger_domain(session: Session, tmp_p
     session.flush()
     rpt = run_dedup_report(session, tmp_path / "r.json")
     assert rpt.by_tier.get("auto") == 1 and rpt.total_candidates == 1
+
+
+def test_report_ignores_portal_homepage(session: Session, tmp_path) -> None:
+    """서로 다른 회사의 네이버 블로그 홈페이지는 같은 root(naver.com)로 접히므로 비교 도메인으로 안 쓴다."""
+    from leadcrawler.schema import CompanyRow
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="name:kr:한빛상사", name="한빛상사", country="KR"),
+        DiscoveredCompanyRow(canonical_key="name:kr:한빛상사b", name="한빛상사", country="KR"),
+    ])
+    session.flush()
+    session.add_all([
+        CompanyRow(id="c_1", canonical_key="name:kr:한빛상사", name="한빛상사", country="KR",
+                   homepage="https://blog.naver.com/hanbit1"),
+        CompanyRow(id="c_2", canonical_key="name:kr:한빛상사b", name="한빛상사", country="KR",
+                   homepage="https://blog.naver.com/hanbit2"),
+    ])
+    session.flush()
+    rpt = run_dedup_report(session, tmp_path / "r.json")
+    assert rpt.by_tier.get("auto", 0) == 0  # 도메인 불명 → lexical 쇼트리스트로만

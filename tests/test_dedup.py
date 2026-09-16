@@ -145,6 +145,8 @@ def test_compare_tokens_cuts_nps_daily_worker_site_suffix() -> None:
     assert compare_tokens("다올이앤씨주식회사-(일용)함양-창녕간 건설공사(제1공구)") == ["다올이앤씨"]
     assert compare_tokens("(주)이수엔지니어링(일용)국립도시건축박물관건립사업중설비공사") == ["이수엔지니어링"]
     assert compare_tokens("일용산업(주)") == ["일용산업"]  # 이름 자체는 보존
+    assert compare_tokens("동양(일용잡화)유통") == ["동양", "일용잡화", "유통"]  # 실제 단어는 보존
+    assert compare_tokens("한빛 일용잡화상회") == ["한빛", "일용잡화상회"]
 
 
 def test_match_records_auto_for_nps_site_row_sharing_domain() -> None:

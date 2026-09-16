@@ -313,7 +313,7 @@ def test_resolve_batch_overshared_domain_not_recorded(tmp_path, monkeypatch) -> 
     """원장에서 이미 과공유된 도메인(디렉터리 신호)은 기록도 승격도 하지 않는다.
 
     2026-08-10 사고 가드: 해석기가 오채택한 디렉터리 도메인이 원장에 무제한 기록됐고
-    (dedup_skip 은 승격만 막고 기록은 남김), promote 백필이 그걸 무차별 승격했다.
+    (당시 동치스킵은 기록은 남겼다), promote 백필이 그걸 무차별 승격했다.
     과공유 캡(_DOMAIN_OVERSHARE_CAP=3)부터는 기록 자체를 끊어야 한다.
     """
     _patch(monkeypatch)
