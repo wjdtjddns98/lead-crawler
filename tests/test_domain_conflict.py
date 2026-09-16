@@ -14,6 +14,7 @@ from leadcrawler.dedup_resolve.domain_conflict import (
     ALLOW_SHARED,
     AUTO_WRONG,
     OWNER,
+    RELATED,
     REVIEW,
     SAME_ENTITY,
     ConflictPlan,
@@ -105,6 +106,19 @@ def test_latin_name_and_title_evidence() -> None:
     assert out["c2"].action == OWNER and out["c2"].evidence == ["title"]
     assert out["c3"].action == AUTO_WRONG
     assert out["c4"].evidence == []
+
+
+def test_related_prefix_and_registry_rows_are_not_auto_wrong() -> None:
+    rows = [
+        _row("c1", "dom:alteogen.com", "(주)알테오젠", host="alteogen.com"),
+        _row("c2", "name:kr:알테오젠바이오로직스", "주식회사 알테오젠바이오로직스", host="alteogen.com"),
+        _row("c3", "reg:dart:00888134", "(주)경주수출포장", host="alteogen.com", reg_no="1"),
+        _row("c4", "name:kr:한빛유통", "한빛유통", host="alteogen.com"),
+    ]
+    out = {c.company_id: c for c in classify_group(rows, {})}
+    assert out["c2"].action == RELATED  # 소유주 이름을 접두로 품음(자회사)
+    assert out["c3"].action == REVIEW  # 등록처 키 행은 사람 판정
+    assert out["c4"].action == AUTO_WRONG
 
 
 # ── DB: 계획 → 적용 → 되돌리기 ─────────────────────────────────────────────────

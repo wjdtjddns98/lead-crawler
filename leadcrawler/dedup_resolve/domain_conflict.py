@@ -10,8 +10,11 @@ company 51,612건 중 같은 country+host 를 다른 이름이 공유하는 그�
   ``<title>`` 토큰 완전일치(opt-in fetch). **등록번호는 법인 동일성 근거이지 도메인 소유 근거가
   아니다**(``reg:dart`` 행도 도메인은 해석으로 받는다 — 삼지토건↔samji.com).
 - 근거 있는 행 = ``owner``(2곳 이상이면 ``allow_shared`` — 계열사 정당 공유, 관계 데이터가 없어
-  자동 판정 안 함). 근거 없는 행은 소유주와 이름 强일치면 ``same_entity``(dedup 몫), 아니면
-  ``auto_wrong``. 소유주가 없으면 전부 ``review``(워크벤치).
+  자동 판정 안 함). 근거 없는 행은 소유주와 이름 强일치면 ``same_entity``(dedup 몫), 소유주
+  이름을 **접두**로 품으면 ``related``(지점·자회사 — 알테오젠바이오로직스/신성미네랄성남지점,
+  손대지 않음), 등록처 키(``reg:``)·등록번호 보유면 ``review``(법인 확정 행은 사람 검토 —
+  라이브 미리보기에서 케이제이인더스트리↔경주수출포장(kjep) 처럼 진짜 소유주가 뒤집힌 사례),
+  그 외(``name:`` 키·근거 없음)만 ``auto_wrong``. 소유주가 없으면 전부 ``review``(워크벤치).
 
 적용(``auto_wrong`` 만): 원장 domain·company.homepage 를 비우고(host 동일 시) site_alive=False,
 그 host 의 이메일·문의폼 연락처만 삭제(전화 보존), 검증큐는 **pending 으로 되돌린다**(confirmed
@@ -51,6 +54,7 @@ log = get_logger("dedup.domain_conflict")
 OWNER = "owner"
 ALLOW_SHARED = "allow_shared"
 SAME_ENTITY = "same_entity"
+RELATED = "related"
 AUTO_WRONG = "auto_wrong"
 REVIEW = "review"
 
@@ -182,13 +186,19 @@ def classify_group(
             c.action = REVIEW
         return out
     owner_tokens = [compare_tokens(o.name) for o in owners]
+    owner_keys = ["".join(t) for t in owner_tokens]
     for c in out:
         if c.evidence:
             c.action = ALLOW_SHARED if len(owners) >= 2 else OWNER
             continue
         mine = compare_tokens(c.name)
+        mine_key = "".join(mine)
         if any(_name_score(mine, ot) >= NAME_STRONG for ot in owner_tokens):
             c.action = SAME_ENTITY  # 같은 회사 — dedup-report/merge 몫
+        elif any(len(k) >= _TITLE_MIN and mine_key.startswith(k) for k in owner_keys):
+            c.action = RELATED  # 지점·자회사 표기 — 모기업 도메인 공유는 손대지 않음
+        elif c.canonical_key.startswith("reg:") or c.reg_no:
+            c.action = REVIEW  # 법인 확정 행 — 소유주가 뒤집힌 경우가 있어 사람 판정
         else:
             c.action = AUTO_WRONG
     return out
