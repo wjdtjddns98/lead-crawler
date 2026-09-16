@@ -210,7 +210,10 @@ def _merge_company_rows(session, survivor_key: str, absorbed_key: str) -> str | 
       UPDATE 불가)·이메일 검증결과 복제·큐 후보 합집합·**사람 확정 판단 승계**(흡수행이
       confirmed 이고 생존자가 미확정이면 그 판단을 가져온다 — 리드손실 방지. 둘 다 확정이면
       생존자 것 유지)·감사 이력을 생존자 큐 행으로 재지정한 뒤 흡수 company 행을 지운다.
-      이 삭제는 비가역(원장 링크는 가역) — 확정 티어(reg_no/auto)만 여기 도달한다.
+      흡수행이 rejected 면 그 후보는 생존자 큐에 되살리지 않는다(사람 판정 보존, 연락처 복제만).
+      이 삭제는 비가역(원장 링크는 가역). 도달 경로 = CLI 확정 티어(reg_no/auto) + 워크벤치
+      사람 '동일 확정'(human) — 사람이 같은 회사라 확정한 이상 본체도 합치는 게 큐 중복 해소
+      목적에 맞다(되돌리기 API 는 원래 없음).
     반환 ``"repointed"`` | ``"merged"`` | ``None``(흡수행에 company 없음).
     """
     from sqlalchemy import delete, select, update
@@ -239,6 +242,11 @@ def _merge_company_rows(session, survivor_key: str, absorbed_key: str) -> str | 
     for col in ("homepage", "industry"):  # 생존자 공란만 채움(기존 값 불변).
         if not getattr(survivor, col) and getattr(absorbed, col):
             setattr(survivor, col, getattr(absorbed, col))
+    if absorbed.is_active and not survivor.is_active:  # 실존 근거는 더 강한 쪽으로(제약②).
+        survivor.is_active, survivor.site_alive = True, survivor.site_alive or absorbed.site_alive
+        survivor.existence_confidence = max(
+            survivor.existence_confidence, absorbed.existence_confidence
+        )
 
     have = {
         (c.type, c.value.lower())
@@ -247,6 +255,15 @@ def _merge_company_rows(session, survivor_key: str, absorbed_key: str) -> str | 
     srq = session.get(ReviewQueueRow, review_id_for(survivor.id, "email"))
     arq = session.get(ReviewQueueRow, review_id_for(absorbed.id, "email"))
     cands = candidate_values_of(srq) if srq is not None else []
+    seen_cands = {v.lower() for v in cands}
+
+    def _add_cand(v: str) -> None:
+        if v.lower() not in seen_cands:
+            cands.append(v)
+            seen_cands.add(v.lower())
+
+    # 흡수행이 사람 거부(rejected)면 그 이메일 후보를 생존자 큐에 되살리지 않는다.
+    revive = arq is None or arq.status != "rejected"
     absorbed_contacts = session.scalars(
         select(ContactRow).where(ContactRow.company_id == absorbed.id)
     ).all()
@@ -266,11 +283,13 @@ def _merge_company_rows(session, survivor_key: str, absorbed_key: str) -> str | 
                 smtp=ev.smtp, provider=ev.provider, checked_at=ev.checked_at,
             ))
         have.add((c.type, c.value.lower()))
-        if c.type == "email" and c.value not in cands:
-            cands.append(c.value)
+        if c.type == "email" and revive:
+            _add_cand(c.value)
 
     if arq is not None:
-        cands += [v for v in candidate_values_of(arq) if v not in cands]
+        if revive:
+            for v in candidate_values_of(arq):
+                _add_cand(v)
         if srq is None:
             enqueue_email_review(session, survivor.id, cands)
             srq = session.get(ReviewQueueRow, review_id_for(survivor.id, "email"))
@@ -325,7 +344,7 @@ def apply_golden(
        체인을 평탄화한다(고아 방지). 생존자 도메인은 비어 있을 때만 권위 도메인으로 채운다
        (이미 값이 있으면 덮지 않음 — key 안정성·기존 값 보존).
     """
-    from sqlalchemy import update
+    from sqlalchemy import select, update
 
     from ..schema import DiscoveredCompanyRow
 
@@ -356,6 +375,13 @@ def apply_golden(
         if row is None or row.duplicate_of is not None:
             continue  # 사라졌거나 이미 머지됨 → 재실행 안전(덮어쓰지 않음)
         # 이 행이 과거 생존자라 자식을 보유했다면 자식들을 새 생존자로 재지정(체인 평탄화).
+        # 자식의 company 본체도 새 생존자로 합친다 — 종전(원장만 링크하던 시절) 머지로 흡수됐지만
+        # company 는 남아 있던 자식이 이 경로 아니면 영영 안 합쳐진다(리뷰 HIGH).
+        child_keys = session.scalars(
+            select(DiscoveredCompanyRow.canonical_key).where(
+                DiscoveredCompanyRow.duplicate_of == key
+            )
+        ).all()
         session.execute(
             update(DiscoveredCompanyRow)
             .where(DiscoveredCompanyRow.duplicate_of == key)
@@ -374,7 +400,8 @@ def apply_golden(
         absorbed += 1
         # 승격된 company 본체까지 합친다(큐·엑셀 중복 해소). 원장 링크 다음에 실행해야
         # 실패 시 링크만 남고 본체는 다음 재실행(idempotent)에서 다시 시도된다.
-        _merge_company_rows(session, golden.survivor_key, key)
+        for k in (key, *child_keys):
+            _merge_company_rows(session, golden.survivor_key, k)
     session.flush()
     session.expire_all()  # 벌크 update 로 갱신된 자식 행의 ORM 캐시 무효화(이후 조회 정합)
     log.info(

@@ -1224,7 +1224,13 @@ def dedup_merge(
         if apply:
             # 머지 주체 audit — LLM 판정을 포함했으면 자동(auto)과 구분(롤백 선택성).
             actor = "auto+llm" if include_llm else "auto"
-            applied = sum(apply_golden(session, g, merged_by=actor) for g in goldens)
+            # 200 클러스터마다 커밋 — 라이브 DB 에서 단일 장기 트랜잭션(락 장기 점유·말미 실패 시
+            # 전량 롤백)을 피한다. apply_golden 이 멱등이라 중단 후 재실행 안전.
+            applied = 0
+            for i, g in enumerate(goldens, 1):
+                applied += apply_golden(session, g, merged_by=actor)
+                if i % 200 == 0:
+                    session.commit()
             session.commit()
             typer.echo(f"머지 적용 완료: {applied:,}건 흡수(duplicate_of 기록·가역). ")
     finally:

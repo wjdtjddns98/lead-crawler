@@ -313,3 +313,54 @@ def test_apply_golden_keeps_survivor_confirmation_when_both_confirmed(session: S
     _merge_pair(session, datetime(2026, 9, 16, tzinfo=timezone.utc))
     srq = session.get(ReviewQueueRow, review_id_for("c_reg", "email"))
     assert srq.status == "confirmed" and srq.assignee == "lee"
+
+
+def test_apply_golden_does_not_revive_rejected_candidates(session: Session) -> None:
+    """흡수행이 사람 거부(rejected)면 그 이메일 후보는 생존자 큐에 되살리지 않는다(연락처는 복제)."""
+    from leadcrawler.schema import ContactRow
+    from leadcrawler.storage.review import ReviewQueueRow, candidate_values_of, review_id_for
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="reg:dart:1", name="에이스", country="KR",
+                             registry="dart", registry_id="1", domain="acme.com"),
+        DiscoveredCompanyRow(canonical_key="dom:acme.com", name="에이스", country="KR", domain="acme.com"),
+    ])
+    session.flush()
+    _promote(session, "reg:dart:1", "c_reg", emails=["ir@acme.com"])
+    _promote(session, "dom:acme.com", "c_dom", emails=["IR@acme.com", "bad@acme.com"])
+    arq = session.get(ReviewQueueRow, review_id_for("c_dom", "email"))
+    arq.status = "rejected"
+    session.flush()
+    _merge_pair(session, datetime(2026, 9, 16, tzinfo=timezone.utc))
+    srq = session.get(ReviewQueueRow, review_id_for("c_reg", "email"))
+    assert srq.status == "pending" and candidate_values_of(srq) == ["ir@acme.com"]
+    # 연락처는 대소문자 무시 합집합(IR@ 는 ir@ 와 같은 값).
+    assert sorted(c.value for c in session.query(ContactRow).filter_by(company_id="c_reg")) == [
+        "bad@acme.com", "ir@acme.com",
+    ]
+
+
+def test_apply_golden_rechain_merges_legacy_child_company(session: Session) -> None:
+    """옛 머지(원장만 링크)로 흡수됐던 자식의 company 도 새 생존자로 합쳐진다(고아 방지)."""
+    from leadcrawler.schema import CompanyRow, ContactRow
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="reg:dart:9", name="에이스 주식회사", country="KR",
+                             registry="dart", registry_id="9", domain="acme.com"),
+        DiscoveredCompanyRow(canonical_key="dom:acme.com", name="에이스", country="KR", domain="acme.com"),
+        # 종전 방식으로 dom:acme.com 에 흡수됐지만 company 는 남아 있는 자식.
+        DiscoveredCompanyRow(canonical_key="name:kr:에이스", name="(주)에이스", country="KR",
+                             domain="acme.com", duplicate_of="dom:acme.com"),
+    ])
+    session.flush()
+    _promote(session, "reg:dart:9", "c_reg", emails=["ir@acme.com"])
+    _promote(session, "name:kr:에이스", "c_child", emails=["contact@acme.com"])
+    members = load_cluster_members(session, ["reg:dart:9", "dom:acme.com"])
+    goldens = resolve_all(members, [("reg:dart:9", "dom:acme.com")])
+    assert apply_golden(session, goldens[0], now=lambda: datetime(2026, 9, 16, tzinfo=timezone.utc)) == 1
+    session.flush()
+    assert session.get(DiscoveredCompanyRow, "name:kr:에이스").duplicate_of == "reg:dart:9"
+    assert session.get(CompanyRow, "c_child") is None
+    assert {c.value for c in session.query(ContactRow).filter_by(company_id="c_reg")} == {
+        "ir@acme.com", "contact@acme.com",
+    }
