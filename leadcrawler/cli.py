@@ -1254,7 +1254,7 @@ def domain_conflicts(
         help="규칙상 auto_wrong 인 행을 Claude(Haiku)로 소유주와 관계 판정(same/affiliate/different/unknown)해 "
         "다른 회사만 auto_wrong 으로 남김(유료, 캡 --llm-max, dry_run/키없음=stub→review)",
     ),
-    llm_max: int = typer.Option(0, "--llm-max", help="--llm 호출 상한(0=설정 dedup_llm_max_pairs)"),
+    llm_max: int | None = typer.Option(None, "--llm-max", help="--llm 호출 상한(미지정=설정 dedup_llm_max_pairs)"),
 ) -> None:
     """같은 홈페이지를 이름이 다른 회사가 공유하는 그룹의 도메인 오배정을 판정·교정한다.
 
@@ -1333,7 +1333,7 @@ def domain_conflicts(
         try:
             result = build_plan(
                 session, get_text=get_text, judge=judge,
-                judge_max=llm_max or settings.dedup_llm_max_pairs, ledger=ledger,
+                judge_max=llm_max if llm_max is not None else settings.dedup_llm_max_pairs, ledger=ledger,
             )
         finally:
             if fetcher is not None:

@@ -169,11 +169,14 @@ def _title_supports(name: str, title: str) -> bool:
     """회사명이 title 에 **토큰 경계로** 들어 있는지 — 단일 토큰 완전일치 또는 다중 토큰 연속 부분열."""
     toks = compare_tokens(name)
     core = "".join(toks)
-    # 단일 토큰 **완전일치**는 2글자 상호(기아·세방·일진·한올)도 인정 — 검색 후보 여러 개를 가르는
-    # 해석기(_KOREAN_TOKEN_MIN=3)와 달리 여기선 이미 정해진 한 페이지의 title 이라 오탐 여지가 작다.
+    # 2글자 상호(기아·세방·일진·한올)도 인정하되 title 첫 토큰(사이트명 자리)일 때만 — 검색 후보 여러
+    # 개를 가르는 해석기(_KOREAN_TOKEN_MIN=3)와 달리 이미 정해진 한 페이지의 title 이라 오탐 여지가 작다.
     if len(core) < 2:
         return False
     ttoks = tokenize_name(title)
+    if len(core) < _TITLE_MIN:
+        # 2글자는 title **첫 토큰**일 때만(사이트명 자리) — 본문 태그라인의 흔한 2글자 단어 오탐 차단.
+        return bool(ttoks) and ttoks[0] == core
     if core in ttoks:
         return True
     n = len(toks)
@@ -236,14 +239,15 @@ class ClaudeRelationJudge:
                 model=self.model, max_tokens=self._max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
-        except Exception as exc:  # noqa: BLE001 — 미설치·키오류·API 오류 → unknown·미과금
+            text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+        except Exception as exc:  # noqa: BLE001 — 미설치·키오류·API 오류·응답 구조 이상 → unknown·미과금
             log.info("domain_conflict.llm_error", err=str(exc))
             return "unknown", False
-        text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+        # 여기부터는 과금 왕복이 끝난 상태 — 파싱 실패도 billed=True(llm_judge.ClaudeJudge 와 동일).
         start, end = text.find("{"), text.rfind("}")
         try:
             rel = str(json.loads(text[start:end + 1]).get("relation", "unknown")).strip().lower()
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             rel = "unknown"
         return (rel if rel in _RELATIONS else "unknown"), True
 

@@ -81,10 +81,68 @@ def test_llm_budget_and_stub_fall_back_to_review() -> None:
     rows = [_row("o", "dom:sebang.com", "세방(주)"), _row("c", "name:kr:향우", "향우종합관리(주)")]
     out = {c.company_id: c for c in classify_group(rows, {}, judge=_FakeJudge({}), judge_budget=[0])}
     assert out["c"].action == REVIEW  # 캡 소진
-    out = {c.company_id: c for c in classify_group(rows, {}, judge=_FakeJudge({"향우종합관리(주)": "different"}),
-                                                    judge_budget=[5], ledger=_Ledger(over=True))}
-    assert out["c"].action == REVIEW  # 예산 초과
+    fj = _FakeJudge({"향우종합관리(주)": "different"})
+    out = {c.company_id: c for c in classify_group(rows, {}, judge=fj, judge_budget=[5], ledger=_Ledger(over=True))}
+    assert out["c"].action == REVIEW and fj.calls == 0  # 예산 초과 — 호출 자체가 없음
     out = {c.company_id: c for c in classify_group(rows, {}, judge=StubRelationJudge(), judge_budget=[5])}
     assert out["c"].action == REVIEW  # stub 은 unknown
     out = {c.company_id: c for c in classify_group(rows, {})}
     assert out["c"].action == AUTO_WRONG  # judge 없으면 규칙대로
+
+
+def test_two_char_title_only_when_first_token() -> None:
+    rows = [_row("k", "name:kr:한국", "한국(주)", host="x.com"), _row("y", "name:kr:다른", "다른회사", host="x.com")]
+    out = {c.company_id: c for c in classify_group(rows, {}, {"x.com": "다른회사 | 한국 최고의 서비스"})}
+    assert out["k"].evidence == []  # 태그라인의 '한국' 은 근거 아님
+    out = {c.company_id: c for c in classify_group(rows, {}, {"x.com": "한국 | 홈"})}
+    assert out["k"].evidence == ["title"]
+
+
+def test_claude_relation_judge_parses_and_fails_closed(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from leadcrawler.dedup_resolve import domain_conflict as dc
+
+    class _Msg:
+        def __init__(self, text):
+            self.content = [SimpleNamespace(type="text", text=text)]
+
+    class _Client:
+        def __init__(self, text=None, exc=None):
+            self.text, self.exc = text, exc
+            self.messages = self
+
+        def create(self, **kw):
+            if self.exc:
+                raise self.exc
+            return _Msg(self.text)
+
+    j = dc.ClaudeRelationJudge("k", model="m")
+    fenced = "```json" + chr(10) + '{"relation": "Affiliate", "reason": "x"}' + chr(10) + "```"
+    j._client = _Client(fenced)
+    assert j.judge("a", "b", "h", "KR") == ("affiliate", True)
+    j._client = _Client("no json here")
+    assert j.judge("a", "b", "h", "KR") == ("unknown", True)  # 왕복은 됐으니 과금
+    j._client = _Client(exc=RuntimeError("api down"))
+    assert j.judge("a", "b", "h", "KR") == ("unknown", False)
+    j._client = _Client('{"relation": "banana"}')
+    assert j.judge("a", "b", "h", "KR") == ("unknown", True)
+
+
+def test_best_owner_prefers_dom_key_over_latin() -> None:
+    rows = [
+        _row("t", "name:kr:x", "Acme Corp", host="acme.com", country="US"),  # latin_name
+        _row("d", "dom:acme.com", "애크미코리아", host="acme.com"),  # dom_key
+        _row("w", "name:kr:향우", "향우종합관리(주)", host="acme.com"),
+    ]
+    seen = []
+
+    class _J:
+        model = "fake"
+
+        def judge(self, a, b, host, country):
+            seen.append(b)
+            return "different", True
+
+    classify_group(rows, {}, judge=_J(), judge_budget=[5])
+    assert seen == ["애크미코리아"]
