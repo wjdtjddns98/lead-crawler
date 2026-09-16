@@ -30,6 +30,7 @@ import re
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
+from typing import Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -82,6 +83,7 @@ class ConflictPlan(BaseModel):
     by_action: dict[str, int]
     rows: list[ConflictRow]
     titles_fetched: int = 0  # --fetch-titles 로 실제 title 을 얻은 host 수(0 이면 title 근거 없음)
+    llm_judged: int = 0  # --llm 관계 판정 호출 수
 
 
 _CJK_RE = re.compile(r"[가-힣぀-ヿ一-鿿]")
@@ -167,13 +169,83 @@ def _title_supports(name: str, title: str) -> bool:
     """회사명이 title 에 **토큰 경계로** 들어 있는지 — 단일 토큰 완전일치 또는 다중 토큰 연속 부분열."""
     toks = compare_tokens(name)
     core = "".join(toks)
-    if len(core) < _TITLE_MIN:
+    # 단일 토큰 **완전일치**는 2글자 상호(기아·세방·일진·한올)도 인정 — 검색 후보 여러 개를 가르는
+    # 해석기(_KOREAN_TOKEN_MIN=3)와 달리 여기선 이미 정해진 한 페이지의 title 이라 오탐 여지가 작다.
+    if len(core) < 2:
         return False
     ttoks = tokenize_name(title)
     if core in ttoks:
         return True
     n = len(toks)
-    return n >= 2 and any(ttoks[i:i + n] == toks for i in range(len(ttoks) - n + 1))
+    return len(core) >= _TITLE_MIN and n >= 2 and any(
+        ttoks[i:i + n] == toks for i in range(len(ttoks) - n + 1)
+    )
+
+
+# 소유 근거 강도 — 사람 수정 이력(audited_homepage)만으로는 소유주가 되지 못한다: 2026-09-16 라이브에서
+# '레이'(의료기기, dom:raymedical)의 홈페이지를 kia.com 으로 잘못 고친 이력 하나가 기아를 auto_wrong 으로
+# 밀어냈다. 강한 근거(소스 도메인·라틴 정합·title)가 하나는 있어야 한다.
+_STRONG = frozenset({"dom_key", "latin_name", "title"})
+
+_REL_PROMPT = (
+    "같은 웹사이트 도메인을 공유하는 두 회사의 관계를 판정하라.\n"
+    "- same: 같은 회사(한글/영문/약어/법인격/지점·공장·사업장 표기 차이일 뿐)\n"
+    "- affiliate: 같은 그룹의 계열사·자회사·모회사·지주사\n"
+    "- different: 무관한 별개 회사(해당 도메인은 한쪽 회사 것이 아님)\n"
+    "- unknown: 근거 부족\n"
+    '오직 아래 JSON 만 출력하라: {{"relation": "same|affiliate|different|unknown", "reason": "한 문장"}}\n\n'
+    "회사 A: {name_a!r}\n회사 B: {name_b!r}\n공유 도메인: {host!r}\n국가: {country!r}"
+)
+_RELATIONS = ("same", "affiliate", "different", "unknown")
+
+
+class RelationJudge(Protocol):
+    """두 회사의 관계 판정기(테스트 더블·스텁·Claude). 반환 (relation, billed)."""
+
+    model: str
+
+    def judge(self, name_a: str, name_b: str, host: str, country: str) -> tuple[str, bool]: ...
+
+
+class StubRelationJudge:
+    """dry_run·키 없음 — 네트워크 없이 항상 unknown(→ review). 절대 different 로 단정하지 않는다."""
+
+    model = "stub"
+
+    def judge(self, name_a: str, name_b: str, host: str, country: str) -> tuple[str, bool]:
+        return "unknown", False
+
+
+class ClaudeRelationJudge:
+    """Claude(Haiku) 관계 판정 — 실패·파싱불가는 unknown(review). llm_judge.ClaudeJudge 와 같은 규율."""
+
+    def __init__(self, api_key: str, *, model: str, max_tokens: int = 150) -> None:
+        self._api_key = api_key
+        self.model = model
+        self._max_tokens = max_tokens
+        self._client = None
+
+    def judge(self, name_a: str, name_b: str, host: str, country: str) -> tuple[str, bool]:
+        from ..llm import anthropic_client
+
+        prompt = _REL_PROMPT.format(name_a=name_a, name_b=name_b, host=host, country=country)
+        try:
+            if self._client is None:
+                self._client = anthropic_client(api_key=self._api_key)
+            msg = self._client.messages.create(
+                model=self.model, max_tokens=self._max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as exc:  # noqa: BLE001 — 미설치·키오류·API 오류 → unknown·미과금
+            log.info("domain_conflict.llm_error", err=str(exc))
+            return "unknown", False
+        text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+        start, end = text.find("{"), text.rfind("}")
+        try:
+            rel = str(json.loads(text[start:end + 1]).get("relation", "unknown")).strip().lower()
+        except (ValueError, TypeError):
+            rel = "unknown"
+        return (rel if rel in _RELATIONS else "unknown"), True
 
 
 def _evidence(row: dict, audited: dict[str, set[str]], titles: dict[str, str]) -> list[str]:
@@ -198,9 +270,18 @@ def _evidence(row: dict, audited: dict[str, set[str]], titles: dict[str, str]) -
     return ev
 
 
+_REL_TO_ACTION = {"same": SAME_ENTITY, "affiliate": RELATED, "different": AUTO_WRONG, "unknown": REVIEW}
+
+
 def classify_group(
-    rows: list[dict], audited: dict[str, set[str]], titles: dict[str, str] | None = None
+    rows: list[dict], audited: dict[str, set[str]], titles: dict[str, str] | None = None,
+    *, judge: RelationJudge | None = None, judge_budget: list[int] | None = None,
+    ledger: object | None = None,
 ) -> list[ConflictRow]:
+    """그룹 1개 판정. ``judge`` 가 있으면 규칙상 auto_wrong 인 행을 소유주와 LLM 관계 판정으로
+    한 번 더 거른다(same→same_entity·affiliate→related·different→auto_wrong·unknown→review) —
+    한글↔영문·음역 변형(에코프로비엠↔EcoPro BM)을 규칙이 못 가르기 때문. ``judge_budget``
+    [남은 호출 수] 가 0 이면 판정 없이 review. ``ledger`` 가 있으면 과금 왕복만 record."""
     titles = titles or {}
     out = [
         ConflictRow(
@@ -210,15 +291,19 @@ def classify_group(
         )
         for r in rows
     ]
-    owners = [c for c in out if c.evidence]
+    owners = [c for c in out if set(c.evidence) & _STRONG]
     if not owners:
         for c in out:
             c.action = REVIEW
         return out
     owner_tokens = [compare_tokens(o.name) for o in owners]
     owner_keys = ["".join(t) for t in owner_tokens]
+    # LLM 상대는 근거가 가장 강한 소유주 1곳(dom_key > latin_name > title).
+    best_owner = max(owners, key=lambda o: (
+        "dom_key" in o.evidence, "latin_name" in o.evidence, "title" in o.evidence,
+    ))
     for c in out:
-        if c.evidence:
+        if c in owners:
             c.action = ALLOW_SHARED if len(owners) >= 2 else OWNER
             continue
         mine = compare_tokens(c.name)
@@ -231,8 +316,21 @@ def classify_group(
             c.action = RELATED
         elif c.canonical_key.startswith("reg:") or c.reg_no:
             c.action = REVIEW  # 법인 확정 행 — 소유주가 뒤집힌 경우가 있어 사람 판정
-        else:
+        elif judge is None:
             c.action = AUTO_WRONG
+        elif judge_budget is not None and judge_budget[0] <= 0:
+            c.action = REVIEW  # 캡·예산 소진 — 판정 없이 사람 위임(다른 회사로 단정하지 않음)
+        else:
+            if ledger is not None and getattr(judge, "model", "") != "stub" and ledger.is_over_budget():
+                c.action = REVIEW
+                continue
+            rel, billed = judge.judge(c.name, best_owner.name, c.host, c.country)
+            if judge_budget is not None:
+                judge_budget[0] -= 1
+            if ledger is not None and billed:
+                ledger.record("dedup_llm")
+            c.evidence.append(f"llm:{rel}")
+            c.action = _REL_TO_ACTION.get(rel, REVIEW)
     return out
 
 
@@ -277,17 +375,19 @@ def _snapshot(session: Session, row: ConflictRow, raw: dict) -> dict:
 
 def build_plan(
     session: Session, *, get_text: Callable[[str], str] | None = None,
+    judge: RelationJudge | None = None, judge_max: int = 200, ledger: object | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> ConflictPlan:
-    """그룹 조회 → 판정 → auto_wrong 스냅샷까지 담은 계획(읽기 전용)."""
+    """그룹 조회 → 판정(+옵션 LLM 관계 게이트) → auto_wrong 스냅샷까지 담은 계획(읽기 전용)."""
     groups = load_conflict_groups(session)
     all_ids = [r["company_id"] for rows in groups.values() for r in rows]
     audited = audited_hosts(session, all_ids)
     titles = fetch_titles(sorted({h for _, h in groups}), get_text) if get_text is not None else {}
+    budget = [judge_max]
     rows_out: list[ConflictRow] = []
     for rows in groups.values():
         raw_by_id = {r["company_id"]: r for r in rows}
-        for c in classify_group(rows, audited, titles):
+        for c in classify_group(rows, audited, titles, judge=judge, judge_budget=budget, ledger=ledger):
             if c.action == AUTO_WRONG:
                 c.before = _snapshot(session, c, raw_by_id[c.company_id])
             rows_out.append(c)
@@ -297,6 +397,7 @@ def build_plan(
     return ConflictPlan(
         generated_at=(now or (lambda: datetime.now(timezone.utc)))(),
         groups=len(groups), by_action=dict(by_action), rows=rows_out, titles_fetched=len(titles),
+        llm_judged=judge_max - budget[0],
     )
 
 

@@ -1249,6 +1249,12 @@ def domain_conflicts(
     fetch_titles: bool = typer.Option(
         False, "--fetch-titles", help="홈페이지 <title> 을 host 당 1회 가져와 소유 근거로 사용(네트워크)"
     ),
+    llm: bool = typer.Option(
+        False, "--llm",
+        help="규칙상 auto_wrong 인 행을 Claude(Haiku)로 소유주와 관계 판정(same/affiliate/different/unknown)해 "
+        "다른 회사만 auto_wrong 으로 남김(유료, 캡 --llm-max, dry_run/키없음=stub→review)",
+    ),
+    llm_max: int = typer.Option(0, "--llm-max", help="--llm 호출 상한(0=설정 dedup_llm_max_pairs)"),
 ) -> None:
     """같은 홈페이지를 이름이 다른 회사가 공유하는 그룹의 도메인 오배정을 판정·교정한다.
 
@@ -1312,8 +1318,23 @@ def domain_conflicts(
 
             fetcher = Fetcher(user_agent=settings.discovery_user_agent, timeout=8.0)
             get_text = lambda url: fetcher.get_text(url, max_bytes=65536)  # noqa: E731
+        judge = ledger = None
+        if llm:
+            from .dedup_resolve.domain_conflict import ClaudeRelationJudge, StubRelationJudge
+
+            if settings.dry_run or not settings.anthropic_api_key:
+                typer.echo("--llm: dry_run/키없음 → stub(unknown→review, 과금 0)")
+                judge = StubRelationJudge()
+            else:
+                from .cost_ledger import CostLedger
+
+                judge = ClaudeRelationJudge(settings.anthropic_api_key, model=settings.dedup_llm_model)
+                ledger = CostLedger(settings, persist=True)
         try:
-            result = build_plan(session, get_text=get_text)
+            result = build_plan(
+                session, get_text=get_text, judge=judge,
+                judge_max=llm_max or settings.dedup_llm_max_pairs, ledger=ledger,
+            )
         finally:
             if fetcher is not None:
                 fetcher.close()
@@ -1321,6 +1342,7 @@ def domain_conflicts(
         Path(out).write_text(result.model_dump_json(indent=2), encoding="utf-8")
         typer.echo(
             f"도메인 충돌 계획 저장: {out} / 그룹 {result.groups:,} / title 수집 {result.titles_fetched:,}"
+            f" / LLM 판정 {result.llm_judged:,}"
         )
         for k, v in sorted(result.by_action.items()):
             typer.echo(f"  - {k}: {v:,}행")
