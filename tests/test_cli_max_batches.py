@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import leadcrawler.cli as cli
 import leadcrawler.pipeline.fill as fill
 
@@ -114,3 +116,28 @@ def test_fill_loop_shares_one_run_across_batches(monkeypatch) -> None:
     cli.fill_emails(loop=True, batch=5, workers=1, interval=0.0, min_queue=0, max_batches=3)
     assert len(runs) == 3 and len({id(r) for r in runs}) == 1  # 배치 3회, 런 객체 1개.
     assert runs[0] is not None
+
+
+def test_resolve_only_listed_전달_및_배타(monkeypatch):
+    """--only-listed 는 resolve_batch 로 그대로 전달되고, --exclude-listed 와 동시면 종료(2)."""
+    import typer
+
+    _stub_common(monkeypatch, SimpleNamespace(dry_run=False, resolve_domains=True))
+    seen: dict = {}
+    monkeypatch.setattr(fill, "count_resolve_targets", lambda sm, countries=None, **kw: 100)
+
+    def fake_resolve_batch(settings, sm, *, limit, workers, countries=None, **kw):
+        seen.update(kw)
+        return 1, 1, 0
+
+    monkeypatch.setattr(fill, "resolve_batch", fake_resolve_batch)
+    cli.backfill_resolve_domains(
+        loop=True, batch=5, workers=1, interval=0.0, min_queue=0, max_batches=1,
+        country=["US"], only_listed=True,
+    )
+    assert seen["only_listed"] is True and seen["exclude_listed"] is False
+    with pytest.raises(typer.Exit) as ei:
+        cli.backfill_resolve_domains(
+            loop=False, batch=5, workers=1, country=["US"], only_listed=True, exclude_listed=True,
+        )
+    assert ei.value.exit_code == 2
