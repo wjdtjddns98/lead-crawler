@@ -1206,12 +1206,36 @@ def dedup_merge(
             typer.echo(f"  생존 {g.survivor_key} ← {len(g.absorbed_keys)}건 / 캐노니컬명='{g.canonical_name}'")
         if len(goldens) > 20:
             typer.echo(f"  …외 {len(goldens) - 20:,}개")
+        # company 본체 영향(큐·엑셀에 보이는 중복): 양쪽 승격=병합(흡수행 삭제), 흡수행만 승격=키 이관.
+        from sqlalchemy import select as _select
+
+        from .schema import CompanyRow as _Co
+
+        promoted = set(session.scalars(_select(_Co.canonical_key).where(_Co.canonical_key.in_(keys))))
+        merged = sum(
+            1 for g in goldens
+            if g.survivor_key in promoted and any(k in promoted for k in g.absorbed_keys)
+        )
+        moved = sum(
+            1 for g in goldens
+            if g.survivor_key not in promoted and any(k in promoted for k in g.absorbed_keys)
+        )
+        typer.echo(f"  company 본체: 병합(양쪽 승격) {merged:,} · 키 이관(흡수행만 승격) {moved:,} 클러스터")
         if apply:
             # 머지 주체 audit — LLM 판정을 포함했으면 자동(auto)과 구분(롤백 선택성).
             actor = "auto+llm" if include_llm else "auto"
-            applied = sum(apply_golden(session, g, merged_by=actor) for g in goldens)
+            # 200 클러스터마다 커밋 — 라이브 DB 에서 단일 장기 트랜잭션(락 장기 점유·말미 실패 시
+            # 전량 롤백)을 피한다. apply_golden 이 멱등이라 중단 후 재실행 안전.
+            applied = 0
+            for i, g in enumerate(goldens, 1):
+                applied += apply_golden(session, g, merged_by=actor)
+                if i % 200 == 0:
+                    session.commit()
             session.commit()
-            typer.echo(f"머지 적용 완료: {applied:,}건 흡수(duplicate_of 기록·가역). ")
+            typer.echo(
+                f"머지 적용 완료: {applied:,}건 흡수(원장 duplicate_of 는 가역 — company 본체 병합·"
+                "흡수 company 삭제는 비가역, 적용 전 pg_dump 백업 권장)."
+            )
     finally:
         session.close()
 

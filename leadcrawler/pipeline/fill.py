@@ -25,6 +25,7 @@ from sqlalchemy.orm import sessionmaker
 from ..config import Settings
 from ..cost_ledger import CostLedger
 from ..dedup import normalize_domain
+from ..dedup_resolve.inline import find_inline_duplicate
 from ..enrich.enricher import Enricher
 from ..enrich.industry_classify import build_classifier
 from ..enrich.name_eng import build_name_eng
@@ -81,6 +82,25 @@ _SCOPE_CLAUSE = "and lower(d.country) in :country_scope"
 # 기록 → promote 백필이 무차별 승격해 company 2만여 건이 오염됐다. blocklist(개별 나열)는
 # 항상 뒤처지므로, 미지의 디렉터리도 여기서 구조적으로 끊는다.
 _DOMAIN_OVERSHARE_CAP = 3
+
+
+def _link_inline_dup(session, key: str, survivor_key: str) -> bool:  # noqa: ANN001 (Session)
+    """원장의 기존 행 ``key`` 를 생존자에 auto 중복으로 링크한다(커밋은 호출부, 가역 audit).
+
+    run._persist_inline_dup 와 같은 표기(merged_by='auto'·reason 'inline:name+domain')지만
+    그쪽은 신규 발견행 저장+자체 커밋이라, 도메인 백필과 한 트랜잭션에 묶기 위해 분리.
+    """
+    from ..schema import DiscoveredCompanyRow
+
+    row = session.get(DiscoveredCompanyRow, key)
+    if row is None or row.duplicate_of is not None or key == survivor_key:
+        return False
+    row.duplicate_of = survivor_key
+    row.merged_at = datetime.now(timezone.utc)
+    row.merged_by = "auto"
+    row.merge_reason = "inline:name+domain"
+    log.info("dedup.inline.absorb", key=key, survivor=survivor_key)
+    return True
 
 
 def _domain_overshared(session, domain: str) -> bool:  # noqa: ANN001 (Session)
@@ -642,11 +662,20 @@ def resolve_batch(
                     continue
                 if backfill_domain(ws, dc.canonical_key, found):
                     resolved += 1
-                ws.commit()  # 도메인 기록은 항상 남긴다(승격 실패해도 재시도 방지).
-                if rdom is not None and rdom in seen_domains:
+                collided = rdom is not None and rdom in seen_domains
+                if collided:
                     # 이미 원장에 있는(또는 이번 배치에서 먼저 처리된) 회사와 동일 도메인
-                    # → 별개 company 로 승격하지 않는다(제약① 중복방지, 흡수는 오프라인
-                    # dedup-report/워크벤치가 후속 처리).
+                    # → 별개 company 로 승격하지 않는다(제약① 중복방지). 이름까지 强일치
+                    # (auto 티어)면 생존자에 duplicate_of 링크까지 **도메인과 같은 트랜잭션**에
+                    # 적는다 — 종전엔 오프라인 dedup-report 에 미뤄 name:→dom:/reg: 교차키
+                    # 중복이 원장에 쌓였다(2026-09-16 실측 1,866 그룹). 도메인만 커밋되고
+                    # 링크가 빠지면 이 행은 대상 SQL(domain='')에서 영구 이탈해 재시도가 없다.
+                    # 이름 상이(계열사 등)는 그대로 워크벤치 위임.
+                    survivor = find_inline_duplicate(ws, dc)
+                    if survivor is not None:
+                        _link_inline_dup(ws, dc.canonical_key, survivor)
+                ws.commit()  # 도메인 기록은 항상 남긴다(승격 실패해도 재시도 방지).
+                if collided:
                     log.info("resolve.backfill.dedup_skip", key=dc.canonical_key, domain=rdom)
                     continue
                 if rdom is not None:
