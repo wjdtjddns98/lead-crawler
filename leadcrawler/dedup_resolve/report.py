@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..cost_ledger import SupportsCostLedger
-from ..schema import DiscoveredCompanyRow
+from ..schema import CompanyRow, DiscoveredCompanyRow
 from .llm_judge import JudgedPair, SupportsJudge, judge_candidates
 from .near_dup import (
     CONFIRMED_TIERS,
@@ -62,6 +62,10 @@ def load_company_records(
 
     ``include_merged`` 가 False(기본)면 이미 중복 판정돼 흡수된 행(``duplicate_of`` 채워짐)은
     제외한다 — 재실행 시 해소된 중복을 다시 보고하지 않기 위함.
+
+    비교 도메인은 승격된 회사의 ``company.homepage`` 를 우선한다(없으면 원장 domain) —
+    사람 수정·enrich 갱신으로 홈페이지와 원장 도메인이 어긋난 행(2026-09-16 실측 51/131)이
+    원장만 봐서는 같은 사이트로 묶이지 않았다. 홈페이지는 사람이 확정해 온 값이라 더 권위 있다.
     """
     stmt = select(
         DiscoveredCompanyRow.canonical_key,
@@ -69,12 +73,15 @@ def load_company_records(
         DiscoveredCompanyRow.country,
         DiscoveredCompanyRow.domain,
         DiscoveredCompanyRow.reg_no,
-    )
+        CompanyRow.homepage,
+    ).outerjoin(CompanyRow, CompanyRow.canonical_key == DiscoveredCompanyRow.canonical_key)
     if not include_merged:
         stmt = stmt.where(DiscoveredCompanyRow.duplicate_of.is_(None))
     return [
-        CompanyRecord(key=key, name=name, country=country or "", domain=domain, reg_no=reg_no)
-        for key, name, country, domain, reg_no in session.execute(stmt).all()
+        CompanyRecord(
+            key=key, name=name, country=country or "", domain=homepage or domain, reg_no=reg_no
+        )
+        for key, name, country, domain, reg_no, homepage in session.execute(stmt).all()
     ]
 
 

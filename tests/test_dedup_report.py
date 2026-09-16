@@ -108,3 +108,25 @@ def test_report_with_stub_judge_populates_verdicts(session: Session, tmp_path) -
     assert len(rpt.judged) == 1
     assert rpt.judged[0].candidate.tier == "lexical"
     assert rpt.judged[0].verdict.same is False  # 스텁: 도메인 불명 → 사람 위임
+
+
+def test_report_uses_company_homepage_over_ledger_domain(session: Session, tmp_path) -> None:
+    """원장 domain 이 서로 달라도 승격된 회사의 homepage 가 같으면 같은 사이트로 묶는다."""
+    from leadcrawler.schema import CompanyRow
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="dom:etexpharm.co.kr", name="테라젠이텍스",
+                             country="KR", domain="etexpharm.co.kr"),
+        DiscoveredCompanyRow(canonical_key="name:kr:테라젠이텍스", name="(주)테라젠이텍스",
+                             country="KR", domain="theragenetex.com"),
+    ])
+    session.flush()  # company FK(canonical_key) 대상이 먼저 있어야 함.
+    session.add_all([
+        CompanyRow(id="c_1", canonical_key="dom:etexpharm.co.kr", name="테라젠이텍스", country="KR",
+                   homepage="https://etexpharm.co.kr"),
+        CompanyRow(id="c_2", canonical_key="name:kr:테라젠이텍스", name="(주)테라젠이텍스", country="KR",
+                   homepage="http://www.etexpharm.co.kr/main/?load_popup=1"),
+    ])
+    session.flush()
+    rpt = run_dedup_report(session, tmp_path / "r.json")
+    assert rpt.by_tier.get("auto") == 1 and rpt.total_candidates == 1

@@ -15,6 +15,7 @@ rapidfuzz 토큰셋 유사도 + 도메인root 일치로 **티어 분류**한다.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Iterable
 from itertools import combinations
@@ -44,6 +45,22 @@ _TIER_ORDER = {"reg_no": 0, "auto": 1, "domain": 2, "lexical": 3, "shortlist": 4
 
 # 확정(자동머지 가능) 티어 — cli dedup-merge·리포트 auto_removable 이 공유하는 단일 출처.
 CONFIRMED_TIERS: frozenset[str] = frozenset({"reg_no", "auto"})
+
+# 이름 **비교 전용** 정규화 — canonical_key 를 만드는 dedup.tokenize_name 은 건드리지 않는다
+# (키 규칙이 바뀌면 재발견분이 기존 행과 다른 키를 받아 제약① 누수). 2026-09-16 실측:
+# 붙여쓴 "주식회사X" 는 tokenize_name 이 못 벗기고(65 그룹), NPS 일용 사업장 표기
+# "회사/일용/…공사명" 은 긴 공사명이 유사도를 깎아(200 행) auto 티어를 놓쳤다.
+_ATTACHED_LEGAL = re.compile(r"(주식회사|유한회사|유한책임회사|합자회사|합명회사|재단법인|사단법인)")
+# 구분자(/ - ( （) 뒤에 오는 '일용' 이후 전부 절단 — '일용산업' 처럼 이름 자체인 경우는 구분자가
+# 없어 보존된다.
+_NPS_SITE_CUT = re.compile(r"\s*[/\-(（]\s*[(（]?\s*일용.*$")
+
+
+def compare_tokens(name: str) -> list[str]:
+    """중복 판정 유사도용 토큰(키 산정과 분리). 정규화 결과가 비면 원래 토큰으로 폴백."""
+    s = _NPS_SITE_CUT.sub("", name or "")
+    s = _ATTACHED_LEGAL.sub(" ", s)
+    return tokenize_name(s) or tokenize_name(name)
 
 
 class CompanyRecord(BaseModel):
@@ -206,7 +223,7 @@ def match_records(
     """
     recs = list(records)
     # 레코드당 1회만 토큰화·도메인/등록번호 정규화(쌍마다 재계산 회피 — 전건 배치 핫패스).
-    tokens = {r.key: tokenize_name(r.name) for r in recs}
+    tokens = {r.key: compare_tokens(r.name) for r in recs}
     domains = {r.key: normalize_domain(r.domain) for r in recs}
     regs = {r.key: normalize_reg_no(r.reg_no) for r in recs}
     found: dict[tuple[str, str], DuplicateCandidate] = {}

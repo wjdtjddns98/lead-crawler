@@ -126,3 +126,33 @@ def test_multi_tenant_tenants_get_distinct_canonical_keys() -> None:
     a = canonical_key(domain="alpha.github.io", name="Alpha", country="US")
     b = canonical_key(domain="beta.github.io", name="Beta", country="US")
     assert a != b and a == "dom:alpha.github.io"
+
+
+# ── 비교 전용 토큰(compare_tokens) — 키 규칙(tokenize_name)과 분리 ─────────────────
+def test_compare_tokens_strips_attached_legal_form_but_key_unchanged() -> None:
+    from leadcrawler.dedup import tokenize_name
+    from leadcrawler.dedup_resolve.near_dup import compare_tokens
+
+    assert compare_tokens("주식회사알에프피티") == ["알에프피티"]
+    assert compare_tokens("알에프피티 주식회사") == ["알에프피티"]
+    assert tokenize_name("주식회사알에프피티") == ["주식회사알에프피티"]  # 키는 그대로(제약①)
+
+
+def test_compare_tokens_cuts_nps_daily_worker_site_suffix() -> None:
+    from leadcrawler.dedup_resolve.near_dup import compare_tokens
+
+    assert compare_tokens("지에스네오텍(주)-일용-쿠팡부산FC신축공사 중 소방시설공사") == ["지에스네오텍"]
+    assert compare_tokens("다올이앤씨주식회사-(일용)함양-창녕간 건설공사(제1공구)") == ["다올이앤씨"]
+    assert compare_tokens("(주)이수엔지니어링(일용)국립도시건축박물관건립사업중설비공사") == ["이수엔지니어링"]
+    assert compare_tokens("일용산업(주)") == ["일용산업"]  # 이름 자체는 보존
+
+
+def test_match_records_auto_for_nps_site_row_sharing_domain() -> None:
+    from leadcrawler.dedup_resolve.near_dup import CompanyRecord, match_records
+
+    res = match_records([
+        CompanyRecord(key="reg:dart:1", name="지에스네오텍(주)", country="KR", domain="gsneotek.com"),
+        CompanyRecord(key="name:kr:지에스네오텍일용쿠팡", name="지에스네오텍(주)/일용/쿠팡부산FC신축공사",
+                      country="KR", domain="gsneotek.com"),
+    ])
+    assert [c.tier for c in res.candidates] == ["auto"]
