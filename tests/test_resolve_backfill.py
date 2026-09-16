@@ -391,3 +391,29 @@ def test_resolve_batch_advances_past_unresolvable_rows(tmp_path, monkeypatch) ->
     with sm() as session:
         for k in keys:
             assert not (session.get(DiscoveredCompanyRow, k).domain or "")
+
+
+def test_resolve_batch_links_duplicate_on_domain_collision_when_name_matches(tmp_path, monkeypatch) -> None:
+    """도메인 충돌 + 이름 强일치(auto 티어)면 원장에 duplicate_of 링크까지 적는다(교차키 중복 차단)."""
+    _patch(monkeypatch)
+    s = Settings(database_url=f"sqlite:///{tmp_path}/rb9.db", dry_run=False, resolve_domains=True)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    with sm() as session:
+        session.add(DiscoveredCompanyRow(
+            canonical_key="reg:dart:00000002", name="살아있는상사", country="KR",
+            industry="화학·석유화학", source="dart", domain="살아있는상사.example.com",
+        ))
+        session.add(DiscoveredCompanyRow(
+            canonical_key="name:kr:살아있는상사", name="(주)살아있는상사", country="KR",
+            industry="화학·석유화학", source="nps",
+        ))
+        session.commit()
+
+    processed, resolved, promoted = fill_mod.resolve_batch(s, sm, limit=50, workers=2)
+    assert (processed, resolved, promoted) == (1, 1, 0)
+    with sm() as session:
+        row = session.get(DiscoveredCompanyRow, "name:kr:살아있는상사")
+        assert row.domain == "살아있는상사.example.com"
+        assert row.duplicate_of == "reg:dart:00000002"
+        assert row.merged_by == "auto" and row.merge_reason == "inline:name+domain"
