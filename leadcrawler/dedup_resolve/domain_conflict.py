@@ -222,8 +222,8 @@ class StubRelationJudge:
 class ClaudeRelationJudge:
     """Claude(Haiku) 관계 판정 — 실패·파싱불가는 unknown(review). llm_judge.ClaudeJudge 와 같은 규율."""
 
-    def __init__(self, api_key: str, *, model: str, max_tokens: int = 150) -> None:
-        self._api_key = api_key
+    def __init__(self, api_key: str, *, model: str, auth_token: str = "", max_tokens: int = 150) -> None:
+        self._api_key, self._auth_token = api_key, auth_token  # 라이브는 OAuth 토큰만 있음(키 없음)
         self.model = model
         self._max_tokens = max_tokens
         self._client = None
@@ -234,7 +234,7 @@ class ClaudeRelationJudge:
         prompt = _REL_PROMPT.format(name_a=name_a, name_b=name_b, host=host, country=country)
         try:
             if self._client is None:
-                self._client = anthropic_client(api_key=self._api_key)
+                self._client = anthropic_client(api_key=self._api_key, auth_token=self._auth_token)
             msg = self._client.messages.create(
                 model=self.model, max_tokens=self._max_tokens,
                 messages=[{"role": "user", "content": prompt}],
