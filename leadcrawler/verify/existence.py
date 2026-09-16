@@ -292,10 +292,21 @@ class ExistenceVerifier:
             )
         else:
             site_alive = self._site().head_ok(domain)
+        # WAF 구제: httpx 프로브는 403 등으로 막혀도 enrich 의 헤드리스 브라우저가 이미 실제 본문을
+        # 렌더했으면 그것이 곧 서비스 생존 근거다(2026-09-16 US 상장 백필: 이메일까지 확보하고도
+        # 프로브 403 으로 탈락한 회사 114곳). 파킹/blank 본문은 여전히 탈락(looks_parked 가드 유지).
+        # 호출자(run._build_lead)는 헤드리스가 연락처를 실제로 뽑았을 때만 rendered_html 을 넘긴다
+        # (챌린지·에러 페이지 배제 게이트는 그쪽). 여기선 파킹 가드만 유지하고 confidence 를 낮춰(0.6)
+        # 정상 200 생존과 구분한다.
+        rescued = False
+        if not site_alive and rendered_html and not looks_parked(rendered_html):
+            log.info("existence.rendered_alive", domain=domain or "")
+            site_alive = rescued = True
         # B1 헤드리스 확인(opt-in) — HTTP 가 살아있다 해도 파킹/JS-blank 면 실접속 생존 아님.
         # site_alive 후보만 렌더(불필요한 렌더 회피). 렌더 실패(None)는 graceful 통과(기존 판정
         # 유지) — 헤드리스 미설치로 실존 기업을 떨구지 않기 위함. 파킹/blank 확인 시에만 떨군다.
-        if site_alive and domain and self.settings.verify_headless:
+        # 구제(rescued)면 같은 본문을 이미 파킹 검사했으므로 건너뛴다.
+        if site_alive and domain and self.settings.verify_headless and not rescued:
             # enrich 가 같은 도메인 home 을 이미 헤드리스로 렌더했으면 그 HTML 을 재사용해
             # 기업당 Chromium 중복 기동을 없앤다(없거나 빈 본문이면 자체 렌더 — https→http 폴백).
             rendered = rendered_html if rendered_html else self._render().render(domain)
@@ -318,7 +329,9 @@ class ExistenceVerifier:
             # active 는 admit override 가 아니라 confidence 보강 신호로만 쓴다 — 등록은 됐지만
             # 사이트가 죽은·406·파킹인 법인(예: CH 휴면·셸)은 IR 연락처를 못 뽑아 큐에서 제외한다.
             # DNS 도 단독 admit 신호 아님(parked 도 해석됨) — 살아있는 사이트를 보강만 한다.
-            if site_alive and registry_active is True:
+            if rescued:
+                confidence = 0.6  # HTTP 프로브 실패 + 헤드리스 본문 구제 — 정상 200 보다 낮게.
+            elif site_alive and registry_active is True:
                 confidence = 0.9  # HTTP 생존 + 등록처 active — 최강 실존.
             elif site_alive and dns_alive:
                 confidence = 0.85  # HTTP+DNS 일치 — 강한 실존.

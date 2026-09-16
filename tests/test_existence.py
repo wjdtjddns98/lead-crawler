@@ -608,3 +608,36 @@ def test_site_probe_sends_browser_ua(monkeypatch) -> None:
     assert len(set(clients)) == 1  # 프로버 수명 동안 Client 1개 재사용(호출마다 재생성 X).
     probe.close()
     assert probe._client is None
+
+
+_REAL = "<html><body><h1>회사</h1><p>충분히 긴 실제 본문 콘텐츠가 여기 있습니다 IR 정보 공시 연락처.</p></body></html>"
+
+
+def _probe_dead_verify(rendered_html, *, headless: bool = False):
+    v = ExistenceVerifier(
+        Settings(dry_run=False, verify_headless=headless),
+        site_probe=_Site(False), dns_probe=_Dns(True), render_probe=_Render(None),
+    )
+    return v.verify("acme.com", rendered_html=rendered_html)
+
+
+def test_probe_403_but_headless_rendered_real_content_is_alive() -> None:
+    """WAF 가 httpx 프로브만 막은 사이트 — enrich 가 렌더한 실제 본문이 있으면 생존(2026-09-16)."""
+    res = _probe_dead_verify(_REAL)
+    assert res.is_active is True and res.site_alive is True and res.confidence == 0.6
+
+
+def test_probe_dead_and_rendered_parked_stays_dead() -> None:
+    res = _probe_dead_verify("<html><body>buy this domain</body></html>")
+    assert res.is_active is False
+
+
+def test_probe_dead_without_rendered_html_unchanged() -> None:
+    res = _probe_dead_verify(None)
+    assert res.is_active is False and res.confidence == 0.0
+
+
+def test_rendered_alive_still_subject_to_verify_headless_parked_check() -> None:
+    # verify_headless 가 켜져도 렌더 본문이 실제면 그대로 생존(재렌더 없이 재사용).
+    res = _probe_dead_verify(_REAL, headless=True)
+    assert res.is_active is True
