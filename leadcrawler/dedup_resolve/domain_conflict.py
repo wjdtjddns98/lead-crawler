@@ -155,6 +155,8 @@ def _evidence(row: dict, audited: dict[str, set[str]], titles: dict[str, str]) -
         ev.append("dom_key")
     if host in audited.get(row["company_id"], ()):
         ev.append("audited_homepage")
+    # name 의 영문 병기('(주)에이럭스(ALUX Co)')도 슬러그가 되게 name_eng 뒤에 name 도 본다 —
+    # _name_matches 의 경계·길이 하한이 우연한 라틴 조각 오탐을 막는다.
     for nm in (row.get("name_eng"), row["name"]):
         slug = _name_slug(nm or "")
         if slug and _name_matches(slug, host):
@@ -287,9 +289,10 @@ def apply_row(session: Session, row: ConflictRow, *, now: datetime) -> str:
     old_home = co.homepage
     co.homepage = None
     co.site_alive = False
-    for c in row.before.get("contacts", []):
-        ct = session.get(ContactRow, c["id"])
-        if ct is not None:
+    # 삭제는 스냅샷 id 가 아니라 **현재** 연락처를 host 로 다시 걸러서 — 계획 이후 추가된 그 host
+    # 연락처가 남지 않게(리뷰 MED). 스냅샷은 되돌리기 복원용.
+    for ct in session.scalars(select(ContactRow).where(ContactRow.company_id == row.company_id)):
+        if _contact_host(ct) == row.host:
             session.delete(ct)  # email_validation 은 CASCADE(PG) — SQLite 도 PRAGMA FK ON.
     rq = session.get(ReviewQueueRow, review_id_for(row.company_id, "email"))
     if rq is not None:
@@ -319,12 +322,17 @@ def rollback_row(session: Session, row: ConflictRow) -> str:
     co = session.get(CompanyRow, row.company_id)
     if co is None:
         return "skipped"
+    q = b.get("queue")
+    rq = session.get(ReviewQueueRow, q["id"]) if q else None
+    if rq is not None and (rq.status != "pending" or rq.assignee is not None):
+        # 적용 뒤 사람이 다시 판정한 큐 — 되돌리기가 그 판단을 덮지 않는다(apply 의 stale 과 대칭).
+        return "stale"
     dc = session.get(DiscoveredCompanyRow, row.canonical_key)
     if dc is not None and not dc.domain and b.get("ledger_domain"):
         dc.domain = b["ledger_domain"]
-    if not co.homepage:
+    if not co.homepage:  # 재해석으로 새 홈페이지가 이미 들어왔으면 홈페이지·생존 판정 모두 보존.
         co.homepage = b.get("homepage")
-    co.site_alive = bool(b.get("site_alive"))
+        co.site_alive = bool(b.get("site_alive"))
     for c in b.get("contacts", []):
         if session.get(ContactRow, c["id"]) is None:
             session.add(ContactRow(
@@ -339,13 +347,10 @@ def rollback_row(session: Session, row: ConflictRow) -> str:
                     domain_match=v["domain_match"], smtp=v["smtp"], provider=v["provider"],
                     checked_at=_parse_dt(v["checked_at"]),
                 ))
-    q = b.get("queue")
-    if q:
-        rq = session.get(ReviewQueueRow, q["id"])
-        if rq is not None:
-            rq.status, rq.assignee, rq.assignee_id = q["status"], q["assignee"], q["assignee_id"]
-            rq.reviewed_at = _parse_dt(q["reviewed_at"])
-            rq.selected, rq.selected_by_human = q["selected"], q["selected_by_human"]
-            rq.candidates = q["candidates"]
+    if rq is not None:
+        rq.status, rq.assignee, rq.assignee_id = q["status"], q["assignee"], q["assignee_id"]
+        rq.reviewed_at = _parse_dt(q["reviewed_at"])
+        rq.selected, rq.selected_by_human = q["selected"], q["selected_by_human"]
+        rq.candidates = q["candidates"]
     session.flush()
     return "restored"

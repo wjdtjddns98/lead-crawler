@@ -222,3 +222,36 @@ def test_groups_exclude_same_name_only(session: Session) -> None:
     ])
     session.flush()
     assert load_conflict_groups(session) == {}  # 이름이 같으면 dedup 몫
+
+
+def test_apply_deletes_host_contacts_added_after_plan(session: Session) -> None:
+    _seed(session)
+    plan = build_plan(session)
+    wrong = next(r for r in plan.rows if r.action == AUTO_WRONG)
+    late = contact_id_for("c2", "email", "late@yesform.com")  # 계획 이후 크롤이 추가한 같은 host 이메일
+    session.add(ContactRow(id=late, company_id="c2", type="email", value="late@yesform.com", role="ir"))
+    session.flush()
+    assert apply_row(session, wrong, now=datetime(2026, 9, 16, tzinfo=timezone.utc)) == "applied"
+    assert session.get(ContactRow, late) is None
+
+
+def test_rollback_keeps_new_homepage_and_refuses_after_human_rejudged(session: Session) -> None:
+    _seed(session)
+    plan = build_plan(session)
+    wrong = next(r for r in plan.rows if r.action == AUTO_WRONG)
+    stamp = datetime(2026, 9, 16, tzinfo=timezone.utc)
+    assert apply_row(session, wrong, now=stamp) == "applied"
+    # 재해석이 새 홈페이지를 채우고 살아있다고 판정한 뒤라면 홈페이지·site_alive 를 덮지 않는다.
+    co = session.get(CompanyRow, "c2")
+    co.homepage, co.site_alive = "https://hyangwoo.co.kr", True
+    session.flush()
+    assert rollback_row(session, wrong) == "restored"
+    co = session.get(CompanyRow, "c2")
+    assert co.homepage == "https://hyangwoo.co.kr" and co.site_alive is True
+    assert session.get(DiscoveredCompanyRow, "name:kr:향우종합관리").domain == "yesform.com"
+    # 사람이 다시 판정한 큐는 되돌리기가 거부한다.
+    rq = session.get(ReviewQueueRow, review_id_for("c2", "email"))
+    rq.status, rq.assignee = "confirmed", "lee"
+    session.flush()
+    assert rollback_row(session, wrong) == "stale"
+    assert session.get(ReviewQueueRow, review_id_for("c2", "email")).assignee == "lee"

@@ -1279,7 +1279,12 @@ def domain_conflicts(
             stats: dict[str, int] = {}
             stamp = datetime.now(timezone.utc)
             for i, r in enumerate(targets, 1):
-                res = rollback_row(session, r) if rollback else apply_row(session, r, now=stamp)
+                try:
+                    res = rollback_row(session, r) if rollback else apply_row(session, r, now=stamp)
+                except Exception as exc:  # noqa: BLE001 — 행 1건 격리(_persist_lead 관례)
+                    session.rollback()
+                    log.warning("domain_conflict.row_failed", company=r.company_id, err=str(exc))
+                    res = "failed"
                 stats[res] = stats.get(res, 0) + 1
                 if i % 100 == 0:
                     session.commit()
@@ -1287,12 +1292,19 @@ def domain_conflicts(
             typer.echo(f"{'되돌리기' if rollback else '적용'} 완료: " + ", ".join(f"{k} {v:,}" for k, v in sorted(stats.items())))
             return
         get_text = None
-        if fetch_titles and not settings.dry_run:
+        fetcher = None
+        if fetch_titles and settings.dry_run:
+            typer.echo("dry_run — --fetch-titles 무시(네트워크 0 계약)")
+        elif fetch_titles:
             from .sources.http import Fetcher
 
             fetcher = Fetcher(user_agent=settings.discovery_user_agent, timeout=8.0)
             get_text = lambda url: fetcher.get_text(url, max_bytes=65536)  # noqa: E731
-        result = build_plan(session, get_text=get_text)
+        try:
+            result = build_plan(session, get_text=get_text)
+        finally:
+            if fetcher is not None:
+                fetcher.close()
         Path(out).parent.mkdir(parents=True, exist_ok=True)
         Path(out).write_text(result.model_dump_json(indent=2), encoding="utf-8")
         typer.echo(f"도메인 충돌 계획 저장: {out} / 그룹 {result.groups:,}")
