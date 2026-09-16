@@ -135,6 +135,7 @@ def test_compare_tokens_strips_attached_legal_form_but_key_unchanged() -> None:
 
     assert compare_tokens("주식회사알에프피티") == ["알에프피티"]
     assert compare_tokens("알에프피티 주식회사") == ["알에프피티"]
+    assert compare_tokens("한국주식회사연구소") == ["한국주식회사연구소"]  # 중간 출현은 보존
     assert tokenize_name("주식회사알에프피티") == ["주식회사알에프피티"]  # 키는 그대로(제약①)
 
 

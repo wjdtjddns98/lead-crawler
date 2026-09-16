@@ -64,9 +64,11 @@ def load_company_records(
     ``include_merged`` 가 False(기본)면 이미 중복 판정돼 흡수된 행(``duplicate_of`` 채워짐)은
     제외한다 — 재실행 시 해소된 중복을 다시 보고하지 않기 위함.
 
-    비교 도메인은 승격된 회사의 ``company.homepage`` 를 우선한다(없으면 원장 domain) —
-    사람 수정·enrich 갱신으로 홈페이지와 원장 도메인이 어긋난 행(2026-09-16 실측 51/131)이
-    원장만 봐서는 같은 사이트로 묶이지 않았다. 홈페이지는 사람이 확정해 온 값이라 더 권위 있다.
+    비교 도메인은 승격된 회사의 ``company.homepage`` 를 우선한다 — 사람 수정·enrich 갱신으로
+    홈페이지와 원장 도메인이 어긋난 행(2026-09-16 실측 51/131)이 원장만 봐서는 같은 사이트로
+    묶이지 않았다. 단 **홈페이지 root 가 어떤 행의 원장 domain 으로도 뒷받침될 때만** 쓴다:
+    linktr.ee/a·linktr.ee/b·블로그처럼 여러 회사가 한 root 를 공유하는 홈페이지가 도메인 동치
+    오탐(auto 오병합)이 되는 것을 막는다(Codex 리뷰 HIGH). 뒷받침 없으면 원장 domain 폴백.
     """
     stmt = select(
         DiscoveredCompanyRow.canonical_key,
@@ -78,27 +80,25 @@ def load_company_records(
     ).outerjoin(CompanyRow, CompanyRow.canonical_key == DiscoveredCompanyRow.canonical_key)
     if not include_merged:
         stmt = stmt.where(DiscoveredCompanyRow.duplicate_of.is_(None))
-    return [
-        CompanyRecord(
+    rows = session.execute(stmt).all()
+    ledger_roots = {r for r in (normalize_domain(d) for _, _, _, d, _, _ in rows) if r}
+    out: list[CompanyRecord] = []
+    for key, name, country, domain, reg_no, homepage in rows:
+        hroot = normalize_domain(homepage)
+        use_home = hroot is not None and hroot in ledger_roots and hroot not in _PORTAL_ROOTS
+        out.append(CompanyRecord(
             key=key, name=name, country=country or "",
-            domain=homepage if _usable_homepage(homepage) else domain, reg_no=reg_no,
-        )
-        for key, name, country, domain, reg_no, homepage in session.execute(stmt).all()
-    ]
+            domain=homepage if use_home else domain, reg_no=reg_no,
+        ))
+    return out
 
 
-# 포털·블로그 root — 서로 다른 회사의 블로그/스토어 홈페이지가 같은 root(naver.com 등)로 접혀
-# 도메인 동치 오탐이 되므로 비교 도메인으로 쓰지 않는다(원장 domain 으로 폴백).
+# 포털·블로그 root — 원장에 어쩌다 들어와 있어도 비교 도메인으로 쓰지 않는다.
 # ponytail: 관측된 KR 포털 위주 정적 집합 — 더 나오면 dedup._MULTI_TENANT_SUFFIXES 와 통합.
 _PORTAL_ROOTS = frozenset({
     "naver.com", "daum.net", "kakao.com", "google.com", "facebook.com", "instagram.com",
-    "tistory.com", "blogspot.com", "wordpress.com", "youtube.com", "linkedin.com",
+    "tistory.com", "blogspot.com", "wordpress.com", "youtube.com", "linkedin.com", "linktr.ee",
 })
-
-
-def _usable_homepage(homepage: str | None) -> bool:
-    root = normalize_domain(homepage)
-    return root is not None and root not in _PORTAL_ROOTS
 
 
 def build_report(

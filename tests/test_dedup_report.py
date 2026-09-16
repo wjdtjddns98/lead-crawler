@@ -150,3 +150,24 @@ def test_report_ignores_portal_homepage(session: Session, tmp_path) -> None:
     session.flush()
     rpt = run_dedup_report(session, tmp_path / "r.json")
     assert rpt.by_tier.get("auto", 0) == 0  # 도메인 불명 → lexical 쇼트리스트로만
+
+
+def test_report_homepage_needs_ledger_support(session: Session, tmp_path) -> None:
+    """홈페이지 root 가 어떤 행의 원장 domain 으로도 뒷받침되지 않으면(linktr.ee 공유) 비교에 안 쓴다."""
+    from leadcrawler.schema import CompanyRow
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="dom:alpha.kr", name="한빛상사", country="KR", domain="alpha.kr"),
+        DiscoveredCompanyRow(canonical_key="dom:beta.kr", name="한빛상사", country="KR", domain="beta.kr"),
+    ])
+    session.flush()
+    session.add_all([
+        CompanyRow(id="c_1", canonical_key="dom:alpha.kr", name="한빛상사", country="KR",
+                   homepage="https://linktr.ee/hanbit1"),
+        CompanyRow(id="c_2", canonical_key="dom:beta.kr", name="한빛상사", country="KR",
+                   homepage="https://linktr.ee/hanbit2"),
+    ])
+    session.flush()
+    rpt = run_dedup_report(session, tmp_path / "r.json")
+    assert rpt.by_tier.get("auto", 0) == 0
+    assert rpt.by_tier.get("keep_both", 0) == 1  # 이름 같고 도메인 상이 → 둘 다 유지
