@@ -389,6 +389,10 @@ def backfill_resolve_domains(
     exclude_listed: bool = typer.Option(
         False, "--exclude-listed", help="상장 확정(listed='listed') 제외 — unknown 은 대상 유지"
     ),
+    only_listed: bool = typer.Option(
+        False, "--only-listed",
+        help="상장 확정(listed='listed')만 대상 — 도메인 없이 원장에 남은 상장사 보충(--exclude-listed 와 배타)",
+    ),
     job_id: str = typer.Option(
         None, "--job-id", help="관리형(웹 supervisor) 실행 — backfill_job 행에 진행 자기보고"
     ),
@@ -433,8 +437,13 @@ def backfill_resolve_domains(
         if isinstance(industry, list) and industry else None
     )
     excl_listed = exclude_listed is True  # OptionInfo 방어(위와 동일).
+    only_l = only_listed is True
+    if excl_listed and only_l:
+        typer.echo("[resolve] --exclude-listed 와 --only-listed 는 동시 사용 불가.")
+        raise typer.Exit(2)
     filters = {
         "industries": incl_ind, "exclude_industries": excl_ind, "exclude_listed": excl_listed,
+        "only_listed": only_l,
     }
     # 정체 종료는 CLI 전용 — filters 와 분리(count_resolve_targets 엔 이 인자가 없다).
     stall = stall_exit_secs if isinstance(stall_exit_secs, (int, float)) else 900.0
@@ -470,7 +479,8 @@ def backfill_resolve_domains(
     typer.echo(
         f"[resolve] 상시 consumer 시작 (batch={batch} workers={workers} min_queue={min_queue}"
         f" country={scope or '전세계'} industry={incl_ind or '전체'}"
-        f" exclude_industry={excl_ind or '없음'} exclude_listed={excl_listed})"
+        f" exclude_industry={excl_ind or '없음'} exclude_listed={excl_listed}"
+        f" only_listed={only_l})"
     )
     batches = 0
     while True:  # 취소 = Ctrl-C / 프로세스 종료 / 관리형 취소 플래그.

@@ -511,11 +511,13 @@ def count_resolve_targets(
     industries: Iterable[str] | None = None,
     exclude_industries: Iterable[str] | None = None,
     exclude_listed: bool = False,
+    only_listed: bool = False,
 ) -> int:
     """현재 도메인 해석 대상(도메인없음·미승격) 회사 수(``_scoped`` 필터 적용 후)."""
     stmt, params = _scoped(
         _RESOLVE_COUNT_SQL, countries, industries=industries,
         exclude_industries=exclude_industries, exclude_listed=exclude_listed,
+        only_listed=only_listed,
     )
     with sm() as s:
         return int(s.execute(stmt, params).scalar() or 0)
@@ -527,6 +529,7 @@ def resolve_batch(
     industries: Iterable[str] | None = None,
     exclude_industries: Iterable[str] | None = None,
     exclude_listed: bool = False,
+    only_listed: bool = False,
     stall_exit_s: float | None = None,
     run: PromoteRun | None = None,
 ) -> tuple[int, int, int]:
@@ -558,6 +561,7 @@ def resolve_batch(
     stmt, params = _scoped(
         _RESOLVE_TARGET_SQL, countries, industries=industries,
         exclude_industries=exclude_industries, exclude_listed=exclude_listed,
+        only_listed=only_listed,
     )
     with sm() as rd:
         targets = [_dc_from_row(r) for r in rd.execute(stmt, {**params, "limit": limit}).all()]

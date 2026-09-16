@@ -182,6 +182,7 @@ def test_count_resolve_targets_exclude_filters(tmp_path) -> None:
     assert picked == {"nm:kr:가", "nm:kr:나", "nm:kr:다", "nm:kr:라"}
     assert count_resolve_targets(sm, ["KR"], exclude_industries=["식품·음료"]) == 3
     assert count_resolve_targets(sm, ["KR"], exclude_listed=True) == 3
+    assert count_resolve_targets(sm, ["KR"], only_listed=True) == 1  # 상장 확정만.
     assert count_resolve_targets(
         sm, ["KR"], exclude_industries=["식품·음료"], exclude_listed=True
     ) == 2  # 가 + 라 만.
