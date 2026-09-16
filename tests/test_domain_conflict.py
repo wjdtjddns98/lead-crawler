@@ -81,13 +81,14 @@ def test_no_owner_means_review() -> None:
 def test_two_owners_allow_shared_and_outsider_auto_wrong() -> None:
     rows = [
         _row("c1", "dom:daishin.com", "대신증권(주)", host="daishin.com", reg_no="1"),
-        _row("c2", "reg:dart:2", "대신에이엠씨(주)", host="daishin.com", reg_no="2"),
+        _row("c2", "reg:dart:2", "대신에이엠씨(주)", host="daishin.com", reg_no="2",
+             name_eng="Daishin AMC"),
         _row("c3", "name:kr:한빛유통", "한빛유통", host="daishin.com"),
     ]
-    audited = {"c2": {"daishin.com"}}  # 사람이 워크벤치에서 확정한 홈페이지
+    audited = {"c2": {"daishin.com"}}  # 사람이 워크벤치에서 확정한 홈페이지(보조 근거)
     out = {c.company_id: c for c in classify_group(rows, audited)}
     assert out["c1"].action == ALLOW_SHARED and out["c2"].action == ALLOW_SHARED
-    assert out["c2"].evidence == ["audited_homepage"]
+    assert out["c2"].evidence == ["audited_homepage", "latin_name"]
     assert out["c3"].action == AUTO_WRONG
 
 
@@ -96,7 +97,7 @@ def test_latin_name_and_title_evidence() -> None:
         _row("c1", "reg:sec:1", "Celsius Holdings, Inc.", host="celsiusholdingsinc.com", country="US"),
         _row("c2", "name:kr:테라젠이텍스", "(주)테라젠이텍스", host="etexpharm.co.kr"),
         _row("c3", "name:kr:다른회사", "다른회사(주)", host="etexpharm.co.kr"),
-        _row("c4", "name:kr:코셈", "(주)코셈", host="coxem.com"),  # 2글자 상호는 title 근거 불인정
+        _row("c4", "name:kr:코셈", "(주)코셈", host="coxem.com"),  # 2글자 상호도 title 완전일치는 인정
     ]
     titles = {"etexpharm.co.kr": "테라젠이텍스 | 제약 전문기업", "coxem.com": "코셈 | 전자현미경"}
     out = {}
@@ -105,7 +106,7 @@ def test_latin_name_and_title_evidence() -> None:
     assert "latin_name" in out["c1"].evidence
     assert out["c2"].action == OWNER and out["c2"].evidence == ["title"]
     assert out["c3"].action == AUTO_WRONG
-    assert out["c4"].evidence == []
+    assert out["c4"].evidence == ["title"]
 
 
 def test_related_prefix_and_registry_rows_are_not_auto_wrong() -> None:
