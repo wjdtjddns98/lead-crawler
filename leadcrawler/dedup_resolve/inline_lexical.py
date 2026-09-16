@@ -19,10 +19,9 @@ from rapidfuzz import fuzz
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..dedup import tokenize_name
 from ..schema import DiscoveredCompanyRow
 from ..storage.dedup_candidate import upsert_candidate
-from .near_dup import MAX_BLOCK_SIZE, NAME_MEDIUM, NAME_PREFIX_BLOCK, NAME_STRONG
+from .near_dup import MAX_BLOCK_SIZE, NAME_MEDIUM, NAME_PREFIX_BLOCK, NAME_STRONG, compare_tokens
 
 
 def _block_key(country: str, tokens: list[str]) -> tuple[str, str]:
@@ -50,7 +49,7 @@ class InlineLexicalMatcher:
             self._index(key, name, country or "")
 
     def _index(self, key: str, name: str, country: str) -> None:
-        tokens = tokenize_name(name)
+        tokens = compare_tokens(name)
         if not tokens:
             return
         self._blocks.setdefault(_block_key(country, tokens), []).append((key, tokens))
@@ -61,7 +60,7 @@ class InlineLexicalMatcher:
         토큰셋 유사도 ≥ ``NAME_MEDIUM`` 인 쌍을 ``dedup_candidate``(pending)로 upsert
         (NAME_STRONG 이상=lexical, 그 사이=shortlist). 생성/갱신된 후보 수를 반환한다.
         """
-        tokens = tokenize_name(name)
+        tokens = compare_tokens(name)
         if not tokens:
             return 0
         bucket = _block_key(country, tokens)

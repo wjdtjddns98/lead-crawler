@@ -573,10 +573,12 @@ def resolve_batch(
     **도메인 동치 dedup(제약①)은 메인스레드에서 순차 판정**한다 — 워커가 해석한 도메인이
     이번 배치 안에서 서로 겹치거나(다른 표기의 같은 회사) 이미 원장에 있는 도메인과
     겹치면(``load_seen_domains`` 스냅샷) 승격을 건너뛰어 중복 ``company`` 행을 막는다.
-    도메인은 **해석까지 성공한 경우에만** 기록한다 — 승격은 실패해도(실존탈락·동치스킵)
-    기록해 재시도를 막지만, 그 뒤 enrich/existence 가 예외를 던진 경우는 기록하지 않는다
-    (다음 배치가 재시도 — 적대 리뷰 HIGH-MED: 일시적 크래시로 도메인만 기록되고 승격
-    기회가 영구 소멸하던 결함).
+    도메인 기록 규칙(세 갈래): ① 충돌 없음 → 기록(승격은 실존탈락으로 실패해도 기록해
+    재시도를 막음) ② 기존 회사와 도메인 충돌 + 이름 强일치(auto) → 기록 + 같은 트랜잭션에
+    duplicate_of 링크, 승격 스킵 ③ 충돌 + 이름 상이 → **기록하지 않음**(남의 도메인, 다음
+    회전 재해석). 그 뒤 enrich/existence 가 예외를 던진 경우도 기록하지 않는다(다음 배치가
+    재시도 — 적대 리뷰 HIGH-MED: 일시적 크래시로 도메인만 기록되고 승격 기회가 영구 소멸하던
+    결함).
     """
     stmt, params = _scoped(
         _RESOLVE_TARGET_SQL, countries, industries=industries,
@@ -660,20 +662,26 @@ def resolve_batch(
                     # _DOMAIN_OVERSHARE_CAP 주석 참고). 선스탬프가 이미 뒤로 보냈다.
                     log.info("resolve.backfill.overshared", key=dc.canonical_key, domain=rdom)
                     continue
+                collided = rdom is not None and rdom in seen_domains
+                survivor = find_inline_duplicate(ws, dc) if collided else None
+                if collided and survivor is None:
+                    # 이미 다른 회사(이름 상이)가 쓰는 도메인 → **기록하지 않는다**(정밀도 우선,
+                    # 제약②). 종전엔 기록만 하고 승격을 건너뛰어 NPS name: 행이 남의 도메인을
+                    # 달고 남았다(2026-09-16 실측: 같은 도메인·다른 이름 876 그룹, 그중 name:
+                    # 키 816행). 계열사가 검색으로 모기업 도메인을 받는 경우도 잃지만 그건
+                    # 계열사 자체 사이트가 아니라 애초에 오해석이다(PO 결정 2026-09-16).
+                    # 선스탬프가 이미 뒤로 보냈고 다음 회전에서 재해석된다.
+                    # ponytail: 회전마다 같은 도메인을 다시 해석(검색 1회)한다 — 낭비가 보이면
+                    # 시도 도메인을 원장에 남겨 건너뛰는 것으로 업그레이드.
+                    log.info("resolve.backfill.owned_by_other", key=dc.canonical_key, domain=rdom)
+                    continue
                 if backfill_domain(ws, dc.canonical_key, found):
                     resolved += 1
-                collided = rdom is not None and rdom in seen_domains
-                if collided:
-                    # 이미 원장에 있는(또는 이번 배치에서 먼저 처리된) 회사와 동일 도메인
-                    # → 별개 company 로 승격하지 않는다(제약① 중복방지). 이름까지 强일치
-                    # (auto 티어)면 생존자에 duplicate_of 링크까지 **도메인과 같은 트랜잭션**에
-                    # 적는다 — 종전엔 오프라인 dedup-report 에 미뤄 name:→dom:/reg: 교차키
-                    # 중복이 원장에 쌓였다(2026-09-16 실측 1,866 그룹). 도메인만 커밋되고
-                    # 링크가 빠지면 이 행은 대상 SQL(domain='')에서 영구 이탈해 재시도가 없다.
-                    # 이름 상이(계열사 등)는 그대로 워크벤치 위임.
-                    survivor = find_inline_duplicate(ws, dc)
-                    if survivor is not None:
-                        _link_inline_dup(ws, dc.canonical_key, survivor)
+                if survivor is not None:
+                    # 같은 회사(이름 强일치·auto 티어) → 도메인과 **같은 트랜잭션**에 duplicate_of
+                    # 링크. 도메인만 커밋되고 링크가 빠지면 이 행은 대상 SQL(domain='')에서 영구
+                    # 이탈해 재시도가 없다.
+                    _link_inline_dup(ws, dc.canonical_key, survivor)
                 ws.commit()  # 도메인 기록은 항상 남긴다(승격 실패해도 재시도 방지).
                 if collided:
                     log.info("resolve.backfill.dedup_skip", key=dc.canonical_key, domain=rdom)

@@ -209,7 +209,7 @@ def test_resolve_batch_country_scope_excludes_unselected(tmp_path, monkeypatch) 
 
 
 def test_resolve_batch_skips_promotion_on_domain_collision(tmp_path, monkeypatch) -> None:
-    """이미 원장에 있는 도메인과 겹치면 도메인은 기록하되 company 승격은 스킵(제약① 중복방지)."""
+    """이미 원장에 있는 도메인과 겹치고 이름이 다르면 도메인을 기록하지 않는다(남의 도메인)."""
     _patch(monkeypatch)
     s = Settings(database_url=f"sqlite:///{tmp_path}/rb3.db", dry_run=False, resolve_domains=True)
     init_db(s)
@@ -233,10 +233,11 @@ def test_resolve_batch_skips_promotion_on_domain_collision(tmp_path, monkeypatch
         session.commit()
 
     processed, resolved, promoted = fill_mod.resolve_batch(s, sm, limit=50, workers=2)
-    assert processed == 1 and resolved == 1 and promoted == 0  # 도메인은 채워지되 승격 0.
+    # 이름 상이 → 남의 도메인: 기록도 승격도 없음(2026-09-16 정밀도 규칙). 다음 회전에서 재해석.
+    assert processed == 1 and resolved == 0 and promoted == 0
     with sm() as session:
         row = session.get(DiscoveredCompanyRow, "name:kr:살아있는상사")
-        assert row.domain == "살아있는상사.example.com"
+        assert row.domain is None
         assert session.query(CompanyRow).count() == 0  # 중복 company 생성 안 됨.
 
 
@@ -272,7 +273,7 @@ def test_resolve_batch_exception_leaves_domain_unrecorded_for_retry(tmp_path, mo
 
 
 def test_resolve_batch_intra_batch_domain_collision_promotes_once(tmp_path, monkeypatch) -> None:
-    """같은 배치 안의 두 서로 다른 신규 행이 같은 도메인으로 해석되면 1건만 승격한다."""
+    """같은 배치 안의 두 서로 다른 신규 행이 같은 도메인으로 해석되면 1건만 기록·승격한다."""
     _patch(monkeypatch)
 
     class _SameDomainResolver(_FakeResolver):
@@ -299,10 +300,12 @@ def test_resolve_batch_intra_batch_domain_collision_promotes_once(tmp_path, monk
         session.commit()
 
     processed, resolved, promoted = fill_mod.resolve_batch(s, sm, limit=50, workers=2)
-    assert (processed, resolved, promoted) == (2, 2, 1)  # 둘 다 도메인 기록, 1건만 승격.
+    assert (processed, resolved, promoted) == (2, 1, 1)  # 먼저 온 1건만 기록·승격, 뒤는 남의 도메인.
     with sm() as session:
-        assert session.get(DiscoveredCompanyRow, "name:kr:회사A").domain == "shared.example.com"
-        assert session.get(DiscoveredCompanyRow, "name:kr:회사B").domain == "shared.example.com"
+        doms = sorted(
+            (session.get(DiscoveredCompanyRow, k).domain or "") for k in ("name:kr:회사A", "name:kr:회사B")
+        )
+        assert doms == ["", "shared.example.com"]
         assert session.query(CompanyRow).count() == 1
 
 
@@ -310,7 +313,7 @@ def test_resolve_batch_overshared_domain_not_recorded(tmp_path, monkeypatch) -> 
     """원장에서 이미 과공유된 도메인(디렉터리 신호)은 기록도 승격도 하지 않는다.
 
     2026-08-10 사고 가드: 해석기가 오채택한 디렉터리 도메인이 원장에 무제한 기록됐고
-    (dedup_skip 은 승격만 막고 기록은 남김), promote 백필이 그걸 무차별 승격했다.
+    (당시 동치스킵은 기록은 남겼다), promote 백필이 그걸 무차별 승격했다.
     과공유 캡(_DOMAIN_OVERSHARE_CAP=3)부터는 기록 자체를 끊어야 한다.
     """
     _patch(monkeypatch)
