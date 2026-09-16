@@ -146,3 +146,20 @@ def test_best_owner_prefers_dom_key_over_latin() -> None:
 
     classify_group(rows, {}, judge=_J(), judge_budget=[5])
     assert seen == ["애크미코리아"]
+
+
+def test_claude_relation_judge_uses_auth_token(monkeypatch) -> None:
+    """라이브 .env 는 OAuth 토큰만 있다 — auth_token 이 anthropic_client 로 전달돼야 한다."""
+    import leadcrawler.llm as llm_mod
+    from leadcrawler.dedup_resolve import domain_conflict as dc
+
+    seen = {}
+
+    def _fake_client(*, api_key="", auth_token="", max_retries=2):
+        seen.update(api_key=api_key, auth_token=auth_token)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(llm_mod, "anthropic_client", _fake_client)
+    j = dc.ClaudeRelationJudge("", auth_token="tok", model="m")
+    assert j.judge("a", "b", "h", "KR") == ("unknown", False)
+    assert seen == {"api_key": "", "auth_token": "tok"}

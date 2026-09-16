@@ -1322,13 +1322,17 @@ def domain_conflicts(
         if llm:
             from .dedup_resolve.domain_conflict import ClaudeRelationJudge, StubRelationJudge
 
-            if settings.dry_run or not settings.anthropic_api_key:
-                typer.echo("--llm: dry_run/키없음 → stub(unknown→review, 과금 0)")
+            if settings.dry_run or not (settings.anthropic_api_key or settings.anthropic_auth_token):
+                typer.echo("--llm: dry_run/인증정보 없음 → stub(unknown→review, 과금 0)")
                 judge = StubRelationJudge()
             else:
                 from .cost_ledger import CostLedger
 
-                judge = ClaudeRelationJudge(settings.anthropic_api_key, model=settings.dedup_llm_model)
+                # industry_classify 와 같은 규율 — OAuth 토큰(구독) 우선, 없으면 API 키(종량).
+                judge = ClaudeRelationJudge(
+                    settings.anthropic_api_key, auth_token=settings.anthropic_auth_token,
+                    model=settings.dedup_llm_model,
+                )
                 ledger = CostLedger(settings, persist=True)
         try:
             result = build_plan(
