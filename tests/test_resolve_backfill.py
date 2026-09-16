@@ -420,3 +420,25 @@ def test_resolve_batch_links_duplicate_on_domain_collision_when_name_matches(tmp
         assert row.domain == "살아있는상사.example.com"
         assert row.duplicate_of == "reg:dart:00000002"
         assert row.merged_by == "auto" and row.merge_reason == "inline:name+domain"
+
+
+def test_resolve_targets_include_promoted_rows_with_blank_homepage(tmp_path) -> None:
+    """domain-conflicts 가 도메인·홈페이지를 비운 승격 회사도 재해석 대상에 든다."""
+    s = Settings(database_url=f"sqlite:///{tmp_path}/rb10.db", dry_run=False, resolve_domains=True)
+    init_db(s)
+    sm = get_sessionmaker(s)
+    with sm() as session:
+        session.add_all([
+            DiscoveredCompanyRow(canonical_key="name:kr:비운회사", name="비운회사", country="KR", source="nps"),
+            DiscoveredCompanyRow(canonical_key="name:kr:정상회사", name="정상회사", country="KR", source="nps",
+                                 domain="ok.example.com"),
+        ])
+        session.flush()
+        session.add_all([
+            CompanyRow(id="c_blank", canonical_key="name:kr:비운회사", name="비운회사", country="KR",
+                       homepage=None),
+            CompanyRow(id="c_ok", canonical_key="name:kr:정상회사", name="정상회사", country="KR",
+                       homepage="https://ok.example.com"),
+        ])
+        session.commit()
+    assert fill_mod.count_resolve_targets(sm) == 1

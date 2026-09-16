@@ -497,7 +497,8 @@ def fill_batch(
     return processed, emails
 
 
-# 대상 = 도메인 미보유 + 미승격(company 행 없음) 발견 행. 기본은 **국가 무관**(전세계 —
+# 대상 = 도메인 미보유 + (미승격 **또는 승격됐지만 홈페이지 공백** — domain-conflicts 가 오배정
+# 도메인을 비운 행의 재해석 복귀, 2026-09-16) 발견 행. 기본은 **국가 무관**(전세계 —
 # 이 프로젝트는 전 산업·전 국가 IR 연락처 추출이 목적)이되, ``countries`` 를 넘기면
 # ``{scope}`` 로 그 국가들만 되짚는다(2026-07-27: KR 제외 크롤에 옛 KR 물량이 승격·큐
 # 유입되던 사고 — 원장 정렬이 last_crawled_at desc 라 직전 KR 크롤 물량이 맨 앞에 왔다.
@@ -511,7 +512,8 @@ _RESOLVE_TARGET_SQL = """
            d.ticker, d.phone, d.ir_url, d.name_eng, d.address
     from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
-    where coalesce(d.domain, '') = '' and co.id is null and d.duplicate_of is null
+    where coalesce(d.domain, '') = '' and (co.id is null or coalesce(co.homepage, '') = '')
+      and d.duplicate_of is null
       {scope}
     order by d.last_crawled_at asc, d.canonical_key
     limit :limit
@@ -519,7 +521,8 @@ _RESOLVE_TARGET_SQL = """
 _RESOLVE_COUNT_SQL = """
     select count(*) from discovered_company d
     left join company co on co.canonical_key = d.canonical_key
-    where coalesce(d.domain, '') = '' and co.id is null and d.duplicate_of is null
+    where coalesce(d.domain, '') = '' and (co.id is null or coalesce(co.homepage, '') = '')
+      and d.duplicate_of is null
       {scope}
     """
 

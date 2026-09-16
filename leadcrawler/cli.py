@@ -1240,6 +1240,71 @@ def dedup_merge(
         session.close()
 
 
+@app.command("domain-conflicts")
+def domain_conflicts(
+    out: str = typer.Option("exports/domain_conflicts.json", help="계획 JSON 산출 경로(미리보기)"),
+    plan: str = typer.Option("", "--plan", help="적용/되돌리기할 계획 JSON(--apply/--rollback 와 함께)"),
+    apply: bool = typer.Option(False, "--apply", help="계획의 auto_wrong 행을 실제 적용(비지정=미리보기)"),
+    rollback: bool = typer.Option(False, "--rollback", help="계획의 before 값으로 되돌리기"),
+    fetch_titles: bool = typer.Option(
+        False, "--fetch-titles", help="홈페이지 <title> 을 host 당 1회 가져와 소유 근거로 사용(네트워크)"
+    ),
+) -> None:
+    """같은 홈페이지를 이름이 다른 회사가 공유하는 그룹의 도메인 오배정을 판정·교정한다.
+
+    기본은 읽기 전용 미리보기(계획 JSON). ``--apply --plan`` 은 auto_wrong 행의 원장 domain·
+    홈페이지를 비우고 그 host 의 이메일·문의폼만 지운 뒤 검증큐를 pending 으로 되돌린다(company
+    행 보존, 100행 단위 커밋, before 값 재검증). ``--rollback --plan`` 은 역적용.
+    """
+    from pathlib import Path
+
+    from .dedup_resolve.domain_conflict import (
+        AUTO_WRONG,
+        ConflictPlan,
+        apply_row,
+        build_plan,
+        rollback_row,
+    )
+    from .storage.db import get_sessionmaker
+
+    configure_logging()
+    settings = get_settings()
+    session = get_sessionmaker(settings)()
+    try:
+        if apply or rollback:
+            if not plan:
+                raise typer.BadParameter("--apply/--rollback 에는 --plan 이 필요합니다")
+            data = ConflictPlan.model_validate_json(Path(plan).read_text(encoding="utf-8"))
+            targets = [r for r in data.rows if r.action == AUTO_WRONG]
+            stats: dict[str, int] = {}
+            stamp = datetime.now(timezone.utc)
+            for i, r in enumerate(targets, 1):
+                res = rollback_row(session, r) if rollback else apply_row(session, r, now=stamp)
+                stats[res] = stats.get(res, 0) + 1
+                if i % 100 == 0:
+                    session.commit()
+            session.commit()
+            typer.echo(f"{'되돌리기' if rollback else '적용'} 완료: " + ", ".join(f"{k} {v:,}" for k, v in sorted(stats.items())))
+            return
+        get_text = None
+        if fetch_titles and not settings.dry_run:
+            from .sources.http import Fetcher
+
+            fetcher = Fetcher(user_agent=settings.discovery_user_agent, timeout=8.0)
+            get_text = lambda url: fetcher.get_text(url, max_bytes=65536)  # noqa: E731
+        result = build_plan(session, get_text=get_text)
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(result.model_dump_json(indent=2), encoding="utf-8")
+        typer.echo(f"도메인 충돌 계획 저장: {out} / 그룹 {result.groups:,}")
+        for k, v in sorted(result.by_action.items()):
+            typer.echo(f"  - {k}: {v:,}행")
+        for r in [x for x in result.rows if x.action == AUTO_WRONG][:15]:
+            typer.echo(f"  auto_wrong {r.host} ← {r.name} [{r.canonical_key}]")
+        typer.echo("적용: leadcrawler domain-conflicts --apply --plan " + out)
+    finally:
+        session.close()
+
+
 @app.command()
 def report(
     date: str = typer.Argument(..., help="보고 일자 YYYY-MM-DD"),
