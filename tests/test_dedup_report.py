@@ -108,3 +108,66 @@ def test_report_with_stub_judge_populates_verdicts(session: Session, tmp_path) -
     assert len(rpt.judged) == 1
     assert rpt.judged[0].candidate.tier == "lexical"
     assert rpt.judged[0].verdict.same is False  # 스텁: 도메인 불명 → 사람 위임
+
+
+def test_report_uses_company_homepage_over_ledger_domain(session: Session, tmp_path) -> None:
+    """원장 domain 이 서로 달라도 승격된 회사의 homepage 가 같으면 같은 사이트로 묶는다."""
+    from leadcrawler.schema import CompanyRow
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="dom:etexpharm.co.kr", name="테라젠이텍스",
+                             country="KR", domain="etexpharm.co.kr"),
+        DiscoveredCompanyRow(canonical_key="name:kr:테라젠이텍스", name="(주)테라젠이텍스",
+                             country="KR", domain="theragenetex.com"),
+    ])
+    session.flush()  # company FK(canonical_key) 대상이 먼저 있어야 함.
+    session.add_all([
+        CompanyRow(id="c_1", canonical_key="dom:etexpharm.co.kr", name="테라젠이텍스", country="KR",
+                   homepage="https://etexpharm.co.kr"),
+        CompanyRow(id="c_2", canonical_key="name:kr:테라젠이텍스", name="(주)테라젠이텍스", country="KR",
+                   homepage="http://www.etexpharm.co.kr/main/?load_popup=1"),
+    ])
+    session.flush()
+    rpt = run_dedup_report(session, tmp_path / "r.json")
+    assert rpt.by_tier.get("auto") == 1 and rpt.total_candidates == 1
+
+
+def test_report_ignores_portal_homepage(session: Session, tmp_path) -> None:
+    """서로 다른 회사의 네이버 블로그 홈페이지는 같은 root(naver.com)로 접히므로 비교 도메인으로 안 쓴다."""
+    from leadcrawler.schema import CompanyRow
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="name:kr:한빛상사", name="한빛상사", country="KR"),
+        DiscoveredCompanyRow(canonical_key="name:kr:한빛상사b", name="한빛상사", country="KR"),
+    ])
+    session.flush()
+    session.add_all([
+        CompanyRow(id="c_1", canonical_key="name:kr:한빛상사", name="한빛상사", country="KR",
+                   homepage="https://blog.naver.com/hanbit1"),
+        CompanyRow(id="c_2", canonical_key="name:kr:한빛상사b", name="한빛상사", country="KR",
+                   homepage="https://blog.naver.com/hanbit2"),
+    ])
+    session.flush()
+    rpt = run_dedup_report(session, tmp_path / "r.json")
+    assert rpt.by_tier.get("auto", 0) == 0  # 도메인 불명 → lexical 쇼트리스트로만
+
+
+def test_report_homepage_needs_ledger_support(session: Session, tmp_path) -> None:
+    """홈페이지 root 가 어떤 행의 원장 domain 으로도 뒷받침되지 않으면(linktr.ee 공유) 비교에 안 쓴다."""
+    from leadcrawler.schema import CompanyRow
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="dom:alpha.kr", name="한빛상사", country="KR", domain="alpha.kr"),
+        DiscoveredCompanyRow(canonical_key="dom:beta.kr", name="한빛상사", country="KR", domain="beta.kr"),
+    ])
+    session.flush()
+    session.add_all([
+        CompanyRow(id="c_1", canonical_key="dom:alpha.kr", name="한빛상사", country="KR",
+                   homepage="https://linktr.ee/hanbit1"),
+        CompanyRow(id="c_2", canonical_key="dom:beta.kr", name="한빛상사", country="KR",
+                   homepage="https://linktr.ee/hanbit2"),
+    ])
+    session.flush()
+    rpt = run_dedup_report(session, tmp_path / "r.json")
+    assert rpt.by_tier.get("auto", 0) == 0
+    assert rpt.by_tier.get("keep_both", 0) == 1  # 이름 같고 도메인 상이 → 둘 다 유지
