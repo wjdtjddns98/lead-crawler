@@ -18,6 +18,7 @@ export)의 role 랭킹이 담당한다 — 이 모듈은 발견 원장의 골든
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -198,6 +199,112 @@ def load_cluster_members(session, keys: Iterable[str]) -> dict[str, "ClusterMemb
     }
 
 
+def _merge_company_rows(session, survivor_key: str, absorbed_key: str) -> str | None:
+    """흡수행의 ``company`` 본체를 생존자로 합친다 — 큐·엑셀에 남던 중복 해소.
+
+    원장 ``duplicate_of`` 만 적던 종전 머지는 이미 승격된 두 회사 행을 그대로 둬 검증큐·
+    엑셀에 같은 회사가 2건씩 남았다(2026-09-16 실측 3,133쌍). 9/1 자산운용 1회성 병합
+    규칙을 공식 경로로 이식:
+    - 생존자 쪽 company 가 없으면 **키만 이관**(본체·연락처·큐·감사 이력 전부 보존).
+    - 둘 다 있으면 연락처를 생존자 id 로 복제(contact id 는 (company,type,value) 해시라
+      UPDATE 불가)·이메일 검증결과 복제·큐 후보 합집합·**사람 확정 판단 승계**(흡수행이
+      confirmed 이고 생존자가 미확정이면 그 판단을 가져온다 — 리드손실 방지. 둘 다 확정이면
+      생존자 것 유지)·감사 이력을 생존자 큐 행으로 재지정한 뒤 흡수 company 행을 지운다.
+      이 삭제는 비가역(원장 링크는 가역) — 확정 티어(reg_no/auto)만 여기 도달한다.
+    반환 ``"repointed"`` | ``"merged"`` | ``None``(흡수행에 company 없음).
+    """
+    from sqlalchemy import delete, select, update
+
+    from ..schema import CompanyRow, ContactRow, EmailValidationRow, ReviewAuditRow
+    from ..storage.repository import contact_id_for
+    from ..storage.review import (
+        ReviewQueueRow,
+        candidate_values_of,
+        enqueue_email_review,
+        review_id_for,
+    )
+
+    absorbed = session.scalars(
+        select(CompanyRow).where(CompanyRow.canonical_key == absorbed_key)
+    ).first()
+    if absorbed is None:
+        return None
+    survivor = session.scalars(
+        select(CompanyRow).where(CompanyRow.canonical_key == survivor_key)
+    ).first()
+    if survivor is None:
+        absorbed.canonical_key = survivor_key
+        return "repointed"
+
+    for col in ("homepage", "industry"):  # 생존자 공란만 채움(기존 값 불변).
+        if not getattr(survivor, col) and getattr(absorbed, col):
+            setattr(survivor, col, getattr(absorbed, col))
+
+    have = {
+        (c.type, c.value.lower())
+        for c in session.scalars(select(ContactRow).where(ContactRow.company_id == survivor.id))
+    }
+    srq = session.get(ReviewQueueRow, review_id_for(survivor.id, "email"))
+    arq = session.get(ReviewQueueRow, review_id_for(absorbed.id, "email"))
+    cands = candidate_values_of(srq) if srq is not None else []
+    absorbed_contacts = session.scalars(
+        select(ContactRow).where(ContactRow.company_id == absorbed.id)
+    ).all()
+    for c in absorbed_contacts:
+        if (c.type, c.value.lower()) in have:
+            continue
+        nid = contact_id_for(survivor.id, c.type, c.value)
+        session.add(ContactRow(
+            id=nid, company_id=survivor.id, type=c.type, value=c.value, role=c.role,
+            extract_method=c.extract_method, confidence=c.confidence,
+        ))
+        session.flush()  # FK 순서: 복제 contact 가 검증결과보다 먼저.
+        ev = session.get(EmailValidationRow, c.id)
+        if ev is not None:
+            session.add(EmailValidationRow(
+                contact_id=nid, status=ev.status, mx=ev.mx, domain_match=ev.domain_match,
+                smtp=ev.smtp, provider=ev.provider, checked_at=ev.checked_at,
+            ))
+        have.add((c.type, c.value.lower()))
+        if c.type == "email" and c.value not in cands:
+            cands.append(c.value)
+
+    if arq is not None:
+        cands += [v for v in candidate_values_of(arq) if v not in cands]
+        if srq is None:
+            enqueue_email_review(session, survivor.id, cands)
+            srq = session.get(ReviewQueueRow, review_id_for(survivor.id, "email"))
+        if arq.status == "confirmed" and srq.status != "confirmed":
+            for col in (
+                "status", "assignee", "assignee_id", "reviewed_at", "selected",
+                "selected_by_human", "note", "has_attachment", "manager",
+            ):
+                setattr(srq, col, getattr(arq, col))
+        # 흡수 큐 행의 처리 이력은 CASCADE 로 사라지므로 생존자 큐 행으로 재지정(책임추적 보존).
+        session.execute(
+            update(ReviewAuditRow)
+            .where(ReviewAuditRow.review_id == arq.id)
+            .values(review_id=srq.id),
+            execution_options={"synchronize_session": False},
+        )
+    if srq is not None:
+        srq.candidates = json.dumps(cands, ensure_ascii=False)
+        if srq.selected not in cands:
+            srq.selected = cands[0] if cands else None
+            srq.selected_by_human = False
+
+    # 흡수 본체 삭제 — PG 는 CASCADE 지만 명시 삭제로 백엔드 무관하게 같은 결과(SQLite 테스트).
+    absorbed_ids = [c.id for c in absorbed_contacts]
+    if absorbed_ids:
+        session.execute(delete(EmailValidationRow).where(EmailValidationRow.contact_id.in_(absorbed_ids)))
+        session.execute(delete(ContactRow).where(ContactRow.company_id == absorbed.id))
+    session.execute(delete(ReviewQueueRow).where(ReviewQueueRow.company_id == absorbed.id))
+    session.delete(absorbed)
+    session.flush()
+    log.info("dedup.golden.company_merged", survivor=survivor.id, absorbed=absorbed.id)
+    return "merged"
+
+
 def apply_golden(
     session,
     golden: GoldenRecord,
@@ -265,6 +372,9 @@ def apply_golden(
         row.merged_by = merged_by
         row.merge_reason = reason
         absorbed += 1
+        # 승격된 company 본체까지 합친다(큐·엑셀 중복 해소). 원장 링크 다음에 실행해야
+        # 실패 시 링크만 남고 본체는 다음 재실행(idempotent)에서 다시 시도된다.
+        _merge_company_rows(session, golden.survivor_key, key)
     session.flush()
     session.expire_all()  # 벌크 update 로 갱신된 자식 행의 ORM 캐시 무효화(이후 조회 정합)
     log.info(

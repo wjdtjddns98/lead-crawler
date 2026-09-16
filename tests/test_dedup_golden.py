@@ -213,3 +213,103 @@ def test_survivor_already_absorbed_is_refused(session: Session) -> None:
     )
     assert apply_golden(session, g) == 0
     assert session.get(DiscoveredCompanyRow, "name:kr:acme").duplicate_of is None
+
+
+# ── company 본체 병합(큐·엑셀 중복 해소) ────────────────────────────────────────
+def _promote(session: Session, key: str, cid: str, *, emails: list[str], homepage: str | None = None) -> None:
+    from leadcrawler.schema import CompanyRow, ContactRow, EmailValidationRow
+    from leadcrawler.storage.repository import contact_id_for
+    from leadcrawler.storage.review import enqueue_email_review
+
+    session.add(CompanyRow(id=cid, canonical_key=key, name=key, country="KR", homepage=homepage))
+    session.flush()
+    for e in emails:
+        k = contact_id_for(cid, "email", e)
+        session.add(ContactRow(id=k, company_id=cid, type="email", value=e, role="ir"))
+        session.flush()
+        session.add(EmailValidationRow(contact_id=k, status="valid", mx=True))
+    enqueue_email_review(session, cid, emails)
+    session.flush()
+
+
+def _merge_pair(session: Session, fixed: datetime) -> None:
+    members = load_cluster_members(session, ["reg:dart:1", "dom:acme.com"])
+    goldens = resolve_all(members, [("reg:dart:1", "dom:acme.com")])
+    assert apply_golden(session, goldens[0], merged_by="auto", now=lambda: fixed) == 1
+    session.flush()
+
+
+def test_apply_golden_repoints_company_when_survivor_unpromoted(session: Session) -> None:
+    """생존자 쪽 company 가 없으면 흡수행 company 의 키만 생존자로 이관(본체·큐 보존)."""
+    from leadcrawler.schema import CompanyRow
+    from leadcrawler.storage.review import ReviewQueueRow
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="reg:dart:1", name="에이스 주식회사", country="KR",
+                             registry="dart", registry_id="1"),
+        DiscoveredCompanyRow(canonical_key="dom:acme.com", name="에이스", country="KR", domain="acme.com"),
+    ])
+    session.flush()
+    _promote(session, "dom:acme.com", "c_dom", emails=["ir@acme.com"])
+    _merge_pair(session, datetime(2026, 9, 16, tzinfo=timezone.utc))
+
+    co = session.get(CompanyRow, "c_dom")
+    assert co is not None and co.canonical_key == "reg:dart:1"
+    assert session.query(CompanyRow).count() == 1
+    assert session.query(ReviewQueueRow).filter_by(company_id="c_dom").count() == 1
+
+
+def test_apply_golden_merges_promoted_companies_and_inherits_confirmed(session: Session) -> None:
+    """둘 다 승격됐으면 연락처 합집합·확정 판단 승계·감사 이력 재지정 후 흡수 company 삭제."""
+    from leadcrawler.schema import CompanyRow, ContactRow, EmailValidationRow, ReviewAuditRow
+    from leadcrawler.storage.review import ReviewQueueRow, candidate_values_of, review_id_for
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="reg:dart:1", name="에이스 주식회사", country="KR",
+                             registry="dart", registry_id="1", domain="acme.com"),
+        DiscoveredCompanyRow(canonical_key="dom:acme.com", name="에이스", country="KR", domain="acme.com"),
+    ])
+    session.flush()
+    _promote(session, "reg:dart:1", "c_reg", emails=["ir@acme.com"], homepage=None)
+    _promote(session, "dom:acme.com", "c_dom", emails=["ir@acme.com", "contact@acme.com"],
+             homepage="https://acme.com")
+    # 흡수될 쪽만 사람이 확정 + 감사 이력 1건.
+    arq = session.get(ReviewQueueRow, review_id_for("c_dom", "email"))
+    arq.status, arq.assignee, arq.selected, arq.selected_by_human = "confirmed", "kim", "contact@acme.com", True
+    session.add(ReviewAuditRow(id="a1", review_id=arq.id, actor_username="kim", action="confirmed"))
+    session.flush()
+
+    _merge_pair(session, datetime(2026, 9, 16, tzinfo=timezone.utc))
+
+    assert session.get(CompanyRow, "c_dom") is None
+    surv = session.get(CompanyRow, "c_reg")
+    assert surv.homepage == "https://acme.com"  # 공란만 채움
+    values = sorted(c.value for c in session.query(ContactRow).filter_by(company_id="c_reg"))
+    assert values == ["contact@acme.com", "ir@acme.com"]  # 중복 없이 합집합
+    assert session.query(ContactRow).filter_by(company_id="c_dom").count() == 0
+    assert session.query(EmailValidationRow).count() == 2  # 복제 1 + 흡수분 삭제
+    srq = session.get(ReviewQueueRow, review_id_for("c_reg", "email"))
+    assert srq.status == "confirmed" and srq.assignee == "kim" and srq.selected == "contact@acme.com"
+    assert sorted(candidate_values_of(srq)) == ["contact@acme.com", "ir@acme.com"]
+    assert session.query(ReviewQueueRow).count() == 1
+    assert session.get(ReviewAuditRow, "a1").review_id == srq.id  # 이력 보존
+
+
+def test_apply_golden_keeps_survivor_confirmation_when_both_confirmed(session: Session) -> None:
+    from leadcrawler.storage.review import ReviewQueueRow, review_id_for
+
+    session.add_all([
+        DiscoveredCompanyRow(canonical_key="reg:dart:1", name="에이스", country="KR",
+                             registry="dart", registry_id="1", domain="acme.com"),
+        DiscoveredCompanyRow(canonical_key="dom:acme.com", name="에이스", country="KR", domain="acme.com"),
+    ])
+    session.flush()
+    _promote(session, "reg:dart:1", "c_reg", emails=["ir@acme.com"])
+    _promote(session, "dom:acme.com", "c_dom", emails=["ir@acme.com"])
+    for cid, who in (("c_reg", "lee"), ("c_dom", "kim")):
+        rq = session.get(ReviewQueueRow, review_id_for(cid, "email"))
+        rq.status, rq.assignee = "confirmed", who
+    session.flush()
+    _merge_pair(session, datetime(2026, 9, 16, tzinfo=timezone.utc))
+    srq = session.get(ReviewQueueRow, review_id_for("c_reg", "email"))
+    assert srq.status == "confirmed" and srq.assignee == "lee"

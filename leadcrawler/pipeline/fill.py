@@ -25,6 +25,7 @@ from sqlalchemy.orm import sessionmaker
 from ..config import Settings
 from ..cost_ledger import CostLedger
 from ..dedup import normalize_domain
+from ..dedup_resolve.inline import find_inline_duplicate
 from ..enrich.enricher import Enricher
 from ..enrich.industry_classify import build_classifier
 from ..enrich.name_eng import build_name_eng
@@ -38,7 +39,14 @@ from ..storage.repository import backfill_domain, load_seen_domains
 from ..verify.email_validator import EmailValidator
 from ..verify.existence import ExistenceVerifier
 from ..verify.registry_active import build_registry_checker
-from .run import _build_lead, _close_in_workers, _persist_lead, drain_completed, stuck_idle_for
+from .run import (
+    _build_lead,
+    _close_in_workers,
+    _persist_inline_dup,
+    _persist_lead,
+    drain_completed,
+    stuck_idle_for,
+)
 
 log = get_logger("pipeline.fill")
 
@@ -645,9 +653,14 @@ def resolve_batch(
                 ws.commit()  # 도메인 기록은 항상 남긴다(승격 실패해도 재시도 방지).
                 if rdom is not None and rdom in seen_domains:
                     # 이미 원장에 있는(또는 이번 배치에서 먼저 처리된) 회사와 동일 도메인
-                    # → 별개 company 로 승격하지 않는다(제약① 중복방지, 흡수는 오프라인
-                    # dedup-report/워크벤치가 후속 처리).
+                    # → 별개 company 로 승격하지 않는다(제약① 중복방지). 이름까지 强일치
+                    # (auto 티어)면 생존자에 duplicate_of 링크까지 적는다 — 종전엔 오프라인
+                    # dedup-report 에 미뤄 name:→dom:/reg: 교차키 중복이 원장에 쌓였다
+                    # (2026-09-16 실측 1,866 그룹). 이름 상이(계열사 등)는 그대로 워크벤치 위임.
                     log.info("resolve.backfill.dedup_skip", key=dc.canonical_key, domain=rdom)
+                    survivor = find_inline_duplicate(ws, dc)
+                    if survivor is not None:
+                        _persist_inline_dup(ws, dc, survivor)
                     continue
                 if rdom is not None:
                     seen_domains.add(rdom)
