@@ -15,7 +15,7 @@ from ..cost_ledger import SupportsCostLedger
 from ..logging import get_logger
 from ..models import Contact, ContactType, EmailRole, ExtractMethod
 from ..sources.base import DiscoveredCompany
-from ..sources.http import Fetcher, SupportsFetch
+from ..sources.http import Fetcher, SupportsFetch, is_dns_error
 from .extract import (
     candidate_images,
     candidate_links,
@@ -61,6 +61,7 @@ class Enricher:
         self._home_html_cache: str | None = None  # 현재 기업의 home HTML(에스컬레이션 단계 간 재사용).
         self._home_url_cache: str | None = None  # fetch 에 성공한 home URL(www 폴백 반영).
         self._home_fetch_failed = False  # 실패도 캐시 — 단계마다 죽은 홈을 재시도(타임아웃 중복)하지 않게.
+        self._home_dns_dead = False  # home fetch 가 이름 해석 실패 — 헤드리스/OCR 도 무의미.
         self._home_rendered_cache: str | None = None  # 현재 기업의 headless 렌더 home HTML(실존검증 재사용).
 
     def enrich(self, dc: DiscoveredCompany) -> list[Contact]:
@@ -70,6 +71,7 @@ class Enricher:
         self._home_html_cache = None
         self._home_url_cache = None
         self._home_fetch_failed = False
+        self._home_dns_dead = False
         self._home_rendered_cache = None
         self._contact_page = None
         if self._settings.dry_run:
@@ -77,6 +79,14 @@ class Enricher:
         if not dc.domain:
             return []
         contacts = self._live(dc)
+        # 이름이 해석 안 되는 도메인은 브라우저도 똑같이 못 연다 — 렌더/OCR 을 통째로 건너뛴다.
+        # 실측(2026-09-17 S 로그): 죽은 도메인 336개에 헤드리스 렌더 2,374회(도메인당 평균 7회,
+        # 최대 24회) — 승격 실패 행이 원장에 남아 반복 잡 회차마다 다시 대상이 되기 때문이다.
+        # DNS 재조회로 거르는 안은 폐기했다(실측 죽은 도메인 1.6~5.5초 + MX만 있는 도메인은
+        # 통과해 버림). httpx 가 이미 지불한 실패 사유를 재사용하는 게 추가 비용 0 이다.
+        if self._home_dns_dead:
+            log.info("enrich.skip.dns_dead", domain=dc.domain)
+            return contacts
         # escalation 체인 — 이메일을 못 찾았고 해당 단계가 켜져 있을 때만 순차 시도.
         if self._settings.enrich_headless and not _has_email(contacts):
             contacts = self._escalate(dc, contacts)
@@ -172,17 +182,32 @@ class Enricher:
             raise RuntimeError("home fetch already failed for this company")
         if self._home_html_cache is None:
             home = f"https://{domain}"
+            # 폴백은 **except 블록 밖**에서 호출한다. 안에서 부르면 두 번째 예외에 파이썬이
+            # ``__context__ = 첫 예외`` 를 자동으로 걸어, 사슬을 훑는 :func:`is_dns_error` 가
+            # www 의 403 을 보고도 naked 의 gaierror 까지 타고 내려가 "DNS 죽음"으로 오판한다
+            # (리뷰 MED-1 실측). 그러면 www 만 살아있는 WAF 사이트의 헤드리스 구제(v1.32.1)가
+            # 통째로 죽는다 — 리드 부분손실이 아니라 회사 자체가 안 실린다.
+            first_exc: Exception | None = None
             try:
+                html = fetcher.get_text(home)
+            except Exception as exc:
+                first_exc = exc
+            if first_exc is not None:
+                first_dns = is_dns_error(first_exc)
+                if domain.startswith("www."):
+                    self._home_fetch_failed = True
+                    self._home_dns_dead = first_dns
+                    raise first_exc
+                home = f"https://www.{domain}"
                 try:
-                    html = fetcher.get_text(home)
-                except Exception:
-                    if domain.startswith("www."):
-                        raise
-                    home = f"https://www.{domain}"
                     html = fetcher.get_text(home)  # 폴백도 실패하면 예외 전파(기존 동작).
-            except Exception:
-                self._home_fetch_failed = True  # 실패 캐시 — 이후 단계는 즉시 스킵.
-                raise
+                except Exception as second:
+                    self._home_fetch_failed = True  # 실패 캐시 — 이후 단계는 즉시 스킵.
+                    # **시도한 호스트가 전부** 이름 해석에 실패했을 때만 "DNS 죽음"이다.
+                    # 첫 예외의 except 블록은 이미 끝나 예외 상태가 정리됐으므로 second 에는
+                    # first_exc 가 __context__ 로 붙지 않는다(위 주석의 오판 경로 차단).
+                    self._home_dns_dead = first_dns and is_dns_error(second)
+                    raise
             self._home_html_cache = html
             self._home_url_cache = home
         assert self._home_url_cache is not None  # 캐시와 함께만 채워진다.
