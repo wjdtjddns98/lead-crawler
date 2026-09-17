@@ -25,6 +25,7 @@ from ..config import Settings
 from ..logging import get_logger
 from .base import (
     DiscoveredCompany,
+    is_fund_entity,
     Segment,
     SupportsCursorStore,
     build_company,
@@ -33,7 +34,6 @@ from .base import (
     opt_str,
 )
 from .countries import resolve_country
-from .domain_resolver import is_fund_entity
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import is_specific_industry
 

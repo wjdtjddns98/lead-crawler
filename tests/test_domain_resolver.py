@@ -728,7 +728,7 @@ def test_naver_api_error_returns_miss() -> None:
 
 
 def test_fund_entities_skip_search() -> None:
-    from leadcrawler.sources.domain_resolver import is_fund_entity
+    from leadcrawler.sources.base import is_fund_entity
 
     funds = (
         "한화 해외채권 EMP 일반사모 증권 투자신탁 1호(채권-재간접파생형)",
@@ -753,7 +753,7 @@ def test_fund_entities_skip_search() -> None:
 
 
 def test_real_companies_not_flagged_as_fund() -> None:
-    from leadcrawler.sources.domain_resolver import is_fund_entity
+    from leadcrawler.sources.base import is_fund_entity
 
     real = (
         "SK hynix Inc.", "Northern Trust Corporation", "TDF SAS",  # 佛 통신인프라 실기업.
@@ -765,7 +765,7 @@ def test_real_companies_not_flagged_as_fund() -> None:
 
 def test_trust_account_rows_flagged_as_fund() -> None:
     """수탁은행/계좌번호 행(GLEIF JP) — 계좌라 사이트가 없고 과공유 가드에 전량 걸린다."""
-    from leadcrawler.sources.domain_resolver import is_fund_entity
+    from leadcrawler.sources.base import is_fund_entity
 
     accounts = (
         "The Master Trust Bank of Japan, Ltd./T280493000",
@@ -774,14 +774,21 @@ def test_trust_account_rows_flagged_as_fund() -> None:
         "The Nomura Trust and Banking Co., Ltd. /057280132",
         "State Street Trust & Banking Co., LTD. PYS4/2861015",
         "JSF Trust and Banking Co.,Ltd/2002926",
+        "SMBC TRUST BANK LTD./ 09300501",  # 슬래시 뒤 공백형(라이브 2건).
     )
     for name in accounts:
         assert is_fund_entity(name), name
     # 슬래시로 끝나도 숫자 4자리 미만이면 실기업(NPS 현장명·사업부 표기) — 오탐 금지.
+    # 수탁 신호 없이 '모양'만 같은 실기업은 통과시킨다 — GLEIF 게이트가 행을 통째로
+    # 버리므로 오탐 1건 = 실기업 유실(적대 리뷰 HIGH, 2026-09-17).
     keep = (
         "이케이네이션(주)-(일용)나이지리아 INORAMA FERTILIZER III PJ(현장)/HVAC",
         "Acme Corp/R&D",
         "Bank of Japan/2",
+        "Foo Ltd./2020",
+        "Bar Co./AB1234",
+        "Deutsche Bahn AG/1994",
+        "SOMECO K.K./RD2024",
     )
     for name in keep:
         assert not is_fund_entity(name), name
