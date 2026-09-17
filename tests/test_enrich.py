@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import socket
+
+import httpx
+
 from leadcrawler.config import Settings
 from leadcrawler.enrich.enricher import Enricher
 from leadcrawler.enrich.extract import (
@@ -903,3 +907,69 @@ def test_deobfuscate_is_linear_on_huge_whitespace_runs() -> None:
     assert out.startswith("info@acme.com")
     # 접힌 공백은 이메일 매칭에 영향 없음 — 표준 표기 복원은 그대로.
     assert _deobfuscate("sales [ at ] foo { dot } jp") == "sales@foo.jp"
+
+
+# --- DNS 죽은 도메인은 헤드리스/OCR 을 건너뛴다(2026-09-17) -------------
+
+class RaisingFetcher:
+    """URL → 발생시킬 예외(또는 HTML). 홈 fetch 실패 유형별 분기 테스트용."""
+
+    def __init__(self, behavior: dict[str, object]) -> None:
+        self._behavior = behavior
+        self.calls: list[str] = []
+
+    def get_text(self, url: str, *, params=None, headers=None) -> str:
+        self.calls.append(url)
+        got = self._behavior.get(url)
+        if got is None:
+            raise KeyError(url)
+        if isinstance(got, BaseException):
+            raise got
+        return str(got)
+
+    def get_json(self, url, *, params=None, headers=None):
+        raise NotImplementedError
+
+    def get_bytes(self, url, *, params=None, headers=None) -> bytes:
+        raise KeyError(url)
+
+
+def _dns_error() -> httpx.ConnectError:
+    """실제 사슬 재현 — httpx.ConnectError(원인=socket.gaierror)."""
+    exc = httpx.ConnectError("[Errno 11001] getaddrinfo failed")
+    exc.__cause__ = socket.gaierror(11001, "getaddrinfo failed")
+    return exc
+
+
+def _status_error(code: int) -> httpx.HTTPStatusError:
+    """WAF 차단 재현 — 이름 해석은 됐고 HTTP 상태만 실패."""
+    req = httpx.Request("GET", "https://acme.co.kr")
+    return httpx.HTTPStatusError("blocked", request=req, response=httpx.Response(code, request=req))
+
+
+def test_dns_dead_domain_skips_headless() -> None:
+    # naked·www 둘 다 이름 해석 실패 → 브라우저도 못 여니 렌더러를 아예 부르지 않는다.
+    fetcher = RaisingFetcher({
+        "https://acme.co.kr": _dns_error(),
+        "https://www.acme.co.kr": _dns_error(),
+    })
+    renderer = FakeRenderer({"https://acme.co.kr": '<a href="mailto:ir@acme.co.kr">IR</a>'})
+    settings = Settings(dry_run=False, enrich_headless=True)
+    out = Enricher(settings, fetcher=fetcher, renderer=renderer).enrich(_DC)
+
+    assert out == []
+    assert renderer.calls == []  # 죽은 도메인에 브라우저 기동 없음(이 PR 의 절감분).
+
+
+def test_waf_blocked_domain_still_escalates_to_headless() -> None:
+    # naked 가 403(해석은 성공)·www 는 없음 → DNS 죽음이 아니므로 헤드리스 구제(v1.32.1) 유지.
+    fetcher = RaisingFetcher({
+        "https://acme.co.kr": _status_error(403),
+        "https://www.acme.co.kr": _dns_error(),
+    })
+    renderer = FakeRenderer({"https://acme.co.kr": '<a href="mailto:ir@acme.co.kr">IR</a>'})
+    settings = Settings(dry_run=False, enrich_headless=True)
+    out = Enricher(settings, fetcher=fetcher, renderer=renderer).enrich(_DC)
+
+    assert renderer.calls  # 렌더러가 호출돼야 한다(구제 경로 보존).
+    assert {c.value for c in out if c.type is ContactType.EMAIL} == {"ir@acme.co.kr"}
