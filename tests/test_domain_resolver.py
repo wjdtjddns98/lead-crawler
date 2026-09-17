@@ -761,3 +761,27 @@ def test_real_companies_not_flagged_as_fund() -> None:
     )
     for name in real:
         assert not is_fund_entity(name), name
+
+
+def test_trust_account_rows_flagged_as_fund() -> None:
+    """수탁은행/계좌번호 행(GLEIF JP) — 계좌라 사이트가 없고 과공유 가드에 전량 걸린다."""
+    from leadcrawler.sources.domain_resolver import is_fund_entity
+
+    accounts = (
+        "The Master Trust Bank of Japan, Ltd./T280493000",
+        "The Master Trust Bank of Japan, Ltd./T5Y0463408",
+        "Custody Bank of Japan, Ltd./012077387/207387",
+        "The Nomura Trust and Banking Co., Ltd. /057280132",
+        "State Street Trust & Banking Co., LTD. PYS4/2861015",
+        "JSF Trust and Banking Co.,Ltd/2002926",
+    )
+    for name in accounts:
+        assert is_fund_entity(name), name
+    # 슬래시로 끝나도 숫자 4자리 미만이면 실기업(NPS 현장명·사업부 표기) — 오탐 금지.
+    keep = (
+        "이케이네이션(주)-(일용)나이지리아 INORAMA FERTILIZER III PJ(현장)/HVAC",
+        "Acme Corp/R&D",
+        "Bank of Japan/2",
+    )
+    for name in keep:
+        assert not is_fund_entity(name), name

@@ -59,10 +59,19 @@ _FUND_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 신탁·커스터디 '계좌' 행: 일본 신탁은행은 계좌마다 LEI 를 받아 GLEIF 에
+# ``수탁은행명/계좌번호`` 로 올린다(2026-09-17 라이브 JP 잔여 2,851건 = mastertrust.co.jp
+# 2,287·custody.jp 1,989·nomura-trust.co.jp 475). 실체가 계좌라 홈페이지가 없고, 해석기는
+# 수탁은행 도메인을 물어와 과공유 가드에 전량 걸린다 → 도메인이 영원히 안 채워져 C 트랙
+# 백필이 세대마다 같은 행을 재시도한다(24h 처리 17,400 · 해석 2건).
+# 접미에 **숫자 4자리 이상**이 있을 때만 매칭한다 — NPS 현장명('…PJ(현장)/HVAC')처럼
+# 슬래시로 끝나는 실기업 행을 오탐하지 않기 위한 하한.
+_TRUST_ACCOUNT_RE = re.compile(r"/(?=(?:[A-Za-z]*\d){4})[A-Za-z0-9]+\s*$")
+
 
 def is_fund_entity(name: str | None) -> bool:
-    """이름이 펀드/신탁/유동화 SPC 등 비영업 엔티티로 보이면 True(도메인 해석 무의미)."""
-    return bool(name and _FUND_NAME_RE.search(name))
+    """이름이 펀드/신탁계좌/유동화 SPC 등 비영업 엔티티로 보이면 True(도메인 해석 무의미)."""
+    return bool(name and (_FUND_NAME_RE.search(name) or _TRUST_ACCOUNT_RE.search(name)))
 
 
 # 회사명에서 떼어낼 법인격·일반어(도메인 매칭 신호로 무의미). 소문자 토큰 기준.

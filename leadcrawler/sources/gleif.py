@@ -33,6 +33,7 @@ from .base import (
     opt_str,
 )
 from .countries import resolve_country
+from .domain_resolver import is_fund_entity
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import is_specific_industry
 
@@ -179,6 +180,12 @@ class GleifSource:
         name = legal_name.get("name") if isinstance(legal_name, dict) else None
         lei = rec.get("id") or attrs.get("lei")
         if not name or not lei:
+            return None
+        # 제약②(실존 기업만): 펀드·신탁계좌는 LEI 는 있어도 '회사'가 아니다 — 원장 진입
+        # 자체를 막는다. LEI 의무 등록 탓에 GLEIF 딥백필이 계좌 행을 수천 건씩 실어 나르고
+        # (JP 2,851건), 도메인이 원리상 안 채워져 백필이 영구 순환한다(is_fund_entity 주석).
+        if is_fund_entity(str(name)):
+            log.info("gleif.skip.fund", name=str(name))
             return None
         # 표시명 영문 우선(KR 제외): 원어 legalName(ja 등)에 등록자가 낸 영문 법인명
         # (otherNames language=en)이 있으면 그걸 name 으로, 원어는 name_eng 보관(#412 규약).
