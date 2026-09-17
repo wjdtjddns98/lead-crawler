@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import socket
 import ssl
 import threading
 import time
@@ -36,6 +37,25 @@ def _is_ssl_error(exc: BaseException) -> bool:
     while e is not None and id(e) not in seen:
         seen.add(id(e))
         if isinstance(e, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(e):
+            return True
+        e = e.__cause__ or e.__context__
+    return False
+
+
+def is_dns_error(exc: BaseException) -> bool:
+    """예외 사슬에 이름 해석 실패(``socket.gaierror``)가 있는지 판정한다.
+
+    httpx 는 DNS 실패를 ``ConnectError`` 로 감싸고 원인에 ``socket.gaierror`` 를 둔다
+    (Windows ``[Errno 11001] getaddrinfo failed`` · Linux ``[Errno -2] Name or service
+    not known``) — 문자열이 플랫폼마다 달라 **예외 타입**으로 판별한다. 호출자는 이걸로
+    "브라우저로 재시도해도 소용없는 실패"만 좁힌다: WAF 차단은 ``HTTPStatusError``(403)
+    라 여기 걸리지 않으므로 헤드리스 구제 경로(v1.32.1)는 그대로 살아 있다.
+    """
+    seen: set[int] = set()
+    e: BaseException | None = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, socket.gaierror):
             return True
         e = e.__cause__ or e.__context__
     return False
