@@ -182,23 +182,32 @@ class Enricher:
             raise RuntimeError("home fetch already failed for this company")
         if self._home_html_cache is None:
             home = f"https://{domain}"
-            first_was_dns = True  # 시도가 1회뿐인 경로(www. 도메인)에선 아래 exc 판정만 쓴다.
+            # 폴백은 **except 블록 밖**에서 호출한다. 안에서 부르면 두 번째 예외에 파이썬이
+            # ``__context__ = 첫 예외`` 를 자동으로 걸어, 사슬을 훑는 :func:`is_dns_error` 가
+            # www 의 403 을 보고도 naked 의 gaierror 까지 타고 내려가 "DNS 죽음"으로 오판한다
+            # (리뷰 MED-1 실측). 그러면 www 만 살아있는 WAF 사이트의 헤드리스 구제(v1.32.1)가
+            # 통째로 죽는다 — 리드 부분손실이 아니라 회사 자체가 안 실린다.
+            first_exc: Exception | None = None
             try:
-                try:
-                    html = fetcher.get_text(home)
-                except Exception as first:
-                    first_was_dns = is_dns_error(first)
-                    if domain.startswith("www."):
-                        raise
-                    home = f"https://www.{domain}"
-                    html = fetcher.get_text(home)  # 폴백도 실패하면 예외 전파(기존 동작).
+                html = fetcher.get_text(home)
             except Exception as exc:
-                self._home_fetch_failed = True  # 실패 캐시 — 이후 단계는 즉시 스킵.
-                # **시도한 호스트가 전부** 이름 해석에 실패했을 때만 "DNS 죽음"이다.
-                # naked 가 403(=해석은 됨)이고 www 만 NXDOMAIN 인 사이트를 죽음으로 보면
-                # WAF 헤드리스 구제(v1.32.1)가 그대로 죽는다 — 그래서 둘 다 본다.
-                self._home_dns_dead = first_was_dns and is_dns_error(exc)
-                raise
+                first_exc = exc
+            if first_exc is not None:
+                first_dns = is_dns_error(first_exc)
+                if domain.startswith("www."):
+                    self._home_fetch_failed = True
+                    self._home_dns_dead = first_dns
+                    raise first_exc
+                home = f"https://www.{domain}"
+                try:
+                    html = fetcher.get_text(home)  # 폴백도 실패하면 예외 전파(기존 동작).
+                except Exception as second:
+                    self._home_fetch_failed = True  # 실패 캐시 — 이후 단계는 즉시 스킵.
+                    # **시도한 호스트가 전부** 이름 해석에 실패했을 때만 "DNS 죽음"이다.
+                    # 첫 예외의 except 블록은 이미 끝나 예외 상태가 정리됐으므로 second 에는
+                    # first_exc 가 __context__ 로 붙지 않는다(위 주석의 오판 경로 차단).
+                    self._home_dns_dead = first_dns and is_dns_error(second)
+                    raise
             self._home_html_cache = html
             self._home_url_cache = home
         assert self._home_url_cache is not None  # 캐시와 함께만 채워진다.

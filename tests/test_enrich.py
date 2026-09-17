@@ -918,7 +918,10 @@ class RaisingFetcher:
         self._behavior = behavior
         self.calls: list[str] = []
 
-    def get_text(self, url: str, *, params=None, headers=None) -> str:
+    def get_text(
+        self, url: str, *, params=None, headers=None,
+        allow_redirects: bool = True, max_bytes: int | None = None,
+    ) -> str:
         self.calls.append(url)
         got = self._behavior.get(url)
         if got is None:
@@ -973,3 +976,50 @@ def test_waf_blocked_domain_still_escalates_to_headless() -> None:
 
     assert renderer.calls  # 렌더러가 호출돼야 한다(구제 경로 보존).
     assert {c.value for c in out if c.type is ContactType.EMAIL} == {"ir@acme.co.kr"}
+
+
+def test_naked_dns_dead_but_www_waf_blocked_is_not_dns_dead() -> None:
+    """naked 가 NXDOMAIN·www 가 403 이면 DNS 죽음이 아니다(www 는 해석됨).
+
+    폴백을 첫 예외의 except 블록 안에서 부르면 파이썬이 __context__ 로 두 예외를 엮어
+    naked 의 gaierror 가 www 판정까지 오염시킨다 — 그러면 www 만 살아있는 WAF 사이트가
+    통째로 유실된다. 이 테스트가 그 방향을 고정한다(리뷰 MED-1).
+    """
+    fetcher = RaisingFetcher({
+        "https://acme.co.kr": _dns_error(),
+        "https://www.acme.co.kr": _status_error(403),
+    })
+    renderer = FakeRenderer({"https://acme.co.kr": '<a href="mailto:ir@acme.co.kr">IR</a>'})
+    enr = Enricher(
+        Settings(dry_run=False, enrich_headless=True), fetcher=fetcher, renderer=renderer
+    )
+    enr.enrich(_DC)
+
+    assert enr._home_dns_dead is False  # www 는 이름이 해석된다.
+    assert renderer.calls  # 헤드리스 구제 경로 보존.
+
+
+class CountingFinder:
+    """SupportsEmailFinder 더블 — 유료 호출 횟수만 센다."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def find(self, domain: str):  # noqa: ANN201 (더블)
+        self.calls += 1
+        return []
+
+
+def test_dns_dead_domain_skips_paid_email_api() -> None:
+    # 이 PR 의 숨은 절감분 — 죽은 도메인에 Hunter/Apollo 유료 질의를 날리지 않는다.
+    # (OCR·Vision 은 _home_fetch_failed 가드로 이미 무비용이었지만 이메일 API 는 도메인만으로 쏜다.)
+    fetcher = RaisingFetcher({
+        "https://acme.co.kr": _dns_error(),
+        "https://www.acme.co.kr": _dns_error(),
+    })
+    finder = CountingFinder()
+    settings = Settings(dry_run=False, enrich_headless=False, enrich_email_api=True)
+    out = Enricher(settings, fetcher=fetcher, email_finders=[finder]).enrich(_DC)
+
+    assert out == []
+    assert finder.calls == 0
