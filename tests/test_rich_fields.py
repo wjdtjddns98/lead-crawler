@@ -146,6 +146,24 @@ def test_gleif_candidate_parses_address_and_reg_no() -> None:
     assert dc.reg_no == "110111-1234567"
 
 
+def test_gleif_candidate_skips_trust_account() -> None:
+    """수탁은행 계좌 행(JP)은 원장 진입 자체를 막는다 — 도메인이 원리상 안 채워져 백필이 순환."""
+    src = GleifSource(Settings(dry_run=True))
+    seg = Segment(country="JP", industry="전체")
+
+    def rec(name: str) -> dict:
+        return {
+            "id": "LEI999",
+            "attributes": {
+                "lei": "LEI999",
+                "entity": {"status": "ACTIVE", "legalName": {"name": name}},
+            },
+        }
+
+    assert src._candidate(seg, rec("The Master Trust Bank of Japan, Ltd./T280493000")) is None
+    assert src._candidate(seg, rec("IPC Network Services Japan K.K.")) is not None
+
+
 def test_companies_house_candidate_parses_address() -> None:
     src = CompaniesHouseSource(Settings(dry_run=True))
     seg = Segment(country="GB", industry="전체")
