@@ -332,7 +332,8 @@ def test_build_sources_registers_all_adapters() -> None:
     assert names == {
         "edgar", "dart", "fsc", "edinet", "fsa_jp", "jp_assoc", "gbiz_jp", "companies_house", "pse", "set", "sgx", "idx",
         "bursa",
-        "hose", "hnx", "gleif", "wikidata", "opencorporates", "search", "ai_directory",
+        "hose", "hnx", "xetra", "euronext", "bme", "six", "gleif", "wikidata", "opencorporates",
+        "search", "ai_directory",
         "naver_local", "nps",
     }
 
