@@ -41,6 +41,21 @@ def test_in_memory_record_totals_and_remaining() -> None:
     assert not led.is_over_budget()
 
 
+def test_subscription_token_prices_claude_zero() -> None:
+    """구독 OAuth 토큰만 있으면 Claude provider 는 0원(실청구 없음) — 타 provider 는 그대로."""
+    led = CostLedger(Settings(anthropic_auth_token="tok"), now=_at(2026, 9))
+    led.record("industry_llm", 1000)
+    led.record("serper")
+    assert led.unit_cost("name_llm") == 0
+    assert led.month_total_krw() == DEFAULT_PRICING_KRW["serper"]
+    # 종량 api_key 가 있으면 기존 단가(실청구) 유지 — 토큰과 병존해도 키 과금 가능성 우선.
+    both = CostLedger(Settings(anthropic_auth_token="tok", anthropic_api_key="sk"))
+    assert both.unit_cost("industry_llm") == DEFAULT_PRICING_KRW["industry_llm"]
+    # env 보정은 구독 0원보다 우선(운영자 명시).
+    over = CostLedger(Settings(anthropic_auth_token="tok", cost_pricing_krw={"industry_llm": 7}))
+    assert over.unit_cost("industry_llm") == 7
+
+
 def test_pricing_override() -> None:
     led = CostLedger(Settings(monthly_budget_krw=1000), pricing={"vision": 100}, now=_at(2026, 6))
     led.record("vision")

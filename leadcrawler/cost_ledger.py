@@ -49,6 +49,13 @@ DEFAULT_PRICING_KRW: dict[str, int] = {
     "serper": 2,  # Serper.dev 검색 1쿼리(~$1/1K, 보수적)
 }
 
+# 구독 OAuth 토큰(``anthropic_auth_token``)으로 부르는 Claude 계열 provider — 건당 청구가 없어
+# 토큰만 있고 종량 ``anthropic_api_key`` 가 없으면 0원으로 집계한다(2026-09-21 가짜 누계 50만원이
+# 세그먼트 큐를 정지시킨 사고 — PO "클로드 토큰은 금액집계 하지 마"). 키를 쓰면 기존 단가.
+CLAUDE_PROVIDERS: frozenset[str] = frozenset(
+    {"vision", "dedup_llm", "industry_llm", "name_llm", "ai_directory"}
+)
+
 
 def month_key_of(dt: datetime) -> str:
     """집계 키 YYYY-MM 을 반환한다."""
@@ -84,9 +91,11 @@ class CostLedger:
     ) -> None:
         self.settings = settings or get_settings()
         self._persist = persist
-        # 단가 우선순위: 기본 추정치 < config 보정(env) < 명시 인자(테스트). env 로 실청구 보정.
+        # 단가 우선순위: 기본 추정치 < 구독 토큰 0원 < config 보정(env) < 명시 인자(테스트).
+        subscription = bool(self.settings.anthropic_auth_token) and not self.settings.anthropic_api_key
         self._pricing = {
             **DEFAULT_PRICING_KRW,
+            **({p: 0 for p in CLAUDE_PROVIDERS} if subscription else {}),
             **self.settings.cost_pricing_krw,
             **(pricing or {}),
         }
@@ -112,7 +121,7 @@ class CostLedger:
         units = max(0, int(units))
         now = self._now()
         unit = self.unit_cost(provider)
-        if unit == 0:  # 단가 미등록 — 실제 과금은 났는데 0원 집계되면 예산 가드가 샌다.
+        if provider not in self._pricing:  # 미등록 — 실과금이 0원 집계되면 예산 가드가 샌다.
             log.warning("cost.unpriced_provider", provider=provider)
         ev = CostEvent(
             provider=provider,
