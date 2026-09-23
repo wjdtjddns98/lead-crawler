@@ -229,6 +229,26 @@ def test_euronext_live_paginates_and_dedups_by_isin() -> None:
     assert all(d.registry == "euronext" and d.market == "Euronext Paris" for d in out)
 
 
+def test_euronext_live_stops_on_repeated_page() -> None:
+    # 같은 페이지(신규 ISIN 0건)를 계속 돌려줘도 무한루프하지 않고 2회 이하로 끝난다.
+    settings = Settings(dry_run=False, discovery_max_per_source=100)
+    calls = {"n": 0}
+    same_page = {
+        "iTotalRecords": 10_000,  # 총량은 커도 서버가 같은 페이지를 반복(서버측 이상 시뮬레이션).
+        "aaData": [["", "<a>Alpha</a>", "FR0001", "ALP", "<div title='X'>XPAR</div>"]],
+    }
+
+    def _json(url: str, params: dict) -> Any:
+        calls["n"] += 1
+        return same_page
+
+    out = EuronextSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="프랑스", industry="금융")
+    )
+    assert [d.registry_id for d in out] == ["FR0001"]
+    assert calls["n"] <= 2
+
+
 def test_euronext_unmapped_country_returns_empty_without_call() -> None:
     # applies_to 를 우회해 직접 discover 해도(방어적) MIC 매핑 없는 국가는 네트워크 호출 없이 빈 결과.
     settings = Settings(dry_run=False)
@@ -291,6 +311,27 @@ def test_bme_live_stops_when_has_more_results_false() -> None:
 
 
 # --- SIX -----------------------------------------------------------------
+
+def test_bme_fetch_pass_stops_on_repeated_page() -> None:
+    # hasMoreResults=True 를 계속 줘도 같은 companyKey 만 반복되면 한 패스 안에서 2회 이하로 끝난다.
+    settings = Settings(dry_run=False, discovery_max_per_source=100)
+    calls = {"n": 0}
+    same_page = {"hasMoreResults": True, "data": [{"companyKey": "SAN", "name": "Santander"}]}
+
+    def _json(url: str, params: dict) -> Any:
+        calls["n"] += 1
+        return same_page
+
+    src = BmeSource(settings, fetcher=FakeFetcher(json=_json))
+    out: list = []
+    seen: set = set()
+    src._fetch_pass(
+        src._client(), {"tradingSystem": "SIBE"}, "SIBE", 100,
+        src._seg(Segment(country="ES", industry="금융")), out, seen,
+    )
+    assert [d.registry_id for d in out] == ["SAN"]
+    assert calls["n"] <= 2
+
 
 def test_six_row_active_filters_country_primary_and_delisting() -> None:
     today = 20260923

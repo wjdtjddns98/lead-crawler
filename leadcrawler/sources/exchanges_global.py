@@ -122,7 +122,10 @@ class DeutscheBoerseSource(ExchangeSource):
         except Exception as exc:  # noqa: BLE001 — 랜딩 실패해도 폴백 URL 로 계속.
             log.info("xetra.landing.error", err_type=type(exc).__name__, err=str(exc))
             landing = ""
-        blob_url = _de_blob_url(landing) or _DE_FALLBACK_XLSX
+        blob_url = _de_blob_url(landing)
+        if blob_url is None:
+            log.info("xetra.blob.fallback", url=_DE_FALLBACK_XLSX)
+            blob_url = _DE_FALLBACK_XLSX
         try:
             data = fetcher.get_bytes(blob_url)
             wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
@@ -250,6 +253,7 @@ class EuronextSource(ExchangeSource):
             rows = payload.get("aaData")
             if not isinstance(rows, list) or not rows:
                 break
+            before = len(seen)
             for raw in rows:
                 parsed = _parse_euronext_row(raw)
                 if not parsed or parsed["isin"] in seen:
@@ -263,6 +267,8 @@ class EuronextSource(ExchangeSource):
                 ))
                 if len(out) >= cap:
                     break
+            if len(seen) == before:  # 이번 페이지에서 신규 ISIN 0건 → 동일 페이지 반복(무한루프 방지).
+                break
             start += len(rows)
             page += 1
         log.info("euronext.live", segment=segment.label, n=len(out))
@@ -305,6 +311,7 @@ class BmeSource(ExchangeSource):
             rows = payload.get("data")
             if not isinstance(rows, list) or not rows:
                 return
+            before = len(seen)
             for row in rows:
                 if not isinstance(row, dict):
                     continue
@@ -326,6 +333,8 @@ class BmeSource(ExchangeSource):
                 ))
                 if len(out) >= cap:
                     return
+            if len(seen) == before:  # 이번 페이지에서 신규 companyKey 0건 → 동일 페이지 반복.
+                return
             if not payload.get("hasMoreResults"):
                 return
             page += 1
