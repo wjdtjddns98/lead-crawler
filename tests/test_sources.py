@@ -165,8 +165,9 @@ def test_exchange_applies_to_listed_segment_regardless_of_industry() -> None:
 def test_exchange_live_memoized_per_country_and_refresh_ttl() -> None:
     """라이브 결과는 국가별 1회 메모(44 업종 세그먼트가 같은 목록을 재요청하지 않음) + 성공일을
     커서에 남겨 ``exchange_refresh_days`` 안의 다음 런은 건너뛴다. 빈 결과는 기록하지 않는다."""
-    from leadcrawler.sources.exchanges import ExchangeSource, _epoch_day
+    from leadcrawler.sources.exchanges import _LIVE_MEMO, ExchangeSource, _epoch_day
 
+    _LIVE_MEMO.clear()  # 프로세스 전역 메모 — 테스트 간 격리.
     calls: list[str] = []
     store: dict[tuple[str, str], int] = {}
 
@@ -194,12 +195,18 @@ def test_exchange_live_memoized_per_country_and_refresh_ttl() -> None:
 
     seg = Segment(country="PH", industry="제조", listed="listed")
     _Src.rows = PseSource(_dry_settings()).discover(seg)
+    _LIVE_MEMO.clear()
     first = _Src(s, cursor_store=_Store())
     assert first.discover(seg) and store == {("fake", "refresh:ph"): _epoch_day()}
-    second = _Src(s, cursor_store=_Store())  # 새 프로세스(메모 없음) — 커서로 건너뜀.
+    other = _Src(s, cursor_store=_Store())  # 같은 프로세스의 다른 워커 인스턴스 — 전역 메모 재사용.
+    assert other.discover(seg) == first.discover(seg) and calls == ["제조", "제조"]
+    _LIVE_MEMO.clear()  # 새 프로세스(메모 없음) — 커서로 건너뜀.
+    second = _Src(s, cursor_store=_Store())
     assert second.discover(seg) == [] and calls == ["제조", "제조"]
+    _LIVE_MEMO.clear()
     always = _Src(Settings(dry_run=False, exchange_refresh_days=0), cursor_store=_Store())
     assert always.discover(seg)  # 0 = 매번 수집.
+    _LIVE_MEMO.clear()
 
 
 def test_unmapped_taxonomy_label_gates_aggregators() -> None:

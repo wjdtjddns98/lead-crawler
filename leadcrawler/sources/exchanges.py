@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import html
 import re
+import threading
 import time
 from typing import Any
 
@@ -66,6 +67,13 @@ _LISTING_ROW = re.compile(
     r'<a[^>]*>\s*([A-Z0-9.\-]{1,12})\s*</a>\s*</td>\s*<td[^>]*>\s*([^<]{2,120}?)\s*</td>',
     re.S,
 )
+
+
+# 국가별 라이브 결과 메모 — **프로세스 전역**(소스 이름, 국가) 키. run.py 병렬 발견은 워커 스레드마다
+# build_sources() 를 따로 만들어 인스턴스 메모로는 스레드 수만큼 중복 호출된다(리뷰 MED) → 클래스
+# 경계를 넘어 공유하고 락으로 "첫 스레드만 fetch" 를 보장한다. 자식 프로세스는 잡마다 재기동되므로 TTL 불필요.
+_LIVE_MEMO: dict[tuple[str, str], list[DiscoveredCompany]] = {}
+_LIVE_MEMO_LOCK = threading.Lock()
 
 
 def _epoch_day() -> int:
@@ -101,9 +109,6 @@ class ExchangeSource:
         # 마지막 성공 수집일(epoch day)을 커서로 영속 — 반복 잡 회차마다 전체 명부(+상세 N+1)를
         # 재수집하지 않게 ``exchange_refresh_days`` 안에서는 건너뛴다(런 간·프로세스 간 공유).
         self._cursor_store = cursor_store
-        # 국가별 라이브 결과 메모 — 상장 잡은 같은 국가를 업종 세그먼트 44개로 돌므로(트랙 S)
-        # 거래소 목록은 프로세스당 1회만 받는다(빈 결과도 메모: 실패 엔드포인트 44회 재타격 방지).
-        self._memo: dict[str, list[DiscoveredCompany]] = {}
 
     def applies_to(self, segment: Segment) -> bool:
         """해당 거래소 국가 세그먼트에 적용된다(산출은 항상 listed).
@@ -121,17 +126,21 @@ class ExchangeSource:
         """세그먼트 국가의 상장기업 목록을 반환한다(라이브는 국가별 1회 메모)."""
         if self._settings.dry_run:
             return self._dry(segment)
-        key = (segment.country or "").strip().lower()
-        if key not in self._memo:
-            if self._recently_fetched(key):
-                log.info("exchange.skip.fresh", source=self.name, country=key)
-                self._memo[key] = []
-            else:
-                rows = self._live(segment)
-                self._memo[key] = rows
-                if rows:  # 빈 결과(장애·차단)는 기록하지 않아 다음 회차에 재시도한다.
-                    self._mark_fetched(key)
-        return self._memo[key]
+        # 상장 잡은 같은 국가를 업종 세그먼트 44개로 돌므로(트랙 S) 거래소 목록은 프로세스당 1회만
+        # 받는다(빈 결과도 메모: 실패 엔드포인트 44회 재타격 방지). 락은 fetch 를 포함해 잡는다 —
+        # 같은 국가를 동시에 만난 워커들이 첫 워커의 결과를 기다렸다 재사용(중복 호출 0).
+        key = (self.name, (segment.country or "").strip().lower())
+        with _LIVE_MEMO_LOCK:
+            if key not in _LIVE_MEMO:
+                if self._recently_fetched(key[1]):
+                    log.info("exchange.skip.fresh", source=self.name, country=key[1])
+                    _LIVE_MEMO[key] = []
+                else:
+                    rows = self._live(segment)
+                    _LIVE_MEMO[key] = rows
+                    if rows:  # 빈 결과(장애·차단)는 기록하지 않아 다음 회차에 재시도한다.
+                        self._mark_fetched(key[1])
+            return _LIVE_MEMO[key]
 
     def _refresh_key(self, cc: str) -> str:
         return f"refresh:{cc}"

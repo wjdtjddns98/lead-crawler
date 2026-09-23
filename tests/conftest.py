@@ -77,3 +77,13 @@ def _block_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(dns.resolver, "resolve", _blocked, raising=False)
     except ImportError:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_exchange_live_memo():
+    """거래소 라이브 결과 메모는 프로세스 전역(같은 국가 재요청 방지) — 테스트 간 격리를 위해 매번 비운다."""
+    from leadcrawler.sources.exchanges import _LIVE_MEMO
+
+    _LIVE_MEMO.clear()
+    yield
+    _LIVE_MEMO.clear()
