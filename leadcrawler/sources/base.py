@@ -183,6 +183,44 @@ _LATIN_NAME = re.compile(r"^[A-Za-z0-9 .,&'()\-/+]{3,120}$")
 _BARE_DOMAIN = re.compile(r"^[\w.-]+\.[a-z]{2,}(?:\.[a-z]{2,})?$", re.I)
 
 
+# 펀드·신탁·유동화 SPC 등 '웹사이트가 있을 수 없는' 비영업 엔티티 판정(고정밀 패턴만).
+# GLEIF/EDGAR 딥페이지는 LEI 의무 등록된 펀드가 대량으로 나온다(라이브 2026-07-02:
+# 한화/키움 투자신탁·TDF·미국 ETF 연발) — 건당 검색 쿼터(네이버 25k/일·Serper 크레딧)를
+# 낭비하므로 쿼리 전에 스킵한다. 오탐 주의: 'TRUST'(Northern Trust)·'TDF'(佛 TDF SAS) 같은
+# 실기업 어휘는 제외하고, TDF 는 빈티지 연도가 붙은 형태(TDF2050)만 매칭한다.
+# (도메인 해석기·GLEIF 수집이 함께 쓰므로 소스 공통 모듈에 둔다 — 2026-09-17.)
+_FUND_NAME_RE = re.compile(
+    r"투자신탁|증권투자회사|투자목적회사|유동화전문|펀드|"
+    r"\bETFs?\b|\bUCITS\b|\bSICAV\b|\bFUNDS?\b|INVESTMENT TRUST|TDF\s*20\d\d",
+    re.IGNORECASE,
+)
+
+# 신탁·커스터디 '계좌' 행: 일본 신탁은행은 계좌마다 LEI 를 받아 GLEIF 에
+# ``수탁은행명/계좌번호`` 로 올린다(2026-09-17 라이브 JP 2,851건 = mastertrust.co.jp 2,287·
+# custody.jp 1,989·nomura-trust.co.jp 475). 실체가 계좌라 홈페이지가 없고, 해석기는 수탁은행
+# 도메인을 물어와 과공유 가드에 전량 걸린다 → 도메인이 영원히 안 채워져 C 트랙 백필이
+# 세대마다 같은 행을 재시도한다(24h 처리 17,400 · 해석 2건).
+# 판정은 **두 조건의 AND**다(적대 리뷰 HIGH): ① 끝이 숫자 4자리 이상을 포함한 계좌 접미,
+# ② 그 앞부분에 수탁 신호(trust/custody/banking/信託). 모양만 보면 'Foo Ltd./2020' 같은
+# 실기업이 걸리는데, GLEIF 게이트는 행을 통째로 버리므로 오탐 1건 = 실기업 유실이다.
+# 라이브 실측(2026-09-17): 모양 매칭 2,860건 중 2,859건이 신호 보유 — AND 로 좁혀도 손실 0.
+# 두 패턴을 따로 돌려 백트래킹을 선형으로 묶는다(2026-09-01 ReDoS 장애 이후 관례).
+_TRUST_ACCOUNT_RE = re.compile(r"/\s*(?=(?:[A-Za-z]*\d){4})[A-Za-z0-9]+\s*$")
+_TRUST_SIGNAL_RE = re.compile(r"trust|custod|banking|信託|信托", re.IGNORECASE)
+
+
+def is_fund_entity(name: str | None) -> bool:
+    """이름이 펀드/신탁계좌/유동화 SPC 등 비영업 엔티티로 보이면 True(도메인 해석 무의미)."""
+    if not name:
+        return False
+    if _FUND_NAME_RE.search(name):
+        return True
+    m = _TRUST_ACCOUNT_RE.search(name)
+    # ponytail: 계좌번호에 하이픈 등 구분자가 섞인 표기(`/012-077-387`)는 안 잡는다 —
+    # 라이브 실측 0건. 나오면 접미 문자 클래스에 구분자를 더하면 된다.
+    return bool(m and _TRUST_SIGNAL_RE.search(name[: m.start()]))
+
+
 def is_non_latin_name(name: str | None) -> bool:
     """표시명이 원어(비라틴 문자 포함)인지 — 영문 우선 규약의 적용 대상 판정."""
     return bool(name) and _NON_LATIN.search(name) is not None
