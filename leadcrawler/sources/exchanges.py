@@ -189,7 +189,6 @@ class ExchangeSource:
                     from .http import CffiFetcher
 
                     self._fetcher = CffiFetcher(
-                        user_agent=self._settings.discovery_user_agent,
                         min_interval=self._settings.http_request_delay,
                         timeout=self._settings.http_timeout,
                     )
@@ -405,26 +404,37 @@ class SgxSource(ExchangeSource):
 
 
 class IdxSource(ExchangeSource):
-    """인도네시아 거래소(IDX) 상장목록 소스 — GetCompanyProfiles JSON(베스트에포트).
+    """인도네시아 거래소(IDX) 상장목록 소스 — GetCompanyProfiles JSON(curl_cffi 세션 2단계).
 
-    IDX 는 ``idx.co.id/primary/ListedCompany/GetCompanyProfiles`` 로 상장사 프로필을
-    페이징 제공한다. 실서비스는 Cloudflare 보호로 정적 접근이 막힐 수 있어(그 경우 graceful
-    빈 결과) 온네트워크 확인이 필요한 베스트에포트다. 목록엔 웹사이트가 없어 도메인 None.
-    dry_run 은 베이스 더미.
+    2026-09-23 실측: 일반 httpx/curl 은 Cloudflare 403 챌린지. **curl_cffi chrome 위장 세션**으로
+    ① 상장사 프로필 페이지(``page_url``)를 GET 해 ``__cf_bm`` 쿠키를 받고 ② 같은 세션으로
+    ``GetCompanyProfiles?start&length&draw=1``(Referer=①, Accept json) 을 부르면 200
+    (``recordsTotal`` 962). 챌린지는 ``/primary/`` API 첫 진입에만 걸린다. 행에 ``Website``·
+    ``PapanPencatatan``(상장 보드)·``Alamat``·``Telepon`` 이 있어 도메인을 목록에서 바로 얻는다
+    (962 중 932 보유). ``length`` 상한은 미확인 → 100 페이징. dry_run 은 베이스 더미.
     """
 
     name = "idx"
     registry = "idx"
     countries = frozenset({"id", "idn", "indonesia", "인도네시아"})
+    impersonate = True  # Cloudflare 는 TLS 지문만 봄 — CffiFetcher(미설치면 일반 페처 → 403 → 빈 결과).
+    page_url = "https://www.idx.co.id/id/perusahaan-tercatat/profil-perusahaan-tercatat/"
     list_url = "https://www.idx.co.id/primary/ListedCompany/GetCompanyProfiles"
     _MAX_PAGES = 20
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         """IDX GetCompanyProfiles 를 페이지네이션하며 상장사를 수집한다(코드 dedup + 캡)."""
+        from ..dedup import normalize_domain
+
         fetcher = self._client()
         cap = self._settings.discovery_max_per_source
         listed_seg = self._seg(segment)
         page_size = min(100, cap)
+        try:  # ① 세션 쿠키 프라이밍(실패해도 ② 를 시도 — 쿠키 없이도 통과하는 경우 대비).
+            fetcher.get_text(self.page_url)
+        except Exception as exc:
+            log.info("idx.prime.error", err_type=type(exc).__name__, err=str(exc))
+        headers = {"Referer": self.page_url, "Accept": "application/json, text/plain, */*"}
 
         out: list[DiscoveredCompany] = []
         seen: set[str] = set()
@@ -434,7 +444,8 @@ class IdxSource(ExchangeSource):
             try:
                 payload = fetcher.get_json(
                     self.list_url,
-                    params={"start": start, "length": page_size, "kodeEmiten": ""},
+                    params={"start": start, "length": page_size, "draw": 1},
+                    headers=headers,
                 )
             except Exception as exc:  # Cloudflare/네트워크/형식 → graceful 부분결과.
                 log.info("idx.error", start=start, err_type=type(exc).__name__, err=str(exc))
@@ -450,11 +461,14 @@ class IdxSource(ExchangeSource):
                 if not symbol or not name or symbol in seen:
                     continue
                 seen.add(symbol)
+                board = _first_str(row, ("PapanPencatatan",))
                 out.append(
                     build_company(
                         source=self.name, segment=listed_seg, name=name,
-                        domain=None, registry=self.registry, registry_id=symbol,
-                        market=self.name.upper(),
+                        domain=normalize_domain(_first_str(row, ("Website",))),
+                        registry=self.registry, registry_id=symbol, ticker=symbol,
+                        market=f"IDX {board}" if board else self.name.upper(),
+                        address=_first_str(row, ("Alamat",)), phone=_first_str(row, ("Telepon",)),
                         listed_verified=True,  # 상장목록 원천 — listed 는 항상 실측.
                     )
                 )
