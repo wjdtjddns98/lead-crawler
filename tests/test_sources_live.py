@@ -661,6 +661,7 @@ def test_idx_live_parses_and_paginates() -> None:
     assert out[0].canonical_key == "reg:idx:bbca"
     assert out[0].domain == "bca.co.id" and out[0].market == "IDX Utama"
     assert out[0].address and out[0].phone and out[1].domain is None
+    assert out[1].address is None and out[1].phone is None  # 결측은 "" 가 아니라 None.
     assert IdxSource.impersonate is True
 
 

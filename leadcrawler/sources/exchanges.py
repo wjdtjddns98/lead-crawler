@@ -54,6 +54,7 @@ from typing import Any
 
 from ..config import Settings
 from ..logging import get_logger
+from ..dedup import normalize_domain
 from .base import DiscoveredCompany, Segment, SupportsCursorStore, build_company, is_country
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import is_specific_industry
@@ -424,8 +425,6 @@ class IdxSource(ExchangeSource):
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         """IDX GetCompanyProfiles 를 페이지네이션하며 상장사를 수집한다(코드 dedup + 캡)."""
-        from ..dedup import normalize_domain
-
         fetcher = self._client()
         cap = self._settings.discovery_max_per_source
         listed_seg = self._seg(segment)
@@ -468,7 +467,8 @@ class IdxSource(ExchangeSource):
                         domain=normalize_domain(_first_str(row, ("Website",))),
                         registry=self.registry, registry_id=symbol, ticker=symbol,
                         market=f"IDX {board}" if board else self.name.upper(),
-                        address=_first_str(row, ("Alamat",)), phone=_first_str(row, ("Telepon",)),
+                        address=_first_str(row, ("Alamat",)) or None,
+                        phone=_first_str(row, ("Telepon",)) or None,
                         listed_verified=True,  # 상장목록 원천 — listed 는 항상 실측.
                     )
                 )
