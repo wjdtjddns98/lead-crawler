@@ -48,12 +48,28 @@ def test_subscription_token_prices_claude_zero() -> None:
     led.record("serper")
     assert led.unit_cost("name_llm") == 0
     assert led.month_total_krw() == DEFAULT_PRICING_KRW["serper"]
-    # 종량 api_key 가 있으면 기존 단가(실청구) 유지 — 토큰과 병존해도 키 과금 가능성 우선.
+    # 토큰+키 병존 — anthropic_client 는 토큰을 우선 쓰므로 여전히 0원. vision 은 키 전용이라 유지.
     both = CostLedger(Settings(anthropic_auth_token="tok", anthropic_api_key="sk"))
-    assert both.unit_cost("industry_llm") == DEFAULT_PRICING_KRW["industry_llm"]
+    assert both.unit_cost("industry_llm") == 0
+    assert both.unit_cost("vision") == DEFAULT_PRICING_KRW["vision"]
+    # 키만 있으면(종량) 기존 단가.
+    key_only = CostLedger(Settings(anthropic_api_key="sk"))
+    assert key_only.unit_cost("industry_llm") == DEFAULT_PRICING_KRW["industry_llm"]
     # env 보정은 구독 0원보다 우선(운영자 명시).
     over = CostLedger(Settings(anthropic_auth_token="tok", cost_pricing_krw={"industry_llm": 7}))
     assert over.unit_cost("industry_llm") == 7
+
+
+def test_unpriced_warning_only_for_unregistered() -> None:
+    """0원으로 등록된 provider 는 경고 없음, 완전 미등록 provider 만 경고."""
+    from structlog.testing import capture_logs
+
+    led = CostLedger(Settings(anthropic_auth_token="tok"))
+    with capture_logs() as logs:
+        led.record("industry_llm")
+        led.record("nope")
+    warned = [e["provider"] for e in logs if e["event"] == "cost.unpriced_provider"]
+    assert warned == ["nope"]
 
 
 def test_pricing_override() -> None:

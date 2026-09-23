@@ -50,10 +50,11 @@ DEFAULT_PRICING_KRW: dict[str, int] = {
 }
 
 # 구독 OAuth 토큰(``anthropic_auth_token``)으로 부르는 Claude 계열 provider — 건당 청구가 없어
-# 토큰만 있고 종량 ``anthropic_api_key`` 가 없으면 0원으로 집계한다(2026-09-21 가짜 누계 50만원이
-# 세그먼트 큐를 정지시킨 사고 — PO "클로드 토큰은 금액집계 하지 마"). 키를 쓰면 기존 단가.
+# 토큰이 있으면 0원으로 집계한다(2026-09-21 가짜 누계 50만원이 세그먼트 큐를 정지시킨 사고 —
+# PO "클로드 토큰은 금액집계 하지 마"). 판정은 ``llm.anthropic_client`` 와 동일하게 **토큰 유무만**
+# 본다(토큰이 있으면 api_key 가 있어도 토큰으로 호출). ``vision`` 은 api_key 전용 경로라 제외.
 CLAUDE_PROVIDERS: frozenset[str] = frozenset(
-    {"vision", "dedup_llm", "industry_llm", "name_llm", "ai_directory"}
+    {"dedup_llm", "industry_llm", "name_llm", "ai_directory"}
 )
 
 
@@ -92,7 +93,7 @@ class CostLedger:
         self.settings = settings or get_settings()
         self._persist = persist
         # 단가 우선순위: 기본 추정치 < 구독 토큰 0원 < config 보정(env) < 명시 인자(테스트).
-        subscription = bool(self.settings.anthropic_auth_token) and not self.settings.anthropic_api_key
+        subscription = bool(self.settings.anthropic_auth_token)
         self._pricing = {
             **DEFAULT_PRICING_KRW,
             **({p: 0 for p in CLAUDE_PROVIDERS} if subscription else {}),
