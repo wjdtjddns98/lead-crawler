@@ -183,6 +183,24 @@ def test_count_resolve_targets_exclude_filters(tmp_path) -> None:
     assert count_resolve_targets(sm, ["KR"], exclude_industries=["식품·음료"]) == 3
     assert count_resolve_targets(sm, ["KR"], exclude_listed=True) == 3
     assert count_resolve_targets(sm, ["KR"], only_listed=True) == 1  # 상장 확정만.
+    # 상장 대상 + 업종 필터: 빈 라벨·'미분류' 상장 행도 포함(거래소 발견분 사각 해소, 2026-09-23).
+    with sm() as session:
+        session.add(DiscoveredCompanyRow(
+            canonical_key="reg:six:1", name="six1", country="KR", industry="",
+            listed="listed", source="six", domain=None,
+        ))
+        session.add(DiscoveredCompanyRow(
+            canonical_key="reg:six:2", name="six2", country="KR", industry="미분류",
+            listed="listed", source="six", domain=None,
+        ))
+        session.commit()
+    from leadcrawler.sources.taxonomy import INDUSTRY_TAXONOMY
+
+    full = list(INDUSTRY_TAXONOMY)
+    assert count_resolve_targets(sm, ["KR"], only_listed=True, industries=full) == 3  # 다+six 2
+    # 업종을 고른 상장 잡·비상장 잡은 기존 그대로 — 미분류 자동 포함 없음(Codex 교차설계 반영).
+    assert count_resolve_targets(sm, ["KR"], only_listed=True, industries=["화학·석유화학"]) == 1
+    assert count_resolve_targets(sm, ["KR"], industries=full) == 3  # 가·나·다(빈 라벨 라·six 제외)
     assert count_resolve_targets(
         sm, ["KR"], exclude_industries=["식품·음료"], exclude_listed=True
     ) == 2  # 가 + 라 만.

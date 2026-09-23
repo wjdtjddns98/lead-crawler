@@ -46,7 +46,11 @@ from .yahoo_finance import YahooProfile
 log = get_logger("sources.domain_resolver")
 
 # exchanges.py 소스의 registry 값 — registry_id 가 곧 거래소 심볼(Yahoo 티커 경로에 재사용).
-_EXCHANGE_REGISTRIES = frozenset({"pse", "set", "sgx", "idx", "bursa", "hose", "hnx"})
+_EXCHANGE_REGISTRIES = frozenset({
+    "pse", "set", "sgx", "idx", "bursa", "hose", "hnx",
+    # 2026-09-23 신설(exchanges_global) — 심볼이 ticker 필드에도 실리지만 폴백 대칭 유지.
+    "xetra", "euronext", "bme", "six", "b3", "kap", "tadawul", "moex",
+})
 
 # 회사명에서 떼어낼 법인격·일반어(도메인 매칭 신호로 무의미). 소문자 토큰 기준.
 _NAME_STOPWORDS = frozenset({
