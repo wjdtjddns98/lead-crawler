@@ -293,6 +293,9 @@ class Settings(BaseSettings):
 
     # 운영비 한도(월, 원)
     monthly_budget_krw: int = Field(default=500_000)
+    # 거래소 상장목록 재수집 주기(일) — 반복 S 잡(5분 순환)이 회차마다 전체 명부(+상세 N+1)를
+    # 다시 받지 않게 cursor_store 에 마지막 성공일을 남기고 그 안엔 건너뛴다. 0=매번(테스트·1회성).
+    exchange_refresh_days: int = Field(default=7, ge=0)
     # 예산 안전장치 — 월 누계가 monthly_budget_krw 이상이면 추가 유료 호출
     # (EmailAPI·Vision·딜리버러빌리티)을 차단한다. cost_ledger 가 활성(라이브)일 때만 작동.
     cost_budget_enforce: bool = Field(default=True)

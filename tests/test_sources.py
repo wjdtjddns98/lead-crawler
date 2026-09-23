@@ -147,6 +147,61 @@ def test_specific_industry_gates_aggregators_not_opencorporates() -> None:
     assert GleifSource(s).applies_to(broad) and PseSource(s).applies_to(broad)
 
 
+def test_exchange_applies_to_listed_segment_regardless_of_industry() -> None:
+    """상장 세그먼트에선 구체 업종이어도 거래소가 켜진다(트랙 S 사각 해소) — 집계원은 그대로 꺼짐.
+    행 업종은 세그먼트 라벨이 아니라 '미분류'(도장 금지)."""
+    from leadcrawler.sources.taxonomy import UNCLASSIFIED
+
+    s = _dry_settings()
+    listed = Segment(country="필리핀", industry="제조", listed="listed")
+    assert PseSource(s).applies_to(listed)
+    assert not GleifSource(s).applies_to(listed) and not WikidataSource(s).applies_to(listed)
+    assert not PseSource(s).applies_to(Segment(country="필리핀", industry="제조", listed="unlisted"))
+    rows = PseSource(s).discover(listed)
+    assert rows and all(r.industry == UNCLASSIFIED and r.listed == "listed" for r in rows)
+    assert all(r.canonical_key.startswith("reg:pse:") for r in rows)
+
+
+def test_exchange_live_memoized_per_country_and_refresh_ttl() -> None:
+    """라이브 결과는 국가별 1회 메모(44 업종 세그먼트가 같은 목록을 재요청하지 않음) + 성공일을
+    커서에 남겨 ``exchange_refresh_days`` 안의 다음 런은 건너뛴다. 빈 결과는 기록하지 않는다."""
+    from leadcrawler.sources.exchanges import ExchangeSource, _epoch_day
+
+    calls: list[str] = []
+    store: dict[tuple[str, str], int] = {}
+
+    class _Store:
+        def get(self, source, key):  # noqa: ANN001
+            return store.get((source, key), 0)
+
+        def advance(self, source, key, position):  # noqa: ANN001
+            store[(source, key)] = position
+
+    class _Src(ExchangeSource):
+        name = registry = "fake"
+        countries = frozenset({"ph"})
+        rows: list = []
+
+        def _live(self, segment):  # noqa: ANN001
+            calls.append(segment.industry)
+            return list(self.rows)
+
+    s = Settings(dry_run=False, exchange_refresh_days=7)
+    empty = _Src(s, cursor_store=_Store())
+    for ind in ("제조", "은행", "게임"):
+        empty.discover(Segment(country="PH", industry=ind, listed="listed"))
+    assert calls == ["제조"] and store == {}  # 메모 1회·빈 결과는 성공일 미기록.
+
+    seg = Segment(country="PH", industry="제조", listed="listed")
+    _Src.rows = PseSource(_dry_settings()).discover(seg)
+    first = _Src(s, cursor_store=_Store())
+    assert first.discover(seg) and store == {("fake", "refresh:ph"): _epoch_day()}
+    second = _Src(s, cursor_store=_Store())  # 새 프로세스(메모 없음) — 커서로 건너뜀.
+    assert second.discover(seg) == [] and calls == ["제조", "제조"]
+    always = _Src(Settings(dry_run=False, exchange_refresh_days=0), cursor_store=_Store())
+    assert always.discover(seg)  # 0 = 매번 수집.
+
+
 def test_unmapped_taxonomy_label_gates_aggregators() -> None:
     # 매핑 없는 택소노미 라벨(게임 등)도 구체 취급 — 집계원이 켜지면 업종 무관 명부가
     # 세그먼트 라벨 도장을 받는 오라벨 사고(2026-07-13 gleif 1,000건 실측) 회귀가드.

@@ -357,3 +357,73 @@ class Fetcher:
         self._client.close()
         if self._insecure_client is not None:
             self._insecure_client.close()
+
+
+class CffiFetcher:
+    """curl_cffi(chrome TLS 지문 위장) 기반 :class:`SupportsFetch` 구현 — TLS 지문만 보는 WAF
+    (Cloudflare 챌린지·Akamai "Access Denied") 뒤의 공개 목록용. 세션 쿠키를 유지하므로
+    "페이지 GET 으로 쿠키 획득 → 같은 세션으로 API" 2단계(IDX)가 자연히 된다.
+
+    ponytail: curl_cffi Session 은 스레드 안전 보장이 없어 요청을 락으로 직렬화한다(DDG 선례).
+    재시도 없음 — 거래소 목록은 호출 수가 적고 실패는 소스가 부분 결과로 흡수한다.
+    ``curl_cffi`` 미설치면 생성 시 ImportError(호출자가 폴백).
+    """
+
+    def __init__(
+        self, *, user_agent: str = "", min_interval: float = 0.5, timeout: float = 15.0,
+        impersonate: str = "chrome",
+    ) -> None:
+        from curl_cffi import requests as cffi_requests  # bypass extra 의존성.
+
+        self._session = cffi_requests.Session(impersonate=impersonate)
+        self._headers = {"User-Agent": user_agent} if user_agent else {}
+        self._min_interval = min_interval
+        self._timeout = timeout
+        self._last = 0.0
+        self._lock = threading.Lock()
+
+    def _request(self, method: str, url: str, **kw: Any) -> Any:
+        with self._lock:
+            now = time.monotonic()
+            wait = self._last + self._min_interval - now
+            if wait > 0:
+                time.sleep(wait)
+            self._last = time.monotonic()
+            headers = {**self._headers, **(kw.pop("headers", None) or {})}
+            resp = self._session.request(
+                method, url, headers=headers, timeout=self._timeout, **kw
+            )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"HTTP {resp.status_code} for {url}")
+        return resp
+
+    def get_json(self, url: str, *, params: dict[str, Any] | None = None,
+                 headers: dict[str, str] | None = None) -> Any:
+        return self._request("GET", url, params=params, headers=headers).json()
+
+    def get_bytes(self, url: str, *, params: dict[str, Any] | None = None,
+                  headers: dict[str, str] | None = None) -> bytes:
+        return self._request("GET", url, params=params, headers=headers).content
+
+    def get_text(self, url: str, *, params: dict[str, Any] | None = None,
+                 headers: dict[str, str] | None = None,
+                 allow_redirects: bool = True, max_bytes: int | None = None) -> str:
+        r = self._request("GET", url, params=params, headers=headers,
+                          allow_redirects=allow_redirects)
+        return r.text if max_bytes is None else r.text[:max_bytes]
+
+    def post_text(self, url: str, *, data: dict[str, Any] | None = None,
+                  params: dict[str, Any] | None = None,
+                  headers: dict[str, str] | None = None) -> str:
+        return self._request("POST", url, data=data, params=params, headers=headers).text
+
+    def post_json(self, url: str, *, json: Any | None = None,
+                  params: dict[str, Any] | None = None,
+                  headers: dict[str, str] | None = None) -> Any:
+        return self._request("POST", url, json=json, params=params, headers=headers).json()
+
+    def close(self) -> None:
+        try:
+            self._session.close()
+        except Exception:  # noqa: BLE001 — 종료 경로 예외는 삼킨다.
+            pass

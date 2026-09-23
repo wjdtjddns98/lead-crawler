@@ -37,6 +37,7 @@ _SUFFIX: dict[str, str] = {
     "DK": ".CO", "FI": ".HE", "BR": ".SA", "MX": ".MX", "TR": ".IS", "NZ": ".NZ", "BE": ".BR",
     "AT": ".VI", "PL": ".WA", "PT": ".LS", "IE": ".IR", "IL": ".TA", "GR": ".AT", "SA": ".SR",
     "VN": ".VN",  # HOSE/HNX 공통(2026-09-11 실측 VNM.VN·VIC.VN 200, .HM 은 404)
+    "RU": ".ME",  # MOEX(주 경로는 ISS emitters URL — 접미는 완결성용, Yahoo RU 데이터는 정체)
 }
 # 연속 오류 이 횟수면 래치(비공식 API 차단·장애 시 잔여 행마다 대기하지 않게).
 _LATCH_AFTER = 5

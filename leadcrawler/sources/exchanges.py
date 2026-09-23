@@ -48,11 +48,12 @@ from __future__ import annotations
 
 import html
 import re
+import time
 from typing import Any
 
 from ..config import Settings
 from ..logging import get_logger
-from .base import DiscoveredCompany, Segment, build_company, is_country
+from .base import DiscoveredCompany, Segment, SupportsCursorStore, build_company, is_country
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import is_specific_industry
 
@@ -67,6 +68,11 @@ _LISTING_ROW = re.compile(
 )
 
 
+def _epoch_day() -> int:
+    """UTC 기준 epoch 일수 — 커서 저장소(int)에 '마지막 성공일'을 싣기 위한 단위."""
+    return int(time.time() // 86400)
+
+
 class ExchangeSource:
     """거래소 상장목록 발견 소스의 공통 베이스(서브클래스가 국가·엔드포인트·_live 제공)."""
 
@@ -75,6 +81,9 @@ class ExchangeSource:
     countries: frozenset[str] = frozenset()
     # WAF 차단 소스(SET/Bursa)는 True — enable_bypass 시 _client() 가 InsaneFetcher 를 쓴다.
     bypass_capable: bool = False
+    # TLS 지문만 보는 WAF(IDX Cloudflare·Tadawul Akamai, 2026-09-23 실측) 는 curl_cffi chrome
+    # 위장이면 통과 — True 면 _client() 가 CffiFetcher 를 쓴다(bypass 격자와 별개·미설치면 폴백).
+    impersonate: bool = False
 
     def __init__(
         self,
@@ -83,27 +92,72 @@ class ExchangeSource:
         count: int = 2,
         fetcher: SupportsFetch | None = None,
         rate_limiters: HostRateLimiters | None = None,
+        cursor_store: SupportsCursorStore | None = None,
     ) -> None:
         self._settings = settings
         self._count = count
         self._fetcher = fetcher
         self._rate_limiters = rate_limiters
+        # 마지막 성공 수집일(epoch day)을 커서로 영속 — 반복 잡 회차마다 전체 명부(+상세 N+1)를
+        # 재수집하지 않게 ``exchange_refresh_days`` 안에서는 건너뛴다(런 간·프로세스 간 공유).
+        self._cursor_store = cursor_store
+        # 국가별 라이브 결과 메모 — 상장 잡은 같은 국가를 업종 세그먼트 44개로 돌므로(트랙 S)
+        # 거래소 목록은 프로세스당 1회만 받는다(빈 결과도 메모: 실패 엔드포인트 44회 재타격 방지).
+        self._memo: dict[str, list[DiscoveredCompany]] = {}
 
     def applies_to(self, segment: Segment) -> bool:
-        """해당 거래소 국가 세그먼트에 적용된다(상장여부 무관 — 산출은 항상 listed). 단 구체
-        업종 지정 시엔 제외 — 상장목록은 업종 필터가 없어 비대상 업종을 섞으므로(정밀도 우선)."""
-        return is_country(segment, self.countries) and not is_specific_industry(segment.industry)
+        """해당 거래소 국가 세그먼트에 적용된다(산출은 항상 listed).
+
+        **상장 세그먼트**(``listed="listed"``)면 업종과 무관하게 적용한다 — 거래소 목록은 상장사의
+        권위·유한 소스이고 행 업종은 세그먼트 라벨을 도장하지 않으므로(:meth:`_seg`) 오라벨이
+        없다(2026-09-23, 트랙 S 가 택소노미 라벨만 받아 거래소가 항상 꺼지던 사각 해소). 그 외
+        세그먼트는 기존대로 구체 업종이면 제외(정밀도 우선).
+        """
+        if not is_country(segment, self.countries):
+            return False
+        return segment.listed == "listed" or not is_specific_industry(segment.industry)
 
     def discover(self, segment: Segment) -> list[DiscoveredCompany]:
-        """세그먼트 국가의 상장기업 목록을 반환한다."""
+        """세그먼트 국가의 상장기업 목록을 반환한다(라이브는 국가별 1회 메모)."""
         if self._settings.dry_run:
             return self._dry(segment)
-        return self._live(segment)
+        key = (segment.country or "").strip().lower()
+        if key not in self._memo:
+            if self._recently_fetched(key):
+                log.info("exchange.skip.fresh", source=self.name, country=key)
+                self._memo[key] = []
+            else:
+                rows = self._live(segment)
+                self._memo[key] = rows
+                if rows:  # 빈 결과(장애·차단)는 기록하지 않아 다음 회차에 재시도한다.
+                    self._mark_fetched(key)
+        return self._memo[key]
+
+    def _refresh_key(self, cc: str) -> str:
+        return f"refresh:{cc}"
+
+    def _recently_fetched(self, cc: str) -> bool:
+        days = int(self._settings.exchange_refresh_days)
+        if self._cursor_store is None or days <= 0:
+            return False
+        last = self._cursor_store.get(self.name, self._refresh_key(cc))
+        return last > 0 and (_epoch_day() - last) < days
+
+    def _mark_fetched(self, cc: str) -> None:
+        if self._cursor_store is not None:
+            self._cursor_store.advance(self.name, self._refresh_key(cc), _epoch_day())
+
+    @staticmethod
+    def _seg(segment: Segment) -> Segment:
+        """거래소 행이 받을 세그먼트 — 업종은 **비워** 세그먼트 라벨이 도장되지 않게 한다
+        (``build_company`` 가 broad 업종이면 ``industry_code_label`` 또는 '미분류' 를 쓴다).
+        2026-07-13 집계원 오라벨 사고와 같은 경로 차단."""
+        return Segment(country=segment.country, industry="", listed="listed")
 
     def _dry(self, segment: Segment) -> list[DiscoveredCompany]:
         """네트워크 없는 결정적 더미(registry_id 기반 canonical_key + 도메인)."""
         cc = (segment.country or "xx").strip().lower()
-        listed_seg = Segment(country=segment.country, industry=segment.industry, listed="listed")
+        listed_seg = self._seg(segment)
         return [
             build_company(
                 source=self.name,
@@ -121,6 +175,18 @@ class ExchangeSource:
     def _client(self) -> SupportsFetch:
         # 소스 인스턴스당 1개만 생성·재사용(discover 호출마다 클라이언트 누수 방지).
         if self._fetcher is None:
+            if self.impersonate:
+                try:
+                    from .http import CffiFetcher
+
+                    self._fetcher = CffiFetcher(
+                        user_agent=self._settings.discovery_user_agent,
+                        min_interval=self._settings.http_request_delay,
+                        timeout=self._settings.http_timeout,
+                    )
+                    return self._fetcher
+                except ImportError:  # bypass extra 미설치 — 일반 페처로 폴백(403 이면 빈 결과).
+                    log.info("exchange.impersonate.unavailable", source=self.name)
             if self.bypass_capable and self._settings.enable_bypass:
                 # WAF 차단 소스 + 우회 활성 → 벤더 엔진 어댑터(미설치 시 graceful 빈 결과).
                 from .insane_fetcher import InsaneFetcher
@@ -147,7 +213,7 @@ class ExchangeSource:
         실제 셀렉터/구조는 라이브 확인이 필요하다(A5 한계 문서 참조).
         """
         cap = self._settings.discovery_max_per_source
-        listed_seg = Segment(country=segment.country, industry=segment.industry, listed="listed")
+        listed_seg = self._seg(segment)
         out: list[DiscoveredCompany] = []
         seen: set[str] = set()
         for symbol, name in _LISTING_ROW.findall(page_html or ""):
@@ -203,7 +269,7 @@ class PseSource(ExchangeSource):
         """PSE companyDirectory 를 페이지네이션하며 상장사를 수집한다(symbol dedup + 캡)."""
         fetcher = self._client()
         cap = self._settings.discovery_max_per_source
-        listed_seg = Segment(country=segment.country, industry=segment.industry, listed="listed")
+        listed_seg = self._seg(segment)
 
         out: list[DiscoveredCompany] = []
         seen: set[str] = set()
@@ -296,7 +362,7 @@ class SgxSource(ExchangeSource):
         """SGX securities 목록을 1회 조회해 상장사 주식만 수집한다(코드 dedup + 캡)."""
         fetcher = self._client()
         cap = self._settings.discovery_max_per_source
-        listed_seg = Segment(country=segment.country, industry=segment.industry, listed="listed")
+        listed_seg = self._seg(segment)
         # SGX securities 는 전 종목을 1회 응답으로 준다(페이징 미구현 — 실 응답에 페이징이
         # 있다면 온네트워크 확인 후 추가). 캡은 클라이언트측 len(out)>=cap 으로 적용.
         try:
@@ -348,7 +414,7 @@ class IdxSource(ExchangeSource):
         """IDX GetCompanyProfiles 를 페이지네이션하며 상장사를 수집한다(코드 dedup + 캡)."""
         fetcher = self._client()
         cap = self._settings.discovery_max_per_source
-        listed_seg = Segment(country=segment.country, industry=segment.industry, listed="listed")
+        listed_seg = self._seg(segment)
         page_size = min(100, cap)
 
         out: list[DiscoveredCompany] = []

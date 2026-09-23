@@ -23,6 +23,8 @@ from leadcrawler.sources.countries import (
         ("PRC", "CN"),
         ("Kingdom of Thailand", "TH"),
         ("Brasil", "BR"),
+        ("Russian Federation", "RU"),
+        ("러시아", "RU"),
         ("United Kingdom of Great Britain and Northern Ireland", "GB"),
         # 현지/한자/한글 표기.
         ("日本", "JP"),
