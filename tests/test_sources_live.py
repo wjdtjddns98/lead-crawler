@@ -563,7 +563,7 @@ def test_pse_live_parses_html_and_paginates() -> None:
 
 
 def test_pse_live_respects_cap() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=1)
+    settings = Settings(dry_run=False, exchange_max_per_source=1)
     page = _pse_page(
         _pse_row("1", "1", "Alpha Corp", "ALP") + _pse_row("2", "2", "Beta Corp", "BET")
     )
@@ -763,7 +763,7 @@ def test_set_bypass_unescapes_html_entities() -> None:
 
 
 def test_set_bypass_respects_cap() -> None:
-    settings = Settings(dry_run=False, enable_bypass=True, discovery_max_per_source=1)
+    settings = Settings(dry_run=False, enable_bypass=True, exchange_max_per_source=1)
     out = SetSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML)).discover(
         Segment(country="태국", industry="에너지")
     )

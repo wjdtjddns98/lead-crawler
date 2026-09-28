@@ -68,7 +68,7 @@ def test_applies_to_country_routing() -> None:
 # --- B3(브라질) -------------------------------------------------------------
 
 def test_b3_live_filters_unlisted_date_and_confirms_via_detail() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
     list_page = {
         "page": {"pageNumber": 1, "pageSize": 100, "totalRecords": 3, "totalPages": 1},
         "results": [
@@ -113,7 +113,7 @@ def test_b3_live_filters_unlisted_date_and_confirms_via_detail() -> None:
 
 
 def test_b3_live_detail_error_skips_row_not_crashes() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
     list_page = {"page": {"totalPages": 1}, "results": [
         {"codeCVM": "1", "companyName": "X", "dateListing": "01/01/2020", "status": "A"},
     ]}
@@ -128,7 +128,7 @@ def test_b3_live_detail_error_skips_row_not_crashes() -> None:
 
 
 def test_b3_live_pagination_stops_at_total_pages() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
     calls = {"list": 0}
 
     def _json(url: str, params: dict) -> Any:
@@ -175,7 +175,7 @@ _KAP_DETAIL_HTML = (
 
 
 def test_kap_live_parses_table_and_detail_labels() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
     out = KapSource(settings, fetcher=FakeFetcher(
         text=lambda u, p: _KAP_DETAIL_HTML if "sirket-bilgileri" in u else _KAP_LIST_HTML,
     )).discover(Segment(country="TR", industry="전체", listed="listed"))
@@ -190,7 +190,7 @@ def test_kap_live_parses_table_and_detail_labels() -> None:
 
 
 def test_kap_live_detail_error_keeps_row_without_domain() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
 
     def _text(url: str, params: dict) -> str:
         if "sirket-bilgileri" in url:
@@ -224,7 +224,7 @@ def test_tadawul_impersonate_flag() -> None:
 
 
 def test_tadawul_live_parses_base_href_and_post_body() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
     landing = '<html><head><base href="https://x.sa/wps/portal/.../action/"></head></html>'
     posted = {"data": [
         {"symbol": "4001", "lonaName": "Abdullah Al Othaim Markets Co.", "isinCode": "SA1"},
@@ -265,7 +265,7 @@ def test_tadawul_live_error_returns_empty() -> None:
 # --- MOEX(러시아) ------------------------------------------------------------
 
 def test_moex_live_filters_types_and_dedups_by_issuer() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
     securities = {
         "securities": {
             "columns": ["secid", "emitent_id", "emitent_title", "type"],
@@ -307,7 +307,7 @@ def test_moex_live_filters_types_and_dedups_by_issuer() -> None:
 
 
 def test_moex_live_emitter_error_keeps_row_without_domain() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
     securities = {
         "securities": {
             "columns": ["secid", "emitent_id", "emitent_title", "type"],
@@ -329,7 +329,7 @@ def test_moex_live_emitter_error_keeps_row_without_domain() -> None:
 
 
 def test_moex_live_skips_malformed_rows_and_stops_on_repeated_page() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
     securities = {
         "securities": {
             "columns": ["secid", "emitent_id", "emitent_title", "type"],

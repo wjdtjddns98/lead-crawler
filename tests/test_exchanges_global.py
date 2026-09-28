@@ -151,7 +151,7 @@ def test_de_blob_url_parses_landing_href() -> None:
 
 
 def test_xetra_live_end_to_end_via_fake_fetcher() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
     wb = _de_workbook({
         "Prime Standard": [_de_row("Prime Standard", "DE0001", "AAA", "Alpha AG")],
         "General Standard": [],
@@ -203,7 +203,7 @@ def test_parse_euronext_row_extracts_name_isin_symbol_market() -> None:
 
 
 def test_euronext_live_paginates_and_dedups_by_isin() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
     page1 = {
         "iTotalRecords": 3,
         "aaData": [
@@ -219,10 +219,12 @@ def test_euronext_live_paginates_and_dedups_by_isin() -> None:
         ],
     }
 
-    def _json(url: str, params: dict) -> Any:
-        return {"0": page1, "2": page2}.get(str(params.get("iDisplayStart")), {"aaData": []})
+    def _post(url: str, data: dict) -> str:
+        return json.dumps(
+            {"0": page1, "2": page2}.get(str(data.get("iDisplayStart")), {"aaData": []})
+        )
 
-    out = EuronextSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+    out = EuronextSource(settings, fetcher=FakeFetcher(post=_post)).discover(
         Segment(country="프랑스", industry="금융")
     )
     assert [d.registry_id for d in out] == ["FR0001", "FR0002", "FR0003"]  # 중복 ISIN dedup.
@@ -231,18 +233,18 @@ def test_euronext_live_paginates_and_dedups_by_isin() -> None:
 
 def test_euronext_live_stops_on_repeated_page() -> None:
     # 같은 페이지(신규 ISIN 0건)를 계속 돌려줘도 무한루프하지 않고 2회 이하로 끝난다.
-    settings = Settings(dry_run=False, discovery_max_per_source=100)
+    settings = Settings(dry_run=False, exchange_max_per_source=100)
     calls = {"n": 0}
     same_page = {
         "iTotalRecords": 10_000,  # 총량은 커도 서버가 같은 페이지를 반복(서버측 이상 시뮬레이션).
         "aaData": [["", "<a>Alpha</a>", "FR0001", "ALP", "<div title='X'>XPAR</div>"]],
     }
 
-    def _json(url: str, params: dict) -> Any:
+    def _post(url: str, data: dict) -> str:
         calls["n"] += 1
-        return same_page
+        return json.dumps(same_page)
 
-    out = EuronextSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+    out = EuronextSource(settings, fetcher=FakeFetcher(post=_post)).discover(
         Segment(country="프랑스", industry="금융")
     )
     assert [d.registry_id for d in out] == ["FR0001"]
@@ -265,7 +267,7 @@ def test_euronext_unmapped_country_returns_empty_without_call() -> None:
 # --- BME -----------------------------------------------------------------
 
 def test_bme_live_two_passes_and_excludes_non_company_segments() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
     sibe_page = {
         "hasMoreResults": False,
         "data": [
@@ -314,7 +316,7 @@ def test_bme_live_stops_when_has_more_results_false() -> None:
 
 def test_bme_fetch_pass_stops_on_repeated_page() -> None:
     # hasMoreResults=True 를 계속 줘도 같은 companyKey 만 반복되면 한 패스 안에서 2회 이하로 끝난다.
-    settings = Settings(dry_run=False, discovery_max_per_source=100)
+    settings = Settings(dry_run=False, exchange_max_per_source=100)
     calls = {"n": 0}
     same_page = {"hasMoreResults": True, "data": [{"companyKey": "SAN", "name": "Santander"}]}
 
@@ -351,7 +353,7 @@ def test_six_row_active_filters_country_primary_and_delisting() -> None:
 
 
 def test_six_live_parses_json_from_text_endpoint() -> None:
-    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    settings = Settings(dry_run=False, exchange_max_per_source=10)
     payload = {
         "status": "Ok",
         "itemList": [
