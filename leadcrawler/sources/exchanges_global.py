@@ -1,4 +1,5 @@
-"""거래소 상장목록 발견 소스(Tier B, 유럽) — DE/Euronext(FR·IT·NL·BE·PT·IE·NO)/ES/CH.
+"""거래소 상장목록 발견 소스(Tier B) — 유럽 DE/Euronext(FR·IT·NL·BE·PT·IE·NO)/ES/CH(PR-b)
++ 신흥 BR(B3)/TR(KAP)/SA(Tadawul)/RU(MOEX)(PR-c).
 
 ``exchanges.py``(동남아 전용)와 분리한 신규 파일(2026-09-23, PR-b) — 국가별 상장기업
 전수를 공개 정적 HTTP(+일부 curl_cffi)로 받는다. 베이스(:class:`ExchangeSource`,
@@ -20,11 +21,25 @@
   (200, content-type text/plain 이지만 본문은 JSON → get_text + json.loads).
   ``country``/``lastListingDate`` 값 형식은 미확인 — 관대한 필터로 시작(스모크로 조정).
 
+- B3: 목록 API 는 ``dateListing`` 이 있는 행도 status 값이 전부 ``"A"`` 라 필터 실질 효력은
+  ``dateListing != 31/12/9999`` 쪽 — 표본 4페이지(400행) 중 180행(45%)이 통과, 상세 콜로 확정.
+  상세 ``hasQuotation`` 은 "S"(페트로브라스, 실거래)/"N"(등록만 된 SPE 법인)로 실측 분기 확인.
+  pageSize 는 100 확인(1000·4000 은 빈 배열) — 스펙의 "120" 대신 100 채택.
+- KAP: 렌더 HTML 테이블(``<tr class="border-b hover:bg-light-danger">`` 758행)을 직접 파싱한다
+  (flight JSON 대신 — 그 안의 ``mkkMemberOid`` 는 상세 URL 의 짧은 숫자 id 와 무관해 별도 상관관계가
+  필요한데, 렌더 테이블 앵커가 이미 그 숫자 id 를 href 에 담고 있어 더 짧고 견고함, 758/758 매치
+  실측). 이 페이지 자체가 BIST 상장사 전용이라 ``kapMemberType`` 필터가 불필요(전부 IGS 동치).
+- Tadawul: Akamai 가 TLS 지문을 본다 — impersonate=True(curl_cffi chrome) 로 272건 확인.
+  ``marketType`` 파라미터를 빈 값으로 보내면 응답에 marketType 필드 자체가 없어 Nomu 별도
+  여부 미확인(메인마켓으로 추정, PO §8 참조).
+- MOEX: ISS 컬럼 실측 일치(``securities``/``emitters`` 엔드포인트 모두 스펙과 동일 스키마).
+
 dry_run: 네트워크 없는 결정적 더미(베이스 ``_dry`` 상속).
 """
 
 from __future__ import annotations
 
+import base64
 import html
 import io
 import json
@@ -36,7 +51,7 @@ import openpyxl
 
 from ..dedup import normalize_domain
 from ..logging import get_logger
-from .base import Segment, build_company
+from .base import DiscoveredCompany, Segment, build_company, english_display, opt_str
 from .countries import resolve_country, supported_countries
 from .exchanges import ExchangeSource
 
@@ -420,4 +435,401 @@ class SixSource(ExchangeSource):
             if len(out) >= cap:
                 break
         log.info("six.live", segment=segment.label, n=len(out))
+        return out
+
+
+# --- B3(브라질) -----------------------------------------------------------
+
+_B3_LIST_URL = (
+    "https://sistemaswebb3-listados.b3.com.br/listedCompaniesProxy/CompanyCall/"
+    "GetInitialCompanies/{b64}"
+)
+_B3_DETAIL_URL = (
+    "https://sistemaswebb3-listados.b3.com.br/listedCompaniesProxy/CompanyCall/"
+    "GetDetail/{b64}"
+)
+_B3_PAGE_SIZE = 100  # 1000/4000 은 빈 배열(2026-09-23 실측) — 100 이 안전 상한.
+_B3_MAX_PAGES = 40  # 실측 totalPages=36(전체 3,533건, pageSize=100).
+_B3_NOT_LISTED_DATE = "31/12/9999"  # 미상장 성격(등록만·공모 대기 등) — 1차 필터로 상세콜 절감.
+
+
+def _b64_json(payload: dict[str, Any]) -> str:
+    """B3 API 의 base64(JSON) 경로 파라미터 인코딩."""
+    return base64.b64encode(json.dumps(payload).encode()).decode()
+
+
+def _b3_parse_list_page(payload: Any) -> tuple[list[dict[str, Any]], int]:
+    """B3 GetInitialCompanies 응답에서 (행 목록, totalPages) 를 뽑는다(형식 불일치는 빈 값)."""
+    if not isinstance(payload, dict):
+        return [], 0
+    results = payload.get("results")
+    total_pages = (payload.get("page") or {}).get("totalPages") or 0
+    return (results if isinstance(results, list) else []), int(total_pages)
+
+
+class B3Source(ExchangeSource):
+    """브라질 B3 거래소 상장목록 소스(목록 페이지네이션 + 상세 N+1, hasQuotation 확정)."""
+
+    name = "b3"
+    registry = "b3"
+    countries = frozenset({"br", "bra", "brazil", "brasil", "브라질"})
+
+    def _live(self, segment: Segment) -> list[DiscoveredCompany]:
+        fetcher = self._client()
+        cap = self._settings.discovery_max_per_source
+        listed_seg = self._seg(segment)
+
+        # 1차: 전 목록 페이지네이션(미상장 성격만 걸러 상세콜 후보를 줄인다).
+        candidates: list[dict[str, Any]] = []
+        page = 1
+        total_pages = _B3_MAX_PAGES
+        while page <= min(total_pages, _B3_MAX_PAGES):
+            b64 = _b64_json({"language": "pt-br", "pageNumber": page, "pageSize": _B3_PAGE_SIZE})
+            try:
+                payload = fetcher.get_json(_B3_LIST_URL.format(b64=b64))
+            except Exception as exc:  # 네트워크/형식 → 부분 결과로 다음 단계 진행.
+                log.info("b3.list.error", page=page, err_type=type(exc).__name__, err=str(exc))
+                break
+            rows, total_pages_resp = _b3_parse_list_page(payload)
+            if not rows:
+                break
+            if total_pages_resp:
+                total_pages = total_pages_resp
+            for row in rows:
+                if (
+                    row.get("dateListing") != _B3_NOT_LISTED_DATE
+                    and row.get("status") == "A"
+                    and row.get("codeCVM")
+                ):
+                    candidates.append(row)
+            page += 1
+
+        # 2차: 후보만 상세 조회 — hasQuotation=="S" 인 행만 상장 확정 채택(cap 안에서).
+        out: list[DiscoveredCompany] = []
+        seen: set[str] = set()
+        for row in candidates:
+            if len(out) >= cap:
+                break
+            code_cvm = str(row["codeCVM"])
+            if code_cvm in seen:
+                continue
+            seen.add(code_cvm)
+            try:
+                info = json.loads(fetcher.get_text(_B3_DETAIL_URL.format(
+                    b64=_b64_json({"codeCVM": code_cvm, "language": "pt-br"})
+                )))
+            except Exception as exc:  # 상세 실패 → 상장 미확정, 행 스킵(저장 안 함).
+                log.info(
+                    "b3.detail.error", codeCVM=code_cvm,
+                    err_type=type(exc).__name__, err=str(exc),
+                )
+                continue
+            if not isinstance(info, dict) or info.get("hasQuotation") != "S":
+                continue
+            out.append(
+                build_company(
+                    source=self.name, segment=listed_seg,
+                    name=opt_str(info.get("companyName")) or opt_str(row.get("companyName"))
+                    or code_cvm,
+                    domain=normalize_domain(opt_str(info.get("website"))),
+                    registry=self.registry, registry_id=code_cvm,
+                    ticker=opt_str(info.get("code")), market=opt_str(info.get("market")),
+                    listed_verified=True,  # 상세 hasQuotation 실측 확정.
+                )
+            )
+        log.info("b3.live", segment=segment.label, n=len(out), candidates=len(candidates))
+        return out
+
+
+# --- KAP(튀르키예) ---------------------------------------------------------
+
+_KAP_LIST_URL = "https://www.kap.org.tr/tr/bist-sirketler"
+_KAP_DETAIL_URL = "https://www.kap.org.tr/tr/sirket-bilgileri/ozet/{slug}"
+_KAP_ROW_SEP = '<tr class="border-b hover:bg-light-danger">'
+# 렌더 테이블 행: <a href="/tr/sirket-bilgileri/ozet/<id>-<slug>"><div>코드</div></a></td>
+# <td..><a..>회사명</a></td><td..>도시</td> — 실측 758/758 매치(2026-09-23).
+_KAP_ID_RE = re.compile(r'/tr/sirket-bilgileri/ozet/([^"]+?)"><div>([^<]*)</div>')
+_KAP_TITLE_RE = re.compile(r'<div>[^<]*</div></a></td>\s*<td[^>]*><a[^>]*>([^<]*)</a>')
+_KAP_CITY_RE = re.compile(r'</a></td>\s*<td[^>]*>([^<]*)</td>')
+# 상세 페이지의 Next.js flight 페이로드는 라벨과 값이 연속된 "children":"..." 쌍으로 실린다
+# (예: ..."children":"İnternet Adresi"}],[...,"children":"www.x.com.tr"}]...).
+_KAP_CHILDREN_RE = re.compile(r'\\"children\\":\\"([^\\]{0,300})\\"')
+_KAP_WEBSITE_LABEL = "İnternet Adresi"
+_KAP_MARKET_LABEL = "Sermaye Piyasası Aracının İşlem Gördüğü Pazar"
+
+
+def _kap_parse_list(page_html: str) -> list[dict[str, str]]:
+    """KAP bist-sirketler 렌더 HTML 테이블에서 상장사 행을 뽑는다(<tr> 블록 단위).
+
+    Next.js RSC flight JSON 대신 서버렌더 테이블을 직접 읽는다 — flight 페이로드의
+    ``mkkMemberOid`` 는 상세 URL 의 slug(짧은 숫자 id)와 무관해 별도 상관관계가 필요했는데,
+    렌더 테이블 앵커가 이미 그 숫자 id 를 href 에 담고 있어 더 짧고 견고하다(설계와 다른 결정 —
+    모듈 docstring 참조).
+    """
+    out: list[dict[str, str]] = []
+    for block in (page_html or "").split(_KAP_ROW_SEP)[1:]:
+        m_id = _KAP_ID_RE.search(block)
+        if not m_id:
+            continue
+        slug, code = m_id.group(1).strip(), m_id.group(2).strip()
+        num_id = slug.split("-", 1)[0]
+        if not num_id.isdigit() or not code:
+            continue
+        m_title = _KAP_TITLE_RE.search(block)
+        m_city = _KAP_CITY_RE.search(block)
+        out.append({
+            "id": num_id,
+            "slug": slug,
+            "code": code,
+            "title": (m_title.group(1).strip() if m_title else "") or code,
+            "city": m_city.group(1).strip() if m_city else "",
+        })
+    return out
+
+
+def _kap_label_value(detail_html: str, label: str) -> str | None:
+    """flight 페이로드의 순차 ``children`` 값 쌍(라벨 다음 값)에서 라벨의 값을 찾는다."""
+    values = _KAP_CHILDREN_RE.findall(detail_html or "")
+    for i, v in enumerate(values):
+        if v == label and i + 1 < len(values):
+            return v and values[i + 1] or None
+    return None
+
+
+class KapSource(ExchangeSource):
+    """튀르키예 KAP(공시플랫폼) BIST 상장사 목록 소스(목록+상세 N+1)."""
+
+    name = "kap"
+    registry = "kap"
+    countries = frozenset({
+        "tr", "tur", "turkey", "türkiye", "turkiye", "튀르키예", "터키",
+    })
+
+    def _live(self, segment: Segment) -> list[DiscoveredCompany]:
+        fetcher = self._client()
+        cap = self._settings.discovery_max_per_source
+        listed_seg = self._seg(segment)
+
+        try:
+            page_html = fetcher.get_text(_KAP_LIST_URL)
+        except Exception as exc:  # 네트워크/형식 → graceful 빈 결과.
+            log.info("kap.list.error", err_type=type(exc).__name__, err=str(exc))
+            return []
+        rows = _kap_parse_list(page_html)
+
+        out: list[DiscoveredCompany] = []
+        seen: set[str] = set()
+        for row in rows:
+            if len(out) >= cap:
+                break
+            if row["id"] in seen:
+                continue
+            seen.add(row["id"])
+            domain: str | None = None
+            market: str | None = None
+            try:
+                detail_html = fetcher.get_text(_KAP_DETAIL_URL.format(slug=row["slug"]))
+                domain = normalize_domain(_kap_label_value(detail_html, _KAP_WEBSITE_LABEL))
+                market = _kap_label_value(detail_html, _KAP_MARKET_LABEL)
+            except Exception as exc:  # 상세 실패 → 웹사이트 None 으로 목록 행 유지.
+                log.info(
+                    "kap.detail.error", id=row["id"],
+                    err_type=type(exc).__name__, err=str(exc),
+                )
+            out.append(
+                build_company(
+                    source=self.name, segment=listed_seg, name=row["title"],
+                    domain=domain, registry=self.registry, registry_id=row["id"],
+                    ticker=row["code"].split(",")[0].strip() or None,
+                    market=market or "BIST", listed_verified=True,
+                )
+            )
+        log.info("kap.live", segment=segment.label, n=len(out), total=len(rows))
+        return out
+
+
+# --- Tadawul(사우디아라비아) -----------------------------------------------
+
+_TADAWUL_LANDING_URL = (
+    "https://www.saudiexchange.sa/wps/portal/saudiexchange/trading/"
+    "participants-directory/issuer-directory"
+)
+# WebSphere 내비 토큰 포함 액션 경로 — base(<base href>, 매 요청 새로 파싱) 뒤에 그대로 붙는다.
+_TADAWUL_ACTION_PATH = (
+    "p0/IZ7_5A602H80OOMQC0604RU6VD10F2=CZ6_5A602H80OGSTA0QFSTBN9F10I5="
+    "NJgetCompanyListByMarknetAndSectors=/"
+)
+_TADAWUL_BASE_RE = re.compile(r'<base href="([^"]+)"')
+
+
+class TadawulSource(ExchangeSource):
+    """사우디 타다울(Tadawul) 상장목록 소스 — Akamai TLS 지문 차단(impersonate 필수)."""
+
+    name = "tadawul"
+    registry = "tadawul"
+    countries = frozenset({
+        "sa", "sau", "saudi arabia", "ksa", "사우디아라비아", "사우디",
+    })
+    impersonate = True
+
+    def _live(self, segment: Segment) -> list[DiscoveredCompany]:
+        fetcher = self._client()
+        cap = self._settings.discovery_max_per_source
+        listed_seg = self._seg(segment)
+        try:
+            landing = fetcher.get_text(_TADAWUL_LANDING_URL)
+            m = _TADAWUL_BASE_RE.search(landing)
+            if not m:
+                log.info("tadawul.base.missing")
+                return []
+            body = fetcher.post_text(
+                m.group(1) + _TADAWUL_ACTION_PATH,
+                data={"marketType": "", "sector": "", "symbol": "", "letter": ""},
+                headers={"X-Requested-With": "XMLHttpRequest"},
+            )
+            payload = json.loads(body)
+        except Exception as exc:  # 네트워크/파싱/impersonate 미설치 → graceful 빈 결과.
+            log.info("tadawul.error", err_type=type(exc).__name__, err=str(exc))
+            return []
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            return []
+
+        out: list[DiscoveredCompany] = []
+        seen: set[str] = set()
+        for row in rows:
+            if len(out) >= cap:
+                break
+            if not isinstance(row, dict):
+                continue
+            symbol = opt_str(row.get("symbol"))
+            name = opt_str(row.get("lonaName")) or opt_str(row.get("shortName"))
+            if not symbol or not name or symbol in seen:
+                continue
+            seen.add(symbol)
+            out.append(
+                build_company(
+                    source=self.name, segment=listed_seg, name=name,
+                    domain=None,  # 목록에 웹사이트 없음 → Yahoo `.SR` 해석에 위임.
+                    registry=self.registry, registry_id=symbol, ticker=symbol,
+                    market="Tadawul Main Market", listed_verified=True,
+                )
+            )
+        log.info("tadawul.live", segment=segment.label, n=len(out))
+        return out
+
+
+# --- MOEX(러시아) -----------------------------------------------------------
+
+_MOEX_LIST_URL = "https://iss.moex.com/iss/securities.json"
+_MOEX_EMITTER_URL = "https://iss.moex.com/iss/emitters/{emitent_id}.json"
+_MOEX_PAGE_SIZE = 100
+_MOEX_MAX_PAGES = 50
+_MOEX_WANTED_TYPES = frozenset({"common_share", "preferred_share"})
+
+
+def _moex_section(payload: Any, block: str) -> tuple[list[str], list[list[Any]]]:
+    """MOEX ISS 응답에서 (columns, data) 를 뽑는다(``block`` 예: 'securities'/'emitter')."""
+    section = payload.get(block) if isinstance(payload, dict) else None
+    if not isinstance(section, dict):
+        return [], []
+    cols = section.get("columns")
+    data = section.get("data")
+    return (cols if isinstance(cols, list) else []), (data if isinstance(data, list) else [])
+
+
+def _moex_cell(value: Any) -> str | None:
+    """MOEX ISS 셀 값을 문자열로(``emitent_id`` 등 정수 컬럼도 있다) — 빈값은 None."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s or None
+
+
+class MoexSource(ExchangeSource):
+    """러시아 MOEX(모스크바거래소) 상장목록 소스 — 발행자(emitent_id) 기준 dedup."""
+
+    name = "moex"
+    registry = "moex"
+    countries = frozenset({
+        "ru", "rus", "russia", "russian federation", "россия", "러시아",
+    })
+
+    def _live(self, segment: Segment) -> list[DiscoveredCompany]:
+        fetcher = self._client()
+        cap = self._settings.discovery_max_per_source
+        listed_seg = self._seg(segment)
+
+        # 1차: 종목 목록 페이지네이션 → 발행자 기준 대표 행 dedup(보통주 ticker 우선).
+        issuers: dict[str, dict[str, Any]] = {}
+        start = 0
+        page = 0
+        while page < _MOEX_MAX_PAGES and len(issuers) < cap:
+            try:
+                payload = fetcher.get_json(
+                    _MOEX_LIST_URL,
+                    params={
+                        "engine": "stock", "market": "shares", "is_trading": 1,
+                        "limit": _MOEX_PAGE_SIZE, "start": start, "iss.meta": "off",
+                    },
+                )
+            except Exception as exc:  # 네트워크/형식 → 부분 결과로 다음 단계 진행.
+                log.info("moex.list.error", start=start, err_type=type(exc).__name__, err=str(exc))
+                break
+            cols, data = _moex_section(payload, "securities")
+            if not cols or not data:
+                break
+            idx = {c: i for i, c in enumerate(cols)}
+            for row in data:
+                if "type" not in idx or row[idx["type"]] not in _MOEX_WANTED_TYPES:
+                    continue
+                emitent_id = _moex_cell(row[idx["emitent_id"]]) if "emitent_id" in idx else None
+                if not emitent_id:
+                    continue
+                sec_type = row[idx["type"]]
+                secid = _moex_cell(row[idx["secid"]]) if "secid" in idx else None
+                title = _moex_cell(row[idx["emitent_title"]]) if "emitent_title" in idx else None
+                existing = issuers.get(emitent_id)
+                if existing is None:
+                    issuers[emitent_id] = {"secid": secid, "title": title, "type": sec_type}
+                elif sec_type == "common_share" and existing["type"] != "common_share":
+                    issuers[emitent_id]["secid"] = secid  # 보통주가 대표 ticker.
+            start += len(data)
+            page += 1
+
+        # 2차: 발행자당 1회 조회(웹사이트 URL·영문 음역).
+        out: list[DiscoveredCompany] = []
+        for emitent_id, info in issuers.items():
+            if len(out) >= cap:
+                break
+            local_name = info.get("title") or emitent_id
+            domain: str | None = None
+            eng: str | None = None
+            try:
+                epayload = fetcher.get_json(
+                    _MOEX_EMITTER_URL.format(emitent_id=emitent_id),
+                    params={"iss.meta": "off"},
+                )
+                ecols, edata = _moex_section(epayload, "emitter")
+                if ecols and edata:
+                    eidx = {c: i for i, c in enumerate(ecols)}
+                    erow = edata[0]
+                    if "URL" in eidx:
+                        domain = normalize_domain(_moex_cell(erow[eidx["URL"]]))
+                    if "TRANSLITERATION_TITLE" in eidx:
+                        eng = _moex_cell(erow[eidx["TRANSLITERATION_TITLE"]])
+            except Exception as exc:  # 발행자 조회 실패 → 도메인 없이 목록 행 유지.
+                log.info(
+                    "moex.emitter.error", emitent_id=emitent_id,
+                    err_type=type(exc).__name__, err=str(exc),
+                )
+            name, name_eng = english_display(local_name, eng, segment.country)
+            out.append(
+                build_company(
+                    source=self.name, segment=listed_seg, name=name, name_eng=name_eng,
+                    domain=domain, registry=self.registry, registry_id=emitent_id,
+                    ticker=info.get("secid"), market="MOEX", listed_verified=True,
+                )
+            )
+        log.info("moex.live", segment=segment.label, n=len(out), issuers=len(issuers))
         return out

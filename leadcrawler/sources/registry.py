@@ -35,10 +35,14 @@ from .exchanges import (
     SgxSource,
 )
 from .exchanges_global import (
+    B3Source,
     BmeSource,
     DeutscheBoerseSource,
     EuronextSource,
+    KapSource,
+    MoexSource,
     SixSource,
+    TadawulSource,
 )
 from .ai_directory import AiDirectorySource
 from .edinet import EdinetSource
@@ -114,6 +118,10 @@ def build_sources(
         EuronextSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         BmeSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         SixSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        B3Source(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        KapSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        TadawulSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        MoexSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         GleifSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         WikidataSource(settings, rate_limiters=rate_limiters),
         # 국민연금 스냅샷(무네트워크) — 살아있는 사업장을 업종·규모(가입자수) 우선으로.
