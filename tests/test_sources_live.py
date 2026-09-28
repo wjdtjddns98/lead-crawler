@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from datetime import date
 from typing import Any
@@ -688,33 +689,174 @@ def test_idx_dict_data_does_not_spin() -> None:
     assert out == [] and calls["n"] == 1
 
 
-def test_bursa_live_is_disabled_unverified() -> None:
-    # Bursa 라이브는 정적 수집 불가 — 네트워크 호출 없이 빈 결과(검증대기).
-    settings = Settings(dry_run=False)
+# --- SET/Bursa/HNX — 2026-09-28 실측 페이로드 형태(축약) ----------------------
 
+# SET listedCompanies_en_US.xls = cp874 HTML 테이블(제목행 2셀 + 헤더 + 10열 데이터).
+_SET_XLS = (
+    '<table><tr><td colspan="6"><strong>List of Listed Companies</strong></td>'
+    "<td>As of 28 Sep 2026</td></tr>"
+    "<tr><td>Symbol</td><td>Company</td><td>Market</td><td>Industry</td><td>Sector</td>"
+    "<td>Address</td><td>Zip code</td><td>Tel.</td><td>Fax</td><td>Website</td></tr>"
+    "<tr><td nowrap>2S</td><td nowrap>2S METAL PUBLIC COMPANY LIMITED</td><td>SET</td>"
+    "<td>Industrials</td><td>Steel and Metal Products</td><td>8/5 Moo 14 Songkhla</td>"
+    "<td>90110</td><td>0-7480-0111</td><td>0-7480-1286</td><td>www.ss.co.th</td></tr>"
+    "<tr><td>3BBIF</td><td>3BB INTERNET INFRASTRUCTURE FUND</td><td>SET</td><td>Technology</td>"
+    "<td>Information &amp; Communication Technology</td><td>Bangkok</td><td>10120</td>"
+    "<td>-</td><td>-</td><td>https://www.3bb-if.com</td></tr>"
+    "<tr><td>CPNREIT</td><td>CPN RETAIL GROWTH LEASEHOLD REIT</td><td>SET</td>"
+    "<td>Property &amp; Construction</td><td>Property Fund &amp; REITs</td><td>Bangkok</td>"
+    "<td>10330</td><td>-</td><td>-</td><td>-</td></tr>"
+    "<tr><td>88TH</td><td>88(Thailand) Public Company Limited</td><td>mai</td>"
+    "<td>Services</td><td>Commerce</td><td>Bangkok</td><td>10230</td>"
+    "<td>1361 หรือ 0-2153-9587</td><td>-</td><td>-</td></tr>"
+    "</table>"
+).encode("cp874")
+
+
+def test_set_live_parses_listed_file_and_skips_funds() -> None:
+    settings = Settings(dry_run=False)  # enable_bypass 불필요.
+    urls: list[str] = []
+
+    def _data(url: str, params: dict) -> bytes:
+        urls.append(url)
+        return _SET_XLS
+
+    out = SetSource(settings, fetcher=FakeFetcher(data=_data)).discover(
+        Segment(country="태국", industry="", listed="listed")
+    )
+    assert urls == [SetSource.list_url]
+    assert [c.registry_id for c in out] == ["2S", "88TH"]  # 인프라펀드·REIT 제외.
+    s2 = out[0]
+    assert s2.name == "2S METAL PUBLIC COMPANY LIMITED" and s2.ticker == "2S"
+    assert s2.domain == "ss.co.th" and s2.phone == "0-7480-0111"
+    assert s2.address == "8/5 Moo 14 Songkhla 90110" and s2.market == "SET"
+    assert s2.canonical_key == "reg:set:2s" and s2.listed == "listed" and s2.listed_verified
+    th = out[1]
+    assert th.market == "SET mai" and th.domain is None
+    assert th.phone and "หรือ" in th.phone  # cp874 태국어 보존.
+
+
+def test_set_live_error_is_graceful() -> None:
     def _boom(*a, **k):
-        raise AssertionError("Bursa 라이브는 네트워크를 호출하면 안 된다(검증대기 no-op)")
+        raise RuntimeError("HTTP 403")
 
-    out = BursaSource(settings, fetcher=FakeFetcher(json=_boom, post=_boom)).discover(
-        Segment(country="말레이시아", industry="금융")
+    out = SetSource(Settings(dry_run=False), fetcher=FakeFetcher(data=_boom)).discover(
+        Segment(country="TH", industry="", listed="listed")
     )
     assert out == []
 
 
-def test_set_live_is_disabled_waf_blocked() -> None:
-    # SET 라이브는 Incapsula WAF 차단으로 비활성 — 네트워크 호출 없이 빈 결과.
-    settings = Settings(dry_run=False)
-
-    def _boom(*a, **k):
-        raise AssertionError("SET 라이브는 네트워크를 호출하면 안 된다(WAF 비활성)")
-
-    out = SetSource(settings, fetcher=FakeFetcher(json=_boom, post=_boom)).discover(
-        Segment(country="태국", industry="에너지")
+def test_set_live_respects_cap() -> None:
+    settings = Settings(dry_run=False, exchange_max_per_source=1)
+    out = SetSource(settings, fetcher=FakeFetcher(data=lambda u, p: _SET_XLS)).discover(
+        Segment(country="TH", industry="", listed="listed")
     )
-    assert out == []
+    assert len(out) == 1
 
 
-# --- Track A: enable_bypass 시 SET/Bursa 우회 파싱(canned HTML) -----------
+def _bursa_row(code: str, name: str) -> list:
+    return [
+        1, f"<div class='stock_change' style='margin-left: 7px;'><span class=\"up\"></span>"
+        f"{name}</div>", code, "s", "0.180", "0.170", "-", "-", "556,688",
+    ]
+
+
+def test_bursa_live_paginates_and_keeps_numeric_codes() -> None:
+    settings = Settings(dry_run=False)
+    full = [_bursa_row(f"{1000 + i}", f"CO{i} [S]") for i in range(49)] + [
+        _bursa_row("5079WA", "ONEGLOVE-WA [S]")  # 워런트 — 제외.
+    ]
+    pages = {
+        1: {"recordsTotal": "53", "recordsFiltered": "53", "data": full, "board": None},
+        2: {"recordsTotal": "53", "data": [
+            _bursa_row("0652VJ", "HSI-PWVJ"),  # 구조화 워런트 — 제외.
+            _bursa_row("7113", "TOPGLOV [S]"),
+            _bursa_row("7113", "TOPGLOV [S]"),  # 중복 — dedup.
+        ]},
+    }
+    seen_pages: list[int] = []
+
+    def _json(url: str, params: dict):
+        seen_pages.append(params["page"])
+        assert params["per_page"] == 50
+        return pages[params["page"]]
+
+    out = BursaSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="말레이시아", industry="", listed="listed")
+    )
+    assert seen_pages == [1, 2]  # 2쪽이 50 미만 → 종료.
+    assert len(out) == 50
+    assert out[0].name == "CO0" and out[0].registry_id == "1000" and out[0].ticker == "1000"
+    assert out[-1].name == "TOPGLOV" and out[-1].canonical_key == "reg:bursa:7113"
+    assert all(c.listed == "listed" and c.domain is None for c in out)
+
+
+def test_bursa_live_error_keeps_partial() -> None:
+    def _json(url: str, params: dict):
+        if params["page"] == 1:
+            return {"data": [_bursa_row(f"{1000 + i}", f"CO{i}") for i in range(50)]}
+        raise RuntimeError("HTTP 403")
+
+    out = BursaSource(Settings(dry_run=False), fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="MY", industry="", listed="listed")
+    )
+    assert len(out) == 50
+
+
+def test_bursa_uses_safari_impersonation() -> None:
+    # Cloudflare 가 chrome 지문은 403, safari 는 200(2026-09-28 실측).
+    assert BursaSource.impersonate and BursaSource.impersonate_as == "safari"
+    assert SetSource.impersonate and SetSource.impersonate_as == "chrome"
+
+
+# HNX ListSearch_Datas 응답: {"Content": <table HTML>, "Total": ...}.
+def _hnx_payload(market: str, rows: list[tuple[str, str]]) -> str:
+    body = "".join(
+        f'<tr> <td class="tdCenterAlign STT"> {i} </td> <td class="tdCenterAlign STOCK_CODE">'
+        f' <a href="/cophieu-etfs/chi-tiet-chung-khoan-{market}-{c.lower()}.html">{c}</a> </td>'
+        f' <td class="tdLeftAlign NAME"> <a href="/x.html">{n}</a> </td>'
+        f' <td class="tdCenterAlign START_TRADING_DATE"> 24/12/2010 </td> </tr>'
+        for i, (c, n) in enumerate(rows, 1)
+    )
+    return json.dumps({"Content": f"<table><tbody>{body}</tbody></table>", "Total": "x"})
+
+
+def test_hnx_live_parses_listed_and_upcom() -> None:
+    settings = Settings(dry_run=False)
+    posts: list[tuple[str, dict]] = []
+
+    def _post(url: str, data: dict) -> str:
+        posts.append((url, data))
+        if "UC_Issuer" in url:
+            return _hnx_payload("uc", [("A32", "CTCP 32"), ("ADC", "중복")])
+        return _hnx_payload("ny", [
+            ("ADC", "C&#244;ng ty cổ phần Mĩ thuật v&#224; Truyền th&#244;ng"),
+            ("BAB123032", "Ngân hàng TMCP Bắc Á"),  # 채권 코드 방어 — 제외.
+        ])
+
+    out = HnxSource(settings, fetcher=FakeFetcher(post=_post)).discover(
+        Segment(country="베트남", industry="", listed="listed")
+    )
+    assert [d["p_market_code"] for _, d in posts] == ["", "UC"]
+    assert [(c.registry_id, c.market) for c in out] == [("ADC", "HNX"), ("A32", "UPCoM")]
+    assert out[0].name == "Công ty cổ phần Mĩ thuật và Truyền thông"
+    assert out[0].canonical_key == "reg:hnx:adc" and out[0].ticker == "ADC"
+    assert all(c.listed == "listed" and c.listed_verified for c in out)
+
+
+def test_hnx_live_board_error_keeps_other_board() -> None:
+    def _post(url: str, data: dict) -> str:
+        if "UC_Issuer" in url:
+            raise RuntimeError("timeout")
+        return _hnx_payload("ny", [("ADC", "CTCP ADC")])
+
+    out = HnxSource(Settings(dry_run=False), fetcher=FakeFetcher(post=_post)).discover(
+        Segment(country="VN", industry="", listed="listed")
+    )
+    assert [c.registry_id for c in out] == ["ADC"]
+
+
+# --- HOSE(베트남) — 정적 엔드포인트 미확보(2026-09-28 재실측), bypass 전용 유지 ------
 
 _LISTING_HTML = (
     "<table>"
@@ -723,54 +865,6 @@ _LISTING_HTML = (
     "</table>"
 )
 
-
-def test_set_bypass_parses_listing() -> None:
-    # enable_bypass + 우회 페처가 목록 HTML 을 주면 (심볼,회사명) 파싱.
-    settings = Settings(dry_run=False, enable_bypass=True, discovery_max_per_source=10)
-    src = SetSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML))
-    out = src.discover(Segment(country="태국", industry="에너지"))
-    assert len(out) == 2
-    assert out[0].registry == "set" and out[0].registry_id == "PTT"
-    assert out[0].name == "PTT Public Company Limited"
-    assert out[0].canonical_key == "reg:set:ptt" and out[0].listed == "listed"
-
-
-def test_bursa_bypass_parses_listing() -> None:
-    settings = Settings(dry_run=False, enable_bypass=True, discovery_max_per_source=10)
-    src = BursaSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML))
-    out = src.discover(Segment(country="말레이시아", industry="금융"))
-    assert {c.registry_id for c in out} == {"PTT", "AOT"}
-    assert all(c.registry == "bursa" for c in out)
-
-
-def test_set_bypass_empty_html_is_graceful() -> None:
-    # 우회해도 WAF 가 빈 HTML 을 주면(차단 지속) graceful 빈 결과.
-    settings = Settings(dry_run=False, enable_bypass=True)
-    out = SetSource(settings, fetcher=FakeFetcher(text=lambda u, p: "")).discover(
-        Segment(country="태국", industry="에너지")
-    )
-    assert out == []
-
-
-def test_set_bypass_unescapes_html_entities() -> None:
-    # 회사명의 HTML 엔티티(&amp; 등)를 복원해 저장(PSE 경로와 일관).
-    html = '<tr><td><a href="/q/SCC">SCC</a></td><td>Siam Cement &amp; Co.</td></tr>'
-    settings = Settings(dry_run=False, enable_bypass=True)
-    out = SetSource(settings, fetcher=FakeFetcher(text=lambda u, p: html)).discover(
-        Segment(country="태국", industry="건설")
-    )
-    assert out and out[0].name == "Siam Cement & Co."
-
-
-def test_set_bypass_respects_cap() -> None:
-    settings = Settings(dry_run=False, enable_bypass=True, exchange_max_per_source=1)
-    out = SetSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML)).discover(
-        Segment(country="태국", industry="에너지")
-    )
-    assert len(out) == 1  # 캡 적용
-
-
-# --- HOSE/HNX(베트남) — 라이브는 SPA/JS 렌더링으로 검증대기(2026-07-02 실측) ------
 
 def test_hose_live_is_disabled_unverified() -> None:
     # HOSE 라이브는 React SPA + F5 WAF 로 정적 수집 불가 — 네트워크 호출 없이 빈 결과.
@@ -785,21 +879,8 @@ def test_hose_live_is_disabled_unverified() -> None:
     assert out == []
 
 
-def test_hnx_live_is_disabled_unverified() -> None:
-    # HNX 라이브는 JS 렌더링 필요·안정 API 미발견으로 검증대기 — 네트워크 호출 없이 빈 결과.
-    settings = Settings(dry_run=False)
-
-    def _boom(*a, **k):
-        raise AssertionError("HNX 라이브는 네트워크를 호출하면 안 된다(검증대기 no-op)")
-
-    out = HnxSource(settings, fetcher=FakeFetcher(json=_boom, post=_boom, text=_boom)).discover(
-        Segment(country="VN", industry="금융")
-    )
-    assert out == []
-
-
 def test_hose_bypass_parses_listing() -> None:
-    # enable_bypass + 우회 페처가 목록 HTML 을 주면 (심볼,회사명) 파싱(SET/Bursa 와 동일 로직).
+    # enable_bypass + 우회 페처가 목록 HTML 을 주면 (심볼,회사명) 파싱.
     settings = Settings(dry_run=False, enable_bypass=True, discovery_max_per_source=10)
     src = HoseSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML))
     out = src.discover(Segment(country="베트남", industry="에너지"))
@@ -808,12 +889,30 @@ def test_hose_bypass_parses_listing() -> None:
     assert out[0].canonical_key == "reg:hose:ptt" and out[0].listed == "listed"
 
 
-def test_hnx_bypass_parses_listing() -> None:
-    settings = Settings(dry_run=False, enable_bypass=True, discovery_max_per_source=10)
-    src = HnxSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML))
-    out = src.discover(Segment(country="VN", industry="금융"))
-    assert {c.registry_id for c in out} == {"PTT", "AOT"}
-    assert all(c.registry == "hnx" and c.canonical_key.startswith("reg:hnx:") for c in out)
+def test_hose_bypass_empty_html_is_graceful() -> None:
+    settings = Settings(dry_run=False, enable_bypass=True)
+    out = HoseSource(settings, fetcher=FakeFetcher(text=lambda u, p: "")).discover(
+        Segment(country="VN", industry="에너지")
+    )
+    assert out == []
+
+
+def test_hose_bypass_unescapes_html_entities() -> None:
+    # 회사명의 HTML 엔티티(&amp; 등)를 복원해 저장(PSE 경로와 일관).
+    html = '<tr><td><a href="/q/SCC">SCC</a></td><td>Siam Cement &amp; Co.</td></tr>'
+    settings = Settings(dry_run=False, enable_bypass=True)
+    out = HoseSource(settings, fetcher=FakeFetcher(text=lambda u, p: html)).discover(
+        Segment(country="VN", industry="건설")
+    )
+    assert out and out[0].name == "Siam Cement & Co."
+
+
+def test_hose_bypass_respects_cap() -> None:
+    settings = Settings(dry_run=False, enable_bypass=True, exchange_max_per_source=1)
+    out = HoseSource(settings, fetcher=FakeFetcher(text=lambda u, p: _LISTING_HTML)).discover(
+        Segment(country="VN", industry="에너지")
+    )
+    assert len(out) == 1  # 캡 적용
 
 
 # --- 검색 현지화(Tier C) ------------------------------------------------

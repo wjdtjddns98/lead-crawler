@@ -9,8 +9,18 @@
 - PSE(필리핀): ``companyDirectory/search.ax`` — POST 폼 + HTML 테이블(JSON 아님),
   ``pageNo`` 로 페이지네이션(50/page, 총 ~283사). 인증·WAF 없음 → 정적 스크래핑 동작
   (2026-06-19 실연동 검증).
-- SET(태국)/Bursa(말레이시아): 공개 목록이 WAF/JS 렌더링으로 정적 HTTP 차단 → 라이브
-  비활성(dry 전용). 해당국은 당분간 Tier A(GLEIF/Wikidata)로 커버. 헤드리스/대체소스 필요.
+- SET(태국): 사이트·``/api/set/stock/list`` 는 Incapsula JS 챌린지(iframe, chrome/safari 위장
+  모두 403 — 2026-09-28 실측). 단 정적 다운로드 ``/dat/eod/listedcompany/static/
+  listedCompanies_en_US.xls`` 는 curl_cffi chrome 으로 200(403KB, 일반 httpx 는 301) — 실체는
+  **cp874 HTML 테이블**(10열: Symbol·Company·Market(SET/mai)·Industry·Sector·Address·Zip·Tel·
+  Fax·Website), 929행(SET 698·mai 231), Website 912행 보유. 인프라펀드·부동산펀드·REIT
+  (섹터 "Property Fund & REITs" 56 + 이름 FUND) 제외 → 주식 ≈865(2026-09-28 실측).
+- Bursa(말레이시아): 2026-08-14 엔 무보호였던 ``/api/v1/equities_prices/equities_prices`` 가
+  2026-09-28 기준 Cloudflare "Just a moment" 챌린지(httpx·curl_cffi chrome 403, 페이지 선방문
+  쿠키도 403). **curl_cffi safari 위장은 200** — DataTables JSON ``{recordsTotal:"2924",
+  data:[[no, "<div>약식명 [S]</div>", 코드, ...]]}``. ``per_page`` 50 까지(1000 은 20 으로
+  폴백) → ~59 페이지. 행엔 **약식 종목명뿐**(정식 상호·웹사이트 없음). 코드 4자리 숫자=보통주·
+  REIT, 나머지(워런트 ``WA``·ETF ``EA``·콜워런트 등 영숫자)는 제외.
 - SGX(싱가포르): ``api.sgx.com/securities`` 공개 JSON(인증 불필요) — 200 OK 로 정상 실측
   됨(2026-07-02). 실 스키마 확인: ``data.prices[]`` 각 행의 코드=``nc``, 이름=``n``(기존
   가정과 일치). 단, 응답에 ``type`` 필드로 11종 상품이 혼재(전체 1276건 중 실제 상장기업
@@ -30,16 +40,17 @@
   로 차단 → 정적 HTTP 로는 뚫리지 않음(2026-07-02 실측: 루트 200/SPA셸, SymbolList
   200/동일셸, JSON Accept 헤더 시 WAF 403 성격 차단). 라이브 비활성(dry 전용) +
   bypass_capable=True(SET/Bursa 와 동일 상황 — 헤드리스 렌더링 필요).
-- HNX(베트남, hnx.vn — UPCoM 포함): 상장목록 페이지(``/vi-vn/co-phieu-etfs/...``)는
-  legacy ASP.NET 서버렌더링이지만 실제 종목 테이블은 Vue 컴포넌트가 별도 호출로 채우는
-  구조로 보이며, 정적 HTML 에는 데이터가 없다. 유일하게 발견한 AJAX 엔드포인트
-  ``/vi-vn/ModuleSearchALL/SearchDataHNX/SearchSuggestSymbol?symbol=`` 는 세션 쿠키
-  없이는 빈 배열, 쿠키를 주면 "리소스를 찾을 수 없음" 오류를 반환해 불안정하고 전체
-  상장목록도 아님(심볼 자동완성용으로 추정) → 신뢰 가능한 공개 JSON 목록 미발견
-  (2026-07-02 실측). UPCoM 은 HNX 산하 게시판이라 별도 엔드포인트를 못 찾은 이상 별도
-  소스를 신설하지 않고 ``HnxSource`` 로 통합 표현(라이브 확보 시 board 파라미터로 분기
-  예정). 라이브 비활성(dry 전용) + bypass_capable=True(헤드리스 렌더링 필요 — Bursa 와
-  동일 상황).
+  2026-09-28 재실측: 루트 SPA 셸 200(1900B)이나 번들 ``/static/js/main.*.js``(661KB)는
+  수 KB/s 로 흘러오다 타임아웃·연결 리셋, 추정 API 호스트(``api.hsx.vn``)도 연결 리셋 →
+  정적 목록 엔드포인트 미확보. 라이브는 기존대로(bypass 전용) 유지.
+- HNX(베트남, hnx.vn — UPCoM 포함): 2026-07-02 엔 잘못된 경로(``/vi-vn/co-phieu-etfs/``,
+  홈으로 떨어짐)를 봤다. 실제 목록 페이지는 ``/cophieu-etfs/chung-khoan-ny.html``(상장)·
+  ``chung-khoan-uc.html``(UPCoM)이고, 둘 다 jQuery 로 ``POST /ModuleIssuer/List/
+  ListSearch_Datas``(상장, ``p_market_code=''``)·``/ModuleIssuer/UC_Issuer/ListSearch_Datas``
+  (``p_market_code=UC``) 를 부른다 → JSON ``{Content: <table HTML>, Total}``. 봇보호 없음
+  (일반 httpx, 인증서 사슬 불완전이라 Fetcher 의 verify=False 폴백 경유). ``p_record_on_page``
+  2000 1회로 전량: 상장 299·UPCoM 818(2026-09-28 실측), 전부 3자 주식 코드(채권·ETF 없음).
+  열: 코드·발행사명(베트남어)·(상장만)업종·첫거래일·상장주식수 — 웹사이트 없음.
 
 dry_run: 네트워크 없는 결정적 더미(전 소스 공통). 키 불필요.
 """
@@ -47,6 +58,7 @@ dry_run: 네트워크 없는 결정적 더미(전 소스 공통). 키 불필요.
 from __future__ import annotations
 
 import html
+import json
 import re
 import threading
 import time
@@ -88,11 +100,13 @@ class ExchangeSource:
     name: str = ""
     registry: str = ""
     countries: frozenset[str] = frozenset()
-    # WAF 차단 소스(SET/Bursa)는 True — enable_bypass 시 _client() 가 InsaneFetcher 를 쓴다.
+    # WAF 차단 소스(HOSE)는 True — enable_bypass 시 _client() 가 InsaneFetcher 를 쓴다.
     bypass_capable: bool = False
     # TLS 지문만 보는 WAF(IDX Cloudflare·Tadawul Akamai, 2026-09-23 실측) 는 curl_cffi chrome
     # 위장이면 통과 — True 면 _client() 가 CffiFetcher 를 쓴다(bypass 격자와 별개·미설치면 폴백).
     impersonate: bool = False
+    # curl_cffi 위장 프로필 — Bursa Cloudflare 는 chrome 403·safari 200(2026-09-28 실측).
+    impersonate_as: str = "chrome"
 
     def __init__(
         self,
@@ -192,6 +206,7 @@ class ExchangeSource:
                     self._fetcher = CffiFetcher(
                         min_interval=self._settings.http_request_delay,
                         timeout=self._settings.http_timeout,
+                        impersonate=self.impersonate_as,
                     )
                     return self._fetcher
                 except ImportError:  # bypass extra 미설치 — 일반 페처로 폴백(403 이면 빈 결과).
@@ -319,32 +334,55 @@ class PseSource(ExchangeSource):
 
 
 class SetSource(ExchangeSource):
-    """태국 증권거래소(SET) 상장목록 소스 — 라이브는 WAF 차단으로 비활성(dry 전용)."""
+    """태국 증권거래소(SET) 상장목록 소스 — 정적 다운로드 ``listedCompanies_en_US.xls``.
+
+    사이트·JSON API 는 Incapsula JS 챌린지지만 이 다운로드는 curl_cffi chrome 위장이면 200
+    (2026-09-28 실측 — 모듈 docstring). 실체는 cp874 HTML 테이블이고 웹사이트·주소·전화를
+    포함한다. 인프라펀드·부동산펀드·REIT 는 제외(주식만).
+    """
 
     name = "set"
     registry = "set"
     countries = frozenset({"th", "tha", "thailand", "태국"})
-    bypass_capable = True  # Incapsula WAF 차단 → enable_bypass 시 InsaneFetcher 로 우회.
-    # 베스트에포트 공개 목록 URL(라이브 셀렉터/구조 확인 필요 — A5).
-    list_url = "https://www.set.or.th/en/market/get-quote/stock"
+    impersonate = True  # 일반 httpx 는 301(챌린지 경로) — chrome 위장이면 200.
+    list_url = "https://www.set.or.th/dat/eod/listedcompany/static/listedCompanies_en_US.xls"
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
-        """SET 공개 목록은 Incapsula WAF(403)로 정적 HTTP 차단(2026-06-19 확인).
-
-        ``enable_bypass`` 시 벤더 엔진(InsaneFetcher)으로 목록 HTML 을 가져와 파싱한다. off
-        이면 기존대로 빈 결과(태국은 Tier A 로 커버). 우회 실패/형식불일치도 graceful 빈 결과.
-        """
-        if not self._settings.enable_bypass:
-            log.info("set.skip.bypass_off", segment=segment.label)
-            return []
+        """상장사 목록 파일을 1회 받아 주식만 수집한다(심볼 dedup + 캡, 실패 시 빈 결과)."""
         try:
-            html = self._client().get_text(self.list_url)
-        except Exception as exc:  # 우회/네트워크/형식 → graceful 빈 결과.
+            raw = self._client().get_bytes(self.list_url)
+        except Exception as exc:  # WAF/네트워크 → graceful 빈 결과.
             log.info("set.error", err_type=type(exc).__name__, err=str(exc))
             return []
-        rows = self._parse_listing(html, segment)
-        log.info("set.bypass", segment=segment.label, found=len(rows))
-        return rows
+        cap = self._settings.exchange_max_per_source
+        listed_seg = self._seg(segment)
+        out: list[DiscoveredCompany] = []
+        seen: set[str] = set()
+        # 태국어는 전화 칸 일부("หรือ")뿐 — cp874 로 풀어야 깨지지 않는다(utf-8 은 디코드 실패).
+        for cells in _html_rows(raw.decode("cp874", errors="replace")):
+            if len(cells) != 10:
+                continue  # 제목·헤더(열 수 다름) 등.
+            symbol, name, market, _ind, sector, addr, zip_code, tel, _fax, web = cells
+            if not symbol or not name or symbol == "Symbol" or symbol in seen:
+                continue
+            if sector == "Property Fund & REITs" or _SET_FUND.search(name):
+                continue  # 펀드·리츠는 회사 아님(주식만).
+            seen.add(symbol)
+            out.append(
+                build_company(
+                    source=self.name, segment=listed_seg, name=name,
+                    domain=normalize_domain(web) if web and web != "-" else None,
+                    registry=self.registry, registry_id=symbol, ticker=symbol,
+                    market="SET" if market == "SET" else f"SET {market}",
+                    address=" ".join(x for x in (addr, zip_code) if x and x != "-") or None,
+                    phone=tel if tel and tel != "-" else None,
+                    listed_verified=True,  # 상장목록 원천 — listed 는 항상 실측.
+                )
+            )
+            if len(out) >= cap:
+                break
+        log.info("set.live", segment=segment.label, n=len(out))
+        return out
 
 
 class SgxSource(ExchangeSource):
@@ -481,36 +519,65 @@ class IdxSource(ExchangeSource):
 
 
 class BursaSource(ExchangeSource):
-    """말레이시아 거래소(Bursa) 상장목록 소스 — 라이브는 검증대기 no-op(dry 전용).
+    """말레이시아 거래소(Bursa) 상장목록 소스 — equities_prices DataTables JSON(safari 위장).
 
-    Bursa 공개 목록은 JS 렌더링/봇 보호로 정적 HTTP 수집이 어렵다(SET 와 동일 상황).
-    실연동 전까지 라이브는 네트워크 없이 빈 결과(말레이시아는 Tier A 로 커버).
-    TODO(live): 헤드리스 브라우저 또는 공식 다운로드 엔드포인트 확인 필요.
+    Cloudflare 챌린지가 chrome 지문은 막고 safari 지문은 통과시킨다(2026-09-28 실측 — 모듈
+    docstring). 행엔 약식 종목명·코드뿐(웹사이트 없음 → ⓪ Yahoo ``.KL`` 해석). 4자리 숫자
+    코드(보통주·REIT)만 채택하고 워런트·ETF 등 영숫자 코드는 제외한다.
     """
 
     name = "bursa"
     registry = "bursa"
     countries = frozenset({"my", "mys", "malaysia", "말레이시아"})
-    bypass_capable = True  # JS/봇보호 차단 → enable_bypass 시 InsaneFetcher 로 우회.
-    list_url = "https://www.bursamalaysia.com/market_information/equities_prices"
+    impersonate = True
+    impersonate_as = "safari"  # chrome 은 Cloudflare 403(2026-09-28 실측).
+    list_url = "https://www.bursamalaysia.com/api/v1/equities_prices/equities_prices"
+    _PER_PAGE = 50  # 서버 상한(1000 요청은 20 으로 폴백 — 실측).
+    _MAX_PAGES = 100  # ~59 페이지(2,924행) — 예산 보호 절대 상한.
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
-        """Bursa 공개 목록은 JS 렌더링/봇 보호로 정적 차단(SET 와 동일 상황).
-
-        ``enable_bypass`` 시 벤더 엔진으로 목록 HTML 을 가져와 파싱, off 면 기존 빈 결과
-        (말레이시아는 Tier A 로 커버). 우회 실패/형식불일치도 graceful 빈 결과.
-        """
-        if not self._settings.enable_bypass:
-            log.info("bursa.skip.bypass_off", segment=segment.label)
-            return []
-        try:
-            html = self._client().get_text(self.list_url)
-        except Exception as exc:
-            log.info("bursa.error", err_type=type(exc).__name__, err=str(exc))
-            return []
-        rows = self._parse_listing(html, segment)
-        log.info("bursa.bypass", segment=segment.label, found=len(rows))
-        return rows
+        """전 종목을 페이지네이션하며 보통주 코드만 수집한다(코드 dedup + 캡)."""
+        fetcher = self._client()
+        cap = self._settings.exchange_max_per_source
+        listed_seg = self._seg(segment)
+        out: list[DiscoveredCompany] = []
+        seen: set[str] = set()
+        for page in range(1, self._MAX_PAGES + 1):
+            try:
+                payload = fetcher.get_json(
+                    self.list_url,
+                    params={"inMarket": "all", "per_page": self._PER_PAGE, "page": page},
+                )
+            except Exception as exc:  # Cloudflare/네트워크/형식 → 부분 결과 보존 후 중단.
+                log.info("bursa.error", page=page, err_type=type(exc).__name__, err=str(exc))
+                break
+            rows = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(rows, list) or not rows:
+                break  # 마지막 도달(또는 예상밖 스키마).
+            for row in rows:
+                if not isinstance(row, list) or len(row) < 3:
+                    continue
+                code = str(row[2]).strip()
+                # 약식명: "<div ...><span ...></span>ZETRIX [S]</div>" → "ZETRIX"([S]=샤리아 표기).
+                name = html.unescape(re.sub(r"<[^>]+>", "", str(row[1])))
+                name = name.replace("[S]", "").strip()
+                if not _BURSA_EQUITY.fullmatch(code) or not name or code in seen:
+                    continue  # 워런트·ETF·구조화상품(영숫자 코드) 제외.
+                seen.add(code)
+                out.append(
+                    build_company(
+                        source=self.name, segment=listed_seg, name=name, domain=None,
+                        registry=self.registry, registry_id=code, ticker=code,
+                        market=self.name.upper(),
+                        listed_verified=True,  # 상장목록 원천 — listed 는 항상 실측.
+                    )
+                )
+                if len(out) >= cap:
+                    break
+            if len(out) >= cap or len(rows) < self._PER_PAGE:
+                break
+        log.info("bursa.live", segment=segment.label, n=len(out))
+        return out
 
 
 class HoseSource(ExchangeSource):
@@ -546,37 +613,89 @@ class HoseSource(ExchangeSource):
 
 
 class HnxSource(ExchangeSource):
-    """베트남 하노이 증권거래소(HNX) 상장목록 소스(UPCoM 포함) — 라이브는 검증대기(dry 전용).
+    """베트남 하노이 증권거래소(HNX) 상장목록 소스(UPCoM 포함) — ListSearch_Datas POST.
 
-    HNX 상장목록 페이지는 실 종목 데이터가 정적 HTML 에 없고(JS 컴포넌트가 별도 채움),
-    유일하게 찾은 AJAX 엔드포인트(SearchSuggestSymbol)는 불안정·전체목록 아님이라 미채택
-    (2026-07-02 실측 — 모듈 docstring 참조). UPCoM 은 HNX 산하 게시판이라 별도 소스를
-    두지 않고 이 클래스로 통합 표현한다.
+    상장(``ModuleIssuer/List``)·UPCoM(``ModuleIssuer/UC_Issuer``) 두 목록을 각 1회 POST 로
+    전량 받는다(2026-09-28 실측 299+818 — 모듈 docstring). 응답 JSON 의 ``Content`` 가 HTML
+    테이블. 웹사이트 없음 → ⓪ Yahoo ``.VN`` 해석. UPCoM 은 HNX 산하 게시판이라 이 클래스로 통합.
     """
 
     name = "hnx"
     registry = "hnx"
     countries = frozenset({"vn", "vnm", "vietnam", "viet nam", "베트남"})
-    bypass_capable = True  # JS 컴포넌트 렌더 필요 → enable_bypass 시 InsaneFetcher 로 우회.
-    list_url = "https://www.hnx.vn/vi-vn/co-phieu-etfs/chung-khoan-ny.html"
+    base_url = "https://www.hnx.vn"
+    # (목록 API 경로, p_market_code, Referer 페이지, market 라벨)
+    _BOARDS = (
+        ("/ModuleIssuer/List/ListSearch_Datas", "", "/vi-vn/cophieu-etfs/chung-khoan-ny.html",
+         "HNX"),
+        ("/ModuleIssuer/UC_Issuer/ListSearch_Datas", "UC",
+         "/vi-vn/cophieu-etfs/chung-khoan-uc.html", "UPCoM"),
+    )
+    # ponytail: 한 번에 전량(실측 최대 818) — 목록이 2000 을 넘으면 페이징 추가.
+    _PAGE_SIZE = 2000
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
-        """HNX 상장목록은 JS 렌더링 필요로 정적 HTTP 로는 데이터 없음(SET/Bursa 와 동일 상황).
+        """상장·UPCoM 목록을 받아 3자 주식 코드만 수집한다(코드 dedup + 캡, 보드별 graceful)."""
+        fetcher = self._client()
+        cap = self._settings.exchange_max_per_source
+        listed_seg = self._seg(segment)
+        out: list[DiscoveredCompany] = []
+        seen: set[str] = set()
+        for path, market_code, referer, market in self._BOARDS:
+            try:
+                body = fetcher.post_text(
+                    self.base_url + path,
+                    data={
+                        "p_issearch": 0, "p_keysearch": "", "p_market_code": market_code,
+                        "p_orderby": "STOCK_CODE", "p_ordertype": "ASC",
+                        "p_currentpage": 1, "p_record_on_page": self._PAGE_SIZE,
+                    },
+                    headers={"X-Requested-With": "XMLHttpRequest",
+                             "Referer": self.base_url + referer},
+                )
+                content = json.loads(body).get("Content") or ""
+            except Exception as exc:  # 네트워크/형식 → 이 보드만 건너뜀(다른 보드는 계속).
+                log.info("hnx.error", board=market, err_type=type(exc).__name__, err=str(exc))
+                continue
+            for code, name in _HNX_ROW.findall(content):
+                code, name = code.strip(), html.unescape(name).strip()
+                if not _VN_EQUITY.fullmatch(code) or not name or code in seen:
+                    continue  # 채권(9자 코드) 등 비주식 방어 — 실측상 목록엔 주식만.
+                seen.add(code)
+                out.append(
+                    build_company(
+                        source=self.name, segment=listed_seg, name=name, domain=None,
+                        registry=self.registry, registry_id=code, ticker=code, market=market,
+                        listed_verified=True,  # 상장목록 원천 — listed 는 항상 실측.
+                    )
+                )
+                if len(out) >= cap:
+                    break
+            if len(out) >= cap:
+                break
+        log.info("hnx.live", segment=segment.label, n=len(out))
+        return out
 
-        ``enable_bypass`` 시 벤더 엔진으로 렌더링된 목록 HTML 을 가져와 파싱한다. off 면
-        빈 결과(베트남은 Tier A 로 커버). 우회 실패/형식불일치도 graceful 빈 결과.
-        """
-        if not self._settings.enable_bypass:
-            log.info("hnx.skip.bypass_off", segment=segment.label)
-            return []
-        try:
-            page_html = self._client().get_text(self.list_url)
-        except Exception as exc:  # 우회/네트워크/형식 → graceful 빈 결과.
-            log.info("hnx.error", err_type=type(exc).__name__, err=str(exc))
-            return []
-        rows = self._parse_listing(page_html, segment)
-        log.info("hnx.bypass", segment=segment.label, found=len(rows))
-        return rows
+
+# SET 목록 파일의 펀드(인프라·부동산)·리츠 이름 — 섹터 "Property Fund & REITs" 밖 인프라펀드 포함.
+_SET_FUND = re.compile(r"\bFUND\b|\bREIT\b|INVESTMENT TRUST", re.I)
+# Bursa 보통주·REIT = 4자리 숫자 코드(워런트 "5021WA"·ETF "0820EA" 등은 영숫자).
+_BURSA_EQUITY = re.compile(r"\d{4}")
+# HNX/UPCoM 주식 코드 = 영숫자 3자(채권은 "BAB123032" 처럼 9자).
+_VN_EQUITY = re.compile(r"[A-Z0-9]{3}")
+# HNX ListSearch_Datas 테이블 행: STOCK_CODE 셀 링크 텍스트 → NAME 셀 링크 텍스트.
+_HNX_ROW = re.compile(
+    r'STOCK_CODE">\s*<a[^>]*>([^<]+)</a>\s*</td>\s*<td[^>]*\bNAME">\s*<a[^>]*>([^<]+)</a>'
+)
+_TD = re.compile(r"<td[^>]*>(.*?)</td>", re.S)
+
+
+def _html_rows(page: str) -> list[list[str]]:
+    """HTML 테이블을 행별 셀 텍스트(태그 제거·엔티티 복원·strip) 목록으로 푼다."""
+    return [
+        [html.unescape(re.sub(r"<[^>]+>", "", c)).strip() for c in _TD.findall(tr)]
+        for tr in re.split(r"<tr[^>]*>", page)[1:]
+    ]
 
 
 def _sgx_rows(payload: Any) -> list[Any]:

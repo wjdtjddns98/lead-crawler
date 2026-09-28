@@ -305,7 +305,14 @@ class Fetcher:
         params: dict[str, Any] | None, headers: dict[str, str] | None,
     ) -> httpx.Response:
         self._pace(url)
-        resp = self._client.post(url, data=data, json=json, params=params, headers=headers)
+        try:
+            resp = self._client.post(url, data=data, json=json, params=params, headers=headers)
+        except httpx.ConnectError as exc:
+            # 폼 POST(post_text — 공개 거래소 목록 전용, 예: HNX 인증서 사슬 불완전)만 verify=False
+            # 1회 폴백. JSON POST(post_json — 자격증명 싣는 API)는 검증을 끄지 않는다.
+            if json is not None or not _is_ssl_error(exc):
+                raise
+            resp = self._insecure().post(url, data=data, params=params, headers=headers)
         resp.raise_for_status()
         return resp
 
