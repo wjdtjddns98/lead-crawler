@@ -154,12 +154,25 @@ def test_clean_de_name_strips_share_class_tails() -> None:
         "MUENCH.RUECKVERSICHERUNGS GESELLSCHAFT.VNA": "MUENCH.RUECKVERSICHERUNGS GESELLSCHAFT",
         "PATRIZIA SE NA ON": "PATRIZIA SE",
         "11 88 0 SOLUTIONS AG": "11 88 0 SOLUTIONS AG",  # 숫자 법인명은 보존.
+        "ADVA OPTICAL 2000": "ADVA OPTICAL 2000",  # 통화코드 뒤가 아닌 숫자 꼬리는 보존.
+        "NAGARRO SE NA EO 5": "NAGARRO SE",
+        "": "",
         "E.ON SE": "E.ON SE",
         "TISCON AG i.A.": "TISCON AG i.A.",
         "1&1 AG ": "1&1 AG",
     }
     for raw, want in cases.items():
         assert _clean_de_name(raw) == want, raw
+
+
+def test_clean_de_name_is_fast_on_adversarial_tokens() -> None:
+    # 2026-09-28 초안이 "A.A.A…" 에서 지수 백트래킹(ReDoS) — 상수 시간 회귀 가드.
+    import time
+
+    t = time.perf_counter()
+    for tok in ("A." * 5000 + "9x", "1," * 20000 + "x", "NA." * 5000 + "X", "-" * 20000 + "x"):
+        _clean_de_name("X AG " + tok)
+    assert time.perf_counter() - t < 1.0
 
 
 def test_de_blob_url_parses_landing_href() -> None:

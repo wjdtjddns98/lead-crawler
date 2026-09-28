@@ -84,24 +84,32 @@ def _de_blob_url(landing_html: str) -> str | None:
 # Xetra 명부의 "Company" 는 종목명 원문 — 주식 종류·액면 꼬리가 붙는다("ADIDAS AG NA O.N.",
 # "AD PEPPER MEDIA   EO 0,05", "HENKEL AG+CO.KGAA ST O.N."). 끝에서부터 이 토큰들만 떼어 법인명을
 # 남긴다(법인격 AG/SE/KGAA 등은 보존). 2026-09-28 실측 명부 전 행 대조.
+_DE_TAIL_WORD = r"(?:NA|INH|ST|VZO|VZ|VNA|VZNA|VINK|NAM|AKT|ON|O\.N|A)"
 _DE_NAME_TAIL = re.compile(
-    # 점·하이픈으로 붙은 조합(INH.O.N.·ST.A.O.N.·O.N.VZO·VZNA·NA ON 등)과 액면(EO-,01·EO 1).
-    r"(?:\.?(?:NA|INH|ST|VZO|VZ|VNA|VZNA|VINK|NAM|AKT|ON|O\.N|A)\.?-?)+"
-    r"|EO-?[\d.,-]*|DL|SF|NK|UNT\.?|KONV\.?|Z\.VERK\.?|A-SP|VV|-?[\d.,-]*\d[\d.,-]*",
+    # 점·하이픈으로 붙은 조합(INH.O.N.·ST.A.O.N.·O.N.VZO·NAM.-AKT.)과 액면(EO-,01·EO 1).
+    # 구분자를 단어 "사이"에만 두어 분해가 유일하다 — `(\.?W\.?)+` 꼴은 점이 앞뒤 어느 쪽에도
+    # 붙을 수 있어 "A.A.A…" 에서 지수 백트래킹(ReDoS, 2026-09-28 벤치 120s+ 실측)이었다.
+    rf"\.?{_DE_TAIL_WORD}(?:[.-]{{1,2}}{_DE_TAIL_WORD})*[.-]?"
+    r"|EO-?[\d.,-]*|DL|SF|NK|UNT\.?|KONV\.?|Z\.VERK\.?|A-SP|VV",
     re.I,
 )
-
-
+_DE_PAR_VALUE = re.compile(r"-?[\d.,-]*\d[\d.,-]*")
+_DE_CURRENCY = frozenset({"EO", "DL", "SF", "NK"})
 _DE_GLUED_TAIL = re.compile(r"(?<=[A-Za-z])\.(?:VNA|VZNA|NA|INH|O\.N)\.?$", re.I)
 
 
 def _clean_de_name(raw: Any) -> str:
     """Xetra 종목명에서 주식 종류·액면 꼬리 토큰을 뗀 법인명(전부 떼질 이름이면 원문 유지)."""
     tokens = str(raw or "").split()
-    # 단독 "A" 는 떼지 않는다(법인명 일부일 수 있음 — 꼬리 조합 속 A 만 허용).
-    while len(tokens) > 1 and tokens[-1].upper() != "A" and _DE_NAME_TAIL.fullmatch(tokens[-1]):
+    # 단독 "A" 는 떼지 않는다(법인명 일부일 수 있음 — 꼬리 조합 속 A 만 허용). 꼬리 토큰은 실측
+    # 최장 9자("ST.A.O.N.") — 20자 초과는 검사 자체를 안 해 정규식 비용을 상수로 묶는다.
+    # 순수 숫자 토큰은 액면("EO 1"·"NA EO 5")일 때만 — 통화코드 바로 뒤가 아니면 법인명 일부로 본다.
+    while len(tokens) > 1 and len(tokens[-1]) <= 20 and tokens[-1].upper() != "A" and (
+        _DE_NAME_TAIL.fullmatch(tokens[-1])
+        or (_DE_PAR_VALUE.fullmatch(tokens[-1]) and tokens[-2].upper() in _DE_CURRENCY)
+    ):
         tokens.pop()
-    if len(tokens) > 1:  # 점으로 붙은 꼬리("GESELLSCHAFT.VNA").
+    if len(tokens) > 1 and len(tokens[-1]) <= 64:  # 점으로 붙은 꼬리("GESELLSCHAFT.VNA").
         tokens[-1] = _DE_GLUED_TAIL.sub("", tokens[-1]) or tokens[-1]
     return " ".join(tokens)
 
