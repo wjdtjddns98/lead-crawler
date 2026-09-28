@@ -16,6 +16,7 @@ from leadcrawler.sources.exchanges_global import (
     EuronextSource,
     SixSource,
     _de_blob_url,
+    _clean_de_name,
     _parse_de_workbook,
     _parse_euronext_row,
     _six_row_active,
@@ -137,6 +138,41 @@ def test_de_parse_workbook_reads_three_sheets_and_filters_country() -> None:
     rows = _parse_de_workbook(wb)
     assert [r["isin"] for r in rows] == ["DE0001", "DE0003", "DE0004"]  # 외국상장·Basic Board 제외.
     assert rows[0]["name"] == "Alpha AG" and rows[0]["sheet"] == "Prime Standard"
+
+
+def test_clean_de_name_strips_share_class_tails() -> None:
+    # 2026-09-28 실측 명부 원문 → 법인명(법인격 보존, 떼질 것만 떼기).
+    cases = {
+        "ADIDAS AG NA O.N.": "ADIDAS AG",
+        "HENKEL AG+CO.KGAA ST O.N.": "HENKEL AG+CO.KGAA",
+        "AD PEPPER MEDIA   EO 0,05": "AD PEPPER MEDIA",
+        "STABILUS SE INH. EO-,01": "STABILUS SE",
+        "DRAEGERWERK ST.A.O.N.": "DRAEGERWERK",
+        "JUNGHEINRICH AG O.N.VZO": "JUNGHEINRICH AG",
+        "BAYWA AG VINK.NA. O.N.": "BAYWA AG",
+        "HAMBURGER HAFEN UND LOGISTIK A-SP NA": "HAMBURGER HAFEN UND LOGISTIK",
+        "MUENCH.RUECKVERSICHERUNGS GESELLSCHAFT.VNA": "MUENCH.RUECKVERSICHERUNGS GESELLSCHAFT",
+        "PATRIZIA SE NA ON": "PATRIZIA SE",
+        "11 88 0 SOLUTIONS AG": "11 88 0 SOLUTIONS AG",  # 숫자 법인명은 보존.
+        "ADVA OPTICAL 2000": "ADVA OPTICAL 2000",  # 통화코드 뒤가 아닌 숫자 꼬리는 보존.
+        "NAGARRO SE NA EO 5": "NAGARRO SE",
+        "": "",
+        "E.ON SE": "E.ON SE",
+        "TISCON AG i.A.": "TISCON AG i.A.",
+        "1&1 AG ": "1&1 AG",
+    }
+    for raw, want in cases.items():
+        assert _clean_de_name(raw) == want, raw
+
+
+def test_clean_de_name_is_fast_on_adversarial_tokens() -> None:
+    # 2026-09-28 초안이 "A.A.A…" 에서 지수 백트래킹(ReDoS) — 상수 시간 회귀 가드.
+    import time
+
+    t = time.perf_counter()
+    for tok in ("A." * 5000 + "9x", "1," * 20000 + "x", "NA." * 5000 + "X", "-" * 20000 + "x"):
+        _clean_de_name("X AG " + tok)
+    assert time.perf_counter() - t < 1.0
 
 
 def test_de_blob_url_parses_landing_href() -> None:
