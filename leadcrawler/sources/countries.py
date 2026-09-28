@@ -135,6 +135,9 @@ _COUNTRIES: tuple[Country, ...] = (
     Country(iso2="SK", qid="Q214", aliases=("sk", "svk", "slovakia", "슬로바키아")),
     Country(iso2="UA", qid="Q212", aliases=("ua", "ukr", "ukraine", "우크라이나")),
     Country(iso2="KZ", qid="Q232", aliases=("kz", "kaz", "kazakhstan", "카자흐스탄")),
+    # 2026-09-23 PO 지시(MOEX 거래소 소스). 발송 정책(제재 발행자)은 별도 확인 사항.
+    Country(iso2="RU", qid="Q159", aliases=(
+        "ru", "rus", "russia", "russian federation", "россия", "러시아")),
 )
 
 def _build_index() -> dict[str, Country]:

@@ -34,6 +34,16 @@ from .exchanges import (
     SetSource,
     SgxSource,
 )
+from .exchanges_global import (
+    B3Source,
+    BmeSource,
+    DeutscheBoerseSource,
+    EuronextSource,
+    KapSource,
+    MoexSource,
+    SixSource,
+    TadawulSource,
+)
 from .ai_directory import AiDirectorySource
 from .edinet import EdinetSource
 from .fsa_jp import FsaJpSource
@@ -96,13 +106,22 @@ def build_sources(
         # 일본 전수(gBizINFO 검색+상세, reg:gbiz=법인번호) — 종업원 10인+ 株式会社, 도메인 있는 행만.
         # 상호/사업요약 규칙 분류. 토큰 없으면 비활성. 등록처·협회 명부 뒤(집계원 tier).
         GbizJpSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
-        PseSource(settings, rate_limiters=rate_limiters),
-        SetSource(settings, rate_limiters=rate_limiters),
-        SgxSource(settings, rate_limiters=rate_limiters),
-        IdxSource(settings, rate_limiters=rate_limiters),
-        BursaSource(settings, rate_limiters=rate_limiters),
-        HoseSource(settings, rate_limiters=rate_limiters),
-        HnxSource(settings, rate_limiters=rate_limiters),
+        # 거래소(상장목록) — 상장 세그먼트에선 업종 무관 적용, 재수집 주기는 cursor_store 로 제한.
+        PseSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        SetSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        SgxSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        IdxSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        BursaSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        HoseSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        HnxSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        DeutscheBoerseSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        EuronextSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        BmeSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        SixSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        B3Source(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        KapSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        TadawulSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        MoexSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         GleifSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         WikidataSource(settings, rate_limiters=rate_limiters),
         # 국민연금 스냅샷(무네트워크) — 살아있는 사업장을 업종·규모(가입자수) 우선으로.

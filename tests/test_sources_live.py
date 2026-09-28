@@ -631,22 +631,38 @@ def test_sgx_live_error_returns_empty() -> None:
 
 
 def test_idx_live_parses_and_paginates() -> None:
+    """2026-09-23 실측 스키마: 세션 프라이밍 GET(page_url) 후 API(draw·Referer). Website→도메인,
+    PapanPencatatan→market, 도메인 없는 행은 None(Yahoo .JK 폴백 대상)."""
     settings = Settings(dry_run=False, discovery_max_per_source=10)
-    page1 = {"data": [
-        {"KodeEmiten": "BBCA", "NamaEmiten": "Bank Central Asia Tbk"},
-        {"KodeEmiten": "BBRI", "NamaEmiten": "Bank Rakyat Indonesia Tbk"},
+    page1 = {"draw": 1, "recordsTotal": 3, "data": [
+        {"KodeEmiten": "BBCA", "NamaEmiten": "Bank Central Asia Tbk",
+         "Website": "https://www.bca.co.id/", "PapanPencatatan": "Utama",
+         "Alamat": "Jl. MH Thamrin No. 1", "Telepon": "021-2358-8000"},
+        {"KodeEmiten": "BBRI", "NamaEmiten": "Bank Rakyat Indonesia Tbk", "Website": ""},
     ]}
     page2 = {"data": [{"KodeEmiten": "TLKM", "NamaEmiten": "Telkom Indonesia Tbk"}]}
+    calls: list[tuple[str, str]] = []
 
     def _json(url: str, params: dict) -> Any:
+        calls.append(("api", str(params.get("start"))))
+        assert params.get("draw") == 1
         return {"0": page1, "2": page2}.get(str(params.get("start")), {"data": []})
 
-    out = IdxSource(settings, fetcher=FakeFetcher(json=_json)).discover(
-        Segment(country="인도네시아", industry="금융")
+    def _text(url: str, params: dict) -> str:
+        calls.append(("prime", url))
+        return "<html>"
+
+    out = IdxSource(settings, fetcher=FakeFetcher(json=_json, text=_text)).discover(
+        Segment(country="인도네시아", industry="금융", listed="listed")
     )
+    assert calls[0] == ("prime", IdxSource.page_url)  # 쿠키 프라이밍이 API 보다 먼저.
     assert [d.registry_id for d in out] == ["BBCA", "BBRI", "TLKM"]
-    assert out[0].registry == "idx" and out[0].listed == "listed"
+    assert out[0].registry == "idx" and out[0].listed == "listed" and out[0].ticker == "BBCA"
     assert out[0].canonical_key == "reg:idx:bbca"
+    assert out[0].domain == "bca.co.id" and out[0].market == "IDX Utama"
+    assert out[0].address and out[0].phone and out[1].domain is None
+    assert out[1].address is None and out[1].phone is None  # 결측은 "" 가 아니라 None.
+    assert IdxSource.impersonate is True
 
 
 def test_idx_non_dict_payload_returns_empty() -> None:

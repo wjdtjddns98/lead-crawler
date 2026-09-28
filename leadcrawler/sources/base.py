@@ -285,7 +285,9 @@ def build_company(
     ``industry`` 는 :func:`resolve_industry_label` 로 정한다: 구체 업종 검색이면 세그먼트
     업종 그대로, broad('전체' 등)면 등록처 코드에서 복원한 ``industry_code_label``(명확
     단일매치, 등록처 소스만 전달)을 쓰고 없으면 '미분류'(파이프라인이 이후 LLM 배치 시도).
-    ``segment`` 라벨(provenance)은 원래 세그먼트 업종을 유지한다 — 구분 컬럼과 별개.
+    ``segment`` 라벨(provenance)은 원래 세그먼트 업종을 유지한다 — 구분 컬럼과 별개. 단, 업종별로
+    반복 스캔되는 상장목록 소스(거래소 ``ExchangeSource._seg``)는 예외로 provenance 업종도 비운다
+    (첫 세그먼트 라벨 도장 방지 — 2026-09-23).
 
     풍부필드는 소스가 받은 만큼만 전달한다. ``region`` 미전달 시 주소 원문에서
     :func:`region_from_address` 로 파생을 시도한다(현재 KR 만).

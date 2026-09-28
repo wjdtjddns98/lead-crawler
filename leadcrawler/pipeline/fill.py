@@ -33,7 +33,7 @@ from ..enrich.name_eng import build_name_eng
 from ..logging import get_logger
 from ..sources.base import DiscoveredCompany
 from ..sources.countries import country_match_set
-from ..sources.taxonomy import UNCLASSIFIED
+from ..sources.taxonomy import INDUSTRY_TAXONOMY, UNCLASSIFIED
 from ..sources.domain_resolver import DomainResolver
 from ..sources.http import HostRateLimiters
 from ..schema import CompanyRow
@@ -124,6 +124,7 @@ def _domain_overshared(session, domain: str) -> bool:  # noqa: ANN001 (Session)
 # 2026-08-18 리뷰 HIGH). resolve 경로(미승격 — co left join null)와 co.industry 빈값은
 # 발견 라벨 d.industry 로 폴백한다(가용한 최선).
 _INDUSTRY_EXPR = "lower(coalesce(nullif(co.industry, ''), d.industry, ''))"
+_TAXONOMY_LOWER = frozenset(t.lower() for t in INDUSTRY_TAXONOMY)
 
 
 def _scoped(
@@ -167,7 +168,13 @@ def _scoped(
     incl = sorted({i.strip().lower() for i in (industries or []) if i and i.strip()})
     if incl:
         cond = f"{_INDUSTRY_EXPR} in :industry_incl"
-        if UNCLASSIFIED.lower() in incl:
+        if only_listed and _TAXONOMY_LOWER <= set(incl):
+            # 상장 + 업종 필터가 택소노미 전체를 덮는 잡("전체 상장사 스윕", 반복 S 잡 10개 구성):
+            # 거래소·등록처가 업종 없이 넣은 행(빈값·'미분류')도 포함 — 트랙 S 가 택소노미 라벨만
+            # 받아 상장 발견분이 영구 제외되던 사각(2026-09-17·23). 승격 파이프라인이 industry_llm
+            # 으로 라벨을 채운다. 업종을 고른 상장 잡·비상장 잡은 기존 그대로(Codex 교차설계 반영).
+            cond = f"({cond} or {_INDUSTRY_EXPR} in ('', '{UNCLASSIFIED.lower()}'))"
+        elif UNCLASSIFIED.lower() in incl:
             # '미분류' = 라벨 빈값 행(큐 재고 API 의 접기와 동일 어휘 — /queue/stock 뱃지
             # 값을 그대로 백필 타겟으로 옮겨 쓸 수 있게 대칭 유지, #360 리뷰 선례).
             cond = f"({cond} or {_INDUSTRY_EXPR} = '')"
