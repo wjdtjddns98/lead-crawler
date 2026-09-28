@@ -370,13 +370,14 @@ class CffiFetcher:
     """
 
     def __init__(
-        self, *, user_agent: str = "", min_interval: float = 0.5, timeout: float = 15.0,
-        impersonate: str = "chrome",
+        self, *, min_interval: float = 0.5, timeout: float = 15.0, impersonate: str = "chrome",
     ) -> None:
         from curl_cffi import requests as cffi_requests  # bypass extra 의존성.
 
         self._session = cffi_requests.Session(impersonate=impersonate)
-        self._headers = {"User-Agent": user_agent} if user_agent else {}
+        # UA 는 위장 프로필이 정한 값을 그대로 둔다 — 커스텀 UA 를 덮어쓰면 TLS 지문과 UA 가
+        # 어긋나 Cloudflare 가 403 (2026-09-23 IDX 실측: 덮어쓰기 403 / 프로필 UA 200).
+        self._headers: dict[str, str] = {}
         self._min_interval = min_interval
         self._timeout = timeout
         self._last = 0.0
