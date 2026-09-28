@@ -797,10 +797,29 @@ def test_bursa_live_error_keeps_partial() -> None:
             return {"data": [_bursa_row(f"{1000 + i}", f"CO{i}") for i in range(50)]}
         raise RuntimeError("HTTP 403")
 
+    store = FakeCursorStore()
+    out = BursaSource(
+        Settings(dry_run=False), fetcher=FakeFetcher(json=_json), cursor_store=store
+    ).discover(Segment(country="MY", industry="", listed="listed"))
+    assert len(out) == 50
+    # 중도 실패한 부분 결과는 "수집 완료"로 기록하지 않는다(다음 회차 재시도 — 리뷰 MED).
+    assert store.get("bursa", "refresh:my") == 0
+
+
+def test_bursa_live_stops_on_repeated_page_and_clamped_page_size() -> None:
+    # 서버가 per_page 를 20 으로 낮추고(1쪽 20행) page 를 무시해 같은 쪽을 반복해도
+    # 1쪽에서 멈추지 않고(2쪽 요청), 반복 쪽에서 즉시 종료한다.
+    calls: list[int] = []
+    same = {"recordsTotal": "2924", "data": [_bursa_row(f"{1000 + i}", f"C{i}") for i in range(20)]}
+
+    def _json(url: str, params: dict):
+        calls.append(params["page"])
+        return same
+
     out = BursaSource(Settings(dry_run=False), fetcher=FakeFetcher(json=_json)).discover(
         Segment(country="MY", industry="", listed="listed")
     )
-    assert len(out) == 50
+    assert calls == [1, 2] and len(out) == 20
 
 
 def test_bursa_uses_safari_impersonation() -> None:

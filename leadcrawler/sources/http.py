@@ -36,7 +36,8 @@ def _is_ssl_error(exc: BaseException) -> bool:
     e: BaseException | None = exc
     while e is not None and id(e) not in seen:
         seen.add(id(e))
-        if isinstance(e, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(e):
+        # 인증서 검증 실패만(핸드셰이크 alert·프로토콜 오류 등 다른 SSLError 는 폴백 금지).
+        if isinstance(e, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in str(e):
             return True
         e = e.__cause__ or e.__context__
     return False
@@ -303,14 +304,16 @@ class Fetcher:
     def _post(
         self, url: str, data: dict[str, Any] | None, json: Any | None,
         params: dict[str, Any] | None, headers: dict[str, str] | None,
+        *, insecure_ok: bool = False,
     ) -> httpx.Response:
         self._pace(url)
         try:
             resp = self._client.post(url, data=data, json=json, params=params, headers=headers)
         except httpx.ConnectError as exc:
             # 폼 POST(post_text — 공개 거래소 목록 전용, 예: HNX 인증서 사슬 불완전)만 verify=False
-            # 1회 폴백. JSON POST(post_json — 자격증명 싣는 API)는 검증을 끄지 않는다.
-            if json is not None or not _is_ssl_error(exc):
+            # 1회 폴백. post_json 은 insecure_ok 를 넘기지 않는다 — 본문 없이 쿼리로 키를 싣는
+            # 호출(NeverBounce params={"key":..})도 있어 json 유무로 판정하면 안 된다(리뷰 HIGH).
+            if not insecure_ok or not _is_ssl_error(exc):
                 raise
             resp = self._insecure().post(url, data=data, params=params, headers=headers)
         resp.raise_for_status()
@@ -351,7 +354,7 @@ class Fetcher:
         params: dict[str, Any] | None = None, headers: dict[str, str] | None = None,
     ) -> str:
         """POST(폼) 후 본문 텍스트(HTML)를 반환한다(예: PSE 페이지네이션)."""
-        return self._post(url, data, None, params, headers).text
+        return self._post(url, data, None, params, headers, insecure_ok=True).text
 
     def post_json(
         self, url: str, *, json: Any | None = None,

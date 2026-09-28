@@ -100,6 +100,7 @@ class ExchangeSource:
     name: str = ""
     registry: str = ""
     countries: frozenset[str] = frozenset()
+    _partial = False  # _live 가 중도 실패로 부분 결과를 냈으면 True(수집 완료 기록 생략).
     # WAF 차단 소스(HOSE)는 True — enable_bypass 시 _client() 가 InsaneFetcher 를 쓴다.
     bypass_capable: bool = False
     # TLS 지문만 보는 WAF(IDX Cloudflare·Tadawul Akamai, 2026-09-23 실측) 는 curl_cffi chrome
@@ -151,9 +152,12 @@ class ExchangeSource:
                     log.info("exchange.skip.fresh", source=self.name, country=key[1])
                     _LIVE_MEMO[key] = []
                 else:
+                    self._partial = False
                     rows = self._live(segment)
                     _LIVE_MEMO[key] = rows
-                    if rows:  # 빈 결과(장애·차단)는 기록하지 않아 다음 회차에 재시도한다.
+                    # 빈 결과(장애·차단)·중도 실패한 부분 결과는 기록하지 않아 다음 회차에 재시도
+                    # (부분 기록 시 꼬리가 refresh 주기 동안 누락 — 리뷰 MED).
+                    if rows and not self._partial:
                         self._mark_fetched(key[1])
             return _LIVE_MEMO[key]
 
@@ -371,7 +375,7 @@ class SetSource(ExchangeSource):
             out.append(
                 build_company(
                     source=self.name, segment=listed_seg, name=name,
-                    domain=normalize_domain(web) if web and web != "-" else None,
+                    domain=_safe_domain(web),
                     registry=self.registry, registry_id=symbol, ticker=symbol,
                     market="SET" if market == "SET" else f"SET {market}",
                     address=" ".join(x for x in (addr, zip_code) if x and x != "-") or None,
@@ -542,6 +546,8 @@ class BursaSource(ExchangeSource):
         listed_seg = self._seg(segment)
         out: list[DiscoveredCompany] = []
         seen: set[str] = set()
+        raw_seen: set[str] = set()  # 전 코드(워런트 포함) — 페이지 반복 감지·recordsTotal 비교용.
+        page_size = 0
         for page in range(1, self._MAX_PAGES + 1):
             try:
                 payload = fetcher.get_json(
@@ -550,14 +556,22 @@ class BursaSource(ExchangeSource):
                 )
             except Exception as exc:  # Cloudflare/네트워크/형식 → 부분 결과 보존 후 중단.
                 log.info("bursa.error", page=page, err_type=type(exc).__name__, err=str(exc))
+                self._partial = True
                 break
             rows = payload.get("data") if isinstance(payload, dict) else None
             if not isinstance(rows, list) or not rows:
                 break  # 마지막 도달(또는 예상밖 스키마).
+            try:
+                total = int(payload.get("recordsTotal") or 0)  # 실측 문자열("2924").
+            except (TypeError, ValueError):
+                total = 0
+            page_size = page_size or len(rows)  # 서버 실제 페이지 크기(1쪽 기준 — 상한 하향 대비).
+            before = len(raw_seen)
             for row in rows:
                 if not isinstance(row, list) or len(row) < 3:
                     continue
                 code = str(row[2]).strip()
+                raw_seen.add(code)
                 # 약식명: "<div ...><span ...></span>ZETRIX [S]</div>" → "ZETRIX"([S]=샤리아 표기).
                 name = html.unescape(re.sub(r"<[^>]+>", "", str(row[1])))
                 name = name.replace("[S]", "").strip()
@@ -574,7 +588,13 @@ class BursaSource(ExchangeSource):
                 )
                 if len(out) >= cap:
                     break
-            if len(out) >= cap or len(rows) < self._PER_PAGE:
+            # 종료: 캡·recordsTotal 도달·신규 코드 0(서버가 page 무시=같은 페이지 반복)·1쪽보다 짧은
+            # 쪽(마지막). 요청 per_page 가 아니라 1쪽 실제 크기와 비교 — 서버가 상한을 낮춰도(1000→20
+            # 실측) 1쪽에서 멈추지 않는다(리뷰 MED).
+            if (
+                len(out) >= cap or len(raw_seen) == before
+                or (total and len(raw_seen) >= total) or len(rows) < page_size
+            ):
                 break
         log.info("bursa.live", segment=segment.label, n=len(out))
         return out
@@ -687,14 +707,24 @@ _VN_EQUITY = re.compile(r"[A-Z0-9]{3}")
 _HNX_ROW = re.compile(
     r'STOCK_CODE">\s*<a[^>]*>([^<]+)</a>\s*</td>\s*<td[^>]*\bNAME">\s*<a[^>]*>([^<]+)</a>'
 )
-_TD = re.compile(r"<td[^>]*>(.*?)</td>", re.S)
+_TD = re.compile(r"<td[^>]*>(.*?)</td>", re.S | re.I)
+
+
+def _safe_domain(web: str | None) -> str | None:
+    """명부 웹사이트 칸 → 도메인. '-'·빈값·파싱 불가(예: '[' 포함 IPv6 오인)는 None(행은 유지)."""
+    if not web or web == "-":
+        return None
+    try:
+        return normalize_domain(web)
+    except ValueError:
+        return None
 
 
 def _html_rows(page: str) -> list[list[str]]:
     """HTML 테이블을 행별 셀 텍스트(태그 제거·엔티티 복원·strip) 목록으로 푼다."""
     return [
         [html.unescape(re.sub(r"<[^>]+>", "", c)).strip() for c in _TD.findall(tr)]
-        for tr in re.split(r"<tr[^>]*>", page)[1:]
+        for tr in re.split(r"<tr[^>]*>", page, flags=re.I)[1:]
     ]
 
 

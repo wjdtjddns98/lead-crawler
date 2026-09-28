@@ -71,3 +71,23 @@ def test_json_post_never_falls_back_to_insecure() -> None:
     with pytest.raises(httpx.ConnectError):
         f.post_json("https://x.test/api", json={"k": 1})
     assert f._insecure_client.calls == 0
+
+
+def test_bodyless_json_post_never_falls_back_to_insecure() -> None:
+    # 본문 없이 쿼리로 키를 싣는 post_json(NeverBounce params={"key":..})도 폴백 금지(리뷰 HIGH).
+    import pytest
+
+    from leadcrawler.sources.http import Fetcher
+
+    f = Fetcher(min_interval=0)
+    f._client, f._insecure_client = _Client(fail=True), _Client(fail=False)
+    with pytest.raises(httpx.ConnectError):
+        f.post_json("https://x.test/api", params={"key": "secret"})
+    assert f._insecure_client.calls == 0
+
+
+def test_non_cert_ssl_error_is_not_fallback_target() -> None:
+    # 인증서 검증 외 SSL 오류(핸드셰이크 alert 등)는 폴백 대상이 아니다.
+    exc = httpx.ConnectError("tls failed")
+    exc.__cause__ = ssl.SSLError("TLSV1_ALERT_PROTOCOL_VERSION")
+    assert _is_ssl_error(exc) is False
