@@ -550,7 +550,6 @@ _KAP_ROW_SEP = '<tr class="border-b hover:bg-light-danger">'
 # <td..><a..>회사명</a></td><td..>도시</td> — 실측 758/758 매치(2026-09-23).
 _KAP_ID_RE = re.compile(r'/tr/sirket-bilgileri/ozet/([^"]+?)"><div>([^<]*)</div>')
 _KAP_TITLE_RE = re.compile(r'<div>[^<]*</div></a></td>\s*<td[^>]*><a[^>]*>([^<]*)</a>')
-_KAP_CITY_RE = re.compile(r'</a></td>\s*<td[^>]*>([^<]*)</td>')
 # 상세 페이지의 Next.js flight 페이로드는 라벨과 값이 연속된 "children":"..." 쌍으로 실린다
 # (예: ..."children":"İnternet Adresi"}],[...,"children":"www.x.com.tr"}]...).
 _KAP_CHILDREN_RE = re.compile(r'\\"children\\":\\"([^\\]{0,300})\\"')
@@ -576,13 +575,11 @@ def _kap_parse_list(page_html: str) -> list[dict[str, str]]:
         if not num_id.isdigit() or not code:
             continue
         m_title = _KAP_TITLE_RE.search(block)
-        m_city = _KAP_CITY_RE.search(block)
         out.append({
             "id": num_id,
             "slug": slug,
             "code": code,
             "title": (m_title.group(1).strip() if m_title else "") or code,
-            "city": m_city.group(1).strip() if m_city else "",
         })
     return out
 
@@ -764,6 +761,7 @@ class MoexSource(ExchangeSource):
         issuers: dict[str, dict[str, Any]] = {}
         start = 0
         page = 0
+        prev: list[Any] | None = None
         while page < _MOEX_MAX_PAGES and len(issuers) < cap:
             try:
                 payload = fetcher.get_json(
@@ -777,18 +775,20 @@ class MoexSource(ExchangeSource):
                 log.info("moex.list.error", start=start, err_type=type(exc).__name__, err=str(exc))
                 break
             cols, data = _moex_section(payload, "securities")
-            if not cols or not data:
+            if not cols or not data or data == prev:  # start 무시로 같은 페이지 반복 → 중단.
                 break
-            idx = {c: i for i, c in enumerate(cols)}
+            prev = data
             for row in data:
-                if "type" not in idx or row[idx["type"]] not in _MOEX_WANTED_TYPES:
+                # zip: 컬럼보다 짧은/깨진 행도 IndexError 없이 결측으로(세그먼트 크래시 방지).
+                rec = dict(zip(cols, row)) if isinstance(row, list) else {}
+                sec_type = rec.get("type")
+                if sec_type not in _MOEX_WANTED_TYPES:
                     continue
-                emitent_id = _moex_cell(row[idx["emitent_id"]]) if "emitent_id" in idx else None
+                emitent_id = _moex_cell(rec.get("emitent_id"))
                 if not emitent_id:
                     continue
-                sec_type = row[idx["type"]]
-                secid = _moex_cell(row[idx["secid"]]) if "secid" in idx else None
-                title = _moex_cell(row[idx["emitent_title"]]) if "emitent_title" in idx else None
+                secid = _moex_cell(rec.get("secid"))
+                title = _moex_cell(rec.get("emitent_title"))
                 existing = issuers.get(emitent_id)
                 if existing is None:
                     issuers[emitent_id] = {"secid": secid, "title": title, "type": sec_type}

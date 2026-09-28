@@ -326,3 +326,30 @@ def test_moex_live_emitter_error_keeps_row_without_domain() -> None:
     assert len(out) == 1
     assert out[0].domain is None
     assert out[0].registry_id == "1142"
+
+
+def test_moex_live_skips_malformed_rows_and_stops_on_repeated_page() -> None:
+    settings = Settings(dry_run=False, discovery_max_per_source=10)
+    securities = {
+        "securities": {
+            "columns": ["secid", "emitent_id", "emitent_title", "type"],
+            "data": [
+                ["ABIO", "1142"],  # 컬럼보다 짧은 행 → type 결측으로 스킵(크래시 금지).
+                "garbage",  # 리스트 아닌 행.
+                ["SBER", "3", "Sberbank", "common_share"],
+            ],
+        }
+    }
+    list_calls: list[int] = []
+
+    def _json(url: str, params: dict) -> Any:
+        if "securities.json" in url:
+            list_calls.append(params["start"])
+            return securities  # start 를 무시하고 같은 페이지 반복.
+        return {"emitter": {"columns": ["URL"], "data": [["https://www.sberbank.com"]]}}
+
+    out = MoexSource(settings, fetcher=FakeFetcher(json=_json)).discover(
+        Segment(country="러시아", industry="전체", listed="listed")
+    )
+    assert [d.registry_id for d in out] == ["3"]
+    assert len(list_calls) == 2  # 두 번째 동일 페이지에서 중단(50페이지 재요청 안 함).
