@@ -221,7 +221,7 @@ class ExchangeSource:
         형식은 빈 결과로 흘려보낸다. 심볼=registry_id, 도메인은 목록에 없어 None(enrich 위임).
         실제 셀렉터/구조는 라이브 확인이 필요하다(A5 한계 문서 참조).
         """
-        cap = self._settings.discovery_max_per_source
+        cap = self._settings.exchange_max_per_source
         listed_seg = self._seg(segment)
         out: list[DiscoveredCompany] = []
         seen: set[str] = set()
@@ -277,7 +277,7 @@ class PseSource(ExchangeSource):
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         """PSE companyDirectory 를 페이지네이션하며 상장사를 수집한다(symbol dedup + 캡)."""
         fetcher = self._client()
-        cap = self._settings.discovery_max_per_source
+        cap = self._settings.exchange_max_per_source
         listed_seg = self._seg(segment)
 
         out: list[DiscoveredCompany] = []
@@ -370,7 +370,7 @@ class SgxSource(ExchangeSource):
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         """SGX securities 목록을 1회 조회해 상장사 주식만 수집한다(코드 dedup + 캡)."""
         fetcher = self._client()
-        cap = self._settings.discovery_max_per_source
+        cap = self._settings.exchange_max_per_source
         listed_seg = self._seg(segment)
         # SGX securities 는 전 종목을 1회 응답으로 준다(페이징 미구현 — 실 응답에 페이징이
         # 있다면 온네트워크 확인 후 추가). 캡은 클라이언트측 len(out)>=cap 으로 적용.
@@ -426,7 +426,7 @@ class IdxSource(ExchangeSource):
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         """IDX GetCompanyProfiles 를 페이지네이션하며 상장사를 수집한다(코드 dedup + 캡)."""
         fetcher = self._client()
-        cap = self._settings.discovery_max_per_source
+        cap = self._settings.exchange_max_per_source
         listed_seg = self._seg(segment)
         page_size = min(100, cap)
         try:  # ① 세션 쿠키 프라이밍(실패해도 ② 를 시도 — 쿠키 없이도 통과하는 경우 대비).

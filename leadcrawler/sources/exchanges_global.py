@@ -10,7 +10,7 @@
 - Xetra(독일): 랜딩 페이지에서 ``Listed-companies.xlsx`` blob URL 을 정규식으로 찾아
   GET(200, 71KB) → openpyxl 로 Prime/General/Scale 3시트 파싱(Basic Board 제외, PO 기본값).
   blob 해시는 재발행 시 바뀔 수 있어 랜딩 파싱이 정식, 실패 시 모듈 상수 URL 로 폴백.
-- Euronext(FR/IT/NL/BE/PT/IE/NO): ``live.euronext.com/en/pd_es/data/stocks`` GET JSON
+- Euronext(FR/IT/NL/BE/PT/IE/NO): ``live.euronext.com/en/pd_es/data/stocks`` POST(폼 페이징) JSON
   (200, CloudFront, 챌린지 없음). 국가→MIC 매핑으로 1콜에 해당국 전 시장을 받는다.
   ``iDisplayLength`` 상한·IT ``EXGM`` 허용 여부는 미확인(스모크로 확인).
 - BME(스페인): ``apiweb.bolsasymercados.es/Market/v1/EQ/ListedCompanies`` GET JSON(200).
@@ -130,7 +130,7 @@ class DeutscheBoerseSource(ExchangeSource):
 
     def _live(self, segment: Segment) -> list[Any]:
         fetcher = self._client()
-        cap = self._settings.discovery_max_per_source
+        cap = self._settings.exchange_max_per_source
         listed_seg = self._seg(segment)
         try:
             landing = fetcher.get_text(_DE_LANDING_URL)
@@ -232,7 +232,7 @@ class EuronextSource(ExchangeSource):
 
     def _live(self, segment: Segment) -> list[Any]:
         fetcher = self._client()
-        cap = self._settings.discovery_max_per_source
+        cap = self._settings.exchange_max_per_source
         listed_seg = self._seg(segment)
         country = resolve_country(segment.country)
         mics = _EURONEXT_MIC_BY_ISO2.get(country.iso2) if country else None
@@ -249,13 +249,17 @@ class EuronextSource(ExchangeSource):
             total is None or start < total
         ):
             try:
-                payload = fetcher.get_json(self.list_url, params={
-                    "mics": mics_param,
-                    "display_datapoints": "dp_stocks",
-                    "display_filters": "df_stocks2",
-                    "iDisplayStart": start,
-                    "iDisplayLength": _EURONEXT_PAGE_SIZE,
-                })
+                # 페이징은 POST 폼으로만 먹힌다 — GET 은 iDisplayStart/Length 를 무시하고 늘 첫
+                # 20행만 준다(2026-09-28 실측: FR GET 20행 고정, POST 100행씩·total 630).
+                payload = json.loads(fetcher.post_text(
+                    self.list_url,
+                    params={
+                        "mics": mics_param,
+                        "display_datapoints": "dp_stocks",
+                        "display_filters": "df_stocks2",
+                    },
+                    data={"iDisplayStart": start, "iDisplayLength": _EURONEXT_PAGE_SIZE},
+                ))
             except Exception as exc:  # noqa: BLE001 — 네트워크/형식 이상 → 부분 결과 보존.
                 log.info(
                     "euronext.error", mics=mics_param,
@@ -356,7 +360,7 @@ class BmeSource(ExchangeSource):
 
     def _live(self, segment: Segment) -> list[Any]:
         fetcher = self._client()
-        cap = self._settings.discovery_max_per_source
+        cap = self._settings.exchange_max_per_source
         listed_seg = self._seg(segment)
         out: list[Any] = []
         seen: set[str] = set()
@@ -404,7 +408,7 @@ class SixSource(ExchangeSource):
 
     def _live(self, segment: Segment) -> list[Any]:
         fetcher = self._client()
-        cap = self._settings.discovery_max_per_source
+        cap = self._settings.exchange_max_per_source
         listed_seg = self._seg(segment)
         try:
             payload = json.loads(fetcher.get_text(self.list_url))
@@ -476,7 +480,7 @@ class B3Source(ExchangeSource):
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         fetcher = self._client()
-        cap = self._settings.discovery_max_per_source
+        cap = self._settings.exchange_max_per_source
         listed_seg = self._seg(segment)
 
         # 1차: 전 목록 페이지네이션(미상장 성격만 걸러 상세콜 후보를 줄인다).
@@ -604,7 +608,7 @@ class KapSource(ExchangeSource):
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         fetcher = self._client()
-        cap = self._settings.discovery_max_per_source
+        cap = self._settings.exchange_max_per_source
         listed_seg = self._seg(segment)
 
         try:
@@ -671,7 +675,7 @@ class TadawulSource(ExchangeSource):
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         fetcher = self._client()
-        cap = self._settings.discovery_max_per_source
+        cap = self._settings.exchange_max_per_source
         listed_seg = self._seg(segment)
         try:
             landing = fetcher.get_text(_TADAWUL_LANDING_URL)
@@ -754,7 +758,7 @@ class MoexSource(ExchangeSource):
 
     def _live(self, segment: Segment) -> list[DiscoveredCompany]:
         fetcher = self._client()
-        cap = self._settings.discovery_max_per_source
+        cap = self._settings.exchange_max_per_source
         listed_seg = self._seg(segment)
 
         # 1차: 종목 목록 페이지네이션 → 발행자 기준 대표 행 dedup(보통주 ticker 우선).
