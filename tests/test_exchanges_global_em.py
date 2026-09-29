@@ -112,6 +112,38 @@ def test_b3_live_filters_unlisted_date_and_confirms_via_detail() -> None:
     assert dc.canonical_key == "reg:b3:9512"
 
 
+def test_b3_live_excludes_bdr_and_etf_bdr() -> None:
+    # 외국 기업 BDR(…31, market "BDR / CDA")·ETF BDR(…39, market "BOLSA")은 브라질 법인이 아니다
+    # (2026-09-29 실측: EXPERIAN EXPB31·FIRST TRUST ETF BROB39). 유닛(…11)은 브라질 주식이라 유지.
+    settings = Settings(dry_run=False)
+    rows = [
+        {"codeCVM": c, "companyName": n, "dateListing": "01/01/2000", "status": "A"}
+        for c, n in (("59420", "EXPERIAN PLC"), ("50046", "FIRST TRUST ETF"),
+                     ("22500", "ALUPAR"), ("9512", "PETROBRAS"))
+    ]
+    details = {
+        "59420": {"companyName": "EXPERIAN PLC", "hasQuotation": "S", "code": "EXPB31",
+                  "market": "BDR / CDA"},
+        "50046": {"companyName": "FIRST TRUST ETF", "hasQuotation": "S", "code": "BROB39",
+                  "market": "BOLSA"},
+        "22500": {"companyName": "ALUPAR", "hasQuotation": "S", "code": "ALUP11",
+                  "market": "BOVESPA NIVEL 2"},
+        "9512": {"companyName": "PETROBRAS", "hasQuotation": "S", "code": "PETR4",
+                 "market": "BOVESPA NIVEL 2"},
+    }
+
+    def _json(url: str, params: dict) -> Any:
+        return {"page": {"totalPages": 1}, "results": rows}
+
+    def _text(url: str, params: dict) -> str:
+        return json.dumps(details[_b3_payload_from_url(url)["codeCVM"]])
+
+    out = B3Source(settings, fetcher=FakeFetcher(json=_json, text=_text)).discover(
+        Segment(country="브라질", industry="전체", listed="listed")
+    )
+    assert sorted(d.registry_id for d in out) == ["22500", "9512"]
+
+
 def test_b3_live_detail_error_skips_row_not_crashes() -> None:
     settings = Settings(dry_run=False, exchange_max_per_source=10)
     list_page = {"page": {"totalPages": 1}, "results": [

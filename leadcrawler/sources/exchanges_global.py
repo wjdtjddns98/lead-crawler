@@ -488,6 +488,10 @@ _B3_DETAIL_URL = (
 _B3_PAGE_SIZE = 100  # 1000/4000 은 빈 배열(2026-09-23 실측) — 100 이 안전 상한.
 _B3_MAX_PAGES = 40  # 실측 totalPages=36(전체 3,533건, pageSize=100).
 _B3_NOT_LISTED_DATE = "31/12/9999"  # 미상장 성격(등록만·공모 대기 등) — 1차 필터로 상세콜 절감.
+# BDR(외국 기업 예탁증서) 티커 = 31~35·ETF BDR = 39(2026-09-29 실측: EXPERIAN EXPB31 market
+# "BDR / CDA", FIRST TRUST ETF BROB39 market "BOLSA"). 브라질 주식은 3·4·5·6·11(유닛)로 끝난다.
+# 원장 실측 699행 중 324행이 3[1-9] 끝(펀드명 298 포함) — hasQuotation=S 만으로는 못 거른다.
+_B3_BDR_TICKER = re.compile(r"(?<!\d)3[1-9]$")
 
 
 def _b64_json(payload: dict[str, Any]) -> str:
@@ -563,6 +567,10 @@ class B3Source(ExchangeSource):
                 continue
             if not isinstance(info, dict) or info.get("hasQuotation") != "S":
                 continue
+            if _B3_BDR_TICKER.search(opt_str(info.get("code")) or "") or "BDR" in (
+                opt_str(info.get("market")) or ""
+            ):
+                continue  # 외국 기업 BDR·ETF BDR — 브라질 법인 아님(국가 오라벨·펀드 차단).
             out.append(
                 build_company(
                     source=self.name, segment=listed_seg,
