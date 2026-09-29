@@ -627,8 +627,90 @@ interface SegJob {
   notBefore: number | null; // epoch ms — 이 시각 전엔 디스패처가 건너뛴다(대기 유지)
 }
 
-const segJobs: SegJob[] = [];
-let segSeq = 0;
+// 시드 — 대기열 UI(접힘·카드 상태별 뱃지)를 바로 볼 수 있게 상태별로 1건씩 깔아 둔다.
+// running 은 promote 구간 중간에서 시작하므로 수십 초 뒤 done 이 되고 대기 1번이 올라간다.
+function segSeed(): SegJob[] {
+  const now = Date.now();
+  const min = 60_000;
+  const base = {
+    listed: "unknown" as Listed,
+    regions: "",
+    priority: 100,
+    startedAt: null,
+    progressMs: 0,
+    pending: null,
+    pendingAt: 0,
+    finishedAt: null,
+    repeatEveryMin: 0,
+    notBefore: null,
+  };
+  const seed: Omit<SegJob, "id">[] = [
+    {
+      ...base,
+      countries: "KR",
+      industries: "건설·엔지니어링",
+      listed: "listed",
+      createdAt: now - 20 * min,
+      startedAt: now - 15_000,
+      status: "running",
+    },
+    {
+      ...base,
+      countries: "KR",
+      industries: "반도체·디스플레이,자동차·모빌리티",
+      regions: "서울,경기",
+      priority: 50,
+      createdAt: now - 10 * min,
+      status: "queued",
+    },
+    {
+      ...base,
+      countries: "US,GB",
+      industries: "IT·소프트웨어",
+      createdAt: now - 8 * min,
+      status: "queued",
+    },
+    {
+      ...base,
+      countries: "JP",
+      industries: "유통·도소매",
+      createdAt: now - 5 * min,
+      status: "queued",
+      repeatEveryMin: 1440,
+      notBefore: now + 6 * 60 * min,
+    },
+    {
+      ...base,
+      countries: "DE,FR",
+      industries: "에너지·전력",
+      createdAt: now - 60 * min,
+      progressMs: 12_000,
+      status: "paused",
+    },
+    {
+      ...base,
+      countries: "SG",
+      industries: "물류·운송",
+      createdAt: now - 180 * min,
+      progressMs: SEG_DISCOVER_MS + SEG_PROMOTE_MS,
+      status: "done",
+      finishedAt: now - 150 * min,
+    },
+    {
+      ...base,
+      countries: "VN",
+      industries: "식품·음료",
+      createdAt: now - 240 * min,
+      progressMs: 4_000,
+      status: "cancelled",
+      finishedAt: now - 235 * min,
+    },
+  ];
+  return seed.map((j, i) => ({ ...j, id: `bf_mock${(i + 1).toString().padStart(4, "0")}` }));
+}
+
+const segJobs: SegJob[] = segSeed();
+let segSeq = segJobs.length;
 
 const segElapsed = (j: SegJob, now: number): number =>
   j.startedAt === null ? j.progressMs : now - j.startedAt;

@@ -525,8 +525,10 @@ export function SegmentJobSection() {
         onRefresh={() => setPvKey((k) => k + 1)}
       />
 
-      <div className="flex items-center justify-between gap-2 mt-5 mb-2">
-        <h3 className="text-sm font-semibold text-ink m-0">
+      {/* 대기열은 평소 접어 둔다 — 요청 폼이 주 동선이고, 목록은 필요할 때 펼쳐 본다.
+          접혀 있어도 폴링은 그대로라 요약줄 건수는 계속 갱신된다. */}
+      <details className="mt-5">
+        <summary className="cursor-pointer text-sm font-semibold text-ink mb-2">
           작업 대기열
           {jobs !== null && jobs.length > 0 && (
             <span className="text-muted font-normal">
@@ -534,39 +536,41 @@ export function SegmentJobSection() {
               · 총 {n(total)}건{total > jobs.length && ` (최근 ${n(jobs.length)}건 표시)`}
             </span>
           )}
-        </h3>
-        <button
-          className={`${BTN} py-0.5! px-2! text-xs`}
-          type="button"
-          onClick={() => void refresh()}
-        >
-          <span className="inline-flex items-center gap-1">
-            <RefreshCw size={12} aria-hidden />
-            새로고침
-          </span>
-        </button>
-      </div>
-      {jobs === null ? (
-        <p className={EMPTY}>불러오는 중…</p>
-      ) : jobs.length === 0 ? (
-        <p className={EMPTY}>요청된 세그먼트 작업이 없습니다.</p>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {jobs.map((j) => (
-            <JobCard
-              key={j.id}
-              job={j}
-              busy={actingId === j.id}
-              onPause={() => void act(j.id, () => pauseSegmentJob(j.id), "일시중지 요청됨")}
-              onResume={() => void act(j.id, () => resumeSegmentJob(j.id), "재개됨")}
-              onCancel={() => setCancelId(j.id)}
-              onPriority={(p) =>
-                void act(j.id, () => updateSegmentJobPriority(j.id, p), "우선순위 변경됨")
-              }
-            />
-          ))}
+        </summary>
+        <div className="flex justify-end mb-2">
+          <button
+            className={`${BTN} py-0.5! px-2! text-xs`}
+            type="button"
+            onClick={() => void refresh()}
+          >
+            <span className="inline-flex items-center gap-1">
+              <RefreshCw size={12} aria-hidden />
+              새로고침
+            </span>
+          </button>
         </div>
-      )}
+        {jobs === null ? (
+          <p className={EMPTY}>불러오는 중…</p>
+        ) : jobs.length === 0 ? (
+          <p className={EMPTY}>요청된 세그먼트 작업이 없습니다.</p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {jobs.map((j) => (
+              <JobCard
+                key={j.id}
+                job={j}
+                busy={actingId === j.id}
+                onPause={() => void act(j.id, () => pauseSegmentJob(j.id), "일시중지 요청됨")}
+                onResume={() => void act(j.id, () => resumeSegmentJob(j.id), "재개됨")}
+                onCancel={() => setCancelId(j.id)}
+                onPriority={(p) =>
+                  void act(j.id, () => updateSegmentJobPriority(j.id, p), "우선순위 변경됨")
+                }
+              />
+            ))}
+          </div>
+        )}
+      </details>
     </section>
   );
 }
