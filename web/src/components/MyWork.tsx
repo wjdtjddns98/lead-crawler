@@ -12,6 +12,8 @@ import { ErrorBox } from "./ErrorBox";
 import type { ClaimFilter, ConfirmEdits, Listed, ReviewItem, ReviewStatus } from "../types";
 
 const FILTER_KEY = "lc_claim_filter";
+// 상태 탭은 새로고침에만 유지(sessionStorage) — 새 창·다음 날엔 기본(대기)으로 시작한다.
+const TAB_KEY = "lc_my_tab";
 const EMPTY_FILTER: ClaimFilter = { country: "", industry: "", listed: "", region: "" };
 // 한 계정 동시 점유 총량 상한 — BE review_claim_cap 과 동일값(계약: PRD-queue-claim-permanent §4.2).
 const CLAIM_CAP = 100;
@@ -77,7 +79,10 @@ export function MyWork() {
   // refresh 가 useCallback([]) 안에서 최신 필터로 잔여 카운트를 조회하도록 ref 로 동행.
   const filterRef = useRef(filter);
   // 상태 탭 — 대기(작업)/확정/거부 내역. refresh 가 최신 탭을 읽도록 ref 동행(위 filter 와 동일 패턴).
-  const [tab, setTab] = useState<ReviewStatus>("pending");
+  const [tab, setTab] = useState<ReviewStatus>(() => {
+    const saved = sessionStorage.getItem(TAB_KEY);
+    return MY_TABS.find((t) => t.value === saved)?.value ?? "pending";
+  });
   const tabRef = useRef(tab);
 
   // 내 점유 목록(items)과 결과(mine 또는 claim 응답 — 둘 다 내 점유 전체)를 화면에 반영하고
@@ -142,6 +147,7 @@ export function MyWork() {
     if (t === tab) return;
     tabRef.current = t;
     setTab(t);
+    sessionStorage.setItem(TAB_KEY, t);
     setItems([]);
     setSessionDone(0);
   };
