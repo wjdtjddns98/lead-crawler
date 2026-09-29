@@ -59,6 +59,18 @@ _MULTI_TENANT_SUFFIXES = frozenset({
     "myshopify.com", "wixsite.com", "notion.site", "oopy.io",
     # KR SME 사이트빌더 — 소기업 공식 홈페이지가 이 접미의 서브도메인으로 흔히 온다.
     "imweb.me", "modoo.at", "cafe24.com", "sixshop.com", "creatorlink.net",
+    # KR 병의원 홈페이지 빌더 — 병원마다 서브도메인(심평원 병원정보서비스 실측).
+    "drline.net", "mdrline.net", "medisay.co.kr", "mobidoc.us",
+    # 무료 개인 서브도메인(x.com.ne.kr).
+    "com.ne.kr",
+})
+
+# .kr 2단계 도메인(KISA) — 범용 휴리스틱이 모르는 개인(pe)·연구(re)·학교(es/ms/hs/sc/kg)·
+# 군(mil)·지자체(seoul 등 17개 시도) 접미. 없으면 ncc.re.kr·kcch.re.kr 가 're.kr' 하나로 접힌다.
+_KR_SECOND_LEVEL = frozenset({
+    "pe", "re", "es", "ms", "hs", "sc", "kg", "mil",
+    "seoul", "busan", "daegu", "incheon", "gwangju", "daejeon", "ulsan", "sejong", "gyeonggi",
+    "gangwon", "chungbuk", "chungnam", "jeonbuk", "jeonnam", "gyeongbuk", "gyeongnam", "jeju",
 })
 
 
@@ -82,7 +94,8 @@ def normalize_domain(value: str | None) -> str | None:
         return None
     labels = host.split(".")
     two_level_tlds = {"co", "com", "or", "ne", "go", "ac", "gov", "edu", "org"}
-    if len(labels) >= 3 and labels[-2] in two_level_tlds and len(labels[-1]) == 2:
+    is_kr_sld = labels[-1] == "kr" and labels[-2] in _KR_SECOND_LEVEL
+    if len(labels) >= 3 and (is_kr_sld or (labels[-2] in two_level_tlds and len(labels[-1]) == 2)):
         base = ".".join(labels[-3:])
     else:
         base = ".".join(labels[-2:])

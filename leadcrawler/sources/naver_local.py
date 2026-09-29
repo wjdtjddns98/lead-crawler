@@ -22,7 +22,7 @@ from .base import DiscoveredCompany, DiscoverySource, Segment, build_company, is
 from .domain_resolver import _is_noise_domain
 from .http import Fetcher, HostRateLimiters, SupportsFetch
 from .industry import is_broad_industry
-from .search import _BLOCKLIST
+from .search import is_blocked
 from .search_provider import clean_search_text
 
 log = get_logger("sources.naver_local")
@@ -161,7 +161,7 @@ class NaverLocalSource(DiscoverySource):
                 # (이중 리뷰 HIGH 합치). None 폴백이면 name: 티어 키로 업체가 분리 보존되고
                 # resolve 백필이 진짜 도메인을 찾을 여지도 남는다.
                 dom = normalize_domain(str(it.get("link") or "").strip() or None)
-                if dom is not None and (dom in _BLOCKLIST or _is_noise_domain(dom)):
+                if dom is not None and (is_blocked(dom) or _is_noise_domain(dom)):
                     dom = None
                 out.append(
                     build_company(

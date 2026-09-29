@@ -34,7 +34,7 @@ from ..logging import get_logger
 from .base import DiscoveredCompany, is_fund_entity
 from .countries import resolve_country
 from .http import HostRateLimiters, SupportsFetch
-from .search import _BLOCKLIST, _DEFAULT_LOCALE, _LOCALE
+from .search import _DEFAULT_LOCALE, _LOCALE, is_blocked
 from .search_provider import (
     SearchProvider,
     build_free_provider,
@@ -186,7 +186,7 @@ class DomainResolver:
             )
             # 게이트는 전 경로 공통분(블록리스트·정부/협회 도메인)만 — 한글 title 경로 전용
             # `_is_noise_root` 는 americanexpress/newscorp 류 실기업을 막으므로 쓰지 않는다.
-            if hit and hit not in _BLOCKLIST and not _is_noise_domain(hit):
+            if hit and not is_blocked(hit) and not _is_noise_domain(hit):
                 log.info("resolve.hit", name=dc.name, domain=hit, via="yahoo")
                 return hit
         paid = self._get_provider()
@@ -421,9 +421,8 @@ class _Candidate(NamedTuple):
 # blocklist 는 개별 나열이라 항상 뒤처진다 — 부류 전체를 게이트로 막는다(2026-07-13
 # 실측: gg.go.kr·gb.go.kr(도청 보도자료)·kpi.or.kr·kati.or.kr(협회)가 홈페이지로 채택됨).
 _NON_COMPANY_SUFFIXES = (".go.kr", ".or.kr", ".ac.kr", ".re.kr", ".hs.kr", ".ms.kr", ".es.kr")
-# normalize_domain 이 2라벨로 접는 접미(re/hs/ms/es 는 dedup 의 two_level_tlds 에 없어
-# 'lab.re.kr'→'re.kr')는 endswith 로 안 잡힌다 — 정규화 산출 등가비교로 부류 전체를 커버
-# (교차리뷰 MED: endswith 단독은 4개 접미가 조용히 죽은 코드였다).
+# 접미 단독 입력('re.kr' 자체)용 등가비교 — normalize_domain 은 'lab.re.kr' 을 3라벨로
+# 보존하므로(dedup._KR_SECOND_LEVEL) 기관 도메인은 위 endswith 가 잡는다.
 _NON_COMPANY_EXACT = frozenset(
     {"go.kr", "or.kr", "ac.kr", "re.kr", "hs.kr", "ms.kr", "es.kr"}
 )
@@ -467,7 +466,7 @@ def _candidates_from(items: list) -> list[_Candidate]:
         if not isinstance(item, dict):
             continue
         domain = normalize_domain(item.get("link") or item.get("displayLink"))
-        if not domain or domain in _BLOCKLIST or domain in seen or _is_noise_domain(domain):
+        if not domain or is_blocked(domain) or domain in seen or _is_noise_domain(domain):
             continue
         seen.add(domain)
         title = _strip_tags(item.get("title") or "")
