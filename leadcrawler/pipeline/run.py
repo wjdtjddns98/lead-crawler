@@ -248,17 +248,16 @@ def _build_lead(
                 industry = verdict.label
         except Exception as exc:
             log.info("pipeline.classify.error", key=dc.canonical_key, err=str(exc))
-    # 표시명 영문 우선(KR 제외, PO 2026-09-04): 소스가 영문명을 못 준 원어 표시명은 홈페이지
-    # 본문에 실제 적힌 영문 상호로만 교체(추측 금지·abstain=원어 유지). 게이트는 업종 분류와
-    # 동일(is_active·홈페이지 본문) — 같은 본문을 재사용하므로 추가 fetch 0.
-    if (
-        name_eng is not None
-        and ex.is_active
-        and enricher.last_home_html
-        and needs_english_name(dc.name, dc.country)
-    ):
+    # 표시명 영문 우선(KR 제외, PO 2026-09-04): 소스가 영문명을 못 준 원어(비라틴) 표시명은
+    # ① 홈페이지 본문에 실제 적힌 영문 상호(추가 fetch 0 — 업종 분류와 같은 본문), 없으면
+    # ② 번역 폴백(PO 2026-09-29: 공식 영문명 또는 영역). 적재 대상(is_active)만 — 버려질 행에
+    # LLM 을 쓰지 않는다. 원어는 name_eng 에 보존.
+    if name_eng is not None and ex.is_active and needs_english_name(dc.name, dc.country):
         try:
-            eng = name_eng.extract(dc.name, dc.domain, enricher.last_home_html)
+            eng = (
+                name_eng.extract(dc.name, dc.domain, enricher.last_home_html)
+                if enricher.last_home_html else None
+            ) or name_eng.translate(dc.name, dc.country or "")
         except Exception as exc:  # 방어 — 추출기는 abstain 계약이지만 리드 유실은 막는다.
             log.info("pipeline.name_eng.error", key=dc.canonical_key, err=str(exc))
             eng = None

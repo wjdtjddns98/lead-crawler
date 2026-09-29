@@ -161,7 +161,8 @@ def _replace_display_name(session, row: DiscoveredCompanyRow, eng: str) -> None:
 
 
 def _english_targets(
-    session, *, registry: str | None = None, with_domain: bool = False, limit: int = 0
+    session, *, registry: str | None = None, with_domain: bool = False, limit: int = 0,
+    promoted_only: bool = False,
 ) -> list[DiscoveredCompanyRow]:
     """영문 교체 대상 원장 행 — 원어 표시명·KR 제외(승격된 회사 우선). 원어 판정은 파이썬
     (PG/SQLite 공통·정규식 방언 회피)이라 SQL 은 KR·중복흡수·등록처·도메인만 먼저 거르고,
@@ -180,6 +181,8 @@ def _english_targets(
         stmt = stmt.where(DiscoveredCompanyRow.registry == registry)
     if with_domain:
         stmt = stmt.where(func.coalesce(DiscoveredCompanyRow.domain, "") != "")
+    if promoted_only:
+        stmt = stmt.where(CompanyRow.id.is_not(None))
     out: list[DiscoveredCompanyRow] = []
     for r in session.execute(stmt).scalars():
         if needs_english_name(r.name, r.country or ""):
@@ -217,6 +220,24 @@ def backfill_name_eng(
             updated += 1
         if commit_every and i % commit_every == 0:
             session.commit()  # 중단돼도 여기까지의 전환(=지출)은 살린다.
+    return len(rows), updated
+
+
+def backfill_name_translate(
+    session, extractor, *, limit: int = 0, commit_every: int = 25
+) -> tuple[int, int]:
+    """근거 단계(GLEIF·홈페이지) 뒤에도 원어로 남은 **승격된** 회사 표시명을 번역 폴백으로 영문
+    교체 — (검토, 전환) 반환(PO 2026-09-29). 원어는 name_eng 보존. 원장만 있는 미승격 행은
+    승격 시점(run._build_lead)이 같은 폴백을 태우므로 여기선 건드리지 않는다(과금 절약)."""
+    rows = _english_targets(session, promoted_only=True, limit=limit)
+    updated = 0
+    for i, row in enumerate(rows, start=1):
+        eng = extractor.translate(row.name, row.country or "")
+        if eng:
+            _replace_display_name(session, row, eng)
+            updated += 1
+        if commit_every and i % commit_every == 0:
+            session.commit()
     return len(rows), updated
 
 
