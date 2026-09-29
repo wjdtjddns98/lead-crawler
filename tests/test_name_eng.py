@@ -11,7 +11,11 @@ from leadcrawler.config import Settings
 from leadcrawler.enrich import name_eng as ne
 from leadcrawler.enrich.enricher import Enricher
 from leadcrawler.enrich.industry_classify import StubClassifier
-from leadcrawler.pipeline.column_backfill import backfill_gleif_names, backfill_name_eng
+from leadcrawler.pipeline.column_backfill import (
+    backfill_gleif_names,
+    backfill_name_eng,
+    backfill_name_translate,
+)
 from leadcrawler.pipeline.run import _build_lead
 from leadcrawler.schema import CompanyRow
 from leadcrawler.sources.base import (
@@ -156,12 +160,16 @@ def test_claude_name_eng_extracts_records_and_abstains(monkeypatch) -> None:
 class _FakeNameEng:
     model = "fake"
 
-    def __init__(self, out: str | None) -> None:
-        self.out, self.calls = out, 0
+    def __init__(self, out: str | None, tr: str | None = None) -> None:
+        self.out, self.tr, self.calls, self.tr_calls = out, tr, 0, 0
 
     def extract(self, name, domain, html):  # noqa: ANN001
         self.calls += 1
         return self.out
+
+    def translate(self, name, country):  # noqa: ANN001
+        self.tr_calls += 1
+        return self.tr
 
 
 def _lead(dc: DiscoveredCompany, name_eng, monkeypatch) -> DiscoveredCompany:
@@ -194,6 +202,53 @@ def test_build_lead_skips_kr_latin_and_keeps_name_on_abstain(monkeypatch) -> Non
     jp = DiscoveredCompany(canonical_key="d:c.jp", name=JP, country="JP", domain="c.jp")
     assert _lead(jp, _FakeNameEng(None), monkeypatch).company.name == JP and jp.name_eng is None
     assert _lead(jp, None, monkeypatch).company.name == JP  # 추출기 미주입(기존 호출부) 무영향.
+
+
+def test_build_lead_translates_when_homepage_has_no_english(monkeypatch) -> None:
+    # PO 2026-09-29: 홈페이지 근거가 없으면 번역 폴백(공식 영문명 또는 영역). 근거가 있으면 번역 안 탐.
+    jp = DiscoveredCompany(canonical_key="d:t.jp", name=JP, country="JP", domain="t.jp")
+    fake = _FakeNameEng(None, tr="Hokuriku Bank, Ltd.")
+    assert _lead(jp, fake, monkeypatch).company.name == "Hokuriku Bank, Ltd."
+    assert jp.name_eng == JP and fake.tr_calls == 1
+    ev = DiscoveredCompany(canonical_key="d:u.jp", name=JP, country="JP", domain="u.jp")
+    both = _FakeNameEng(EN, tr="SHOULD NOT USE")
+    assert _lead(ev, both, monkeypatch).company.name == EN and both.tr_calls == 0
+    kr = DiscoveredCompany(canonical_key="d:v.kr", name="삼성전자", country="KR", domain="v.kr")
+    kr_fake = _FakeNameEng(None, tr="Samsung")
+    assert _lead(kr, kr_fake, monkeypatch).company.name == "삼성전자" and kr_fake.tr_calls == 0
+
+
+def test_claude_translate_records_and_validates(monkeypatch) -> None:
+    ledger = _Ledger()
+    x = ne.ClaudeNameEng(model="m", api_key="k", ledger=ledger, max_calls=3)
+    monkeypatch.setattr(ne, "anthropic_client", lambda **kw: _fake_client("Sberbank of Russia PJSC"))
+    assert x.translate("ПАО Сбербанк", "RU") == "Sberbank of Russia PJSC"
+    assert ledger.recorded == ["name_llm"]  # 홈페이지 없이도 호출(번역은 근거 게이트 없음).
+    monkeypatch.setattr(ne, "anthropic_client", lambda **kw: _fake_client("ABSTAIN"))
+    y = ne.ClaudeNameEng(model="m", api_key="k", ledger=_Ledger())
+    assert y.translate("ПАО Сбербанк", "RU") is None
+    monkeypatch.setattr(ne, "anthropic_client", lambda **kw: _fake_client("сбербанк"))
+    z = ne.ClaudeNameEng(model="m", api_key="k", ledger=_Ledger())
+    assert z.translate("ПАО Сбербанк", "RU") is None  # 비라틴 출력은 형식 검증에서 기각.
+    assert ne.StubNameEng().translate(JP, "JP") is None
+    monkeypatch.setattr(ne, "anthropic_client", lambda **kw: _fake_client("Tōhō Co., Ltd."))
+    w = ne.ClaudeNameEng(model="m", api_key="k", ledger=_Ledger())
+    assert w.translate("東邦株式会社", "JP") is None  # 장음 기호(비ASCII)는 형식 검증 기각.
+    capped = ne.ClaudeNameEng(model="m", api_key="k", ledger=_Ledger(), max_calls=1)
+    monkeypatch.setattr(ne, "anthropic_client", lambda **kw: _fake_client("Toho Co., Ltd."))
+    assert capped.extract(JP, "d", "<p>x</p>") is None  # 추출이 런당캡 1 을 소진하면
+    assert capped.translate("東邦株式会社", "JP") is None  # 번역도 호출 없이 abstain(캡 공유).
+
+
+def test_build_lead_inactive_never_translates(monkeypatch) -> None:
+    jp = DiscoveredCompany(canonical_key="d:w.jp", name=JP, country="JP", domain="w.jp")
+    fake = _FakeNameEng(None, tr="X Co., Ltd.")
+    monkeypatch.setattr(ExistenceVerifier, "verify", lambda self, *a, **k: SimpleNamespace(
+        is_active=False, confidence=0.0, site_alive=False, status="dead", note=""))
+    s = Settings(dry_run=True)
+    lead = _build_lead(jp, enricher=Enricher(s), existence=ExistenceVerifier(s),
+                       email_validator=EmailValidator(s), classifier=StubClassifier(), name_eng=fake)
+    assert fake.tr_calls == 0 and lead.company.name == JP
 
 
 # ── 원장·company 동기화 + 소급 ─────────────────────────────────────────────────────
@@ -304,3 +359,23 @@ def test_backfill_name_eng_homepage_then_en_fallback(tmp_path) -> None:
 @pytest.mark.parametrize("country", ["KR", "korea"])
 def test_kr_always_kept(country: str) -> None:
     assert english_display("한국회사", "Korea Co., Ltd.", country) == ("한국회사", None)
+
+
+def test_backfill_name_translate_promoted_only_and_skips_kr(tmp_path) -> None:
+    s = _db(tmp_path)
+    with session_scope(s) as db:
+        _seed(db, "d:p.jp", JP, domain="p.jp", promoted=True)  # 승격 → 번역.
+        _seed(db, "d:q.jp", "株式会社キュー")  # 미승격 → 대상 아님(승격 시점 폴백 담당).
+        _seed(db, "d:k.kr", "한국회사", country="KR", promoted=True)  # KR 제외.
+        _seed(db, "d:l.jp", "Latin Co", promoted=True)  # 이미 라틴.
+    fake = _FakeNameEng(None, tr="Hokuriku Bank, Ltd.")
+    with session_scope(s) as db:
+        assert backfill_name_translate(db, fake, commit_every=1) == (1, 1)
+    with session_scope(s) as db:
+        from leadcrawler.schema import DiscoveredCompanyRow
+
+        p = db.get(DiscoveredCompanyRow, "d:p.jp")
+        assert p.name == "Hokuriku Bank, Ltd." and p.name_eng == JP
+        assert db.get(CompanyRow, company_id_for("d:p.jp")).name == "Hokuriku Bank, Ltd."
+        assert db.get(DiscoveredCompanyRow, "d:q.jp").name == "株式会社キュー"
+        assert db.get(CompanyRow, company_id_for("d:k.kr")).name == "한국회사"

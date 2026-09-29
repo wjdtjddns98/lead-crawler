@@ -39,6 +39,10 @@ interface NavState {
 }
 const PAGE = 50;
 
+// 새로고침(F5)은 history.state 를 보존한다 — 현재 엔트리에 심어 둔 전체 큐 필터로 복원(없으면 기본).
+const savedNav = (): Partial<NavState> =>
+  (history.state as { wb?: Partial<NavState> } | null)?.wb ?? {};
+
 // 시장 보드 검색용 한글 별칭 — BE 어휘엔 라벨/별칭이 없어 FE 가 표기만 보강한다.
 const MARKET_ALIASES: Record<string, string[]> = {
   KOSPI: ["코스피"],
@@ -131,15 +135,15 @@ function Workbench({
     if (saved === "mine") return "mine";
     return isAdmin ? "admin" : "mine";
   });
-  const [filter, setFilter] = useState<Filter>("pending");
+  const [filter, setFilter] = useState<Filter>(() => savedNav().filter ?? "pending");
   // 전체 큐 국가·업종 필터 — total 이 이 조건 반영분으로 내려와 '해당 건수'를 그대로 보여준다.
-  const [country, setCountry] = useState("");
-  const [industry, setIndustry] = useState("");
-  const [listed, setListed] = useState<"" | Listed>("");
-  const [market, setMarket] = useState("");
+  const [country, setCountry] = useState(() => savedNav().country ?? "");
+  const [industry, setIndustry] = useState(() => savedNav().industry ?? "");
+  const [listed, setListed] = useState<"" | Listed>(() => savedNav().listed ?? "");
+  const [market, setMarket] = useState(() => savedNav().market ?? "");
   // 지역(KR 시/도) — 국가에 KR 이 있을 때만 노출·전송(#243). 숨김 중엔 선택값을 유지해
   // KR 재선택 시 복원하고, 전송만 비운다(크롤 실행 섹션의 지역 팬아웃과 같은 패턴).
-  const [region, setRegion] = useState("");
+  const [region, setRegion] = useState(() => savedNav().region ?? "");
   // 국가·업종·시장·지역 셀렉트 옵션 — worker 접근 가능한 경로로 한 번 로드(실패해도 큐 조회는 가능).
   const { countryOpts, industryOpts, markets, regionOpts } = useQueueFilterOpts();
   // 시장 어휘는 BE 계약 확장 대기 — 내려올 때만 폴백을 실측 목록으로 교체.
