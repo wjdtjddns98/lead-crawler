@@ -1606,7 +1606,7 @@ def backfill_name_eng_cmd(
     ),
     translate: bool = typer.Option(
         False, "--translate",
-        help="근거 단계 뒤에도 원어로 남은 승격 회사를 LLM 번역(공식 영문명 또는 영역)으로 교체",
+        help="근거 단계 뒤에도 원어로 남은 승격 회사를 LLM 번역(원문 충실 음역·번역)으로 교체",
     ),
 ) -> None:
     """원어(일문 등) 표시명으로 남은 기존 회사(KR 제외)를 영문 표시명으로 소급 교체한다(멱등).
@@ -1615,8 +1615,11 @@ def backfill_name_eng_cmd(
     ② 도메인 있는 행은 홈페이지(+/en/·/english/)에 실제 적힌 영문 상호를 LLM 으로 추출한다 —
     파이프라인 유입 시점(_build_lead)과 같은 추출기·같은 규칙(번역·음역 금지, abstain=원어
     유지). dry_run/키없음이면 ②는 스텁(무과금·무변경)이고 ①은 네트워크 0 계약에 따라 건너뛴다.
-    ③ ``--translate``: 그래도 원어(비라틴)로 남은 **승격** 회사는 LLM 번역(공식 영문명 또는 영역)
+    ③ ``--translate``: 그래도 원어(비라틴)로 남은 **승격** 회사는 LLM 번역(원문 충실 음역·번역)
     으로 교체(PO 2026-09-29). 원어는 name_eng 보존.
+    ponytail: 번역된 행은 라틴 표시명이 되어 이후 ①② 근거 단계 대상에서 빠진다(번역 출처 표식
+    컬럼 없음). ``--skip-homepage --translate`` 는 ②를 이미 돈 행(2026-09-04 소급)에만 쓸 것 —
+    근거명으로 덮을 일이 생기면 name_eng(원어) 기준 재대상화 플래그를 추가.
     """
     import httpx
 
@@ -1647,6 +1650,8 @@ def backfill_name_eng_cmd(
         if not skip_homepage:
             _backfill_name_eng_homepage(settings, session, client, extractor, limit)
         if translate:
+            if skip_homepage:
+                typer.echo("주의: 홈페이지 근거 단계 없이 번역 — 번역된 행은 이후 근거 단계 대상에서 빠짐")
             t_seen, t_upd = backfill_name_translate(session, extractor, limit=limit)
             session.commit()
             mode = "스텁(무과금)" if extractor.model == "stub" else f"LLM({extractor.model})"

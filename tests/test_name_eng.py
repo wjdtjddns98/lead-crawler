@@ -231,6 +231,24 @@ def test_claude_translate_records_and_validates(monkeypatch) -> None:
     z = ne.ClaudeNameEng(model="m", api_key="k", ledger=_Ledger())
     assert z.translate("ПАО Сбербанк", "RU") is None  # 비라틴 출력은 형식 검증에서 기각.
     assert ne.StubNameEng().translate(JP, "JP") is None
+    monkeypatch.setattr(ne, "anthropic_client", lambda **kw: _fake_client("Tōhō Co., Ltd."))
+    w = ne.ClaudeNameEng(model="m", api_key="k", ledger=_Ledger())
+    assert w.translate("東邦株式会社", "JP") is None  # 장음 기호(비ASCII)는 형식 검증 기각.
+    capped = ne.ClaudeNameEng(model="m", api_key="k", ledger=_Ledger(), max_calls=1)
+    monkeypatch.setattr(ne, "anthropic_client", lambda **kw: _fake_client("Toho Co., Ltd."))
+    assert capped.extract(JP, "d", "<p>x</p>") is None  # 추출이 런당캡 1 을 소진하면
+    assert capped.translate("東邦株式会社", "JP") is None  # 번역도 호출 없이 abstain(캡 공유).
+
+
+def test_build_lead_inactive_never_translates(monkeypatch) -> None:
+    jp = DiscoveredCompany(canonical_key="d:w.jp", name=JP, country="JP", domain="w.jp")
+    fake = _FakeNameEng(None, tr="X Co., Ltd.")
+    monkeypatch.setattr(ExistenceVerifier, "verify", lambda self, *a, **k: SimpleNamespace(
+        is_active=False, confidence=0.0, site_alive=False, status="dead", note=""))
+    s = Settings(dry_run=True)
+    lead = _build_lead(jp, enricher=Enricher(s), existence=ExistenceVerifier(s),
+                       email_validator=EmailValidator(s), classifier=StubClassifier(), name_eng=fake)
+    assert fake.tr_calls == 0 and lead.company.name == JP
 
 
 # ── 원장·company 동기화 + 소급 ─────────────────────────────────────────────────────
