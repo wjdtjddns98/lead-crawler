@@ -216,13 +216,26 @@ class DomainResolver:
             search_name = dc.name
 
         gl, lr, keyword = _LOCALE.get(country.iso2, _DEFAULT_LOCALE) if country else _DEFAULT_LOCALE
+        # KR 병의원은 IR 키워드가 역효과 — 네이버가 상호명을 묻고 "IR 투자정보"에 맞는 대기업을
+        # 돌려줘 NPS 의료 200곳 0% 해석(2026-10-07 실측). 평범한 "공식 홈페이지"면 73%.
+        # 의료법인은 .or.kr 이 상용이라 비기업 접미 게이트도 이 업종에선 푼다 — 단 LLM 중재가
+        # 켜졌을 때만. 결정규칙(title 토큰일치)은 심평원·공단·의사회 .or.kr(제목에 병원명이
+        # 그대로 실림)을 채택할 수 있어 제약② 위반(리뷰 MED, 2026-10-07).
+        # ponytail: 공공·협회 .or.kr 개별 블록리스트 대신 중재 게이트 하나로 막음 — 중재 없이
+        # 병의원을 돌릴 일이 생기면 hira/nhis/kha 류를 search._BLOCKLIST 에 추가.
+        healthcare = is_kr and dc.industry == _HEALTHCARE
+        allow_or_kr = healthcare and s.resolve_llm_arbiter
+        if healthcare:
+            keyword = "공식 홈페이지"
         # 회사명 + 국가 현지화 키워드(공식/IR). 정확구문 인용("...")은 쓰지 않는다 — 법인명
         # 전체를 따옴표로 묶으면(예: "EMCOR Group, Inc.") 구글이 정확일치만 찾아 organic 0건이
         # 되는 경우가 많다(라이브 확인). 정밀도는 후보 선택 단계에서 거른다.
         query = f"{search_name} {keyword}"
         tld = f".{country.iso2.lower()}" if country else ""
 
-        cands = _candidates_from(primary.fetch_page(query, gl=gl, lr=lr, start=1))
+        cands = _candidates_from(
+            primary.fetch_page(query, gl=gl, lr=lr, start=1), allow_or_kr=allow_or_kr
+        )
         best = self._pick(dc, cands, slug=slug, korean_core=korean_core, tld=tld, is_kr=is_kr)
 
         # ② 유료 폴백 — 무료 1차(KR 네이버·비KR DDG) miss 시 유료 글로벌로 재시도(예산가드는
@@ -230,7 +243,9 @@ class DomainResolver:
         if best is None and s.resolve_serper_fallback:
             fallback = paid  # 글로벌(serper/cse) — KR 도 country 무시하고 서비스.
             if fallback is not None and fallback is not primary:
-                more = _candidates_from(fallback.fetch_page(query, gl=gl, lr=lr, start=1))
+                more = _candidates_from(
+                    fallback.fetch_page(query, gl=gl, lr=lr, start=1), allow_or_kr=allow_or_kr
+                )
                 if more:
                     cands = _merge_candidates(cands, more)
                     best = self._pick(
@@ -396,6 +411,7 @@ def _name_matches(slug: str, domain: str) -> bool:
 # ── 후보 수집·선택 헬퍼(수율 3레버 공용) ──────────────────────────────────────
 
 _LLM_MAX_CANDIDATES = 6  # LLM 중재에 보낼 후보 상한(프롬프트 비용·토큰 절약).
+_HEALTHCARE = "의료·헬스케어"  # 택소노미 라벨 — KR 병의원 전용 쿼리·.or.kr 허용 분기 키.
 _KOREAN_TOKEN_MIN = 3  # LLM-off 한글 결정 채택 최소 상호명 길이(짧으면 오탐 위험 → 포기).
 _TAG_RE = re.compile(r"<[^>]+>")  # 네이버 title 의 <b>…</b> 하이라이트 등 제거.
 
@@ -435,7 +451,10 @@ _NOISE_ROOT_RE = re.compile(r"news|daily|ilbo|press|recruit|job", re.IGNORECASE)
 
 
 def _is_noise_domain(domain: str) -> bool:
-    """전 경로 공통 제외 부류인지(정부/협회/학교/연구기관 — 기업 공식 도메인 불가)."""
+    """전 경로 공통 제외 부류인지(정부/협회/학교/연구기관 — 기업 공식 도메인 불가).
+
+    예외: ``_candidates_from(allow_or_kr=True)`` — KR 병의원(LLM 중재 on)은 ``.or.kr`` 통과.
+    """
     return domain in _NON_COMPANY_EXACT or domain.endswith(_NON_COMPANY_SUFFIXES)
 
 
@@ -458,15 +477,21 @@ def _strip_tags(text: str) -> str:
     return _TAG_RE.sub("", text)
 
 
-def _candidates_from(items: list) -> list[_Candidate]:
-    """공급자 raw 결과를 blocklist·중복도메인 제거한 후보 목록으로 정규화한다(순서 보존)."""
+def _candidates_from(items: list, *, allow_or_kr: bool = False) -> list[_Candidate]:
+    """공급자 raw 결과를 blocklist·중복도메인 제거한 후보 목록으로 정규화한다(순서 보존).
+
+    ``allow_or_kr``: 비기업 접미 게이트에서 ``.or.kr`` 만 통과시킨다(KR 병의원 — 의료법인·
+    재단 병원은 .or.kr 이 상용이라 게이트가 실기관 도메인을 버렸다, 2026-10-07 실측 8/146).
+    """
     out: list[_Candidate] = []
     seen: set[str] = set()
     for item in items:
         if not isinstance(item, dict):
             continue
         domain = normalize_domain(item.get("link") or item.get("displayLink"))
-        if not domain or is_blocked(domain) or domain in seen or _is_noise_domain(domain):
+        if not domain or is_blocked(domain) or domain in seen:
+            continue
+        if _is_noise_domain(domain) and not (allow_or_kr and domain.endswith(".or.kr")):
             continue
         seen.add(domain)
         title = _strip_tags(item.get("title") or "")
