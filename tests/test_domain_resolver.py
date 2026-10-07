@@ -792,3 +792,59 @@ def test_trust_account_rows_flagged_as_fund() -> None:
     )
     for name in keep:
         assert not is_fund_entity(name), name
+
+
+class _QueryFetcher(FakeFetcher):
+    """마지막 검색 쿼리(q)를 기록하는 FakeFetcher — 업종별 키워드 분기 검증용."""
+
+    def __init__(self, *payloads: dict) -> None:
+        super().__init__(*payloads)
+        self.queries: list[str] = []
+
+    def get_json(self, url: str, *, params: dict | None = None) -> dict:
+        self.queries.append(str((params or {}).get("q", "")))
+        return super().get_json(url, params=params)
+
+
+def test_kr_healthcare_uses_plain_homepage_keyword_and_allows_or_kr() -> None:
+    """KR 병의원은 IR 키워드 대신 '공식 홈페이지'로 검색하고 .or.kr 후보를 살린다.
+
+    2026-10-07 실측: NPS 의료 200곳이 '기업 공식 홈페이지 IR 투자정보' 쿼리로 0% 해석
+    (네이버가 상호명 대신 IR 키워드에 맞는 대기업을 반환) → '공식 홈페이지'면 73%.
+    의료법인 .or.kr 은 비기업 접미 게이트에 버려지던 실기관 도메인(8/146).
+    """
+    f = _QueryFetcher({"items": [{"link": "https://ajoumc.or.kr", "title": "아주대학교병원"}]})
+    r = DomainResolver(_no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k"), fetcher=f)
+    r._arbitrate = lambda dc, cands: (0, True)
+    dc = DiscoveredCompany(
+        canonical_key="name:kr:아주대학교병원", name="아주대학교병원", country="KR",
+        industry="의료·헬스케어",
+    )
+    assert r.resolve(dc) == "ajoumc.or.kr"
+    assert f.queries == ["아주대학교병원 공식 홈페이지"]
+
+
+def test_kr_non_healthcare_keeps_ir_keyword_and_or_kr_gate() -> None:
+    """비의료 KR 은 종전 그대로 — IR 키워드 쿼리, .or.kr 은 협회 접미로 계속 제외."""
+    f = _QueryFetcher({"items": [{"link": "https://kpi.or.kr", "title": "동양 협회"}]})
+    r = DomainResolver(_no_naver_settings(resolve_llm_arbiter=True, anthropic_api_key="k"), fetcher=f)
+    r._arbitrate = lambda dc, cands: (0, True)  # 후보가 남았다면 채택하도록 — 게이트가 막아야 한다.
+    dc = DiscoveredCompany(canonical_key="reg:dart:11", name="동양", country="KR", industry="화학·석유화학")
+    assert r.resolve(dc) is None
+    assert f.queries == ["동양 기업 공식 홈페이지 IR 투자정보"]
+
+
+def test_kr_healthcare_or_kr_requires_llm_arbiter() -> None:
+    """LLM 중재가 꺼진 결정규칙 경로에선 의료라도 .or.kr 을 열지 않는다(리뷰 MED).
+
+    심평원·공단·의사회 .or.kr 은 페이지 title 에 병원명이 그대로 실려 title 토큰일치가
+    다른 기관 도메인을 채택할 수 있다(제약②) — 중재가 거르는 경우에만 허용.
+    """
+    f = _QueryFetcher({"items": [{"link": "https://hira.or.kr", "title": "아주대학교병원 | 심평원"}]})
+    r = DomainResolver(_no_naver_settings(), fetcher=f)  # resolve_llm_arbiter 기본 False.
+    dc = DiscoveredCompany(
+        canonical_key="name:kr:아주대학교병원", name="아주대학교병원", country="KR",
+        industry="의료·헬스케어",
+    )
+    assert r.resolve(dc) is None
+    assert f.queries == ["아주대학교병원 공식 홈페이지"]  # 쿼리 분기는 중재와 무관하게 적용.

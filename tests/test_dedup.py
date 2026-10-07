@@ -159,3 +159,27 @@ def test_match_records_auto_for_nps_site_row_sharing_domain() -> None:
                       country="KR", domain="gsneotek.com"),
     ])
     assert [c.tier for c in res.candidates] == ["auto"]
+
+
+def test_normalize_domain_kr_second_level_and_clinic_builders() -> None:
+    """.kr 2단계(pe·re·지자체 등)·병의원 빌더는 서로 다른 기관을 한 도메인으로 접지 않는다."""
+    assert normalize_domain("http://www.ncc.re.kr") == "ncc.re.kr"
+    assert normalize_domain("http://www.kcch.re.kr") == "kcch.re.kr"
+    assert normalize_domain("http://drahn.pe.kr") == "drahn.pe.kr"
+    assert normalize_domain("http://health.junggu.seoul.kr/") == "junggu.seoul.kr"
+    assert normalize_domain("http://www.amc.seoul.kr") == "amc.seoul.kr"
+    assert normalize_domain("http://barum.drline.net") == "barum.drline.net"
+    assert normalize_domain("http://eye119.com.ne.kr/") == "eye119.com.ne.kr"
+    assert normalize_domain("https://ljsclinic.medisay.co.kr") == "ljsclinic.medisay.co.kr"
+    assert normalize_domain("http://army.mil.kr") == "army.mil.kr"
+    # 개인 홈페이지는 도메인이 분리돼도 검색 blocklist 부류로 계속 걸린다.
+    from leadcrawler.sources.search import is_blocked
+
+    assert is_blocked("drahn.pe.kr") and is_blocked("pe.kr") and not is_blocked("acme.co.kr")
+    # 접미 자체만 오면 그대로(인덱스 안전).
+    assert normalize_domain("re.kr") == "re.kr"
+    assert normalize_domain("www.seoul.kr") == "seoul.kr"
+    assert normalize_domain("drline.net") == "drline.net"
+    # 회귀 없음: 일반 2레이블 .kr·기존 2단계.
+    assert normalize_domain("https://www.naver.kr") == "naver.kr"
+    assert normalize_domain("https://ir.acme.or.kr") == "acme.or.kr"

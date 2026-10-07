@@ -989,7 +989,8 @@ function dashboardSummaryJson(): DashboardSummary {
 // 셋째 경우 — 표시명이 일문이고 name_eng 가 아예 없다(jp_assoc 중 JSDA·IMAJ 미매칭분. IMAJ
 // 매칭분은 BE #445 로 EDINET 과 같은 슬롯이 됐다. 여기에 BE #449 fsa_jp 중 gBizINFO 영문명을
 // 못 붙인 분과, BE #458 gbiz_jp 의 name_en 미보유분(상세의 97.5%)이 더해져 소수가 아니게
-// 된다) — 은 목에 없다. 그 행은 name 매칭만 타므로
+// 된다. BE #529 번역 폴백 이후엔 소급 전 기존·비활성 행으로 줄어든다) — 은 목에 없다.
+// 그 행은 name 매칭만 타므로
 // 목으로 재현할 게 없어서다(라이브에서만 관찰된다).
 const MOCK_NAME_ENG: Record<string, string> = {
   "cs-jp1": "ビーホールディングス",

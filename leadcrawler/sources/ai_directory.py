@@ -42,7 +42,7 @@ from .base import DiscoveredCompany, Segment, build_company
 from .countries import Country, resolve_country
 from .http import HostRateLimiters, SupportsFetch
 from .industry import industry_search_term, industry_search_terms, is_specific_industry
-from .search import _BLOCKLIST
+from .search import is_blocked
 from .search_provider import SearchProvider, build_search_provider
 
 log = get_logger("sources.ai_directory")
@@ -441,7 +441,7 @@ class AiDirectorySource:
         domain = normalize_domain(company.domain)
         if not domain or not _VALID_DOMAIN.fullmatch(domain):
             return None
-        if domain in _BLOCKLIST or domain in seen:
+        if is_blocked(domain) or domain in seen:
             return None
         name = company.name.strip()[:_NAME_LIMIT]
         if not name:

@@ -137,6 +137,12 @@ _BLOCKLIST = frozenset({
 })
 
 
+def is_blocked(domain: str) -> bool:
+    """blocklist 해당 여부. 개인 홈페이지(x.pe.kr)는 부류 전체 — normalize_domain 이
+    pe.kr 을 2단계로 보존하므로(테넌트별 도메인) 완전일치만으론 안 걸린다."""
+    return domain in _BLOCKLIST or domain.endswith(".pe.kr")
+
+
 class SearchSource:
     """검색엔진 기반 범용 발견 소스(모든 세그먼트 적용)."""
 
@@ -363,7 +369,7 @@ class SearchSource:
         if not isinstance(item, dict):
             return None
         domain = normalize_domain(item.get("link") or item.get("displayLink"))
-        if not domain or domain in _BLOCKLIST or domain in seen:
+        if not domain or is_blocked(domain) or domain in seen:
             return None
         # 정부·교육·학술·군·단체 도메인 제외(기업 아님): mida.gov.my·x.ac.uk·y.edu·
         # bizinfo.go.kr(정부)·kdra.or.kr(단체)·foo.go.jp 등. East-Asia 2단계 라벨(go/or/ne)
