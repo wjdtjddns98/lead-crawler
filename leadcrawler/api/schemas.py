@@ -333,6 +333,8 @@ class SendPreview(BaseModel):
 SEND_ATTACHMENTS_MAX_BYTES = 10 * 1024 * 1024
 _CID_SAFE = re.compile(r"[A-Za-z0-9._-]+")
 _INLINE_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+# Python<=3.12 의 mimetypes 는 .webp 를 모른다(3.13 부터 등록) — 버전 무관하게 고정.
+mimetypes.add_type("image/webp", ".webp")
 
 
 class SendAttachment(BaseModel):

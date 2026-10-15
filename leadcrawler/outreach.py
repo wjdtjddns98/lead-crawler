@@ -31,6 +31,8 @@ from .storage.db import session_scope
 from .storage.review import CONFIRMED, candidate_values_of, effective_selected
 
 log = get_logger("outreach")
+# Python<=3.12 의 mimetypes 는 .webp 를 모른다(3.13 부터 등록) — 버전 무관하게 고정.
+mimetypes.add_type("image/webp", ".webp")
 
 
 def _send_id(email: str) -> str:
