@@ -75,7 +75,7 @@ def test_enabled_sends_logs_and_dedups(db_settings, monkeypatch) -> None:
     sent: list[str] = []
     monkeypatch.setattr(
         outreach, "send_one",
-        lambda settings, *, to, subject, body, from_display="", server=None, attachments=(): sent.append(to),
+        lambda settings, *, to, subject, body, from_display="", server=None, attachments=(), body_html="", inline_images=(): sent.append(to),
     )
     s = _settings(email_send_enabled=True)
     with session_scope(s) as sess:
@@ -93,7 +93,7 @@ def test_country_industry_filter(db_settings, monkeypatch) -> None:
     sent: list[str] = []
     monkeypatch.setattr(
         outreach, "send_one",
-        lambda settings, *, to, subject, body, from_display="", server=None, attachments=(): sent.append(to),
+        lambda settings, *, to, subject, body, from_display="", server=None, attachments=(), body_html="", inline_images=(): sent.append(to),
     )
     s = _settings(email_send_enabled=True)
     with session_scope(s) as sess:
@@ -113,7 +113,7 @@ def test_daily_cap_limits_send(db_settings, monkeypatch) -> None:
 
 
 def test_failure_is_logged_and_continues(db_settings, monkeypatch) -> None:
-    def _boom(settings, *, to, subject, body, from_display="", server=None, attachments=()):
+    def _boom(settings, *, to, subject, body, from_display="", server=None, attachments=(), body_html="", inline_images=()):
         if to == "ir@a.co.kr":
             raise RuntimeError("smtp refused")
 
@@ -132,7 +132,7 @@ def test_sends_persist_across_request_rollback(db_settings, monkeypatch) -> None
     sent: list[str] = []
     monkeypatch.setattr(
         outreach, "send_one",
-        lambda settings, *, to, subject, body, from_display="", server=None, attachments=(): sent.append(to),
+        lambda settings, *, to, subject, body, from_display="", server=None, attachments=(), body_html="", inline_images=(): sent.append(to),
     )
     s = _settings(email_send_enabled=True)
     # 요청 세션(get_db)을 모사: 발송 후 핸들러 예외처럼 rollback 한다.
@@ -242,7 +242,7 @@ def test_send_campaign_reuses_smtp_connection(db_settings, monkeypatch) -> None:
     """send_one 이 돌려준 연결을 다음 수신자에 그대로 넘긴다(수신자마다 접속·로그인 X)."""
     seen: list = []
 
-    def fake_send_one(settings, *, to, subject, body, from_display="", server=None, attachments=()):
+    def fake_send_one(settings, *, to, subject, body, from_display="", server=None, attachments=(), body_html="", inline_images=()):
         seen.append(server)
         return server if server is not None else object()
 
@@ -263,7 +263,7 @@ def test_send_campaign_dead_idle_connection_is_replaced_not_retried(db_settings,
 
     calls: list = []
 
-    def fake_send_one(settings, *, to, subject, body, from_display="", server=None, attachments=()):
+    def fake_send_one(settings, *, to, subject, body, from_display="", server=None, attachments=(), body_html="", inline_images=()):
         calls.append(("send", to, server))
         if to == "ir@b.co.kr":  # 발송 중 끊김 — 재시도(이중발송) 금지.
             raise smtplib.SMTPServerDisconnected("mid-DATA")
@@ -335,7 +335,7 @@ def test_uncertain_is_logged_counted_and_never_auto_resent(db_settings, monkeypa
     """uncertain 은 로그 status·집계·일일상한에 반영되고, 다음 캠페인 수신자에서 빠진다."""
     from leadcrawler.schema import EmailSendLogRow
 
-    def flaky(settings, *, to, subject, body, from_display="", server=None, attachments=()):
+    def flaky(settings, *, to, subject, body, from_display="", server=None, attachments=(), body_html="", inline_images=()):
         if to == "ir@b.co.kr":
             raise outreach.SendUncertain("connection closed before 250")
         return object()
@@ -421,3 +421,37 @@ def test_send_one_adds_attachments(monkeypatch) -> None:
         SendRequest(subject="s", body="b", attachments=[
             SendAttachment(filename="big.bin", content_base64="A" * (14 * 1024 * 1024)),
         ])
+
+    # HTML 본문 + 붙여넣은 이미지(cid 참조) — related 파트에 Content-ID 가 붙고 첨부도 공존.
+    srv2 = _Smtp()
+    outreach.send_one(
+        s, to="ir@a.co.kr", subject="제목", body="대체 텍스트", server=srv2,
+        body_html='<p>안녕</p><img src="cid:paste-1.png">',
+        inline_images=[("paste-1.png", b"\x89PNG rest")],
+        attachments=[("a.txt", b"hi")],
+    )
+    text2 = srv2.payload.decode("utf-8", "replace")
+    assert "multipart/related" in text2 and "text/html" in text2
+    assert "Content-ID: <paste-1.png>" in text2 and "image/png" in text2
+    assert 'Content-Disposition: inline; filename="paste-1.png"' in text2
+    assert 'filename="a.txt"' in text2  # 일반 첨부 공존
+    assert srv2.sock.timeout == 60.0  # 인라인 이미지만 있어도 타임아웃 상향
+
+    # 인라인 이미지: png/jpeg/gif/webp 만·cid 안전 파일명·중복 금지·body_html 필수.
+    # 총량 상한은 첨부+인라인 합산.
+    for bad_imgs, html in [
+        ([("x.exe", "aGk=")], "<p>h</p>"),
+        ([("logo.svg", "aGk=")], "<p>h</p>"),
+        ([("내 사진.png", "aGk=")], "<p>h</p>"),
+        ([("a.png", "aGk="), ("A.PNG", "aGk=")], "<p>h</p>"),
+        ([("a.png", "aGk=")], ""),
+    ]:
+        with pytest.raises(ValueError):
+            SendRequest(subject="s", body="b", body_html=html, inline_images=[
+                SendAttachment(filename=f, content_base64=c) for f, c in bad_imgs
+            ])
+    half = "A" * (7 * 1024 * 1024)
+    with pytest.raises(ValueError):
+        SendRequest(subject="s", body="b", body_html="<p>h</p>",
+                    attachments=[SendAttachment(filename="a.bin", content_base64=half)],
+                    inline_images=[SendAttachment(filename="b.png", content_base64=half)])

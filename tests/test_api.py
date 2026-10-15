@@ -222,6 +222,11 @@ def test_send_attachments_accepted_and_validated(client: TestClient) -> None:
     assert client.post("/send", json=ok).status_code == 200
     bad = {"subject": "s", "body": "b", "attachments": [{"filename": "a.pdf", "content_base64": "@@"}]}
     assert client.post("/send", json=bad).status_code == 422
+    html = {
+        "subject": "s", "body": "b", "body_html": '<img src="cid:p.png">',
+        "inline_images": [{"filename": "p.png", "content_base64": "aGk="}],
+    }
+    assert client.post("/send", json=html).status_code == 200
 
 
 def test_reject(client: TestClient) -> None:

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import mimetypes
+import re
 from enum import Enum
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ReviewStatus(str, Enum):
@@ -329,6 +331,8 @@ class SendPreview(BaseModel):
 
 # 첨부 총량 상한(디코딩 바이트) — Gmail/네이버웍스 수신 한도(~25MB)·서버 메모리 보호.
 SEND_ATTACHMENTS_MAX_BYTES = 10 * 1024 * 1024
+_CID_SAFE = re.compile(r"[A-Za-z0-9._-]+")
+_INLINE_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 
 class SendAttachment(BaseModel):
@@ -361,20 +365,44 @@ class SendRequest(BaseModel):
     country: str = ""  # 쉼표구분 국가 필터(빈값=전체)
     industry: str = ""  # 쉼표구분 업종 필터(빈값=전체)
     attachments: list[SendAttachment] = Field(default_factory=list, max_length=10)
+    # HTML 본문(있으면 text 본문은 대체 텍스트). 붙여넣은 이미지는 inline_images 로 보내고
+    # 본문에서 <img src="cid:파일명"> 으로 참조한다(파일명 = Content-ID).
+    body_html: str = Field(default="", max_length=2_000_000)
+    inline_images: list[SendAttachment] = Field(default_factory=list, max_length=20)
 
-    @field_validator("attachments")
+    @field_validator("inline_images")
     @classmethod
-    def _check_attachments(cls, v: list[SendAttachment]) -> list[SendAttachment]:
-        # base64 길이로 상한 선검사(디코딩 전 메모리 보호) 후 실제 디코딩 검증.
-        if sum(len(a.content_base64) for a in v) * 3 // 4 > SEND_ATTACHMENTS_MAX_BYTES:
-            raise ValueError("attachments exceed 10MB total")
-        total = sum(len(a.decode()) for a in v)
-        if total > SEND_ATTACHMENTS_MAX_BYTES:
-            raise ValueError("attachments exceed 10MB total")
+    def _images_only(cls, v: list[SendAttachment]) -> list[SendAttachment]:
+        seen: set[str] = set()
+        for a in v:
+            # 파일명 = Content-ID: 한글·공백·'>' 는 cid 매칭이 깨지므로 ASCII 안전 문자만.
+            if not _CID_SAFE.fullmatch(a.filename):
+                raise ValueError(f"inline image {a.filename}: use [A-Za-z0-9._-] only")
+            ctype, _ = mimetypes.guess_type(a.filename)
+            if ctype not in _INLINE_IMAGE_TYPES:  # svg 는 Gmail 차단 → 메이저 래스터만.
+                raise ValueError(f"inline image {a.filename}: allowed png/jpeg/gif/webp")
+            if a.filename.lower() in seen:  # 같은 cid 둘 → 그림이 뒤바뀐다.
+                raise ValueError(f"inline image {a.filename}: duplicate filename")
+            seen.add(a.filename.lower())
         return v
+
+    @model_validator(mode="after")
+    def _check_total_size(self) -> SendRequest:
+        if self.inline_images and not self.body_html:
+            raise ValueError("inline_images require body_html")
+        # base64 길이로 상한 선검사(디코딩 전 메모리 보호) 후 실제 디코딩 검증 — 첨부+인라인 합산.
+        files = self.attachments + self.inline_images
+        if sum(len(a.content_base64) for a in files) * 3 // 4 > SEND_ATTACHMENTS_MAX_BYTES:
+            raise ValueError("attachments exceed 10MB total")
+        if sum(len(a.decode()) for a in files) > SEND_ATTACHMENTS_MAX_BYTES:
+            raise ValueError("attachments exceed 10MB total")
+        return self
 
     def decoded_attachments(self) -> list[tuple[str, bytes]]:
         return [(a.filename, a.decode()) for a in self.attachments]
+
+    def decoded_inline_images(self) -> list[tuple[str, bytes]]:
+        return [(a.filename, a.decode()) for a in self.inline_images]
 
 
 class SendResult(BaseModel):

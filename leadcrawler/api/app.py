@@ -438,6 +438,7 @@ def create_app() -> FastAPI:
             get_settings(), db,
             subject=payload.subject, body=payload.body, from_display=payload.from_display,
             attachments=payload.decoded_attachments(),
+            body_html=payload.body_html, inline_images=payload.decoded_inline_images(),
             countries=_split_csv(payload.country), industries=_split_csv(payload.industry),
             sent_by=admin.username,
         )
