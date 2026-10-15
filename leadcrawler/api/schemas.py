@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from enum import Enum
 from typing import Literal
 from urllib.parse import urlparse
@@ -325,6 +327,31 @@ class SendPreview(BaseModel):
     sample: list[str] = []
 
 
+# 첨부 총량 상한(디코딩 바이트) — Gmail/네이버웍스 수신 한도(~25MB)·서버 메모리 보호.
+SEND_ATTACHMENTS_MAX_BYTES = 10 * 1024 * 1024
+
+
+class SendAttachment(BaseModel):
+    """발송 첨부 1건 — 파일명 + base64 본문(JSON 전송, multipart 의존성 없음)."""
+
+    filename: str = Field(min_length=1, max_length=255)
+    content_base64: str = Field(min_length=1, max_length=14_000_000)  # ≈10MB 디코딩분
+
+    @field_validator("filename")
+    @classmethod
+    def _basename_only(cls, v: str) -> str:
+        v = v.replace("\\", "/").rsplit("/", 1)[-1].strip()  # 경로 조각 제거(헤더 인젝션 방어)
+        if not v or v in (".", "..") or any(ord(c) < 32 or ord(c) == 127 for c in v):
+            raise ValueError("invalid filename")
+        return v
+
+    def decode(self) -> bytes:
+        try:
+            return base64.b64decode(self.content_base64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError(f"attachment {self.filename}: invalid base64") from exc
+
+
 class SendRequest(BaseModel):
     """확정큐 전체발송 요청 — 제목·본문·발신표시명은 사람이 직접 입력."""
 
@@ -333,6 +360,21 @@ class SendRequest(BaseModel):
     from_display: str = ""  # 발신 표시명(From 주소는 인증 계정으로 고정)
     country: str = ""  # 쉼표구분 국가 필터(빈값=전체)
     industry: str = ""  # 쉼표구분 업종 필터(빈값=전체)
+    attachments: list[SendAttachment] = Field(default_factory=list, max_length=10)
+
+    @field_validator("attachments")
+    @classmethod
+    def _check_attachments(cls, v: list[SendAttachment]) -> list[SendAttachment]:
+        # base64 길이로 상한 선검사(디코딩 전 메모리 보호) 후 실제 디코딩 검증.
+        if sum(len(a.content_base64) for a in v) * 3 // 4 > SEND_ATTACHMENTS_MAX_BYTES:
+            raise ValueError("attachments exceed 10MB total")
+        total = sum(len(a.decode()) for a in v)
+        if total > SEND_ATTACHMENTS_MAX_BYTES:
+            raise ValueError("attachments exceed 10MB total")
+        return v
+
+    def decoded_attachments(self) -> list[tuple[str, bytes]]:
+        return [(a.filename, a.decode()) for a in self.attachments]
 
 
 class SendResult(BaseModel):

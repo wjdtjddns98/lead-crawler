@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hashlib
+import mimetypes
 import smtplib
 from email.generator import BytesGenerator
 from io import BytesIO
@@ -62,8 +63,11 @@ def send_one(
     body: str,
     from_display: str = "",
     server: smtplib.SMTP | None = None,
+    attachments: Sequence[tuple[str, bytes]] = (),
 ) -> smtplib.SMTP:
     """SMTP(STARTTLS+로그인)로 1통 발송하고 **사용한 연결을 돌려준다**. 실패 시 예외.
+
+    ``attachments`` 는 (파일명, 바이트) 목록 — MIME 타입은 확장자로 추정(모르면 octet-stream).
 
     ``server`` 를 주면 그 연결로 보내고(캠페인 재사용 — 수신자마다 접속+TLS+로그인 왕복
     제거), 없으면 새로 접속·로그인한다. 연결 종료(``quit``)는 호출자 책임.
@@ -76,6 +80,10 @@ def send_one(
     msg["To"] = to
     msg["Subject"] = subject
     msg.set_content(body)
+    for filename, data in attachments:
+        ctype, _ = mimetypes.guess_type(filename)
+        maintype, subtype = (ctype or "application/octet-stream").split("/", 1)
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
     if server is None:
         server = smtplib.SMTP(
             settings.smtp_send_host, settings.smtp_send_port, timeout=settings.smtp_timeout
@@ -99,6 +107,9 @@ def send_one(
         raise smtplib.SMTPRecipientsRefused({to: (code, resp)})
     buf = BytesIO()
     BytesGenerator(buf, policy=msg.policy.clone(linesep="\r\n")).flatten(msg)
+    if attachments and server.sock is not None:
+        # 첨부 수 MB 는 기본 10s 안에 DATA 가 안 끝나 '불명' 처리될 수 있다 — 전송 중만 넉넉히.
+        server.sock.settimeout(max(settings.smtp_timeout, 60.0))
     try:
         code, resp = server.data(buf.getvalue())
     except smtplib.SMTPServerDisconnected as exc:
@@ -324,6 +335,7 @@ def send_campaign(
     subject: str,
     body: str,
     from_display: str = "",
+    attachments: Sequence[tuple[str, bytes]] = (),
     countries: Sequence[str] = (),
     industries: Sequence[str] = (),
     sent_by: str | None = None,
@@ -382,7 +394,7 @@ def send_campaign(
                     conn = None
                 conn = send_one(
                     settings, to=email, subject=subject, body=body,
-                    from_display=from_display, server=conn,
+                    from_display=from_display, server=conn, attachments=attachments,
                 )
                 status, error = "sent", None
                 sent += 1
