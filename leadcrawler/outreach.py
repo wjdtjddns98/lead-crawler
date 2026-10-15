@@ -1,8 +1,9 @@
 """아웃리치 이메일 발송 — 확정(confirmed) 큐 대상 전체발송.
 
 설계 원칙(안전 우선): 발송은 외부행위라 ``email_send_enabled`` 가 켜져야만 실제로
-나간다(꺼져 있으면 수신 미리보기만, 네트워크 0). 수신주소당 1통(재발송 방지 —
-``email_send_log`` 의 status='sent' 면 제외), 일일 상한·발송 간 레이트리밋, per-수신
+나간다(꺼져 있으면 수신 미리보기만, 네트워크 0). **제목(캠페인)당 수신주소 1통**(재발송 방지 —
+``email_send_log`` 에 같은 제목으로 status='sent' 면 제외; 제목이 다르면 새 캠페인으로 다시
+받는다 — 2026-10-15 PO 결정, 이전엔 주소당 평생 1통), 일일 상한·발송 간 레이트리밋, per-수신
 성공/실패 로그로 책임추적한다. 제목·본문·발신표시명은 호출부(웹앱 폼)가 사람 입력으로
 넘긴다. From 주소는 인증 계정(``smtp_send_user``)으로 고정(표시명만 가변).
 """
@@ -35,9 +36,9 @@ log = get_logger("outreach")
 mimetypes.add_type("image/webp", ".webp")
 
 
-def _send_id(email: str) -> str:
-    """수신주소에서 결정적 PK(재발송 방지 — 주소당 1행)."""
-    return "e_" + hashlib.sha1(email.encode("utf-8")).hexdigest()[:38]
+def _send_id(subject: str, email: str) -> str:
+    """(제목, 수신주소)에서 결정적 PK — 캠페인당 주소 1행. 제목은 저장 규약과 같이 512자 절단."""
+    return "e_" + hashlib.sha1(f"{subject[:512]}\n{email}".encode()).hexdigest()[:38]
 
 
 def _utcnow() -> datetime:
@@ -166,10 +167,15 @@ def _smtp_quit(server: smtplib.SMTP | None) -> None:
 
 
 def recipients(
-    session: Session, *, countries: Sequence[str] = (), industries: Sequence[str] = ()
+    session: Session,
+    *,
+    subject: str = "",
+    countries: Sequence[str] = (),
+    industries: Sequence[str] = (),
 ) -> list[tuple[str, str]]:
-    """확정 큐의 선택 이메일 (company_id, email) 목록 — 주소 dedup + 이미 발송분 제외.
+    """확정 큐의 선택 이메일 (company_id, email) 목록 — 주소 dedup + **같은 제목** 기발송분 제외.
 
+    ``subject`` 가 비면 제외 없이 전부(새 캠페인 가정 — 미리보기에서 제목 미입력 시).
     국가는 별칭·대소문자 무시 매칭('KR'↔'대한민국'), 업종은 대소문자 무시.
     """
     stmt = (
@@ -191,11 +197,12 @@ def recipients(
         seen.add(email)
         out.append((company.id, email))
 
-    if out:  # 이미 발송 성공(sent)·결과 불명(uncertain)인 주소는 재발송 제외.
+    if out and subject:  # 같은 제목으로 발송 성공(sent)·결과 불명(uncertain)인 주소는 재발송 제외.
         already = set(
             session.scalars(
                 select(EmailSendLogRow.email).where(
                     EmailSendLogRow.email.in_([e for _, e in out]),
+                    EmailSendLogRow.subject == subject[:512],
                     EmailSendLogRow.status.in_(_DELIVERED),
                 )
             ).all()
@@ -236,14 +243,18 @@ def preview(
     settings: Settings,
     session: Session,
     *,
+    subject: str = "",
     countries: Sequence[str] = (),
     industries: Sequence[str] = (),
     now: datetime | None = None,
     sample: int = 10,
 ) -> dict:
-    """발송 전 미리보기 — 수신 N명·일일 잔여 상한·표본(실발송 없음, 네트워크 0)."""
+    """발송 전 미리보기 — 수신 N명·일일 잔여 상한·표본(실발송 없음, 네트워크 0).
+
+    ``subject`` 를 주면 그 제목으로 이미 보낸 주소를 뺀 실제 발송 수가 된다(발송과 동일 산식).
+    """
     now = now or _utcnow()
-    recips = recipients(session, countries=countries, industries=industries)
+    recips = recipients(session, subject=subject, countries=countries, industries=industries)
     cap = max(0, settings.email_send_daily_cap)
     remaining = max(0, cap - _today_used_count(session, now))
     return {
@@ -295,7 +306,7 @@ def _reserve_send(
             res.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _SEND_LOCK_KEY})
         if _today_used_count(res, now) >= cap:
             return "capped"
-        rid = _send_id(email)
+        rid = _send_id(subject, email)
         row = res.get(EmailSendLogRow, rid)
         if row is not None:
             if row.status in _DELIVERED:
@@ -334,8 +345,8 @@ def _log_send(
     sent_by: str | None,
     now: datetime,
 ) -> None:
-    """발송 결과를 주소당 1행으로 멱등 기록(재발송 방지 + 책임추적)."""
-    rid = _send_id(email)
+    """발송 결과를 (제목, 주소)당 1행으로 멱등 기록(재발송 방지 + 책임추적)."""
+    rid = _send_id(subject, email)
     row = session.get(EmailSendLogRow, rid)
     if row is None:
         row = EmailSendLogRow(id=rid, email=email, company_id=company_id)
@@ -369,9 +380,11 @@ def send_campaign(
     ``email_send_enabled`` 가 꺼져 있으면 **실발송·로그 없이** dry-run 요약만 반환한다.
     켜져 있으면 일일 잔여 상한까지만 보내고 발송 간 ``email_send_min_interval`` 만큼 쉰다.
     """
+    if not subject.strip():  # 제목이 곧 캠페인 키 — 비면 기발송 제외가 꺼져 전량 재발송된다.
+        raise ValueError("subject is required (campaign key)")
     injected_now = now  # 테스트 주입용 고정 시각 — 미주입(운영)이면 수신자마다 신선하게 찍는다.
     now = now or _utcnow()
-    recips = recipients(session, countries=countries, industries=industries)
+    recips = recipients(session, subject=subject, countries=countries, industries=industries)
 
     if not settings.email_send_enabled:  # 안전 게이트 — 실발송 차단(미리보기 동치).
         log.info("outreach.dry_run", recipients=len(recips))
