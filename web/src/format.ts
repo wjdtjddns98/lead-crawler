@@ -38,3 +38,30 @@ export function tri(v: boolean | null): string {
   if (v === null) return "—";
   return v ? "O" : "X";
 }
+
+// 메일 본문(일반 텍스트) → HTML. 붙여넣은 이미지 자리표시 `[이미지 N]` 은 cidOf(N) 이 파일명을
+// 주면 <img src="cid:…"> 로 바꾸고(BE #535: 파일명 = Content-ID), 없으면 글자 그대로 둔다.
+export const IMG_TOKEN = /\[이미지 (\d+)\]/g;
+export function bodyToHtml(text: string, cidOf: (n: number) => string | undefined): string {
+  const esc = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    // HTML 은 연속 공백을 하나로 접는다 — 작성 화면의 들여쓰기·정렬을 그대로 보이게.
+    .replace(/\t/g, "    ")
+    .replace(/ {2}/g, " &nbsp;");
+  return esc
+    .replace(IMG_TOKEN, (tok, n: string) => {
+      const cid = cidOf(Number(n));
+      return cid ? `<img src="cid:${cid}" alt="" style="max-width:100%">` : tok;
+    })
+    .replace(/\r?\n/g, "<br>");
+}
+
+// 바이트 → 사람이 읽는 크기(첨부 목록·합계 표시).
+export function fmtBytes(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)}KB`;
+  return `${(n / 1024 / 1024).toFixed(1)}MB`;
+}

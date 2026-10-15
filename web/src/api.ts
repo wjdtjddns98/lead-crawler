@@ -381,6 +381,10 @@ export async function sendCampaign(payload: {
   from_display: string;
   country: string;
   industry: string;
+  // BE #535 — 생략 가능. content_base64 는 `data:…;base64,` 접두 없는 순수 base64.
+  attachments?: { filename: string; content_base64: string }[];
+  body_html?: string;
+  inline_images?: { filename: string; content_base64: string }[];
 }): Promise<SendResult> {
   return apiSend("POST", "/send", payload);
 }
