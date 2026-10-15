@@ -349,16 +349,21 @@ def test_uncertain_is_logged_counted_and_never_auto_resent(db_settings, monkeypa
     assert r1["sent"] == 2 and r1["uncertain"] == 1 and r1["failed"] == 0
     assert r1["attempted"] == 3
     with session_scope(s) as sess:
-        row = sess.get(EmailSendLogRow, outreach._send_id("ir@b.co.kr"))
+        row = sess.get(EmailSendLogRow, outreach._send_id("제목", "ir@b.co.kr"))
         assert row.status == "uncertain" and "250" in (row.error or "")
         assert outreach._today_used_count(sess, outreach._utcnow()) == 3  # 상한에 포함.
         # 재발송 대상에서 제외(자동 재시도 금지) — failed 였다면 남았을 것.
-        assert outreach.recipients(sess) == []
+        assert outreach.recipients(sess, subject="제목") == []
         assert outreach.preview(s, sess)["remaining_today"] == 7
-    # 예약 경로도 dup 으로 막는다(다른 캠페인이 같은 주소를 잡으려 해도).
+    # 예약 경로도 같은 제목이면 dup 으로 막는다(동시 캠페인이 같은 주소를 잡으려 해도).
     assert outreach._reserve_send(
-        s, email="ir@b.co.kr", company_id="x", subject="s", sent_by=None, cap=10, now=outreach._utcnow()
+        s, email="ir@b.co.kr", company_id="x", subject="제목", sent_by=None, cap=10, now=outreach._utcnow()
     ) == "dup"
+    # 제목이 다르면 새 캠페인 — uncertain 이력이 있어도 예약된다(제목당 1통 규칙).
+    assert outreach._reserve_send(
+        s, email="ir@b.co.kr", company_id="x", subject="다른 제목", sent_by=None, cap=10,
+        now=outreach._utcnow(),
+    ) == "reserved"
 
 
 def test_send_one_adds_attachments(monkeypatch) -> None:
@@ -460,3 +465,43 @@ def test_send_one_adds_attachments(monkeypatch) -> None:
         SendRequest(subject="s", body="b", body_html="<p>h</p>",
                     attachments=[SendAttachment(filename="a.bin", content_base64=half)],
                     inline_images=[SendAttachment(filename="b.png", content_base64=half)])
+
+
+def test_dedup_is_per_subject(db_settings, monkeypatch) -> None:
+    """제목(캠페인)당 1통 — 같은 제목 재실행은 0명, 제목이 다르면 같은 사람에게 다시 나간다."""
+    monkeypatch.setattr(outreach, "send_one", lambda *a, **k: None)
+    s = _settings(email_send_enabled=True)
+    with session_scope(s) as sess:
+        r1 = outreach.send_campaign(s, sess, subject="A", body="b", sleep=lambda _: None)
+    with session_scope(s) as sess:
+        r1b = outreach.send_campaign(s, sess, subject="A", body="b", sleep=lambda _: None)
+    with session_scope(s) as sess:
+        r2 = outreach.send_campaign(s, sess, subject="B", body="b", sleep=lambda _: None)
+    assert r1["sent"] == 3 and r1b["recipients"] == 0 and r2["sent"] == 3
+    with session_scope(s) as sess:
+        assert outreach.preview(s, sess, subject="A")["recipients"] == 0
+        assert outreach.preview(s, sess, subject="C")["recipients"] == 3
+        assert outreach.preview(s, sess)["recipients"] == 3  # 제목 없으면 제외 없음(새 캠페인 가정).
+    # 제목은 캠페인 키 — 비면 거부(전량 재발송 사고 방지).
+    with session_scope(s) as sess, pytest.raises(ValueError):
+        outreach.send_campaign(s, sess, subject="  ", body="b", sleep=lambda _: None)
+
+
+def test_legacy_email_only_rows_still_excluded_for_same_subject(db_settings, monkeypatch) -> None:
+    """배포 전 라이브 행(PK=주소만 해시)도 같은 제목이면 제외된다 — 제외는 PK 가 아니라 (주소,제목,상태)."""
+    import hashlib
+
+    from leadcrawler.schema import EmailSendLogRow
+
+    monkeypatch.setattr(outreach, "send_one", lambda *a, **k: None)
+    s = _settings(email_send_enabled=True)
+    with session_scope(s) as sess:
+        sess.add(EmailSendLogRow(
+            id="e_" + hashlib.sha1(b"ir@a.co.kr").hexdigest()[:38], email="ir@a.co.kr", company_id="x",
+            subject="A", status="sent", sent_at=outreach._utcnow(),
+        ))
+    with session_scope(s) as sess:
+        assert [e for _, e in outreach.recipients(sess, subject="A")] == ["ir@b.co.kr", "ir@c.com"]
+        assert len(outreach.recipients(sess, subject="B")) == 3
+        r = outreach.send_campaign(s, sess, subject="A", body="b", sleep=lambda _: None)
+    assert r["sent"] == 2

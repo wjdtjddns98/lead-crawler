@@ -24,12 +24,12 @@ function Row({ label, gap = "gap-3", children }: { label: string; gap?: string; 
 const MAX_FILES = 10;
 const MAX_IMAGES = 20;
 const MAX_TOTAL = 10 * 1024 * 1024;
-// 붙여넣기 허용 이미지 → 확장자. BE 는 확장자를 mimetypes.guess_type 로 판정하는데
-// Python 3.12 는 .webp 를 모른다(None → 422) — 그래서 BE 허용 목록의 webp 는 뺀다.
+// 붙여넣기 허용 이미지 → 확장자(BE 허용 목록 png/jpeg/gif/webp — 확장자로 판정, webp 는 BE #537).
 const IMG_EXT: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/gif": "gif",
+  "image/webp": "webp",
 };
 
 // 붙여넣은 이미지 — n 은 본문 자리표시 `[이미지 n]`, name 은 Content-ID 겸 파일명(ASCII 전용).
@@ -137,7 +137,7 @@ export function SendSection() {
     e.preventDefault();
     const bad = pasted.find((f) => !IMG_EXT[f.type]);
     if (bad) {
-      setErr(`붙여넣을 수 없는 이미지 형식입니다(${bad.type}) — png·jpeg·gif 만 됩니다.`);
+      setErr(`붙여넣을 수 없는 이미지 형식입니다(${bad.type}) — png·jpeg·gif·webp 만 됩니다.`);
       return;
     }
     const added = pasted.map((file) => {
@@ -203,129 +203,132 @@ export function SendSection() {
       <h2 className={SECTION_H2}>확정큐 이메일 발송</h2>
       {err && <ErrorBox>{err}</ErrorBox>}
 
-      <div className="flex flex-col gap-5 max-w-[780px]">
-        {/* 메시지 작성 그룹 */}
-        <div className="flex flex-col gap-3">
-          <span className="text-[11px] text-muted uppercase tracking-[0.06em]">메시지 작성</span>
-          <label className={FIELD}>
-            제목
-            <input className={INPUT} value={subject} onChange={(e) => setSubject(e.target.value)} />
-          </label>
-          <label className={FIELD}>
-            발신 표시명 <span className="text-muted">(From 주소는 서버 발신계정 고정)</span>
-            <input
-              className={INPUT}
-              value={fromName}
-              onChange={(e) => setFromName(e.target.value)}
-              placeholder="예: Zenith Asset IR"
-            />
-          </label>
-          <label className={FIELD}>
-            <span>
-              본문 <span className="text-muted">(이미지는 Ctrl+V 로 붙여넣기)</span>
-            </span>
-            <textarea
-              className={`${INPUT} text-[13px] resize-y font-sans`}
-              value={bodyText}
-              rows={6}
-              onChange={(e) => setBodyText(e.target.value)}
-              onPaste={onPaste}
-            />
-          </label>
-          {usedImages.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {usedImages.map((im) => (
-                <figure key={im.n} className="m-0 flex flex-col items-start gap-1 text-[12px] text-muted">
-                  <img
-                    src={im.url}
-                    alt={`이미지 ${im.n}`}
-                    className="h-16 max-w-[160px] object-contain rounded border border-line bg-canvas"
-                  />
-                  <figcaption className="flex items-center gap-1">
-                    [이미지 {im.n}]
+      <div className="flex flex-col gap-5">
+        {/* 데스크탑(xl)은 작성 | 범위 2열 — 범위가 작성 내내 옆에 보인다. 작성란이 남는 폭을 채움. */}
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:gap-8">
+          {/* 메시지 작성 그룹 */}
+          <div className="flex flex-col gap-3 w-full max-w-[780px] xl:flex-1 xl:min-w-0">
+            <span className="text-[13px] font-semibold text-ink">메시지 작성</span>
+            <label className={FIELD}>
+              제목
+              <input className={INPUT} value={subject} onChange={(e) => setSubject(e.target.value)} />
+            </label>
+            <label className={FIELD}>
+              발신 표시명 <span className="text-muted">(From 주소는 서버 발신계정 고정)</span>
+              <input
+                className={INPUT}
+                value={fromName}
+                onChange={(e) => setFromName(e.target.value)}
+                placeholder="예: Zenith Asset IR"
+              />
+            </label>
+            <label className={FIELD}>
+              <span>
+                본문 <span className="text-muted">(이미지는 Ctrl+V 로 붙여넣기)</span>
+              </span>
+              <textarea
+                className={`${INPUT} text-[13px] resize-y font-sans`}
+                value={bodyText}
+                rows={6}
+                onChange={(e) => setBodyText(e.target.value)}
+                onPaste={onPaste}
+              />
+            </label>
+            {usedImages.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {usedImages.map((im) => (
+                  <figure key={im.n} className="m-0 flex flex-col items-start gap-1 text-[12px] text-muted">
+                    <img
+                      src={im.url}
+                      alt={`이미지 ${im.n}`}
+                      className="h-16 max-w-[160px] object-contain rounded border border-line bg-canvas"
+                    />
+                    <figcaption className="flex items-center gap-1">
+                      [이미지 {im.n}]
+                      <button
+                        type="button"
+                        className="p-1 -m-1 text-muted hover:text-ink"
+                        aria-label={`이미지 ${im.n} 제거`}
+                        onClick={() => removeImage(im)}
+                      >
+                        <X size={12} aria-hidden />
+                      </button>
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+            )}
+            <div className={FIELD}>
+              <span>
+                첨부파일{" "}
+                <span className="text-muted">(최대 {MAX_FILES}개 · 본문 이미지 포함 합계 10MB)</span>
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <button className={BTN} type="button" onClick={() => fileInput.current?.click()}>
+                  파일 선택
+                </button>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  multiple
+                  hidden
+                  onChange={(e) => {
+                    pickFiles(e.target.files);
+                    e.target.value = ""; // 같은 파일을 지웠다 다시 고를 수 있게
+                  }}
+                />
+                {files.map((f, i) => (
+                  <span
+                    key={`${i}-${f.name}`}
+                    className="inline-flex items-center gap-1 border border-line rounded-md px-2 py-0.5 text-[12px] text-ink"
+                  >
+                    <span className="[overflow-wrap:anywhere]">{f.name}</span>
+                    <span className="text-muted tabular-nums">{fmtBytes(f.size)}</span>
                     <button
                       type="button"
                       className="p-1 -m-1 text-muted hover:text-ink"
-                      aria-label={`이미지 ${im.n} 제거`}
-                      onClick={() => removeImage(im)}
+                      aria-label={`${f.name} 첨부 제거`}
+                      onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
                     >
                       <X size={12} aria-hidden />
                     </button>
-                  </figcaption>
-                </figure>
-              ))}
+                  </span>
+                ))}
+              </div>
+              <span className="text-danger-fg" aria-live="polite">
+                {attachErr}
+              </span>
             </div>
-          )}
-          <div className={FIELD}>
-            <span>
-              첨부파일{" "}
-              <span className="text-muted">(최대 {MAX_FILES}개 · 본문 이미지 포함 합계 10MB)</span>
-            </span>
-            <div className="flex flex-wrap items-center gap-2">
-              <button className={BTN} type="button" onClick={() => fileInput.current?.click()}>
-                파일 선택
-              </button>
-              <input
-                ref={fileInput}
-                type="file"
-                multiple
-                hidden
-                onChange={(e) => {
-                  pickFiles(e.target.files);
-                  e.target.value = ""; // 같은 파일을 지웠다 다시 고를 수 있게
-                }}
-              />
-              {files.map((f, i) => (
-                <span
-                  key={`${i}-${f.name}`}
-                  className="inline-flex items-center gap-1 border border-line rounded-md px-2 py-0.5 text-[12px] text-ink"
-                >
-                  <span className="[overflow-wrap:anywhere]">{f.name}</span>
-                  <span className="text-muted tabular-nums">{fmtBytes(f.size)}</span>
-                  <button
-                    type="button"
-                    className="p-1 -m-1 text-muted hover:text-ink"
-                    aria-label={`${f.name} 첨부 제거`}
-                    onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
-                  >
-                    <X size={12} aria-hidden />
-                  </button>
-                </span>
-              ))}
-            </div>
-            <span className="text-danger-fg" aria-live="polite">
-              {attachErr}
-            </span>
           </div>
-        </div>
 
-        {/* 발송 범위 그룹 */}
-        <div className="flex flex-col gap-2">
-          <span className="text-[11px] text-muted uppercase tracking-[0.06em]">발송 범위</span>
-          <div className={CRAWL_TARGET}>
-            <div className={FIELD}>
-              <span>
-                국가 <span className="text-muted">(선택 안 함 = 전체)</span>
-              </span>
-              <MultiPicker
-                options={countryOpts}
-                value={countries}
-                onChange={setCountries}
-                placeholder="국가 검색 (예: 미국, US, 일본)"
-                emptyHint="전체 국가"
-              />
-            </div>
-            <div className={FIELD}>
-              <span>
-                업종 <span className="text-muted">(선택 안 함 = 전체)</span>
-              </span>
-              <MultiPicker
-                options={industryOpts}
-                value={industries}
-                onChange={setIndustries}
-                placeholder="업종 검색 (예: 반도체, 미분류)"
-                emptyHint="전체 업종"
-              />
+          {/* 발송 범위 그룹 — 피커가 체크 목록이라 세로로 쌓으면 길어진다: 2열에서도 국가·업종 나란히 */}
+          <div className="flex flex-col gap-2 xl:shrink-0">
+            <span className="text-[13px] font-semibold text-ink">발송 범위</span>
+            <div className={CRAWL_TARGET}>
+              <div className={FIELD}>
+                <span>
+                  국가 <span className="text-muted">(선택 안 함 = 전체)</span>
+                </span>
+                <MultiPicker
+                  options={countryOpts}
+                  value={countries}
+                  onChange={setCountries}
+                  placeholder="국가 검색 (예: 미국, US, 일본)"
+                  emptyHint="전체 국가"
+                />
+              </div>
+              <div className={FIELD}>
+                <span>
+                  업종 <span className="text-muted">(선택 안 함 = 전체)</span>
+                </span>
+                <MultiPicker
+                  options={industryOpts}
+                  value={industries}
+                  onChange={setIndustries}
+                  placeholder="업종 검색 (예: 반도체, 미분류)"
+                  emptyHint="전체 업종"
+                />
+              </div>
             </div>
           </div>
         </div>
