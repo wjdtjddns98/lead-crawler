@@ -437,6 +437,11 @@ def test_send_one_adds_attachments(monkeypatch) -> None:
     assert 'filename="a.txt"' in text2  # 일반 첨부 공존
     assert srv2.sock.timeout == 60.0  # 인라인 이미지만 있어도 타임아웃 상향
 
+    # webp 는 Python<=3.12 mimetypes 미등록 → add_type 으로 버전 무관 허용(FE #536 지적).
+    ok = SendRequest(subject="s", body="b", body_html="<p>h</p>",
+                     inline_images=[SendAttachment(filename="p.webp", content_base64="aGk=")])
+    assert ok.decoded_inline_images() == [("p.webp", b"hi")]
+    assert outreach._mime_of("p.webp") == ("image", "webp")
     # 인라인 이미지: png/jpeg/gif/webp 만·cid 안전 파일명·중복 금지·body_html 필수.
     # 총량 상한은 첨부+인라인 합산.
     for bad_imgs, html in [
