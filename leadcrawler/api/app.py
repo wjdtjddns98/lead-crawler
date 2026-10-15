@@ -411,14 +411,19 @@ def create_app() -> FastAPI:
 
     @app.get("/send/preview", response_model=SendPreview)
     def send_preview(
+        subject: str = Query(default="", max_length=512),
         country: str = Query(default=""),
         industry: str = Query(default=""),
         db: Session = Depends(get_db),
         _admin: UserRow = Depends(require_admin),
     ) -> SendPreview:
-        """발송 전 미리보기 — 수신 N명·일일 잔여 상한·표본(실발송 없음, 관리자 전용)."""
+        """발송 전 미리보기 — 수신 N명·일일 잔여 상한·표본(실발송 없음, 관리자 전용).
+
+        ``subject`` 를 주면 같은 제목으로 이미 보낸 주소를 뺀 수(발송과 동일 산식). 비우면
+        제외 없이 전부(제목당 1통 규칙 — 2026-10-15).
+        """
         result = outreach_preview(
-            get_settings(), db,
+            get_settings(), db, subject=subject,
             countries=_split_csv(country), industries=_split_csv(industry),
         )
         return SendPreview(**result)
