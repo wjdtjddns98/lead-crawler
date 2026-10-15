@@ -24,12 +24,12 @@ function Row({ label, gap = "gap-3", children }: { label: string; gap?: string; 
 const MAX_FILES = 10;
 const MAX_IMAGES = 20;
 const MAX_TOTAL = 10 * 1024 * 1024;
-// 붙여넣기 허용 이미지 → 확장자. BE 는 확장자를 mimetypes.guess_type 로 판정하는데
-// Python 3.12 는 .webp 를 모른다(None → 422) — 그래서 BE 허용 목록의 webp 는 뺀다.
+// 붙여넣기 허용 이미지 → 확장자(BE 허용 목록 png/jpeg/gif/webp — 확장자로 판정, webp 는 BE #537).
 const IMG_EXT: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/gif": "gif",
+  "image/webp": "webp",
 };
 
 // 붙여넣은 이미지 — n 은 본문 자리표시 `[이미지 n]`, name 은 Content-ID 겸 파일명(ASCII 전용).
@@ -137,7 +137,7 @@ export function SendSection() {
     e.preventDefault();
     const bad = pasted.find((f) => !IMG_EXT[f.type]);
     if (bad) {
-      setErr(`붙여넣을 수 없는 이미지 형식입니다(${bad.type}) — png·jpeg·gif 만 됩니다.`);
+      setErr(`붙여넣을 수 없는 이미지 형식입니다(${bad.type}) — png·jpeg·gif·webp 만 됩니다.`);
       return;
     }
     const added = pasted.map((file) => {
