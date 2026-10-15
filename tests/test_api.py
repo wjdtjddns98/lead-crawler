@@ -216,6 +216,19 @@ def test_send_empty_subject_422(client: TestClient) -> None:
     assert client.post("/send", json={"subject": "", "body": "x"}).status_code == 422
 
 
+def test_send_attachments_accepted_and_validated(client: TestClient) -> None:
+    # 첨부는 base64 JSON — 정상이면 200(dry-run), 깨진 base64 는 422.
+    ok = {"subject": "s", "body": "b", "attachments": [{"filename": "a.pdf", "content_base64": "aGk="}]}
+    assert client.post("/send", json=ok).status_code == 200
+    bad = {"subject": "s", "body": "b", "attachments": [{"filename": "a.pdf", "content_base64": "@@"}]}
+    assert client.post("/send", json=bad).status_code == 422
+    html = {
+        "subject": "s", "body": "b", "body_html": '<img src="cid:p.png">',
+        "inline_images": [{"filename": "p.png", "content_base64": "aGk="}],
+    }
+    assert client.post("/send", json=html).status_code == 200
+
+
 def test_reject(client: TestClient) -> None:
     rid = client.get("/queue").json()["items"][0]["id"]
     assert client.post(f"/queue/{rid}/reject").json()["status"] == "rejected"

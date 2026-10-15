@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hashlib
+import mimetypes
 import smtplib
 from email.generator import BytesGenerator
 from io import BytesIO
@@ -30,6 +31,8 @@ from .storage.db import session_scope
 from .storage.review import CONFIRMED, candidate_values_of, effective_selected
 
 log = get_logger("outreach")
+# Python<=3.12 의 mimetypes 는 .webp 를 모른다(3.13 부터 등록) — 버전 무관하게 고정.
+mimetypes.add_type("image/webp", ".webp")
 
 
 def _send_id(email: str) -> str:
@@ -62,8 +65,15 @@ def send_one(
     body: str,
     from_display: str = "",
     server: smtplib.SMTP | None = None,
+    attachments: Sequence[tuple[str, bytes]] = (),
+    body_html: str = "",
+    inline_images: Sequence[tuple[str, bytes]] = (),
 ) -> smtplib.SMTP:
     """SMTP(STARTTLS+로그인)로 1통 발송하고 **사용한 연결을 돌려준다**. 실패 시 예외.
+
+    ``attachments`` 는 (파일명, 바이트) 목록 — MIME 타입은 확장자로 추정(모르면 octet-stream).
+    ``body_html`` 이 있으면 text/html 대체 본문으로 붙이고, ``inline_images`` 는 그 안에서
+    ``<img src="cid:파일명">`` 으로 참조되는 related 파트(Content-ID = 파일명)로 넣는다.
 
     ``server`` 를 주면 그 연결로 보내고(캠페인 재사용 — 수신자마다 접속+TLS+로그인 왕복
     제거), 없으면 새로 접속·로그인한다. 연결 종료(``quit``)는 호출자 책임.
@@ -76,6 +86,18 @@ def send_one(
     msg["To"] = to
     msg["Subject"] = subject
     msg.set_content(body)
+    if body_html:
+        msg.add_alternative(body_html, subtype="html")
+        html_part = msg.get_payload()[-1]
+        for filename, data in inline_images:
+            maintype, subtype = _mime_of(filename)
+            html_part.add_related(
+                data, maintype=maintype, subtype=subtype, cid=f"<{filename}>",
+                filename=filename, disposition="inline",
+            )
+    for filename, data in attachments:
+        maintype, subtype = _mime_of(filename)
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
     if server is None:
         server = smtplib.SMTP(
             settings.smtp_send_host, settings.smtp_send_port, timeout=settings.smtp_timeout
@@ -99,6 +121,9 @@ def send_one(
         raise smtplib.SMTPRecipientsRefused({to: (code, resp)})
     buf = BytesIO()
     BytesGenerator(buf, policy=msg.policy.clone(linesep="\r\n")).flatten(msg)
+    if (attachments or inline_images) and server.sock is not None:
+        # 첨부 수 MB 는 기본 10s 안에 DATA 가 안 끝나 '불명' 처리될 수 있다 — 전송 중만 넉넉히.
+        server.sock.settimeout(max(settings.smtp_timeout, 60.0))
     try:
         code, resp = server.data(buf.getvalue())
     except smtplib.SMTPServerDisconnected as exc:
@@ -109,6 +134,12 @@ def send_one(
         _smtp_rset(server)
         raise smtplib.SMTPDataError(code, resp)
     return server
+
+
+def _mime_of(filename: str) -> tuple[str, str]:
+    ctype, _ = mimetypes.guess_type(filename)
+    maintype, subtype = (ctype or "application/octet-stream").split("/", 1)
+    return maintype, subtype
 
 
 def _smtp_rset(server: smtplib.SMTP) -> None:
@@ -324,6 +355,9 @@ def send_campaign(
     subject: str,
     body: str,
     from_display: str = "",
+    attachments: Sequence[tuple[str, bytes]] = (),
+    body_html: str = "",
+    inline_images: Sequence[tuple[str, bytes]] = (),
     countries: Sequence[str] = (),
     industries: Sequence[str] = (),
     sent_by: str | None = None,
@@ -382,7 +416,8 @@ def send_campaign(
                     conn = None
                 conn = send_one(
                     settings, to=email, subject=subject, body=body,
-                    from_display=from_display, server=conn,
+                    from_display=from_display, server=conn, attachments=attachments,
+                    body_html=body_html, inline_images=inline_images,
                 )
                 status, error = "sent", None
                 sent += 1

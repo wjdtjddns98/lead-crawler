@@ -431,11 +431,14 @@ def create_app() -> FastAPI:
     ) -> SendResult:
         """확정큐 대상 전체발송(관리자 전용). email_send_enabled 가 꺼져 있으면 dry-run.
 
-        제목·본문·발신표시명은 사람 입력. 수신주소당 1통(재발송 방지)·일일 상한·레이트리밋.
+        제목·본문·발신표시명은 사람 입력. 첨부는 base64 JSON(총 10MB·10개 상한).
+        수신주소당 1통(재발송 방지)·일일 상한·레이트리밋.
         """
         result = send_campaign(
             get_settings(), db,
             subject=payload.subject, body=payload.body, from_display=payload.from_display,
+            attachments=payload.decoded_attachments(),
+            body_html=payload.body_html, inline_images=payload.decoded_inline_images(),
             countries=_split_csv(payload.country), industries=_split_csv(payload.industry),
             sent_by=admin.username,
         )
