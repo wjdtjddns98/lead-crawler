@@ -367,10 +367,17 @@ export function withUnclassified(industries: IndustryOption[]): IndustryOption[]
     : [...industries, UNCLASSIFIED_INDUSTRY_OPTION];
 }
 
-export async function fetchSendPreview(country = "", industry = ""): Promise<SendPreview> {
+// subject 를 주면 같은 제목으로 이미 보낸 주소를 뺀 수(발송과 동일 산식, BE #541 '제목당 1통').
+// BE 가 원문 그대로 비교하므로 trim 하지 않고 POST /send 와 같은 문자열을 넘긴다.
+export async function fetchSendPreview(
+  country = "",
+  industry = "",
+  subject = "",
+): Promise<SendPreview> {
   const q = new URLSearchParams();
   if (country) q.set("country", country);
   if (industry) q.set("industry", industry);
+  if (subject) q.set("subject", subject);
   const qs = q.toString();
   return apiGet(`/send/preview${qs ? `?${qs}` : ""}`);
 }
