@@ -89,7 +89,7 @@ export function SendSection() {
     setErr(null);
     setResult(null);
     try {
-      setPreview(await fetchSendPreview(countries, industries));
+      setPreview(await fetchSendPreview(countries, industries, subject));
     } catch (e) {
       setErr(errMsg(e));
     } finally {
@@ -104,7 +104,7 @@ export function SendSection() {
     setErr(null);
     setResult(null);
     try {
-      setPreview(await fetchSendPreview(countries, industries));
+      setPreview(await fetchSendPreview(countries, industries, subject));
       setConfirmOpen(true);
     } catch (e) {
       setErr(errMsg(e));
@@ -430,7 +430,7 @@ export function SendSection() {
                   <span>
                     결과 불명 {result.uncertain}건 — 메일 서버가 응답을 끊어 전달 여부를 알 수
                     없습니다. 이미 전달됐을 수 있어{" "}
-                    <strong className="font-semibold">자동 재발송에서 제외</strong>되니, 발신함을
+                    <strong className="font-semibold">같은 제목 재발송에서 제외</strong>되니, 발신함을
                     직접 확인해 필요하면 수동 재발송하세요.
                   </span>
                 </div>
@@ -480,7 +480,8 @@ export function SendSection() {
           )}
           {preview.recipients === 0 && (
             <p className="m-0 text-[13px] text-muted">
-              수신 대상이 없습니다 — 필터를 확인하세요.
+              수신 대상이 없습니다 — 필터를 확인하거나, 이 제목으로 이미 모두 보냈는지
+              확인하세요(다른 내용이면 제목을 바꿔 보내세요).
             </p>
           )}
         </ConfirmDialog>
