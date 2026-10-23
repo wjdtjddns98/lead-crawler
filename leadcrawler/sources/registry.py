@@ -44,6 +44,7 @@ from .exchanges_global import (
     SixSource,
     TadawulSource,
 )
+from .exchanges_major import AsxSource, HkexSource, NseSource, TsxSource, TwseSource
 from .ai_directory import AiDirectorySource
 from .edinet import EdinetSource
 from .fsa_jp import FsaJpSource
@@ -122,6 +123,12 @@ def build_sources(
         KapSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         TadawulSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         MoexSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        # 2026-10-23 신설(exchanges_major) — AU/IN/CA/HK/TW 상장 전수(TW 는 웹사이트 동봉).
+        AsxSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        NseSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        TsxSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        HkexSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        TwseSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         GleifSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         WikidataSource(settings, rate_limiters=rate_limiters),
         # 국민연금 스냅샷(무네트워크) — 살아있는 사업장을 업종·규모(가입자수) 우선으로.
