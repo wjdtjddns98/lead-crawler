@@ -60,8 +60,10 @@ _ASX_CSV_URL = "https://www.asx.com.au/asx/research/ASXListedCompanies.csv"
 
 def _parse_asx_csv(text: str) -> list[dict[str, str]]:
     """ASX CSV — 헤더 행("Company name" 으로 시작)을 찾아 그 아래를 DictReader 로 읽는다."""
-    lines = (text or "").splitlines()
-    start = next((i for i, ln in enumerate(lines) if ln.startswith("Company name")), None)
+    lines = (text or "").lstrip("﻿").splitlines()
+    start = next(
+        (i for i, ln in enumerate(lines) if ln.strip('"').startswith("Company name")), None
+    )
     if start is None:
         return []
     out = []
@@ -69,7 +71,9 @@ def _parse_asx_csv(text: str) -> list[dict[str, str]]:
         code = opt_str(row.get("ASX code"))
         name = opt_str(row.get("Company name"))
         if code and name:
-            out.append({"code": code, "name": name, "gics": opt_str(row.get("GICS industry group"))})
+            out.append({"code": code, "name": name})
+    if not out:
+        log.warning("asx.parse.empty", lines=len(lines))
     return out
 
 
@@ -123,13 +127,14 @@ _NSE_HEADERS = {
 
 def _parse_nse_csv(text: str) -> list[dict[str, str]]:
     """NSE EQUITY_L.csv — 헤더 선행 공백 정규화 후 EQ/BE 시리즈 행만."""
-    reader = csv.reader(io.StringIO(text or ""))
+    reader = csv.reader(io.StringIO((text or "").lstrip("﻿")))
     header = next(reader, None)
     if not header:
         return []
     idx = {h.strip().upper(): i for i, h in enumerate(header)}
     need = ("SYMBOL", "NAME OF COMPANY", "SERIES", "ISIN NUMBER")
     if any(k not in idx for k in need):
+        log.warning("nse.parse.no_header", header=header[:8])
         return []
     out = []
     for row in reader:
@@ -144,8 +149,17 @@ def _parse_nse_csv(text: str) -> list[dict[str, str]]:
     return out
 
 
+def _nse_issuer_id(isin: str) -> str:
+    """인도 ISIN(INE + 발행사 4자리 + 증권 2자리 + 일련 2자리 + 검증 1자리)에서 **발행사 7자리**만.
+
+    심볼은 사명 변경 때, 전체 ISIN 은 액면분할·병합 때(일련 01→02) 바뀌어 같은 회사가 새
+    canonical_key 로 재추출될 위험(제약①) — 발행사 부분은 유지된다(리뷰 MED, 2026-10-23).
+    """
+    return isin[:7].upper()
+
+
 class NseSource(ExchangeSource):
-    """인도 국립증권거래소(NSE) 상장목록 CSV. registry_id=ISIN(심볼은 변경될 수 있음), ticker=SYMBOL."""
+    """인도 국립증권거래소(NSE) 상장목록 CSV. registry_id=ISIN 발행사 7자리, ticker=SYMBOL."""
 
     name = "nse"
     registry = "nse"
@@ -163,12 +177,13 @@ class NseSource(ExchangeSource):
         out = []
         seen: set[str] = set()
         for row in rows:
-            if row["isin"] in seen:
-                continue
-            seen.add(row["isin"])
+            issuer = _nse_issuer_id(row["isin"])
+            if issuer in seen:
+                continue  # 같은 발행사의 복수 증권은 첫 행만.
+            seen.add(issuer)
             out.append(build_company(
                 source=self.name, segment=listed_seg, name=row["name"], domain=None,
-                registry=self.registry, registry_id=row["isin"], ticker=row["symbol"],
+                registry=self.registry, registry_id=issuer, ticker=row["symbol"],
                 market="NSE", listed_verified=True,
             ))
             if len(out) >= cap:
@@ -218,7 +233,12 @@ class TsxSource(ExchangeSource):
                 self._partial = True
                 continue
             results = payload.get("results") if isinstance(payload, dict) else None
-            for row in results if isinstance(results, list) else []:
+            if not isinstance(results, list) or not results:
+                # 200 이지만 스키마 이상/0행 — 완료로 기록하면 7일간 누락되므로 부분 결과 처리.
+                log.warning("tsx.parse.empty", market=market)
+                self._partial = True
+                continue
+            for row in results:
                 if not isinstance(row, dict):
                     continue
                 symbol = opt_str(row.get("symbol"))
@@ -261,12 +281,22 @@ def _parse_hkex_workbook(wb: Any) -> list[dict[str, str | None]]:
 
         def _cell(key: str) -> str | None:
             i = col.get(key)  # noqa: B023 — col 은 헤더 발견 후 고정.
-            return opt_str(row[i]) if i is not None and i < len(row) else None  # noqa: B023
+            if i is None or i >= len(row) or row[i] is None:
+                return None
+            return opt_str(str(row[i]))
 
         code, name = _cell("Stock Code"), _cell("Name of Securities")
         sub = _cell("Sub-Category") or ""
-        if not code or not name or _cell("Category") != "Equity" or not sub.startswith(_HKEX_EQUITY_SUB):
+        if not code or not name or _cell("Category") != "Equity":
             continue
+        if not sub.startswith(_HKEX_EQUITY_SUB):
+            continue
+        # HKD-RMB 듀얼카운터의 RMB 쪽(80700 TENCENT-R 등 24행, 2026-10-23 실측)은 같은 회사의
+        # 중복 — Trading Currency 열이 있으면 HKD 만(열이 없는 구형식이면 통과).
+        currency = _cell("Trading Currency")
+        if currency is not None and currency.upper() != "HKD":
+            continue
+        code = code.zfill(5)  # 숫자 셀로 와도 5자리 문자열로 안정화.
         out.append({"code": code, "name": name, "sub": sub, "isin": _cell("ISIN")})
     return out
 
@@ -365,6 +395,10 @@ class TwseSource(ExchangeSource):
                 rows = parse(fetcher.get_json(url))
             except Exception as exc:  # noqa: BLE001 — 한 시장 실패는 부분 결과(재수집 기록 생략).
                 log.info("twse.error", url=url, err_type=type(exc).__name__, err=str(exc))
+                self._partial = True
+                continue
+            if not rows:  # 200 이지만 스키마 이상/0행 — 완료 기록 시 7일 누락 → 부분 결과.
+                log.warning("twse.parse.empty", url=url)
                 self._partial = True
                 continue
             for row in rows:
