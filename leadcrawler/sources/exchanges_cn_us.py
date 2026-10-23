@@ -262,10 +262,19 @@ _NASDAQ_SECURITY = re.compile(
 )
 # 꼬리 "Trust" 는 BlackRock 계열 폐쇄형 펀드가 대부분 — 단, "Real Estate Investment Trust" 는 REIT 법인.
 _NASDAQ_TRUST_TAIL = re.compile(r"\bTrust\s*\.?\s*$", re.I)
+# 꼬리를 뗀 법인명이 "… Fund(, Inc.)" 로 끝나면 폐쇄형 펀드(Nuveen Municipal Value Fund, Inc. Common Stock).
+_NASDAQ_FUND = re.compile(r"\bFund\b(?:,?\s*Inc\.?)?\s*$", re.I)
+# 보통주 꼬리로 끝나는 장문형 파생증권 — "Warrants, each warrant exercisable for one share of Common Stock",
+# "Units, each consisting of one share of Class A Common Stock", "Rights, each right to receive …".
+_NASDAQ_DERIVATIVE = re.compile(
+    r"\b(?:Warrants?|Rights?|Units?|Depositary)\b[^()]*"
+    r"\b(?:each|exercisable|representing|consisting|to\s+(?:receive|purchase))\b",
+    re.I,
+)
 _NASDAQ_REIT = re.compile(r"Real\s+Estate\s+Investment\s+Trust", re.I)
 # SPAC(블랭크체크) — 사업·IR 담당이 없는 껍데기 법인(2026-10-23 NASDAQ 표본 앞머리 다수).
 _NASDAQ_SPAC = re.compile(
-    r"\b(?:Acquisition|Merger)\s+(?:Corp|Co|Company|Inc|Ltd|Holdings|Group|Limited)\b|\bSPAC\b",
+    r"\b(?:Acquisitions?|Merger)\s+(?:Corp|Co|Company|Inc|Ltd|Holdings|Group|Limited)\b|\bSPAC\b",
     re.I,
 )
 _NASDAQ_THE_RE = re.compile(r"\s*\(The\)\s*", re.I)
@@ -279,6 +288,8 @@ def _nasdaq_company_name(raw: str) -> str | None:
     m = _NASDAQ_COMMON_TAIL.search(name)
     if m and m.start() > 0:
         base = name[:m.start()]
+        if _NASDAQ_DERIVATIVE.search(base):
+            return None
     else:
         # 단독 "Class B" 꼬리는 떼되, 남은 이름이 증권 문맥("… Preferred Stock Series B")이면 제외.
         mc = _NASDAQ_CLASS_TAIL.search(name)
@@ -288,7 +299,7 @@ def _nasdaq_company_name(raw: str) -> str | None:
         if _NASDAQ_TRUST_TAIL.search(base) and not _NASDAQ_REIT.search(base):
             return None
     base = _NASDAQ_THE_RE.sub(" ", base).strip(" -–")
-    if not base or _NASDAQ_SPAC.search(base):
+    if not base or _NASDAQ_SPAC.search(base) or _NASDAQ_FUND.search(base):
         return None
     return base
 

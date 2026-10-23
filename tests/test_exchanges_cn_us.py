@@ -202,6 +202,13 @@ def test_nasdaq_company_name_common_tail_first() -> None:
         "CHS Inc Class B Cumulative Redeemable Preferred Stock Series 4",
         "BlackRock Municipal Income Trust", "Sprott Physical Gold Trust",
         "iShares Core S&P 500 ETF", "Archimedes Tech SPAC Partners III Co.",
+        "Iron Horse Acquisitions Corp. Ordinary Shares",
+        # 재리뷰 MED — 보통주 꼬리로 끝나는 장문형 파생증권·폐쇄형 펀드.
+        "XYZ Inc. Warrants, each warrant exercisable for one share of Common Stock",
+        "Foo Capital Corp Rights, each right to receive 1/10 of one Class A Ordinary Share",
+        "Bar Corp Units, each consisting of one share of Class A Common Stock",
+        "Adams Diversified Equity Fund, Inc.", "Nuveen Municipal Value Fund, Inc. Common Stock",
+        "Eaton Vance Tax-Managed Income Fund Common Shares of Beneficial Interest",
         "Armada Acquisition Corp. III Class A Ordinary Share", "Armada Acquisition Corp. III Units",
         "Calisa Acquisition Corp Ordinary shares", "",
     ):
