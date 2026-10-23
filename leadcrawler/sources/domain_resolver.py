@@ -52,6 +52,7 @@ _EXCHANGE_REGISTRIES = frozenset({
     "xetra", "euronext", "bme", "six", "b3", "kap", "tadawul", "moex",
     # 2026-10-23 신설(exchanges_major).
     "asx", "nse", "tsx", "hkex", "twse",
+    "sse", "szse", "nasdaq",  # 2026-10-23 신설(exchanges_cn_us).
 })
 
 # 회사명에서 떼어낼 법인격·일반어(도메인 매칭 신호로 무의미). 소문자 토큰 기준.

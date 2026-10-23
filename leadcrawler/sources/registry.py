@@ -44,6 +44,7 @@ from .exchanges_global import (
     SixSource,
     TadawulSource,
 )
+from .exchanges_cn_us import NasdaqScreenerSource, SseSource, SzseSource
 from .exchanges_major import AsxSource, HkexSource, NseSource, TsxSource, TwseSource
 from .ai_directory import AiDirectorySource
 from .edinet import EdinetSource
@@ -129,6 +130,10 @@ def build_sources(
         TsxSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         HkexSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         TwseSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        # 2026-10-23 신설(exchanges_cn_us) — CN(SSE·SZSE, SZSE 는 웹사이트 동봉)·US(Nasdaq 스크리너).
+        SseSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        SzseSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
+        NasdaqScreenerSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         GleifSource(settings, rate_limiters=rate_limiters, cursor_store=cursor_store),
         WikidataSource(settings, rate_limiters=rate_limiters),
         # 국민연금 스냅샷(무네트워크) — 살아있는 사업장을 업종·규모(가입자수) 우선으로.
