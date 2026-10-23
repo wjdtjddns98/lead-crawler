@@ -62,6 +62,11 @@ def yahoo_symbol(ticker: str | None, country: str | None, market: str | None = N
         return f"{t.zfill(4)}.HK"
     if cc == "JP":
         t = t.split(".")[0]  # EDINET 은 '7203' — 이미 접미가 붙은 값은 정리.
+    # 한 나라 복수 거래소 — 2차 시장은 Yahoo 접미가 다르다(2026-10-23 리뷰 MED).
+    if cc == "CA" and (market or "").upper() == "TSXV":
+        return f"{t}.V"
+    if cc == "TW" and (market or "").upper() == "TPEX":
+        return f"{t}.TWO"
     suffix = _SUFFIX.get(cc)
     if suffix is None:
         return None
