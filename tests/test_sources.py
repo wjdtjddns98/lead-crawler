@@ -333,7 +333,7 @@ def test_build_sources_registers_all_adapters() -> None:
         "edgar", "dart", "fsc", "edinet", "fsa_jp", "jp_assoc", "gbiz_jp", "companies_house", "pse", "set", "sgx", "idx",
         "bursa",
         "hose", "hnx", "xetra", "euronext", "bme", "six",
-        "b3", "kap", "tadawul", "moex", "asx", "nse", "tsx", "hkex", "twse",
+        "b3", "kap", "tadawul", "moex", "asx", "nse", "tsx", "hkex", "twse", "sse", "szse", "nasdaq",
         "gleif", "wikidata", "opencorporates",
         "search", "ai_directory",
         "naver_local", "nps",
