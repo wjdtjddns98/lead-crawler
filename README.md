@@ -8,6 +8,12 @@
 전 산업·전 기업(상장+비상장)의 IR 연락처 — 이메일·전화·문의폼 — 를 자동 수집하고,
 웹앱에서 사람이 검증한 뒤 고정 엑셀 서식으로 내보내는 B2B 리드 수집 시스템.
 
+## 🎬 시연 영상
+
+[![Lead-Crawler 시연 영상](docs/media/leadcrawler-demo.jpg)](https://github.com/wjdtjddns98/lead-crawler/releases/download/demo-2026-10/leadcrawler-demo.mp4)
+
+검수 워크벤치 → 크롤 타깃·백필 실행 → 판정 → 통계 흐름을 돌린 1분 50초 영상. 720p, 클릭하면 재생·내려받기. (Release `demo-2026-10` 자산)
+
 ## 파이프라인
 
 1. **발견** — NPS · DART · EDGAR · Companies House · GLEIF · 거래소 18개국(72개국 대상)
