@@ -10,7 +10,9 @@
 
 ## 🎬 시연 영상
 
-[![Lead-Crawler 시연 영상](docs/media/leadcrawler-demo.jpg)](https://github.com/wjdtjddns98/lead-crawler/releases/download/demo-2026-10/leadcrawler-demo.mp4)
+[![Lead-Crawler 시연 영상](docs/media/leadcrawler-demo.jpg)](
+https://github.com/user-attachments/assets/414882b1-6c8c-4322-acf6-91dfae72335b
+)
 
 검수 워크벤치 → 크롤 타깃·백필 실행 → 판정 → 통계 흐름을 돌린 1분 50초 영상. 720p, 클릭하면 재생·내려받기. (Release `demo-2026-10` 자산)
 
